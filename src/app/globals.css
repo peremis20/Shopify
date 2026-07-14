@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Poppins", "Segoe UI", system-ui, sans-serif;
+  --font-script: "Caveat", cursive;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #fbf3e6;
+  color: #3f3b36;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Warm page background gradient matching the reference design */
+.page-bg {
+  background:
+    radial-gradient(1200px 500px at 80% -10%, #fdf3e2 0%, rgba(253, 243, 226, 0) 60%),
+    linear-gradient(180deg, #fdf9f1 0%, #fbf3e6 40%, #f8ecd9 100%);
+  min-height: 100vh;
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full
+      bg-gradient-to-r from-brand-orange to-brand-orange-dark
+      px-8 py-4 text-base font-semibold text-white shadow-soft
+      transition-all duration-200 hover:shadow-card-hover hover:brightness-105
+      active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full
+      border border-brand-green/20 bg-white px-7 py-3.5 text-base font-semibold
+      text-brand-green shadow-soft transition-all duration-200
+      hover:border-brand-green/40 hover:shadow-card active:scale-[0.98];
+  }
+
+  .card {
+    @apply rounded-2xl bg-white shadow-card;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-2 rounded-full bg-brand-orange-soft
+      px-4 py-2 text-sm font-medium text-brand-green;
+  }
+
+  .heading-script {
+    font-family: var(--font-script);
+    @apply text-brand-orange;
+  }
+}
+
+/* Custom scrollbar for a polished feel */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #e6d8c2;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #d8c6a9;
+}
