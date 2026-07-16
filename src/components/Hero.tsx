@@ -43,7 +43,7 @@ export default function Hero() {
 
         <div className="relative">
           <PhotoWithFallback
-            src="https://loremflickr.com/900/700/healthy,food?lock=20"
+            src="/images/hero.jpg"
             alt="Healthy food and wellness flat lay"
             fallbackGradient="from-amber-100 via-orange-50 to-emerald-50"
             fallbackContent="🥗"

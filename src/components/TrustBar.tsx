@@ -8,10 +8,10 @@ const ITEMS = [
 ];
 
 const AVATARS = [
-  { src: "https://loremflickr.com/80/80/face,portrait?lock=21", emoji: "🧑" },
-  { src: "https://loremflickr.com/80/80/woman,portrait?lock=22", emoji: "👩" },
-  { src: "https://loremflickr.com/80/80/man,portrait?lock=23", emoji: "🧔" },
-  { src: "https://loremflickr.com/80/80/smile,portrait?lock=24", emoji: "👩‍🦰" },
+  { src: "/images/avatar-1.jpg", emoji: "🧑" },
+  { src: "/images/avatar-2.jpg", emoji: "👩" },
+  { src: "/images/avatar-3.jpg", emoji: "🧔" },
+  { src: "/images/avatar-4.jpg", emoji: "👩‍🦰" },
 ];
 
 export default function TrustBar() {

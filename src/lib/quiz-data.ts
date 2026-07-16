@@ -22,7 +22,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "🧠",
     badge: "bg-amber-100 text-amber-600",
     visual: "from-amber-200 via-orange-100 to-rose-100",
-    photo: "https://loremflickr.com/600/400/yoga,sunrise?lock=11",
+    photo: "/images/goal-energy-focus.jpg",
   },
   {
     id: "increase-energy",
@@ -31,7 +31,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "⚡",
     badge: "bg-yellow-100 text-yellow-600",
     visual: "from-sky-200 via-blue-100 to-slate-100",
-    photo: "https://loremflickr.com/600/400/running,fitness?lock=12",
+    photo: "/images/goal-increase-energy.jpg",
   },
   {
     id: "better-sleep",
@@ -40,7 +40,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "🌙",
     badge: "bg-indigo-100 text-indigo-500",
     visual: "from-indigo-200 via-violet-100 to-slate-100",
-    photo: "https://loremflickr.com/600/400/sleep,bedroom?lock=13",
+    photo: "/images/goal-better-sleep.jpg",
   },
   {
     id: "immunity",
@@ -49,7 +49,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "🛡️",
     badge: "bg-lime-100 text-lime-600",
     visual: "from-lime-200 via-green-100 to-emerald-100",
-    photo: "https://loremflickr.com/600/400/fitness,muscle?lock=14",
+    photo: "/images/goal-immunity.jpg",
   },
   {
     id: "digestion",
@@ -58,7 +58,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "🌿",
     badge: "bg-green-100 text-green-600",
     visual: "from-emerald-200 via-teal-100 to-lime-100",
-    photo: "https://loremflickr.com/600/400/wellness,spa?lock=15",
+    photo: "/images/goal-digestion.jpg",
   },
   {
     id: "heart-health",
@@ -67,7 +67,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "❤️",
     badge: "bg-rose-100 text-rose-500",
     visual: "from-rose-200 via-red-100 to-orange-100",
-    photo: "https://loremflickr.com/600/400/healthy,heart?lock=16",
+    photo: "/images/goal-heart-health.jpg",
   },
   {
     id: "skin-glow",
@@ -76,7 +76,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "✨",
     badge: "bg-pink-100 text-pink-500",
     visual: "from-pink-200 via-rose-100 to-amber-100",
-    photo: "https://loremflickr.com/600/400/skincare,beauty?lock=17",
+    photo: "/images/goal-skin-glow.jpg",
   },
   {
     id: "weight",
@@ -85,7 +85,7 @@ export const GOALS: GoalCardData[] = [
     emoji: "⚖️",
     badge: "bg-teal-100 text-teal-600",
     visual: "from-teal-200 via-cyan-100 to-slate-100",
-    photo: "https://loremflickr.com/600/400/fitness,scale?lock=18",
+    photo: "/images/goal-weight.jpg",
   },
 ];
 
