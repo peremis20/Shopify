@@ -1,8 +1,17 @@
+import PhotoWithFallback from "./PhotoWithFallback";
+
 const ITEMS = [
   { icon: "🌿", label: "Natural Ingredients" },
   { icon: "💛", label: "Made with Love" },
   { icon: "🛡️", label: "Rooted in Tradition" },
   { icon: "🇺🇸", label: "Made in USA" },
+];
+
+const AVATARS = [
+  { src: "https://loremflickr.com/80/80/face,portrait?lock=21", emoji: "🧑" },
+  { src: "https://loremflickr.com/80/80/woman,portrait?lock=22", emoji: "👩" },
+  { src: "https://loremflickr.com/80/80/man,portrait?lock=23", emoji: "🧔" },
+  { src: "https://loremflickr.com/80/80/smile,portrait?lock=24", emoji: "👩‍🦰" },
 ];
 
 export default function TrustBar() {
@@ -11,13 +20,15 @@ export default function TrustBar() {
       <div className="flex flex-wrap items-center justify-between gap-6">
         <div className="flex items-center gap-3">
           <div className="flex -space-x-2">
-            {["🧑", "👩", "🧔", "👩‍🦰"].map((e, i) => (
-              <span
+            {AVATARS.map((a, i) => (
+              <PhotoWithFallback
                 key={i}
-                className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-brand-orange-soft text-sm"
-              >
-                {e}
-              </span>
+                src={a.src}
+                alt="Happy customer"
+                fallbackGradient="from-brand-orange-soft to-amber-100"
+                fallbackContent={<span className="text-sm">{a.emoji}</span>}
+                className="h-8 w-8 rounded-full border-2 border-white"
+              />
             ))}
           </div>
           <div className="leading-tight">

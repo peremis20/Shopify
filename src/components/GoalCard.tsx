@@ -1,4 +1,5 @@
 import { GoalCardData } from "@/lib/quiz-data";
+import PhotoWithFallback from "./PhotoWithFallback";
 
 interface Props {
   goal: GoalCardData;
@@ -19,24 +20,31 @@ export default function GoalCard({ goal, selected, onToggle }: Props) {
           : "border-transparent shadow-card hover:-translate-y-0.5 hover:shadow-card-hover",
       ].join(" ")}
     >
-      {/* Check indicator */}
-      <span
-        className={[
-          "absolute right-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs transition-colors",
-          selected
-            ? "border-brand-orange bg-brand-orange text-white"
-            : "border-white bg-white/70 text-transparent",
-        ].join(" ")}
-      >
-        ✓
-      </span>
+      {/* Photo header */}
+      <div className="relative">
+        <PhotoWithFallback
+          src={goal.photo}
+          alt={goal.title}
+          fallbackGradient={goal.visual}
+          fallbackContent={goal.emoji}
+          className="h-28 w-full"
+        />
 
-      {/* Visual area */}
-      <div
-        className={`relative flex h-24 items-center justify-center bg-gradient-to-br ${goal.visual}`}
-      >
+        {/* Check indicator (top-right) */}
         <span
-          className={`absolute -bottom-5 left-4 flex h-11 w-11 items-center justify-center rounded-full text-xl shadow-soft ${goal.badge}`}
+          className={[
+            "absolute right-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs shadow-sm transition-colors",
+            selected
+              ? "border-brand-orange bg-brand-orange text-white"
+              : "border-white bg-white/40 text-transparent",
+          ].join(" ")}
+        >
+          ✓
+        </span>
+
+        {/* Icon badge overlapping the bottom of the photo */}
+        <span
+          className={`absolute -bottom-5 left-4 z-10 flex h-11 w-11 items-center justify-center rounded-full text-xl shadow-soft ring-2 ring-white ${goal.badge}`}
         >
           {goal.emoji}
         </span>

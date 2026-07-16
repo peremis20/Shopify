@@ -1,3 +1,5 @@
+import PhotoWithFallback from "./PhotoWithFallback";
+
 const BADGES = [
   { icon: "🌿", label: "Personalized\nResults" },
   { icon: "💛", label: "Better\nWellness" },
@@ -40,25 +42,21 @@ export default function Hero() {
         </div>
 
         <div className="relative">
-          <div className="aspect-[4/3] overflow-hidden rounded-[2rem] bg-gradient-to-br from-amber-100 via-orange-50 to-emerald-50 shadow-card">
-            <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-8 text-center">
-              <div className="grid grid-cols-3 gap-3 text-4xl">
-                <span>🥤</span>
-                <span>🧘</span>
-                <span>🥗</span>
-                <span>💧</span>
-                <span>🍊</span>
-                <span>📓</span>
-              </div>
-              <div className="rounded-xl bg-white/80 px-5 py-3 shadow-soft">
-                <p
-                  className="text-2xl text-brand-green"
-                  style={{ fontFamily: "var(--font-script)" }}
-                >
-                  My Health Goals
-                </p>
-              </div>
-            </div>
+          <PhotoWithFallback
+            src="https://loremflickr.com/900/700/healthy,food?lock=20"
+            alt="Healthy food and wellness flat lay"
+            fallbackGradient="from-amber-100 via-orange-50 to-emerald-50"
+            fallbackContent="🥗"
+            className="aspect-[4/3] rounded-[2rem] shadow-card"
+          />
+          {/* Floating "My Health Goals" note, echoing the reference */}
+          <div className="absolute bottom-5 left-5 rounded-xl bg-white/90 px-5 py-3 shadow-card backdrop-blur">
+            <p
+              className="text-2xl text-brand-green"
+              style={{ fontFamily: "var(--font-script)" }}
+            >
+              My Health Goals
+            </p>
           </div>
         </div>
       </div>
