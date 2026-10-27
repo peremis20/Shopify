@@ -51,6 +51,50 @@ Open http://localhost:3000.
    firebase deploy --only firestore:rules
    ```
 
+## Insights dashboard (`/analytics`)
+
+One page that pulls Google Analytics 4 and Google Search Console together:
+headline KPIs, users and page views over time, search clicks and impressions,
+traffic channels, top pages, and top search queries, each compared with the
+previous period. It works right away with sample data, then switches to your
+real numbers once credentials are added.
+
+### Connect Google (about 10 minutes)
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create or pick
+   a project and enable the **Google Analytics Data API** and the
+   **Google Search Console API**.
+2. IAM and Admin, Service Accounts: create a service account, then open it,
+   go to Keys, and add a JSON key. A file downloads.
+3. Google Analytics, Admin, Property access management: add the service
+   account email as a **Viewer**.
+4. Search Console, Settings, Users and permissions: add the same email as a
+   **Restricted** user.
+5. Add these to `.env.local` (and to your host's environment settings):
+   ```bash
+   GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'  # whole key file on one line
+   GA4_PROPERTY_ID=123456789              # GA Admin, Property details
+   GSC_SITE_URL=sc-domain:example.com     # or https://www.example.com/
+   DASHBOARD_PASSWORD=choose-one          # optional, locks /analytics
+   ```
+6. Restart the server and open http://localhost:3000/analytics.
+
+Data is cached for 10 minutes; the Refresh button pulls fresh numbers.
+Search Console reports about 3 days behind, so its date range ends earlier
+than the Analytics one.
+
+### Adding more apps later
+
+The data layer lives in `src/lib/analytics/`:
+
+- `ga4.ts` and `gsc.ts` are the two live connectors. A new app gets its own
+  file following the same shape (take a date range, return typed data).
+- `overview.ts` calls each connector and returns one response to the page.
+- `integrations.ts` lists every app shown under Connected Apps. Google Ads,
+  Meta, Mailchimp and Shopify are already listed as coming soon.
+
+The UI is in `src/components/analytics/`.
+
 ## Data model
 
 Firestore stores one document per user at `users/{uid}`:
@@ -69,7 +113,7 @@ Firestore stores one document per user at `users/{uid}`:
 
 ```
 src/
-  app/            # routes: / (quiz), /login, /signup, /dashboard
+  app/            # routes: / (quiz), /login, /signup, /dashboard, /analytics
   components/     # Navbar, Hero, Quiz, Dashboard, cards, etc.
   lib/            # firebase, auth-context, firestore, quiz-data,
                   # products, recommendations, quiz-storage

@@ -23,6 +23,18 @@ const config: Config = {
           "orange-dark": "#F26B0F",
           "orange-soft": "#FCE9CF",
         },
+        dash: {
+          bg: "#F7F3EC",
+          card: "#FFFDF9",
+          line: "#ECE5D8",
+          green: "#1F4D36",
+          deep: "#173B2A",
+          copper: "#B8693D",
+          ink: "#2B2A27",
+          muted: "#7D776E",
+          up: "#2E7D4F",
+          down: "#C0392B",
+        },
         ink: {
           DEFAULT: "#3F3B36",
           muted: "#7A736B",
@@ -31,6 +43,8 @@ const config: Config = {
       fontFamily: {
         sans: ["var(--font-sans)", "system-ui", "sans-serif"],
         script: ["var(--font-script)", "cursive"],
+        serif: ["var(--font-serif)", "Georgia", "serif"],
+        dash: ["var(--font-dash)", "system-ui", "sans-serif"],
       },
       boxShadow: {
         card: "0 10px 30px -12px rgba(22, 68, 43, 0.18)",
