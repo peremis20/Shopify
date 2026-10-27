@@ -1,4 +1,4 @@
-import { googlePost } from "./google-auth";
+import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listDates, pctChange } from "./dates";
 import type { DateRange, Delta, GscData, PeriodRanges } from "./types";
 
@@ -10,15 +10,23 @@ interface GscRow {
   position: number;
 }
 
-export function gscSiteUrl(): string | undefined {
+export function envGscSiteUrl(): string | undefined {
   return process.env.GSC_SITE_URL?.trim() || undefined;
 }
 
-export function gscOpenUrl(): string | undefined {
-  const site = gscSiteUrl();
-  return site
-    ? `https://search.google.com/search-console/performance/search-analytics?resource_id=${encodeURIComponent(site)}`
-    : undefined;
+export const gscOpenUrl = (site: string) =>
+  `https://search.google.com/search-console/performance/search-analytics?resource_id=${encodeURIComponent(site)}`;
+
+/** Every Search Console property the signed in Google account can read. */
+export async function listGscSites(auth: GoogleAuth) {
+  const body = await googleRequest<{ siteEntry?: { siteUrl: string; permissionLevel: string }[] }>(
+    auth,
+    "https://www.googleapis.com/webmasters/v3/sites"
+  );
+  return (body.siteEntry ?? [])
+    .filter((s) => s.permissionLevel !== "siteUnverifiedUser")
+    .map((s) => s.siteUrl)
+    .sort((a, b) => Number(b.startsWith("sc-domain:")) - Number(a.startsWith("sc-domain:")));
 }
 
 const delta = (value: number, previous: number): Delta => ({
@@ -27,13 +35,11 @@ const delta = (value: number, previous: number): Delta => ({
   change: pctChange(value, previous),
 });
 
-export async function fetchGsc(ranges: PeriodRanges): Promise<GscData> {
-  const site = gscSiteUrl();
-  if (!site) throw new Error("GSC_SITE_URL is not set.");
+export async function fetchGsc(auth: GoogleAuth, site: string, ranges: PeriodRanges): Promise<GscData> {
   const url = `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site)}/searchAnalytics/query`;
 
   const query = (range: DateRange, dimensions: string[], rowLimit = 10) =>
-    googlePost<{ rows?: GscRow[] }>(url, {
+    googleRequest<{ rows?: GscRow[] }>(auth, url, {
       startDate: range.start,
       endDate: range.end,
       dimensions,

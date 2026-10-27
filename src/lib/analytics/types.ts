@@ -74,10 +74,26 @@ export interface IntegrationInfo {
   detail?: string;
 }
 
+export interface ConnectionInfo {
+  /** How data is pulled: a signed in Google account, a server service account, or not at all. */
+  mode: "oauth" | "service_account" | "none";
+  /** Whether "Connect with Google" is set up on the server. */
+  oauthAvailable: boolean;
+  email?: string;
+  gaPropertyId?: string;
+  gscSiteUrl?: string;
+}
+
+export interface PropertyOptions {
+  ga: { items: { id: string; name: string; account: string }[]; error?: string };
+  gsc: { items: string[]; error?: string };
+}
+
 export interface OverviewResponse {
   generatedAt: string;
   rangeKey: RangeKey;
   ga: SourceResult<GaData>;
   gsc: SourceResult<GscData>;
+  connection: ConnectionInfo;
   integrations: IntegrationInfo[];
 }

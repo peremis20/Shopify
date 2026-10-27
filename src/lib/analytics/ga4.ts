@@ -1,4 +1,4 @@
-import { googlePost } from "./google-auth";
+import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listDates, pctChange } from "./dates";
 import type { Delta, GaData, PeriodRanges } from "./types";
 
@@ -10,13 +10,33 @@ interface Ga4Report {
   rows?: Ga4Row[];
 }
 
-export function ga4PropertyId(): string | undefined {
+export function envGa4PropertyId(): string | undefined {
   return process.env.GA4_PROPERTY_ID?.replace(/^properties\//, "").trim() || undefined;
 }
 
-export function ga4OpenUrl(): string | undefined {
-  const id = ga4PropertyId();
-  return id ? `https://analytics.google.com/analytics/web/#/p${id}/reports/intelligenthome` : undefined;
+export const ga4OpenUrl = (id: string) =>
+  `https://analytics.google.com/analytics/web/#/p${id}/reports/intelligenthome`;
+
+interface AccountSummaries {
+  accountSummaries?: {
+    displayName: string;
+    propertySummaries?: { property: string; displayName: string }[];
+  }[];
+}
+
+/** Every GA4 property the signed in Google account can read. */
+export async function listGa4Properties(auth: GoogleAuth) {
+  const body = await googleRequest<AccountSummaries>(
+    auth,
+    "https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200"
+  );
+  return (body.accountSummaries ?? []).flatMap((a) =>
+    (a.propertySummaries ?? []).map((p) => ({
+      id: p.property.replace(/^properties\//, ""),
+      name: p.displayName,
+      account: a.displayName,
+    }))
+  );
 }
 
 const num = (row: Ga4Row | undefined, i: number) => Number(row?.metricValues?.[i]?.value ?? 0);
@@ -27,14 +47,12 @@ const delta = (value: number, previous: number): Delta => ({
   change: pctChange(value, previous),
 });
 
-export async function fetchGa4(ranges: PeriodRanges): Promise<GaData> {
-  const id = ga4PropertyId();
-  if (!id) throw new Error("GA4_PROPERTY_ID is not set.");
+export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRanges): Promise<GaData> {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`;
   const current = { startDate: ranges.current.start, endDate: ranges.current.end };
 
   const [summary, daily, channels, pages] = await Promise.all([
-    googlePost<Ga4Report>(url, {
+    googleRequest<Ga4Report>(auth, url, {
       dateRanges: [
         { ...current, name: "current" },
         { startDate: ranges.previous.start, endDate: ranges.previous.end, name: "previous" },
@@ -47,19 +65,19 @@ export async function fetchGa4(ranges: PeriodRanges): Promise<GaData> {
         { name: "activeUsers" },
       ],
     }),
-    googlePost<Ga4Report>(url, {
+    googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
       dimensions: [{ name: "date" }],
       metrics: [{ name: "totalUsers" }, { name: "screenPageViews" }],
       orderBys: [{ dimension: { dimensionName: "date" } }],
     }),
-    googlePost<Ga4Report>(url, {
+    googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
       dimensions: [{ name: "sessionDefaultChannelGroup" }],
       metrics: [{ name: "sessions" }],
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
     }),
-    googlePost<Ga4Report>(url, {
+    googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
       dimensions: [{ name: "pagePath" }],
       metrics: [

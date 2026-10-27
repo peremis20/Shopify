@@ -73,7 +73,7 @@ export function SourceError({ message, source }: { message?: string; source: str
       <p className="font-semibold text-dash-down">Couldn&apos;t load {source}</p>
       <p className="mt-1 break-words text-dash-muted">{message}</p>
       <p className="mt-2 text-dash-muted">
-        Check that the service account email has access to this property and the ID in your settings is right.
+        Open Settings to check the connected account and the property it reads.
       </p>
     </div>
   );

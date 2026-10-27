@@ -5,8 +5,9 @@ import { RANGE_OPTIONS } from "@/lib/analytics/dates";
 import type { IntegrationInfo, OverviewResponse, RangeKey } from "@/lib/analytics/types";
 import { DonutChart } from "./DonutChart";
 import { formatDuration, formatNumber, formatPct, formatRange } from "./format";
-import { ClockIcon, FileIcon, InfoIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
+import { ClockIcon, CloseIcon, FileIcon, InfoIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
 import { Legend, LineChart } from "./LineChart";
+import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, DeltaBadge, GaLogo, GscLogo, Skeleton, SourceError } from "./ui";
@@ -23,6 +24,22 @@ export function DashboardView() {
   const [active, setActive] = useState("overview");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
+
+  // Show the result of a Google sign in, then tidy the address bar.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const authError = params.get("auth_error");
+    if (params.get("connected")) {
+      setNotice({ tone: "good", text: "Google account connected. You can change properties any time in Settings." });
+    } else if (authError) {
+      setNotice({ tone: "bad", text: `Couldn't connect Google: ${authError}` });
+    }
+    if (params.has("connected") || authError) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => {
     try {
@@ -69,6 +86,7 @@ export function DashboardView() {
   const ga = data?.ga;
   const gsc = data?.gsc;
   const usingDemo = ga?.status === "demo" || gsc?.status === "demo";
+  const connection = data?.connection;
 
   return (
     <div className="min-h-screen bg-dash-bg font-dash text-dash-ink">
@@ -103,6 +121,18 @@ export function DashboardView() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  className="flex items-center gap-2 rounded-xl border border-dash-line bg-white px-3.5 py-2.5 text-sm font-medium text-dash-ink hover:border-dash-green/40"
+                  title={connection?.email ? `Connected as ${connection.email}` : undefined}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      connection && connection.mode !== "none" ? "bg-dash-up" : "bg-dash-copper"
+                    }`}
+                  />
+                  {connection && connection.mode !== "none" ? "Settings" : "Connect Google"}
+                </button>
                 <select
                   value={range}
                   onChange={(e) => changeRange(e.target.value as RangeKey)}
@@ -141,6 +171,20 @@ export function DashboardView() {
             </div>
           )}
 
+          {notice && (
+            <div
+              className={`mt-6 flex items-center justify-between gap-3 rounded-xl border p-4 text-sm ${
+                notice.tone === "good" ? "border-dash-up/30 bg-dash-up/5" : "border-dash-down/30 bg-dash-down/5"
+              }`}
+              role="status"
+            >
+              <span>{notice.text}</span>
+              <button onClick={() => setNotice(null)} className="text-dash-muted" aria-label="Dismiss">
+                <CloseIcon className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
           {usingDemo && (
             <div className="mt-6 rounded-2xl border border-[#E7D3B4] bg-[#FBF1E1] p-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -148,11 +192,19 @@ export function DashboardView() {
                   <InfoIcon className="h-5 w-5 shrink-0 text-dash-copper" />
                   You&apos;re looking at sample data. Connect your Google account to see your real numbers.
                 </p>
-                <button onClick={() => setShowSetup((s) => !s)} className="font-semibold text-dash-green hover:underline">
-                  {showSetup ? "Hide steps" : "How to connect"}
-                </button>
+                {connection?.oauthAvailable ? (
+                  <ConnectButton />
+                ) : (
+                  <button onClick={() => setShowSetup((s) => !s)} className="font-semibold text-dash-green hover:underline">
+                    {showSetup ? "Hide steps" : "How to connect"}
+                  </button>
+                )}
               </div>
-              {showSetup && <SetupSteps />}
+              {showSetup && !connection?.oauthAvailable && (
+                <div className="mt-4">
+                  <SetupSteps />
+                </div>
+              )}
             </div>
           )}
 
@@ -287,9 +339,17 @@ export function DashboardView() {
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
           </div>
 
-          <ConnectedApps integrations={data?.integrations ?? []} onSetup={() => { setShowSetup(true); navigate("overview"); }} />
+          <ConnectedApps integrations={data?.integrations ?? []} onSetup={() => setSettingsOpen(true)} />
         </div>
       </main>
+
+      {settingsOpen && (
+        <SettingsPanel
+          connection={connection}
+          onClose={() => setSettingsOpen(false)}
+          onChanged={() => load(range, true)}
+        />
+      )}
     </div>
   );
 }
@@ -472,27 +532,5 @@ function ConnectedApps({ integrations, onSetup }: { integrations: IntegrationInf
         ))}
       </div>
     </section>
-  );
-}
-
-function SetupSteps() {
-  return (
-    <ol className="mt-4 list-decimal space-y-2 pl-5 text-dash-ink marker:text-dash-muted">
-      <li>
-        In Google Cloud Console, create a project, enable the <b>Google Analytics Data API</b> and the{" "}
-        <b>Google Search Console API</b>, then create a <b>service account</b> and download its JSON key.
-      </li>
-      <li>
-        In Google Analytics, open Admin, Property access management, and add the service account email as a <b>Viewer</b>.
-      </li>
-      <li>
-        In Search Console, open Settings, Users and permissions, and add the same email as a <b>Restricted</b> user.
-      </li>
-      <li>
-        Add <code className="rounded bg-white px-1">GOOGLE_SERVICE_ACCOUNT_JSON</code>,{" "}
-        <code className="rounded bg-white px-1">GA4_PROPERTY_ID</code> and{" "}
-        <code className="rounded bg-white px-1">GSC_SITE_URL</code> to your <code className="rounded bg-white px-1">.env.local</code>, then restart.
-      </li>
-    </ol>
   );
 }

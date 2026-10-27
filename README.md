@@ -59,25 +59,47 @@ traffic channels, top pages, and top search queries, each compared with the
 previous period. It works right away with sample data, then switches to your
 real numbers once credentials are added.
 
-### Connect Google (about 10 minutes)
+### Connect Google with one button (recommended)
+
+Do this once, then anyone with the dashboard password can click
+**Connect with Google** and pick their properties from a list.
 
 1. In [Google Cloud Console](https://console.cloud.google.com), create or pick
-   a project and enable the **Google Analytics Data API** and the
-   **Google Search Console API**.
-2. IAM and Admin, Service Accounts: create a service account, then open it,
-   go to Keys, and add a JSON key. A file downloads.
-3. Google Analytics, Admin, Property access management: add the service
-   account email as a **Viewer**.
-4. Search Console, Settings, Users and permissions: add the same email as a
-   **Restricted** user.
-5. Add these to `.env.local` (and to your host's environment settings):
+   a project and enable the **Google Analytics Data API**, the
+   **Google Analytics Admin API** and the **Google Search Console API**.
+2. APIs and Services, OAuth consent screen: choose **Internal** if you use
+   Google Workspace. Otherwise choose External and add your own email as a
+   test user. (External apps left in testing mode need you to reconnect
+   every 7 days; publish the app to avoid that.)
+3. Credentials, Create credentials, **OAuth client ID**, type Web
+   application. Add the redirect URI
+   `https://YOUR-SITE/api/auth/google/callback` (and
+   `http://localhost:3000/api/auth/google/callback` for local testing).
+4. Put the client ID and secret in `.env.local` and in your host's settings:
    ```bash
-   GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'  # whole key file on one line
-   GA4_PROPERTY_ID=123456789              # GA Admin, Property details
-   GSC_SITE_URL=sc-domain:example.com     # or https://www.example.com/
-   DASHBOARD_PASSWORD=choose-one          # optional, locks /analytics
+   GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com
+   GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-...
+   DASHBOARD_PASSWORD=choose-one   # strongly recommended once it's online
    ```
-6. Restart the server and open http://localhost:3000/analytics.
+5. Restart, open `/analytics`, click **Connect with Google**. The first
+   Analytics property and Search Console site are picked automatically;
+   change them under **Settings**.
+
+The connection is stored in an encrypted cookie in your browser, so no
+database is needed. Disconnect from Settings at any time.
+
+### Or use a service account
+
+If you prefer fixed properties set by the server, create a service account,
+add its email as a Viewer in Analytics and a user in Search Console, then
+set `GOOGLE_SERVICE_ACCOUNT_JSON`, `GA4_PROPERTY_ID` and `GSC_SITE_URL`
+(see `.env.local.example`).
+
+### Put it online
+
+Import the GitHub repo at [vercel.com/new](https://vercel.com/new), add the
+environment variables above, and deploy. Then add the live redirect URI to
+your OAuth client in Google Cloud.
 
 Data is cached for 10 minutes; the Refresh button pulls fresh numbers.
 Search Console reports about 3 days behind, so its date range ends earlier

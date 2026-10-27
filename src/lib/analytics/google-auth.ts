@@ -1,8 +1,9 @@
 import crypto from "crypto";
 
 /**
- * Minimal Google service account auth: signs a JWT and trades it for an
- * access token. Avoids pulling in the full googleapis SDK for two APIs.
+ * Minimal Google auth for two ways of connecting: "Sign in with Google"
+ * (OAuth refresh token) or a service account (signed JWT). Avoids pulling in
+ * the full googleapis SDK for a handful of read only calls.
  */
 
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -10,6 +11,8 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/analytics.readonly",
   "https://www.googleapis.com/auth/webmasters.readonly",
 ];
+/** Sign in also asks for the email address, to show which account is connected. */
+export const OAUTH_SCOPES = ["openid", "email", ...SCOPES];
 
 interface ServiceAccount {
   email: string;
@@ -42,17 +45,41 @@ export function getServiceAccount(): ServiceAccount | null {
   return null;
 }
 
-let cached: { token: string; expiresAt: number } | null = null;
+export type GoogleAuth =
+  | { kind: "service_account" }
+  | { kind: "oauth"; refreshToken: string };
+
+export function oauthClient(): { id: string; secret: string } | null {
+  const id = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
+  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
+  return id && secret ? { id, secret } : null;
+}
+
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
 const b64url = (input: string | Buffer) =>
   Buffer.from(input).toString("base64url");
 
-async function getAccessToken(): Promise<string> {
-  if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
+async function requestToken(params: Record<string, string>) {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(params),
+    cache: "no-store",
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    if (body.error === "invalid_grant" && params.grant_type === "refresh_token") {
+      throw new Error("Google access has expired or was removed. Reconnect your Google account in Settings.");
+    }
+    throw new Error(`Google sign in failed: ${body.error_description ?? body.error ?? res.status}`);
+  }
+  return body as { access_token: string; expires_in: number; refresh_token?: string; id_token?: string };
+}
 
+function serviceAccountAssertion(): string {
   const account = getServiceAccount();
   if (!account) throw new Error("Google service account credentials are not set.");
-
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = b64url(
@@ -68,33 +95,76 @@ async function getAccessToken(): Promise<string> {
     .createSign("RSA-SHA256")
     .update(`${header}.${claims}`)
     .sign(account.privateKey);
-  const assertion = `${header}.${claims}.${b64url(signature)}`;
-
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-    cache: "no-store",
-  });
-  const body = await res.json();
-  if (!res.ok) {
-    throw new Error(`Google sign in failed: ${body.error_description ?? body.error ?? res.status}`);
-  }
-
-  cached = { token: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
-  return cached.token;
+  return `${header}.${claims}.${b64url(signature)}`;
 }
 
-/** POSTs JSON to a Google API and surfaces Google's own error message on failure. */
-export async function googlePost<T>(url: string, payload: unknown): Promise<T> {
-  const token = await getAccessToken();
-  const res = await fetch(url, {
+async function getAccessToken(auth: GoogleAuth): Promise<string> {
+  const key =
+    auth.kind === "oauth"
+      ? crypto.createHash("sha256").update(auth.refreshToken).digest("hex")
+      : "service_account";
+  const hit = tokenCache.get(key);
+  if (hit && hit.expiresAt > Date.now() + 60_000) return hit.token;
+
+  let body;
+  if (auth.kind === "oauth") {
+    const client = oauthClient();
+    if (!client) throw new Error("Google sign in is not set up on the server.");
+    body = await requestToken({
+      grant_type: "refresh_token",
+      refresh_token: auth.refreshToken,
+      client_id: client.id,
+      client_secret: client.secret,
+    });
+  } else {
+    body = await requestToken({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: serviceAccountAssertion(),
+    });
+  }
+
+  tokenCache.set(key, { token: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 });
+  return body.access_token;
+}
+
+/** Trades the one time code from Google's consent screen for long lived access. */
+export async function exchangeAuthCode(code: string, redirectUri: string) {
+  const client = oauthClient();
+  if (!client) throw new Error("Google sign in is not set up on the server.");
+  const body = await requestToken({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    client_id: client.id,
+    client_secret: client.secret,
+  });
+  let email: string | undefined;
+  if (body.id_token) {
+    try {
+      email = JSON.parse(Buffer.from(body.id_token.split(".")[1], "base64url").toString()).email;
+    } catch {
+      /* email is only used for display */
+    }
+  }
+  return { refreshToken: body.refresh_token, email };
+}
+
+export async function revokeToken(token: string): Promise<void> {
+  await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, {
     method: "POST",
+  }).catch(() => undefined);
+}
+
+/**
+ * Calls a Google API (POST with a JSON body, or GET without one) and
+ * surfaces Google's own error message on failure.
+ */
+export async function googleRequest<T>(auth: GoogleAuth, url: string, payload?: unknown): Promise<T> {
+  const token = await getAccessToken(auth);
+  const res = await fetch(url, {
+    method: payload === undefined ? "GET" : "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+    body: payload === undefined ? undefined : JSON.stringify(payload),
     cache: "no-store",
   });
   const body = await res.json().catch(() => ({}));
