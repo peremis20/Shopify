@@ -12,6 +12,8 @@ import { decrypt, encrypt } from "../secrets";
 
 export interface PlatformSettings {
   anthropicKey?: string;
+  /** Google Gemini, usable instead of Claude. */
+  geminiKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
 }
@@ -28,7 +30,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   shopConnected: boolean;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasShopifyApp: boolean };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasShopifyApp: boolean };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -43,6 +45,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
   }
   return {
     anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
+    geminiKey: process.env.GEMINI_API_KEY || stored.geminiKey,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
   };
@@ -59,7 +62,16 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-export const platformReady = (p: PlatformSettings) => Boolean(p.anthropicKey && p.shopifyClientId && p.shopifyClientSecret);
+/** The AI that writes changes: Claude when its key is set, otherwise Gemini. */
+export const aiProvider = (p: PlatformSettings): AiProvider | null =>
+  p.anthropicKey ? { kind: "claude", key: p.anthropicKey } : p.geminiKey ? { kind: "gemini", key: p.geminiKey } : null;
+
+export interface AiProvider {
+  kind: "claude" | "gemini";
+  key: string;
+}
+
+export const platformReady = (p: PlatformSettings) => Boolean(aiProvider(p) && p.shopifyClientId && p.shopifyClientSecret);
 
 export async function readAccountAutopilot(accountId: string): Promise<AccountAutopilot & { shopTokenEnc: string | null }> {
   await ensureSchema();
@@ -104,7 +116,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }

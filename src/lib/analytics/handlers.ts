@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, revertChange, runAutopilot } from "./autopilot/engine";
 import {
+  aiProvider,
   autopilotView,
   readPlatformSettings,
   saveAccountAutopilot,
@@ -16,7 +17,7 @@ import {
   verifyCallbackHmac,
   verifyWebhookHmac,
 } from "./autopilot/shopify";
-import { checkAnthropicKey } from "./autopilot/writer";
+import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -390,12 +391,14 @@ export const savePlatform = (req: Request) =>
     const str = (k: string) => (typeof b[k] === "string" ? b[k] : undefined);
     await savePlatformSettings({
       anthropicKey: str("anthropicKey"),
+      geminiKey: str("geminiKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
     const p = await readPlatformSettings();
     let claude: string | undefined;
-    if (p.anthropicKey) await checkAnthropicKey(p.anthropicKey).catch((e) => (claude = message(e)));
+    const ai = aiProvider(p);
+    if (ai) await checkAiKey(ai).catch((e) => (claude = message(e)));
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
   });
 

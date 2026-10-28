@@ -4,7 +4,7 @@ import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
 import { findOpportunities } from "../seo-tools";
 import type { Opportunity } from "../seo-types";
-import { readAccountAutopilot, readPlatformSettings } from "./settings";
+import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./settings";
 import {
   getBody,
   listArticles,
@@ -32,7 +32,7 @@ const WORSE_BY_POSITIONS = 3;
 interface Ctx {
   accountId: string;
   store: StoreAccess;
-  anthropicKey: string;
+  ai: AiProvider;
   allowContent: boolean;
   maxPagesPerWeek: number;
 }
@@ -150,7 +150,7 @@ function pickTarget(ops: Opportunity[], brand: string, rested: Set<string>): { o
 
 async function improvePage(ctx: Ctx, runId: string, op: Opportunity, related: string[], page: StoreResource) {
   const done: string[] = [];
-  const plan = await writeImprovement(ctx.anthropicKey, page, op, related, ctx.allowContent);
+  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent);
   const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: plan.reason, op };
 
   const apply = async (field: ChangeField, before: string | null, after: string, run: () => Promise<void>, targetId?: string) => {
@@ -189,7 +189,7 @@ async function improvePage(ctx: Ctx, runId: string, op: Opportunity, related: st
     .filter((x) => x.score > 0)
     .sort((x, y) => y.score - x.score)[0]?.a;
   if (source) {
-    const sentence = await writeInternalLink(ctx.anthropicKey, source, { path, query: op.query, title: page.title });
+    const sentence = await writeInternalLink(ctx.ai, source, { path, query: op.query, title: page.title });
     if (sentence) {
       const blockId = `${runId}-link`;
       const block = wrap(blockId, sentence);
@@ -210,12 +210,13 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
   if (trigger === "schedule" && !acct.enabled) return { run: null, message: "Autopilot is turned off." };
   if (!conn?.gscSiteUrl) return { run: null, message: "Choose a Search Console property in Settings first." };
-  if (!platform.anthropicKey) return { run: null, message: "Autopilot isn't available yet." };
+  const ai = aiProvider(platform);
+  if (!ai) return { run: null, message: "Autopilot isn't available yet." };
   if (!acct.shopDomain || !acct.shopTokenEnc) return { run: null, message: "Connect your Shopify store first." };
   const ctx: Ctx = {
     accountId,
     store: { accountId, shopDomain: acct.shopDomain },
-    anthropicKey: platform.anthropicKey,
+    ai,
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
   };

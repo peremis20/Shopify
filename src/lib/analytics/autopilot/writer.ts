@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
+import type { AiProvider } from "./settings";
 import type { StoreResource } from "./shopify";
 
 /**
- * Writes on-page improvements with Claude. Every answer comes back as JSON
+ * Writes on-page improvements with Claude (or Gemini when only its key is set). Every answer comes back as JSON
  * matching a schema, and all HTML is cleaned before it reaches the store.
  */
 
@@ -64,7 +65,7 @@ const LINK_SCHEMA = {
 
 const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-async function askJson<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askClaude<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const client = new Anthropic({ apiKey });
   const response = await client.beta.messages.create({
     model: MODEL,
@@ -81,9 +82,67 @@ async function askJson<T>(apiKey: string, prompt: string, schema: Record<string,
   return JSON.parse(text) as T;
 }
 
+// ---------- Gemini ----------
+
+const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
+let geminiModel: { key: string; name: string } | null = null;
+
+/** Picks the newest stable Gemini "flash" model this key can use (or GEMINI_MODEL if set). */
+async function pickGeminiModel(apiKey: string): Promise<string> {
+  if (process.env.GEMINI_MODEL) return process.env.GEMINI_MODEL;
+  if (geminiModel?.key === apiKey) return geminiModel.name;
+  const res = await fetch(`${GEMINI_API}/models?pageSize=200&key=${encodeURIComponent(apiKey)}`);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Gemini didn't accept the key: ${body?.error?.message ?? res.status}`);
+  const usable = ((body.models ?? []) as { name: string; supportedGenerationMethods?: string[] }[])
+    .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
+    .map((m) => m.name.replace(/^models\//, ""))
+    .filter((n) => /^gemini-[\d.]+-(flash|pro)$/.test(n));
+  const version = (n: string) => parseFloat(n.split("-")[1]);
+  usable.sort((a, b) => version(b) - version(a) || Number(b.endsWith("flash")) - Number(a.endsWith("flash")));
+  const name = usable.find((n) => n.endsWith("flash")) ?? usable[0];
+  if (!name) throw new Error("No Gemini model is available for this key.");
+  geminiModel = { key: apiKey, name };
+  return name;
+}
+
+/** Gemini's schema format: OpenAPI style types and no additionalProperties. */
+function toGeminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(toGeminiSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (k === "additionalProperties") continue;
+    out[k] = k === "type" && typeof v === "string" ? v.toUpperCase() : toGeminiSchema(v);
+  }
+  return out;
+}
+
+async function askGemini<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  const model = await pickGeminiModel(apiKey);
+  const res = await fetch(`${GEMINI_API}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: RULES }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(schema) },
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Gemini request failed: ${body?.error?.message ?? res.status}`);
+  const text = (body.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
+  if (!text) throw new Error("Gemini declined to write this change.");
+  return JSON.parse(text) as T;
+}
+
+function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  return ai.kind === "gemini" ? askGemini<T>(ai.key, prompt, schema) : askClaude<T>(ai.key, prompt, schema);
+}
+
 /** Title, description, alt text and (optionally) a new section for one page. */
 export async function writeImprovement(
-  apiKey: string,
+  ai: AiProvider,
   page: StoreResource,
   target: { query: string; position: number; impressions: number },
   relatedQueries: string[],
@@ -115,7 +174,7 @@ ${
 
 Keep the SEO title and description if they are already strong for this search; you may return them unchanged.`;
 
-  const out = await askJson<PageImprovement>(apiKey, prompt, IMPROVEMENT_SCHEMA);
+  const out = await askJson<PageImprovement>(ai, prompt, IMPROVEMENT_SCHEMA);
   return {
     metaTitle: out.metaTitle.trim().slice(0, 70),
     metaDescription: out.metaDescription.trim().slice(0, 170),
@@ -129,7 +188,7 @@ Keep the SEO title and description if they are already strong for this search; y
 
 /** One sentence for the end of another article, linking to the page being boosted. */
 export async function writeInternalLink(
-  apiKey: string,
+  ai: AiProvider,
   source: { title: string; body: string },
   target: { path: string; query: string; title: string }
 ): Promise<string> {
@@ -145,7 +204,7 @@ ${plainText(source.body).slice(0, 6000)}
 
 If the link would feel forced in this article, return an empty string.`;
 
-  const out = await askJson<{ sentenceHtml: string }>(apiKey, prompt, LINK_SCHEMA);
+  const out = await askJson<{ sentenceHtml: string }>(ai, prompt, LINK_SCHEMA);
   return cleanHtml(out.sentenceHtml, target.path);
 }
 
@@ -174,7 +233,11 @@ export function cleanHtml(html: string, linkPath?: string): string {
 }
 
 /** Quick check that the key works, without generating anything. */
-export async function checkAnthropicKey(apiKey: string): Promise<void> {
-  const client = new Anthropic({ apiKey });
+export async function checkAiKey(ai: AiProvider): Promise<void> {
+  if (ai.kind === "gemini") {
+    await pickGeminiModel(ai.key);
+    return;
+  }
+  const client = new Anthropic({ apiKey: ai.key });
   await client.models.retrieve(MODEL);
 }
