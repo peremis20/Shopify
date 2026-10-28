@@ -83,11 +83,7 @@ export function KeywordResearch({ connection, searchQueries, onChanged }: {
       ) : !status ? (
         <Skeleton className="h-24" />
       ) : status.step === "ready" ? (
-        <KeywordTool
-          site={siteFromProperty(connection.gscSiteUrl)}
-          searchQueries={searchQueries}
-          customerId={status.customerId}
-        />
+        <KeywordTool site={siteFromProperty(connection.gscSiteUrl)} searchQueries={searchQueries} />
       ) : (
         <KeywordSetup status={status} onSaved={setupDone} />
       )}
@@ -228,11 +224,7 @@ function KeywordSetup({ status, onSaved }: { status: KeywordStatus; onSaved: () 
   );
 }
 
-function KeywordTool({ site, searchQueries, customerId }: {
-  site: string;
-  searchQueries: string[];
-  customerId?: string;
-}) {
+function KeywordTool({ site, searchQueries }: { site: string; searchQueries: string[] }) {
   const [keywords, setKeywords] = useState("");
   const [url, setUrl] = useState(site);
   const [geo, setGeo] = useState("2840");
@@ -364,7 +356,7 @@ function KeywordTool({ site, searchQueries, customerId }: {
         </button>
       </form>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <div className="text-sm">
         <button
           onClick={() => run("volumes", { keywords: searchQueries }, "your Search Console queries")}
           disabled={loading || !searchQueries.length}
@@ -373,7 +365,6 @@ function KeywordTool({ site, searchQueries, customerId }: {
         >
           Check search volume for my Search Console queries
         </button>
-        {customerId && <span className="text-xs text-dash-muted">Google Ads account {formatCustomerId(customerId)}</span>}
       </div>
 
       {error && <p className="rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
