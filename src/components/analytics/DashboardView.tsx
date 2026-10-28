@@ -349,6 +349,7 @@ export function DashboardView() {
           <KeywordResearch
             connection={connection}
             searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
+            range={range}
             onChanged={() => load(range, true)}
           />
 

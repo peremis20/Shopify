@@ -22,6 +22,10 @@ const routes: Record<string, Handler> = {
   "POST /api/keywords/settings": api.saveKeywordSettings,
   "POST /api/keywords/ideas": api.keywordIdeasHandler,
   "POST /api/keywords/volumes": api.keywordVolumesHandler,
+  "GET /api/seo/opportunities": api.opportunities,
+  "GET /api/seo/lists": () => api.keywordLists(),
+  "POST /api/seo/lists/update": api.updateKeywordLists,
+  "GET /api/seo/rankings": api.rankings,
 };
 
 function page(): Response {

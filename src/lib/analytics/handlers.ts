@@ -5,6 +5,7 @@ import { exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import { explainAdsError, keywordIdeas, keywordStatus, keywordVolumes, saveAdsSettings, type KeywordQuery } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
+import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
 import { getOverview } from "./overview";
 import { listProperties } from "./properties";
 
@@ -242,5 +243,67 @@ export async function keywordVolumesHandler(req: Request): Promise<Response> {
     return json({ ideas: await keywordVolumes(conn, q) });
   } catch (err) {
     return json({ error: explainAdsError(err) }, 502);
+  }
+}
+
+const needConnection = () => json({ error: "Connect your Google account first." }, 401);
+
+/** Searches ranking just outside Google's top results, sorted by upside. */
+export async function opportunities(req: Request): Promise<Response> {
+  const conn = await getConnection();
+  if (!conn) return needConnection();
+  const range = new URL(req.url).searchParams.get("range");
+  try {
+    return json({ opportunities: await findOpportunities(conn, isRangeKey(range) ? range : "28d") });
+  } catch (err) {
+    return json({ error: message(err) }, 502);
+  }
+}
+
+export async function keywordLists(): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  return json({ lists: await getLists() });
+}
+
+/** One endpoint for list changes: create, delete, add keywords, remove a keyword. */
+export async function updateKeywordLists(req: Request): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  const body = await req.json().catch(() => ({}));
+  const str = (k: string) => (typeof body[k] === "string" ? body[k].trim() : "");
+  switch (body.action) {
+    case "create": {
+      const name = str("name").slice(0, 80);
+      if (!name) return json({ error: "Give the list a name." }, 400);
+      const list = await createList(name);
+      if (Array.isArray(body.keywords)) await addKeywords(list.id, body.keywords.map(String));
+      break;
+    }
+    case "delete":
+      await deleteList(str("listId"));
+      break;
+    case "add":
+      if (!Array.isArray(body.keywords)) return json({ error: "No keywords to add." }, 400);
+      await addKeywords(str("listId"), body.keywords.map(String));
+      break;
+    case "remove":
+      await removeKeyword(str("listId"), str("keyword"));
+      break;
+    default:
+      return json({ error: "Unknown action." }, 400);
+  }
+  return json({ lists: await getLists() });
+}
+
+/** Weekly Google positions for the keywords in a saved list. */
+export async function rankings(req: Request): Promise<Response> {
+  const conn = await getConnection();
+  if (!conn) return needConnection();
+  const listId = new URL(req.url).searchParams.get("listId");
+  const list = (await getLists()).find((l) => l.id === listId);
+  if (!list) return json({ error: "That list doesn't exist anymore." }, 404);
+  try {
+    return json({ rankings: await trackRankings(conn, list.keywords) });
+  } catch (err) {
+    return json({ error: message(err) }, 502);
   }
 }

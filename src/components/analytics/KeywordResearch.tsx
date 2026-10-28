@@ -9,12 +9,25 @@ import {
   type KeywordIdea,
   type KeywordStatus,
 } from "@/lib/analytics/keyword-options";
-import type { ConnectionInfo } from "@/lib/analytics/types";
+import type { KeywordList } from "@/lib/analytics/seo-types";
+import type { ConnectionInfo, RangeKey } from "@/lib/analytics/types";
 import { formatNumber } from "./format";
 import { DownloadIcon, KeyIcon } from "./Icons";
+import { Opportunities } from "./Opportunities";
+import { RankTracker } from "./RankTracker";
+import { api, TrackButton } from "./seo-ui";
+import { TopicsView } from "./TopicsView";
 import { ConnectButton } from "./SettingsPanel";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, Skeleton } from "./ui";
+
+type Tab = "ideas" | "opportunities" | "tracker";
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: "opportunities", label: "Opportunities" },
+  { id: "tracker", label: "Rank tracker" },
+  { id: "ideas", label: "Keyword ideas" },
+];
 
 const COMPETITION_STYLE: Record<Competition, string> = {
   LOW: "bg-dash-up/10 text-dash-up",
@@ -40,14 +53,62 @@ async function post<T>(url: string, body: unknown): Promise<T> {
   return data as T;
 }
 
-export function KeywordResearch({ connection, searchQueries, onChanged }: {
+export function KeywordResearch({ connection, searchQueries, range, onChanged }: {
   connection: ConnectionInfo | undefined;
   /** Search Console queries, for the "check my queries" shortcut. */
   searchQueries: string[];
+  range: RangeKey;
   onChanged: () => void;
 }) {
   const [status, setStatus] = useState<KeywordStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("opportunities");
+  const [lists, setLists] = useState<KeywordList[] | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const connected = connection?.mode === "oauth";
+  const site = siteFromProperty(connection?.gscSiteUrl);
+  const brand = site.split(".")[0].replace(/^www$/, "");
+
+  useEffect(() => {
+    if (!connected) return;
+    api<{ lists: KeywordList[] }>("/api/seo/lists")
+      .then((d) => {
+        setLists(d.lists);
+        setActiveId((id) => id ?? d.lists[0]?.id ?? null);
+      })
+      .catch(() => setLists([]));
+  }, [connected]);
+
+  async function updateLists(body: Record<string, unknown>) {
+    try {
+      const d = await api<{ lists: KeywordList[] }>("/api/seo/lists/update", body);
+      setLists(d.lists);
+      if (body.action === "create" || !d.lists.some((l) => l.id === activeId)) {
+        setActiveId(body.action === "create" ? d.lists.at(-1)?.id ?? null : d.lists[0]?.id ?? null);
+      }
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Couldn't update the list");
+    }
+  }
+
+  const active = lists?.find((l) => l.id === activeId) ?? null;
+  const isTracked = (k: string) => Boolean(active?.keywords.includes(k.trim().toLowerCase()));
+
+  function track(keywords: string[]) {
+    const name = active?.name ?? "My keywords";
+    (active
+      ? updateLists({ action: "add", listId: active.id, keywords })
+      : updateLists({ action: "create", name, keywords })
+    ).then(() => setNotice(`Added ${keywords.length === 1 ? `“${keywords[0]}”` : `${keywords.length} keywords`} to ${name}.`));
+  }
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 3500);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const refreshStatus = useCallback(() => {
     setStatusError(null);
@@ -69,23 +130,51 @@ export function KeywordResearch({ connection, searchQueries, onChanged }: {
   return (
     <Card id="keywords" className="mt-5">
       <CardHeader
-        title="Keyword Research"
+        title="SEO Tools"
         icon={<KeyIcon className="h-5 w-5 text-dash-green" />}
         href="https://ads.google.com/aw/keywordplanner/home"
         linkLabel="Open Keyword Planner"
       />
-      {connection?.mode !== "oauth" ? (
+      {!connected ? (
         <p className="text-sm text-dash-muted">
           Connect your Google account in Settings first. Keyword research uses the same sign in.
         </p>
-      ) : statusError ? (
-        <p className="text-sm text-dash-down">{statusError}</p>
-      ) : !status ? (
-        <Skeleton className="h-24" />
-      ) : status.step === "ready" ? (
-        <KeywordTool site={siteFromProperty(connection.gscSiteUrl)} searchQueries={searchQueries} />
       ) : (
-        <KeywordSetup status={status} onSaved={setupDone} />
+        <>
+          <div className="mb-4 flex flex-wrap items-center gap-3">
+            <div className="flex rounded-lg bg-[#F1ECE3] p-0.5 text-sm font-medium" role="tablist">
+              {TABS.map((t) => (
+                <button
+                  key={t.id}
+                  role="tab"
+                  aria-selected={tab === t.id}
+                  onClick={() => setTab(t.id)}
+                  className={`rounded-md px-3 py-1.5 ${tab === t.id ? "bg-white text-dash-ink shadow-sm" : "text-dash-muted"}`}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+            {notice && <span className="text-sm text-dash-up" role="status">{notice}</span>}
+          </div>
+
+          {tab === "opportunities" && (
+            <Opportunities range={range} brand={brand} isTracked={isTracked} onTrack={track} />
+          )}
+          {tab === "tracker" && (
+            <RankTracker lists={lists} activeId={activeId} setActiveId={setActiveId} update={updateLists} />
+          )}
+          {tab === "ideas" &&
+            (statusError ? (
+              <p className="text-sm text-dash-down">{statusError}</p>
+            ) : !status ? (
+              <Skeleton className="h-24" />
+            ) : status.step === "ready" ? (
+              <KeywordTool site={site} searchQueries={searchQueries} isTracked={isTracked} onTrack={track} />
+            ) : (
+              <KeywordSetup status={status} onSaved={setupDone} />
+            ))}
+        </>
       )}
     </Card>
   );
@@ -224,7 +313,13 @@ function KeywordSetup({ status, onSaved }: { status: KeywordStatus; onSaved: () 
   );
 }
 
-function KeywordTool({ site, searchQueries }: { site: string; searchQueries: string[] }) {
+function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
+  site: string;
+  searchQueries: string[];
+  isTracked: (keyword: string) => boolean;
+  onTrack: (keywords: string[]) => void;
+}) {
+  const [view, setView] = useState<"keywords" | "topics">("keywords");
   const [keywords, setKeywords] = useState("");
   const [url, setUrl] = useState(site);
   const [geo, setGeo] = useState("2840");
@@ -378,14 +473,30 @@ function KeywordTool({ site, searchQueries }: { site: string; searchQueries: str
               {formatNumber(ideas.length)} keywords for <span className="text-dash-ink">{label}</span>
             </p>
             {ideas.length > 0 && (
-              <button onClick={downloadCsv} className="flex items-center gap-1.5 font-semibold text-dash-green hover:underline">
-                <DownloadIcon className="h-4 w-4" />
-                Download CSV
-              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex rounded-lg bg-[#F1ECE3] p-0.5 text-xs font-medium">
+                  {(["keywords", "topics"] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setView(v)}
+                      className={`rounded-md px-2.5 py-1 capitalize ${view === v ? "bg-white text-dash-ink shadow-sm" : "text-dash-muted"}`}
+                    >
+                      {v === "topics" ? "Content ideas" : "Keywords"}
+                    </button>
+                  ))}
+                </div>
+                <TrackButton label="Track all" onClick={() => onTrack(sorted.map((i) => i.keyword))} />
+                <button onClick={downloadCsv} className="flex items-center gap-1.5 font-semibold text-dash-green hover:underline">
+                  <DownloadIcon className="h-4 w-4" />
+                  Download CSV
+                </button>
+              </div>
             )}
           </div>
           {ideas.length === 0 ? (
             <p className="py-8 text-center text-sm text-dash-muted">Google returned no ideas. Try broader keywords.</p>
+          ) : view === "topics" ? (
+            <TopicsView ideas={ideas} onTrack={onTrack} />
           ) : (
             <div className="max-h-[520px] overflow-auto">
               <table className="w-full text-sm">
@@ -396,6 +507,7 @@ function KeywordTool({ site, searchQueries }: { site: string; searchQueries: str
                     <th className="hidden px-1 pb-2 font-semibold sm:table-cell">12 month trend</th>
                     <th className="px-1 pb-2 text-left">{header("competition", "Competition")}</th>
                     <th className="hidden px-1 pb-2 text-right md:table-cell">{header("bid", "Top of page bid")}</th>
+                    <th className="px-1 pb-2" />
                   </tr>
                 </thead>
                 <tbody>
@@ -417,6 +529,9 @@ function KeywordTool({ site, searchQueries }: { site: string; searchQueries: str
                         {i.lowBid === null && i.highBid === null
                           ? "—"
                           : `${i.lowBid?.toFixed(2) ?? "?"} to ${i.highBid?.toFixed(2) ?? "?"}`}
+                      </td>
+                      <td className="px-1 py-2 text-right">
+                        <TrackButton tracked={isTracked(i.keyword)} onClick={() => onTrack([i.keyword])} />
                       </td>
                     </tr>
                   ))}

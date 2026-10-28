@@ -156,6 +156,21 @@ encrypted in Neon. Or set `GOOGLE_ADS_DEVELOPER_TOKEN`,
 `GOOGLE_ADS_LOGIN_CUSTOMER_ID`. `GOOGLE_ADS_API_VERSION` defaults to `v26`.
 Results are cached for 24 hours.
 
+### SEO tools
+
+The SEO Tools section has three tabs:
+
+- **Opportunities**: Search Console searches where the site ranks 4 to 20,
+  with an estimate of extra clicks at position 3, and a content ideas view
+  that groups them into topics. Brand searches can be hidden.
+- **Rank tracker**: saved keyword lists (stored in Neon) with weekly
+  positions for the last 12 weeks, the change over 4 weeks, and the
+  ranking page. History comes from Search Console, so nothing needs to
+  run on a schedule.
+- **Keyword ideas**: Keyword Planner ideas and volumes (see above), with a
+  content ideas view that groups keywords into topics and suggests the
+  kind of page to write.
+
 ### Adding more apps later
 
 The data layer lives in `src/lib/analytics/`:

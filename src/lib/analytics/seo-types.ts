@@ -1,0 +1,38 @@
+/** Shapes shared by the SEO tools on the server and the page. */
+
+export interface Opportunity {
+  query: string;
+  page: string;
+  position: number;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  /** Estimated extra clicks per period if the page reached position 3. */
+  potentialClicks: number;
+}
+
+export interface KeywordList {
+  id: string;
+  name: string;
+  keywords: string[];
+}
+
+export interface RankingWeek {
+  /** First day of the week, YYYY-MM-DD. */
+  start: string;
+  position: number | null;
+  clicks: number;
+  impressions: number;
+}
+
+export interface Ranking {
+  keyword: string;
+  weeks: RankingWeek[];
+  /** Latest week with data. */
+  position: number | null;
+  /** Places gained over the last four weeks (positive is better). */
+  change: number | null;
+  clicks: number;
+  impressions: number;
+  topPage?: string;
+}

@@ -50,6 +50,17 @@ export function ensureSchema(): Promise<void> {
       data jsonb NOT NULL,
       fetched_at timestamptz NOT NULL DEFAULT now()
     )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_keyword_lists (
+      id bigserial PRIMARY KEY,
+      name text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_tracked_keywords (
+      list_id bigint NOT NULL REFERENCES insights_keyword_lists (id) ON DELETE CASCADE,
+      keyword text NOT NULL,
+      added_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (list_id, keyword)
+    )`;
     await sql`CREATE TABLE IF NOT EXISTS insights_settings (
       key text PRIMARY KEY,
       value text NOT NULL,

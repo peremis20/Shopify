@@ -10,7 +10,7 @@ const NAV: { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGEleme
   { id: "search-console", label: "Search Console", icon: SearchIcon },
   { id: "pages", label: "Top Pages", icon: FileIcon },
   { id: "queries", label: "Search Queries", icon: ListIcon },
-  { id: "keywords", label: "Keyword Research", icon: KeyIcon },
+  { id: "keywords", label: "SEO Tools", icon: KeyIcon },
   { id: "apps", label: "Connected Apps", icon: PlugIcon },
 ];
 

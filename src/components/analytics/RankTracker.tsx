@@ -1,0 +1,190 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import type { KeywordList, Ranking } from "@/lib/analytics/seo-types";
+import { formatNumber } from "./format";
+import { ArrowDownIcon, ArrowUpIcon, CloseIcon } from "./Icons";
+import { api, Explainer, pathOf } from "./seo-ui";
+import { Sparkline } from "./Sparkline";
+import { Skeleton } from "./ui";
+
+export function RankTracker({ lists, activeId, setActiveId, update }: {
+  lists: KeywordList[] | null;
+  activeId: string | null;
+  setActiveId: (id: string) => void;
+  update: (body: Record<string, unknown>) => Promise<void>;
+}) {
+  const [rankings, setRankings] = useState<Ranking[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [newKeyword, setNewKeyword] = useState("");
+  const [newList, setNewList] = useState("");
+
+  const active = lists?.find((l) => l.id === activeId) ?? null;
+  const keywordKey = active?.keywords.join("|") ?? "";
+
+  useEffect(() => {
+    if (!active) return;
+    if (!active.keywords.length) {
+      setRankings([]);
+      return;
+    }
+    setRankings(null);
+    setError(null);
+    api<{ rankings: Ranking[] }>(`/api/seo/rankings?listId=${active.id}`)
+      .then((d) => setRankings(d.rankings))
+      .catch((err) => setError(err.message));
+    // keywordKey reloads when keywords are added or removed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id, keywordKey]);
+
+  if (!lists) return <Skeleton className="h-48" />;
+
+  return (
+    <div>
+      <Explainer>
+        Your Google position for each keyword, week by week, from Search Console. History goes back 12 weeks right away,
+        so there&apos;s nothing to wait for. Add keywords here or with the Track buttons in the other tabs.
+      </Explainer>
+
+      <div className="mb-4 flex flex-wrap items-end gap-3 text-sm">
+        {lists.length > 0 && (
+          <label className="block">
+            <span className="mb-1 block text-xs text-dash-muted">List</span>
+            <select
+              id="rank-list"
+              value={activeId ?? ""}
+              onChange={(e) => setActiveId(e.target.value)}
+              className="rounded-lg border border-dash-line bg-white px-3 py-2"
+            >
+              {lists.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name} ({l.keywords.length})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!newKeyword.trim()) return;
+            const keywords = newKeyword.split(",").map((k) => k.trim()).filter(Boolean);
+            (active
+              ? update({ action: "add", listId: active.id, keywords })
+              : update({ action: "create", name: "My keywords", keywords })
+            ).then(() => setNewKeyword(""));
+          }}
+          className="flex items-end gap-2"
+        >
+          <label className="block">
+            <span className="mb-1 block text-xs text-dash-muted">Add keywords</span>
+            <input
+              id="rank-add"
+              value={newKeyword}
+              onChange={(e) => setNewKeyword(e.target.value)}
+              placeholder="neuro plus, brain supplements"
+              className="w-64 max-w-full rounded-lg border border-dash-line bg-white px-3 py-2"
+            />
+          </label>
+          <button type="submit" className="rounded-lg bg-dash-green px-4 py-2 font-semibold text-white hover:bg-dash-deep">
+            Add
+          </button>
+        </form>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (newList.trim()) update({ action: "create", name: newList.trim() }).then(() => setNewList(""));
+          }}
+          className="flex items-end gap-2"
+        >
+          <label className="block">
+            <span className="mb-1 block text-xs text-dash-muted">New list</span>
+            <input
+              id="rank-new-list"
+              value={newList}
+              onChange={(e) => setNewList(e.target.value)}
+              placeholder="Blog topics"
+              className="w-40 rounded-lg border border-dash-line bg-white px-3 py-2"
+            />
+          </label>
+          <button type="submit" className="rounded-lg border border-dash-line bg-white px-4 py-2 font-semibold text-dash-ink">
+            Create
+          </button>
+        </form>
+        {active && (
+          <button
+            onClick={() => update({ action: "delete", listId: active.id })}
+            className="ml-auto text-xs font-semibold text-dash-down hover:underline"
+          >
+            Delete this list
+          </button>
+        )}
+      </div>
+
+      {error && <p className="rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
+
+      {!active || active.keywords.length === 0 ? (
+        <p className="py-8 text-center text-sm text-dash-muted">
+          No keywords tracked yet. Add some above, or use + Track in Opportunities or Keyword ideas.
+        </p>
+      ) : !rankings ? (
+        <Skeleton className="h-48" />
+      ) : (
+        <div className="max-h-[520px] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-dash-card">
+              <tr className="border-b border-dash-line text-left text-xs font-semibold text-dash-ink">
+                <th className="px-1 pb-2">Keyword</th>
+                <th className="px-1 pb-2 text-right">Position</th>
+                <th className="px-1 pb-2 text-right">4 weeks</th>
+                <th className="hidden px-1 pb-2 sm:table-cell">12 weeks</th>
+                <th className="hidden px-1 pb-2 text-right sm:table-cell">Clicks</th>
+                <th className="hidden px-1 pb-2 md:table-cell">Ranking page</th>
+                <th className="px-1 pb-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {rankings.map((r) => (
+                <tr key={r.keyword} className="border-b border-dash-line/70 last:border-0">
+                  <td className="max-w-[220px] truncate px-1 py-2 text-dash-ink" title={r.keyword}>{r.keyword}</td>
+                  <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
+                    {r.position === null ? <span className="text-dash-muted">Not in results</span> : r.position.toFixed(1)}
+                  </td>
+                  <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
+                    {r.change === null || r.change === 0 ? (
+                      <span className="text-dash-muted">—</span>
+                    ) : (
+                      <span className={`inline-flex items-center gap-0.5 font-semibold ${r.change > 0 ? "text-dash-up" : "text-dash-down"}`}>
+                        {r.change > 0 ? <ArrowUpIcon className="h-3.5 w-3.5" /> : <ArrowDownIcon className="h-3.5 w-3.5" />}
+                        {Math.abs(r.change).toFixed(1)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="hidden px-1 py-1 sm:table-cell">
+                    {r.weeks.filter((w) => w.position !== null).length > 1 && (
+                      // Higher line means a better (smaller) position; weeks with no data sit at the bottom.
+                      <Sparkline values={r.weeks.map((w) => (w.position === null ? 0 : 101 - Math.min(w.position, 100)))} />
+                    )}
+                  </td>
+                  <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell">{formatNumber(r.clicks)}</td>
+                  <td className="hidden max-w-[200px] truncate px-1 py-2 text-dash-muted md:table-cell" title={r.topPage}>
+                    {r.topPage ? pathOf(r.topPage) : "—"}
+                  </td>
+                  <td className="px-1 py-2 text-right">
+                    <button
+                      onClick={() => update({ action: "remove", listId: active.id, keyword: r.keyword })}
+                      className="rounded p-1 text-dash-muted hover:bg-black/5 hover:text-dash-down"
+                      aria-label={`Stop tracking ${r.keyword}`}
+                    >
+                      <CloseIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
