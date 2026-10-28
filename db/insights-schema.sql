@@ -40,3 +40,36 @@ CREATE TABLE IF NOT EXISTS insights_settings (
   value      text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Autopilot: each run, and every change it made (with the old value for undo).
+CREATE TABLE IF NOT EXISTS insights_autopilot_runs (
+  id          bigserial PRIMARY KEY,
+  started_at  timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz,
+  trigger     text NOT NULL,
+  status      text NOT NULL DEFAULT 'running',
+  summary     text
+);
+
+CREATE TABLE IF NOT EXISTS insights_autopilot_changes (
+  id                   bigserial PRIMARY KEY,
+  run_id               bigint REFERENCES insights_autopilot_runs (id) ON DELETE SET NULL,
+  created_at           timestamptz NOT NULL DEFAULT now(),
+  page_url             text NOT NULL,
+  resource_type        text NOT NULL,
+  resource_id          text NOT NULL,
+  query                text NOT NULL,
+  field                text NOT NULL,       -- meta_title, meta_description, content, alt, internal_link
+  target_id            text,                -- image id, or the article that received a link
+  before_value         text,
+  after_value          text,
+  reason               text,
+  status               text NOT NULL,       -- applied, kept, reverted, failed, skipped
+  baseline_position    real,
+  baseline_clicks      integer,
+  baseline_impressions integer,
+  evaluated_at         timestamptz,
+  result_position      real,
+  result_clicks        integer,
+  note                 text
+);

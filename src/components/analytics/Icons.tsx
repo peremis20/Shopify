@@ -73,3 +73,6 @@ export const KeyIcon = (p: IconProps) => (
 export const DownloadIcon = (p: IconProps) => (
   <Base {...p}><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></Base>
 );
+export const BoltIcon = (p: IconProps) => (
+  <Base {...p}><path d="M13 2 4 14h7l-1 8 9-12h-7z" /></Base>
+);

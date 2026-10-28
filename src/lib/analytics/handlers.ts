@@ -5,6 +5,10 @@ import { exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import { explainAdsError, keywordIdeas, keywordStatus, keywordVolumes, saveAdsSettings, type KeywordQuery } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
+import { autopilotHistory, revertChange, runAutopilot } from "./autopilot/engine";
+import { readAutopilotSettings, saveAutopilotSettings, viewOf } from "./autopilot/settings";
+import { shopName } from "./autopilot/shopify";
+import { checkAnthropicKey } from "./autopilot/writer";
 import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
 import { getOverview } from "./overview";
 import { listProperties } from "./properties";
@@ -305,5 +309,75 @@ export async function rankings(req: Request): Promise<Response> {
     return json({ rankings: await trackRankings(conn, list.keywords) });
   } catch (err) {
     return json({ error: message(err) }, 502);
+  }
+}
+
+// ---------- autopilot ----------
+
+export async function autopilotStatus(): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  return json({ settings: viewOf(await readAutopilotSettings()), ...(await autopilotHistory()) });
+}
+
+export async function saveAutopilot(req: Request): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  const b = await req.json().catch(() => ({}));
+  const str = (k: string) => (typeof b[k] === "string" ? b[k] : undefined);
+  await saveAutopilotSettings({
+    enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
+    maxPagesPerWeek: typeof b.maxPagesPerWeek === "number" ? b.maxPagesPerWeek : undefined,
+    allowContent: typeof b.allowContent === "boolean" ? b.allowContent : undefined,
+    shopDomain: str("shopDomain"),
+    shopifyClientId: str("shopifyClientId"),
+    shopifyClientSecret: str("shopifyClientSecret"),
+    anthropicKey: str("anthropicKey"),
+  });
+  return json({ settings: viewOf(await readAutopilotSettings()) });
+}
+
+/** Checks the Shopify app and Claude key without changing anything. */
+export async function testAutopilot(): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  const s = await readAutopilotSettings();
+  const result: { shopify?: string; claude?: string; shopifyError?: string; claudeError?: string } = {};
+  await Promise.all([
+    shopName(s).then((n) => (result.shopify = n)).catch((e) => (result.shopifyError = message(e))),
+    s.anthropicKey
+      ? checkAnthropicKey(s.anthropicKey).then(() => (result.claude = "ok")).catch((e) => (result.claudeError = message(e)))
+      : Promise.resolve((result.claudeError = "Add your Claude API key.")),
+  ]);
+  return json(result);
+}
+
+export async function runAutopilotNow(): Promise<Response> {
+  const conn = await getConnection();
+  if (!conn) return needConnection();
+  try {
+    return json(await runAutopilot(conn, "manual"));
+  } catch (err) {
+    return json({ error: message(err) }, 500);
+  }
+}
+
+/** Called by the daily scheduled trigger. */
+export async function autopilotTick(): Promise<Response> {
+  try {
+    const result = await runAutopilot(await getConnection(), "schedule");
+    console.log(`autopilot: ${result.message}`);
+    return json(result);
+  } catch (err) {
+    console.error(`autopilot failed: ${message(err)}`);
+    return json({ error: message(err) }, 500);
+  }
+}
+
+export async function revertAutopilot(req: Request): Promise<Response> {
+  if (!(await getConnection())) return needConnection();
+  const b = await req.json().catch(() => ({}));
+  try {
+    await revertChange(String(b.id ?? ""));
+    return json(await autopilotHistory());
+  } catch (err) {
+    return json({ error: message(err) }, 400);
   }
 }

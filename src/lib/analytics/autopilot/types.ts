@@ -1,0 +1,31 @@
+/** Autopilot shapes shared by the server and the page. */
+
+export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link";
+export type ChangeStatus = "applied" | "kept" | "reverted" | "failed" | "skipped";
+
+export interface AutopilotChange {
+  id: string;
+  createdAt: string;
+  pageUrl: string;
+  query: string;
+  field: ChangeField;
+  before: string | null;
+  after: string | null;
+  reason: string | null;
+  status: ChangeStatus;
+  baselinePosition: number | null;
+  resultPosition: number | null;
+  evaluatedAt: string | null;
+  note: string | null;
+  /** For internal links: the article that received the link. */
+  targetId: string | null;
+}
+
+export interface AutopilotRun {
+  id: string;
+  startedAt: string;
+  finishedAt: string | null;
+  trigger: string;
+  status: string;
+  summary: string | null;
+}

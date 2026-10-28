@@ -26,6 +26,11 @@ const routes: Record<string, Handler> = {
   "GET /api/seo/lists": () => api.keywordLists(),
   "POST /api/seo/lists/update": api.updateKeywordLists,
   "GET /api/seo/rankings": api.rankings,
+  "GET /api/autopilot": () => api.autopilotStatus(),
+  "POST /api/autopilot/settings": api.saveAutopilot,
+  "POST /api/autopilot/test": () => api.testAutopilot(),
+  "POST /api/autopilot/run": () => api.runAutopilotNow(),
+  "POST /api/autopilot/revert": api.revertAutopilot,
 };
 
 function page(): Response {
@@ -54,10 +59,16 @@ function page(): Response {
 
 export default {
   async fetch(req: Request): Promise<Response> {
+    const path = new URL(req.url).pathname.replace(/\/+$/, "") || "/";
+
+    // Neon's scheduler calls this without the password. Neon strips client-set
+    // X-Neon-* headers, so this header proves the call came from a trigger.
+    if (req.method === "POST" && path === "/api/autopilot/tick" && req.headers.get("x-neon-trigger-invocation-id")) {
+      return api.autopilotTick();
+    }
+
     const denied = requirePassword(req);
     if (denied) return denied;
-
-    const path = new URL(req.url).pathname.replace(/\/+$/, "") || "/";
     const handler = routes[`${req.method} ${path}`];
     if (handler) {
       try {

@@ -7,6 +7,7 @@ import { DonutChart } from "./DonutChart";
 import { formatDuration, formatNumber, formatPct, formatRange } from "./format";
 import { ClockIcon, CloseIcon, FileIcon, InfoIcon, KeyIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
 import { Legend, LineChart } from "./LineChart";
+import { Autopilot } from "./Autopilot";
 import { KeywordResearch } from "./KeywordResearch";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
@@ -349,6 +350,8 @@ export function DashboardView() {
 
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
           </div>
+
+          <Autopilot connected={connection?.mode === "oauth"} />
 
           <KeywordResearch
             connection={connection}

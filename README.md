@@ -171,6 +171,29 @@ The SEO Tools section has three tabs:
   content ideas view that groups keywords into topics and suggests the
   kind of page to write.
 
+### SEO Autopilot
+
+Runs once a day as a Neon scheduled trigger (POST `/api/autopilot/tick`,
+accepted without the password only when Neon's `X-Neon-Trigger-Invocation-Id`
+header is present). Each run:
+
+1. Measures pages changed at least 4 weeks ago in Search Console; if a
+   page dropped more than 3 positions and lost clicks, its changes are undone.
+2. Within the weekly page limit, picks the best opportunity whose page maps
+   to a blog post, page, product or collection and hasn't been changed in 45
+   days, then asks Claude (Opus 5.5) for an SEO title, meta description,
+   missing image alt text and, for posts and pages, a new section; and adds
+   one internal link from the most related other post.
+3. Logs every change with the old value. Added sections and links are
+   wrapped in `<!-- autopilot:ID -->` markers so undo removes only them.
+
+Prices, product names, handles and checkout are never touched. Setup needs a
+Shopify Dev Dashboard app (scopes `write_content`, `write_products`,
+`write_online_store_pages`, `write_files`) installed on the store, and a
+Claude API key; both are entered in the dashboard and stored encrypted, or
+set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
+`ANTHROPIC_API_KEY`.
+
 ### Adding more apps later
 
 The data layer lives in `src/lib/analytics/`:

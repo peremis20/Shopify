@@ -61,6 +61,36 @@ export function ensureSchema(): Promise<void> {
       added_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (list_id, keyword)
     )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_autopilot_runs (
+      id bigserial PRIMARY KEY,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      finished_at timestamptz,
+      trigger text NOT NULL,
+      status text NOT NULL DEFAULT 'running',
+      summary text
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_autopilot_changes (
+      id bigserial PRIMARY KEY,
+      run_id bigint REFERENCES insights_autopilot_runs (id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      page_url text NOT NULL,
+      resource_type text NOT NULL,
+      resource_id text NOT NULL,
+      query text NOT NULL,
+      field text NOT NULL,
+      target_id text,
+      before_value text,
+      after_value text,
+      reason text,
+      status text NOT NULL,
+      baseline_position real,
+      baseline_clicks integer,
+      baseline_impressions integer,
+      evaluated_at timestamptz,
+      result_position real,
+      result_clicks integer,
+      note text
+    )`;
     await sql`CREATE TABLE IF NOT EXISTS insights_settings (
       key text PRIMARY KEY,
       value text NOT NULL,
