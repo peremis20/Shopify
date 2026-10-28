@@ -1,14 +1,39 @@
 import { resolveRange } from "./dates";
 import { demoGa, demoGsc } from "./demo";
 import { envGa4PropertyId, fetchGa4, ga4OpenUrl } from "./ga4";
-import { getServiceAccount, oauthClient, type GoogleAuth } from "./google-auth";
+import { getServiceAccount, type GoogleAuth } from "./google-auth";
 import { envGscSiteUrl, fetchGsc, gscOpenUrl } from "./gsc";
 import { buildIntegrations } from "./integrations";
-import type { Connection } from "./connection";
+import { signInAvailable, type Connection } from "./connection";
+import { db, ensureSchema, hasDatabase } from "./db";
 import type { ConnectionInfo, OverviewResponse, PeriodRanges, RangeKey, SourceResult } from "./types";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const cache = new Map<string, { at: number; data: OverviewResponse }>();
+const memoryCache = new Map<string, { at: number; data: OverviewResponse }>();
+
+/** Recent responses live in Neon when it's set up, so every server instance shares them. */
+async function readCache(key: string): Promise<OverviewResponse | null> {
+  if (!hasDatabase()) {
+    const hit = memoryCache.get(key);
+    return hit && Date.now() - hit.at < CACHE_TTL_MS ? hit.data : null;
+  }
+  await ensureSchema();
+  const [row] = await db()`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${key} AND fetched_at > now() - make_interval(secs => ${CACHE_TTL_MS / 1000})`;
+  return (row?.data as OverviewResponse) ?? null;
+}
+
+async function writeCache(key: string, data: OverviewResponse): Promise<void> {
+  if (!hasDatabase()) {
+    memoryCache.set(key, { at: Date.now(), data });
+    return;
+  }
+  await db()`
+    INSERT INTO insights_report_cache (cache_key, data, fetched_at)
+    VALUES (${key}, ${JSON.stringify(data)}::jsonb, now())
+    ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`;
+}
 
 function hasServiceAccount(): boolean {
   try {
@@ -27,7 +52,7 @@ interface Source {
 
 /** A signed in Google account wins; otherwise fall back to a server service account. */
 function resolveSource(conn: Connection | null): Source {
-  const oauthAvailable = Boolean(oauthClient());
+  const oauthAvailable = signInAvailable();
   if (conn && oauthAvailable) {
     return {
       auth: { kind: "oauth", refreshToken: conn.refreshToken },
@@ -84,8 +109,10 @@ export async function getOverview(
 ): Promise<OverviewResponse> {
   const source = resolveSource(conn);
   const cacheKey = [rangeKey, source.info.mode, conn?.email, source.gaId, source.site].join("|");
-  const hit = cache.get(cacheKey);
-  if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
+  if (!refresh) {
+    const hit = await readCache(cacheKey).catch(() => null);
+    if (hit) return hit;
+  }
 
   // GA4 is complete through yesterday; Search Console lags about 3 days.
   const [ga, gsc] = await Promise.all([
@@ -103,9 +130,9 @@ export async function getOverview(
     connection: source.info,
     integrations: buildIntegrations({ ga: ga.status, gsc: gsc.status }),
   };
-  // Don't cache failures, so fixing a setting shows up on the next reload.
-  if (ga.status !== "error" && gsc.status !== "error") {
-    cache.set(cacheKey, { at: Date.now(), data });
+  // Sample data is cheap to rebuild, so only live results are stored.
+  if (ga.status === "live" && gsc.status === "live") {
+    await writeCache(cacheKey, data).catch(() => undefined);
   }
   return data;
 }

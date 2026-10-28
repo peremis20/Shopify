@@ -55,8 +55,9 @@ export function DashboardView() {
     setFailed(null);
     try {
       const res = await fetch(`/api/analytics/overview?range=${key}${refresh ? "&refresh=1" : ""}`);
-      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
-      setData(await res.json());
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? `Server responded with ${res.status}`);
+      setData(body);
     } catch (err) {
       setFailed(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -167,7 +168,7 @@ export function DashboardView() {
 
           {failed && (
             <div className="mt-6 rounded-xl border border-dash-down/30 bg-dash-down/5 p-4 text-sm">
-              Couldn&apos;t reach the dashboard server: {failed}
+              Couldn&apos;t load the dashboard. {failed}
             </div>
           )}
 

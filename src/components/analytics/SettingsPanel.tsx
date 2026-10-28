@@ -204,9 +204,10 @@ export function SetupSteps() {
           <code className="mt-1 block break-all rounded bg-white px-2 py-1 text-xs">{origin}/api/auth/google/callback</code>
         </li>
         <li>
-          Add <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_ID</code> and{" "}
-          <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> to your environment settings and
-          restart. A <b>Connect with Google</b> button then appears here.
+          Add <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_ID</code>,{" "}
+          <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> and your Neon{" "}
+          <code className="rounded bg-white px-1">DATABASE_URL</code> to your environment settings and restart. A{" "}
+          <b>Connect with Google</b> button then appears here.
         </li>
       </ol>
     </div>

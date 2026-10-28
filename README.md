@@ -75,18 +75,24 @@ Do this once, then anyone with the dashboard password can click
    application. Add the redirect URI
    `https://YOUR-SITE/api/auth/google/callback` (and
    `http://localhost:3000/api/auth/google/callback` for local testing).
-4. Put the client ID and secret in `.env.local` and in your host's settings:
+4. Put the client ID and secret, plus your Neon connection string, in
+   `.env.local` and in your host's settings:
    ```bash
    GOOGLE_OAUTH_CLIENT_ID=1234-abc.apps.googleusercontent.com
    GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-...
+   DATABASE_URL=postgresql://...neon.tech/neondb?sslmode=require
    DASHBOARD_PASSWORD=choose-one   # strongly recommended once it's online
    ```
 5. Restart, open `/analytics`, click **Connect with Google**. The first
    Analytics property and Search Console site are picked automatically;
    change them under **Settings**.
 
-The connection is stored in an encrypted cookie in your browser, so no
-database is needed. Disconnect from Settings at any time.
+The connected account and the chosen properties are saved in Neon (table
+`insights_google_connection`, with the Google token encrypted), so the
+dashboard stays connected on every device. Recent reports are cached in
+`insights_report_cache` for 10 minutes. The app creates both tables on first
+use; `db/insights-schema.sql` has the same definitions. Disconnect from
+Settings at any time.
 
 ### Or use a service account
 

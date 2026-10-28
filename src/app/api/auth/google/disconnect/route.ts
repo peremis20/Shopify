@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-import { clearConnection, readConnection } from "@/lib/analytics/connection";
+import { deleteConnection, getConnection } from "@/lib/analytics/connection";
 import { revokeToken } from "@/lib/analytics/google-auth";
 
 export async function POST() {
-  const conn = readConnection();
+  const conn = await getConnection();
   if (conn) await revokeToken(conn.refreshToken);
-  const res = NextResponse.json({ ok: true });
-  clearConnection(res);
-  return res;
+  await deleteConnection();
+  return NextResponse.json({ ok: true });
 }

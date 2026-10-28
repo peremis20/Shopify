@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { redirectUri, STATE_COOKIE } from "@/lib/analytics/connection";
+import { redirectUri, signInAvailable, STATE_COOKIE } from "@/lib/analytics/connection";
 import { OAUTH_SCOPES, oauthClient } from "@/lib/analytics/google-auth";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 /** Sends the user to Google's consent screen. */
 export function GET(req: NextRequest) {
   const client = oauthClient();
-  if (!client) {
+  if (!client || !signInAvailable()) {
     return NextResponse.redirect(new URL("/analytics?auth_error=Google+sign+in+is+not+set+up+yet", req.url));
   }
 

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { redirectUri, STATE_COOKIE, writeConnection } from "@/lib/analytics/connection";
+import { redirectUri, saveConnection, STATE_COOKIE } from "@/lib/analytics/connection";
 import { exchangeAuthCode } from "@/lib/analytics/google-auth";
 import { listProperties } from "@/lib/analytics/properties";
 
@@ -31,14 +31,13 @@ export async function GET(req: NextRequest) {
 
     // Start with the first property of each kind so data shows up right away.
     const options = await listProperties({ kind: "oauth", refreshToken });
-    const res = back(req, { connected: "1" });
-    writeConnection(res, {
+    await saveConnection({
       refreshToken,
       email,
       gaPropertyId: options.ga.items[0]?.id,
       gscSiteUrl: options.gsc.items[0],
     });
-    return res;
+    return back(req, { connected: "1" });
   } catch (err) {
     return back(req, { auth_error: err instanceof Error ? err.message : "Sign in failed" });
   }
