@@ -5,8 +5,9 @@ import { RANGE_OPTIONS } from "@/lib/analytics/dates";
 import type { IntegrationInfo, OverviewResponse, RangeKey } from "@/lib/analytics/types";
 import { DonutChart } from "./DonutChart";
 import { formatDuration, formatNumber, formatPct, formatRange } from "./format";
-import { ClockIcon, CloseIcon, FileIcon, InfoIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
+import { ClockIcon, CloseIcon, FileIcon, InfoIcon, KeyIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
 import { Legend, LineChart } from "./LineChart";
+import { KeywordResearch } from "./KeywordResearch";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { Sparkline } from "./Sparkline";
@@ -345,7 +346,16 @@ export function DashboardView() {
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
           </div>
 
-          <ConnectedApps integrations={data?.integrations ?? []} onSetup={() => setSettingsOpen(true)} />
+          <KeywordResearch
+            connection={connection}
+            searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
+            onChanged={() => load(range, true)}
+          />
+
+          <ConnectedApps
+            integrations={data?.integrations ?? []}
+            onSetup={(id) => (id === "keywords" ? navigate("keywords") : setSettingsOpen(true))}
+          />
         </div>
       </main>
 
@@ -500,9 +510,13 @@ const STATUS_STYLE: Record<IntegrationInfo["status"], string> = {
   demo: "bg-dash-copper",
   error: "bg-dash-down",
   coming_soon: "bg-[#C9C2B6]",
+  setup: "bg-dash-copper",
 };
 
-function ConnectedApps({ integrations, onSetup }: { integrations: IntegrationInfo[]; onSetup: () => void }) {
+function ConnectedApps({ integrations, onSetup }: {
+  integrations: IntegrationInfo[];
+  onSetup: (id: string) => void;
+}) {
   return (
     <section id="apps" className="mt-5 scroll-mt-6 rounded-2xl border border-dash-line bg-[#EFF2EA] p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -516,7 +530,15 @@ function ConnectedApps({ integrations, onSetup }: { integrations: IntegrationInf
           <div key={app.id} className="flex flex-col justify-between gap-3 rounded-xl border border-dash-line bg-white p-4">
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#F6F2EA]">
-                {app.id === "ga4" ? <GaLogo className="h-5 w-5" /> : app.id === "gsc" ? <GscLogo className="h-5 w-5" /> : <PlusIcon className="h-4 w-4 text-dash-muted" />}
+                {app.id === "ga4" ? (
+                  <GaLogo className="h-5 w-5" />
+                ) : app.id === "gsc" ? (
+                  <GscLogo className="h-5 w-5" />
+                ) : app.id === "keywords" ? (
+                  <KeyIcon className="h-5 w-5 text-dash-green" />
+                ) : (
+                  <PlusIcon className="h-4 w-4 text-dash-muted" />
+                )}
               </div>
               <div className="min-w-0">
                 <p className="text-sm font-semibold leading-tight">{app.name}</p>
@@ -528,9 +550,9 @@ function ConnectedApps({ integrations, onSetup }: { integrations: IntegrationInf
                 <span className={`h-2 w-2 rounded-full ${STATUS_STYLE[app.status]}`} />
                 {app.detail}
               </span>
-              {(app.status === "demo" || app.status === "error") && (
-                <button onClick={onSetup} className="text-xs font-semibold text-dash-green hover:underline">
-                  Connect
+              {(app.status === "demo" || app.status === "error" || app.status === "setup") && (
+                <button onClick={() => onSetup(app.id)} className="text-xs font-semibold text-dash-green hover:underline">
+                  {app.status === "setup" ? "Set up" : "Connect"}
                 </button>
               )}
             </div>

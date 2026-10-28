@@ -8,6 +8,7 @@ import type { IntegrationInfo, IntegrationStatus, SourceStatus } from "./types";
 const CATALOG: Omit<IntegrationInfo, "status" | "detail">[] = [
   { id: "ga4", name: "Google Analytics", description: "Traffic, users and engagement" },
   { id: "gsc", name: "Google Search Console", description: "Search clicks, impressions and queries" },
+  { id: "keywords", name: "Google Keyword Planner", description: "Search volume and keyword ideas" },
   { id: "google-ads", name: "Google Ads", description: "Spend, conversions and ROAS" },
   { id: "meta", name: "Meta (Facebook / Instagram)", description: "Ad and social performance" },
   { id: "mailchimp", name: "Mailchimp", description: "Email opens, clicks and growth" },
@@ -21,12 +22,14 @@ const DETAIL: Record<IntegrationStatus, string> = {
   demo: "Showing sample data",
   error: "Connection problem",
   coming_soon: "Coming soon",
+  setup: "Needs setup",
 };
 
-export function buildIntegrations(live: { ga: SourceStatus; gsc: SourceStatus }): IntegrationInfo[] {
+export function buildIntegrations(live: { ga: SourceStatus; gsc: SourceStatus; keywords?: boolean }): IntegrationInfo[] {
   const statuses: Record<string, IntegrationStatus> = {
     ga4: fromSource(live.ga),
     gsc: fromSource(live.gsc),
+    keywords: live.keywords ? "connected" : "setup",
   };
   return CATALOG.map((app) => {
     const status = statuses[app.id] ?? "coming_soon";

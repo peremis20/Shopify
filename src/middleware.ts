@@ -7,5 +7,5 @@ export function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/analytics/:path*", "/api/analytics/:path*", "/api/auth/google/:path*"],
+  matcher: ["/analytics/:path*", "/api/analytics/:path*", "/api/auth/google/:path*", "/api/keywords/:path*"],
 };

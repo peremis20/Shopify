@@ -18,6 +18,10 @@ const routes: Record<string, Handler> = {
   "GET /api/auth/google/start": api.authStart,
   "GET /api/auth/google/callback": api.authCallback,
   "POST /api/auth/google/disconnect": () => api.disconnect(),
+  "GET /api/keywords/status": () => api.keywordSetup(),
+  "POST /api/keywords/settings": api.saveKeywordSettings,
+  "POST /api/keywords/ideas": api.keywordIdeasHandler,
+  "POST /api/keywords/volumes": api.keywordVolumesHandler,
 };
 
 function page(): Response {

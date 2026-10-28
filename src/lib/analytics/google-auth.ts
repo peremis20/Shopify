@@ -12,8 +12,10 @@ export const SCOPES = [
   "https://www.googleapis.com/auth/analytics.readonly",
   "https://www.googleapis.com/auth/webmasters.readonly",
 ];
+/** Keyword Planner data comes through the Google Ads API. */
+export const ADS_SCOPE = "https://www.googleapis.com/auth/adwords";
 /** Sign in also asks for the email address, to show which account is connected. */
-export const OAUTH_SCOPES = ["openid", "email", ...SCOPES];
+export const OAUTH_SCOPES = ["openid", "email", ...SCOPES, ADS_SCOPE];
 
 interface ServiceAccount {
   email: string;
@@ -50,7 +52,7 @@ export type GoogleAuth =
   | { kind: "service_account" }
   | { kind: "oauth"; refreshToken: string };
 
-const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const tokenCache = new Map<string, { token: string; expiresAt: number; scope: string }>();
 
 const b64url = (input: string | Buffer) =>
   Buffer.from(input).toString("base64url");
@@ -69,7 +71,13 @@ async function requestToken(params: Record<string, string>) {
     }
     throw new Error(`Google sign in failed: ${body.error_description ?? body.error ?? res.status}`);
   }
-  return body as { access_token: string; expires_in: number; refresh_token?: string; id_token?: string };
+  return body as {
+    access_token: string;
+    expires_in: number;
+    scope?: string;
+    refresh_token?: string;
+    id_token?: string;
+  };
 }
 
 function serviceAccountAssertion(): string {
@@ -93,13 +101,13 @@ function serviceAccountAssertion(): string {
   return `${header}.${claims}.${b64url(signature)}`;
 }
 
-async function getAccessToken(auth: GoogleAuth): Promise<string> {
+async function getToken(auth: GoogleAuth): Promise<{ token: string; scope: string }> {
   const key =
     auth.kind === "oauth"
       ? crypto.createHash("sha256").update(auth.refreshToken).digest("hex")
       : "service_account";
   const hit = tokenCache.get(key);
-  if (hit && hit.expiresAt > Date.now() + 60_000) return hit.token;
+  if (hit && hit.expiresAt > Date.now() + 60_000) return hit;
 
   let body;
   if (auth.kind === "oauth") {
@@ -118,8 +126,18 @@ async function getAccessToken(auth: GoogleAuth): Promise<string> {
     });
   }
 
-  tokenCache.set(key, { token: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 });
-  return body.access_token;
+  const entry = {
+    token: body.access_token,
+    expiresAt: Date.now() + body.expires_in * 1000,
+    scope: body.scope ?? SCOPES.join(" "),
+  };
+  tokenCache.set(key, entry);
+  return entry;
+}
+
+/** Whether the connected account granted a scope (older connections predate Google Ads access). */
+export async function hasScope(auth: GoogleAuth, scope: string): Promise<boolean> {
+  return (await getToken(auth)).scope.split(" ").includes(scope);
 }
 
 /** Trades the one time code from Google's consent screen for long lived access. */
@@ -150,21 +168,37 @@ export async function revokeToken(token: string): Promise<void> {
   }).catch(() => undefined);
 }
 
+/** A failed Google API call, keeping Google's structured error details. */
+export class GoogleApiError extends Error {
+  constructor(message: string, readonly status: number, readonly details: unknown[]) {
+    super(message);
+  }
+}
+
 /**
  * Calls a Google API (POST with a JSON body, or GET without one) and
  * surfaces Google's own error message on failure.
  */
-export async function googleRequest<T>(auth: GoogleAuth, url: string, payload?: unknown): Promise<T> {
-  const token = await getAccessToken(auth);
+export async function googleRequest<T>(
+  auth: GoogleAuth,
+  url: string,
+  payload?: unknown,
+  headers: Record<string, string> = {}
+): Promise<T> {
+  const { token } = await getToken(auth);
   const res = await fetch(url, {
     method: payload === undefined ? "GET" : "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
     body: payload === undefined ? undefined : JSON.stringify(payload),
     cache: "no-store",
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(body?.error?.message ?? `Request failed with status ${res.status}`);
+    throw new GoogleApiError(
+      body?.error?.message ?? `Request failed with status ${res.status}`,
+      res.status,
+      body?.error?.details ?? []
+    );
   }
   return body as T;
 }

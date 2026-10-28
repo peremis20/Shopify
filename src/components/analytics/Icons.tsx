@@ -67,3 +67,9 @@ export const ArrowDownIcon = (p: IconProps) => (
 export const InfoIcon = (p: IconProps) => (
   <Base {...p}><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 8h.01" /></Base>
 );
+export const KeyIcon = (p: IconProps) => (
+  <Base {...p}><circle cx="8" cy="15" r="4" /><path d="m10.8 12.2 9.2-9.2M17 6l3 3M14 9l2 2" /></Base>
+);
+export const DownloadIcon = (p: IconProps) => (
+  <Base {...p}><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></Base>
+);

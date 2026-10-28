@@ -2,7 +2,7 @@
 
 import type { ComponentType, SVGProps } from "react";
 import type { IntegrationInfo } from "@/lib/analytics/types";
-import { BarsIcon, CloseIcon, FileIcon, HomeIcon, ListIcon, PlugIcon, SearchIcon } from "./Icons";
+import { BarsIcon, CloseIcon, FileIcon, HomeIcon, KeyIcon, ListIcon, PlugIcon, SearchIcon } from "./Icons";
 
 const NAV: { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> }[] = [
   { id: "overview", label: "Overview", icon: HomeIcon },
@@ -10,6 +10,7 @@ const NAV: { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGEleme
   { id: "search-console", label: "Search Console", icon: SearchIcon },
   { id: "pages", label: "Top Pages", icon: FileIcon },
   { id: "queries", label: "Search Queries", icon: ListIcon },
+  { id: "keywords", label: "Keyword Research", icon: KeyIcon },
   { id: "apps", label: "Connected Apps", icon: PlugIcon },
 ];
 

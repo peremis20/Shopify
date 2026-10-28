@@ -135,6 +135,27 @@ in the same Neon project as its database. `DATABASE_URL` is injected automatical
 3. Open the function URL, then paste your Google Client ID and secret under
    **Settings**. They're stored encrypted in the `insights_settings` table.
 
+### Keyword research (Google Keyword Planner)
+
+The Keyword Research section pulls keyword ideas, monthly search volume,
+competition and bid ranges from Google Keyword Planner through the Google
+Ads API, and can look up volume for your Search Console queries.
+
+It needs, once:
+1. The **Google Ads API** enabled in the same Google Cloud project.
+2. A Google Ads account for the connected Google account (no ads or
+   billing needed) and its **developer token** (Google Ads, Admin, API
+   Center). Real data needs **Basic access**; a new token starts with test
+   access only.
+3. Reconnecting Google from the dashboard once, to grant the Ads scope.
+   Your Analytics and Search Console choices are kept.
+
+Paste the developer token in the Keyword Research section; it's stored
+encrypted in Neon. Or set `GOOGLE_ADS_DEVELOPER_TOKEN`,
+`GOOGLE_ADS_CUSTOMER_ID` and, for a manager account,
+`GOOGLE_ADS_LOGIN_CUSTOMER_ID`. `GOOGLE_ADS_API_VERSION` defaults to `v26`.
+Results are cached for 24 hours.
+
 ### Adding more apps later
 
 The data layer lives in `src/lib/analytics/`:

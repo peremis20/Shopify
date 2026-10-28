@@ -6,6 +6,7 @@ import { envGscSiteUrl, fetchGsc, gscOpenUrl } from "./gsc";
 import { buildIntegrations } from "./integrations";
 import { signInAvailable, type Connection } from "./connection";
 import { ensureSchema, hasDatabase, sql } from "./db";
+import { keywordsReady } from "./keywords";
 import { canSaveClient } from "./oauth-client";
 import type { ConnectionInfo, OverviewResponse, PeriodRanges, RangeKey, SourceResult } from "./types";
 
@@ -131,7 +132,11 @@ export async function getOverview(
     ga,
     gsc,
     connection: source.info,
-    integrations: buildIntegrations({ ga: ga.status, gsc: gsc.status }),
+    integrations: buildIntegrations({
+      ga: ga.status,
+      gsc: gsc.status,
+      keywords: await keywordsReady(conn).catch(() => false),
+    }),
   };
   // Sample data is cheap to rebuild, so only live results are stored.
   if (ga.status === "live" && gsc.status === "live") {

@@ -64,7 +64,8 @@ export type IntegrationStatus =
   | "connected"
   | "demo"
   | "error"
-  | "coming_soon";
+  | "coming_soon"
+  | "setup";
 
 export interface IntegrationInfo {
   id: string;

@@ -2,6 +2,8 @@ import crypto from "crypto";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
 import { isRangeKey } from "./dates";
 import { exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
+import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
+import { explainAdsError, keywordIdeas, keywordStatus, keywordVolumes, saveAdsSettings, type KeywordQuery } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
 import { getOverview } from "./overview";
 import { listProperties } from "./properties";
@@ -147,13 +149,18 @@ export async function authCallback(req: Request): Promise<Response> {
     const { refreshToken, email } = await exchangeAuthCode(code, redirectUri(req));
     if (!refreshToken) throw new Error("Google did not return offline access. Please try again.");
 
-    // Start with the first property of each kind so data shows up right away.
-    const options = await listProperties({ kind: "oauth", refreshToken });
+    // Keep the properties already chosen when the same account reconnects;
+    // otherwise start with the first of each kind so data shows up right away.
+    const previous = await getConnection().catch(() => null);
+    const same = previous && previous.email === email;
+    const options = same && previous.gaPropertyId && previous.gscSiteUrl
+      ? null
+      : await listProperties({ kind: "oauth", refreshToken });
     await saveConnection({
       refreshToken,
       email,
-      gaPropertyId: options.ga.items[0]?.id,
-      gscSiteUrl: options.gsc.items[0],
+      gaPropertyId: (same && previous.gaPropertyId) || options?.ga.items[0]?.id,
+      gscSiteUrl: (same && previous.gscSiteUrl) || options?.gsc.items[0],
     });
     return back({ connected: "1" });
   } catch (err) {
@@ -166,4 +173,74 @@ export async function disconnect(): Promise<Response> {
   if (conn) await revokeToken(conn.refreshToken);
   await deleteConnection();
   return json({ ok: true });
+}
+
+/** Where Keyword Planner setup stands, and the Ads accounts to choose from. */
+export async function keywordSetup(): Promise<Response> {
+  try {
+    return json(await keywordStatus(await getConnection()));
+  } catch (err) {
+    return json({ step: "token", error: explainAdsError(err) });
+  }
+}
+
+/** Saves the Google Ads developer token, account ID or manager account ID. */
+export async function saveKeywordSettings(req: Request): Promise<Response> {
+  if (!(await getConnection())) return json({ error: "Connect your Google account first." }, 401);
+  const body = await req.json().catch(() => ({}));
+  const pick = (k: string) => (typeof body[k] === "string" ? body[k] : undefined);
+  const developerToken = pick("developerToken")?.replace(/\s+/g, "");
+  if (developerToken !== undefined && developerToken.length < 15) {
+    return json({ error: "Paste the full developer token from Google Ads (Admin, then API Center)." }, 400);
+  }
+  await saveAdsSettings({
+    developerToken,
+    customerId: pick("customerId"),
+    loginCustomerId: pick("loginCustomerId"),
+  });
+  return json({ ok: true });
+}
+
+function readKeywordQuery(body: Record<string, unknown>): KeywordQuery {
+  const list = Array.isArray(body.keywords)
+    ? body.keywords
+    : typeof body.keywords === "string"
+      ? body.keywords.split(/[,\n]/)
+      : [];
+  const geo = typeof body.geo === "string" && KEYWORD_LOCATIONS.some((l) => l.id === body.geo) ? body.geo : "2840";
+  const language = typeof body.language === "string" && KEYWORD_LANGUAGES.some((l) => l.id === body.language)
+    ? body.language
+    : "1000";
+  return {
+    keywords: list.map((k) => String(k).trim()).filter(Boolean),
+    url: typeof body.url === "string" && body.url.trim() ? body.url.trim() : undefined,
+    geo,
+    language,
+  };
+}
+
+/** Keyword ideas for seed keywords and/or a website. */
+export async function keywordIdeasHandler(req: Request): Promise<Response> {
+  const conn = await getConnection();
+  if (!conn) return json({ error: "Connect your Google account first." }, 401);
+  const q = readKeywordQuery(await req.json().catch(() => ({})));
+  if (!q.keywords.length && !q.url) return json({ error: "Enter a keyword or a website address." }, 400);
+  try {
+    return json({ ideas: await keywordIdeas(conn, q) });
+  } catch (err) {
+    return json({ error: explainAdsError(err) }, 502);
+  }
+}
+
+/** Search volume for an exact list of keywords, such as your Search Console queries. */
+export async function keywordVolumesHandler(req: Request): Promise<Response> {
+  const conn = await getConnection();
+  if (!conn) return json({ error: "Connect your Google account first." }, 401);
+  const q = readKeywordQuery(await req.json().catch(() => ({})));
+  if (!q.keywords.length) return json({ error: "There are no keywords to look up yet." }, 400);
+  try {
+    return json({ ideas: await keywordVolumes(conn, q) });
+  } catch (err) {
+    return json({ error: explainAdsError(err) }, 502);
+  }
 }
