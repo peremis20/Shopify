@@ -117,12 +117,17 @@ The dashboard can run as a [Neon Function](https://neon.com/docs/compute/functio
 in the same Neon project as its database. `DATABASE_URL` is injected automatically.
 
 1. `npm run build:neon` builds the page files into `neon/insights/public`
-   (commit them) and the function into `neon/dist/insights.zip`.
-2. Deploy the zip as a function (slug `insights`) with these variables:
+   and the server into `neon/insights/release/server.mjs` (commit both),
+   plus `neon/dist/loader.zip`, a tiny function that downloads that server
+   from the CDN and checks its SHA-256 before running it.
+2. Deploy `loader.zip` as a function (slug `insights`) with these variables:
    - `ASSET_BASE_URL`: `https://cdn.jsdelivr.net/gh/peremis20/Shopify@<commit>/neon/insights/public`
+   - `SERVER_BUNDLE_URL`: `https://cdn.jsdelivr.net/gh/peremis20/Shopify@<commit>/neon/insights/release/server.mjs`
+   - `SERVER_BUNDLE_SHA256`: printed by the build
    - `APP_URL`: the function's invocation URL
    - `SESSION_SECRET`: a long random string (encrypts stored Google credentials and tokens)
    - `DASHBOARD_PASSWORD`: the password for the page
+   Or skip the loader and deploy the whole server with the CLI:
    ```bash
    neon functions deploy insights --src neon/dist/index.mjs --no-bundle --env KEY=VALUE ...
    ```
