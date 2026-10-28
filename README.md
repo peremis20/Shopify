@@ -203,7 +203,7 @@ refresh automatically). All data is scoped to the signed-in account.
 
 The platform owner (emails in `ADMIN_EMAILS`) sets up, once:
 - the Google OAuth client (Settings, Platform owner);
-- the Claude API key (or `GEMINI_API_KEY` / a Gemini key) and the public Shopify app's Client ID and secret
+- the Claude API key (or a Groq key / `GROQ_API_KEY`, or a Gemini key / `GEMINI_API_KEY`) and the public Shopify app's Client ID and secret
   (SEO Autopilot, Platform keys); app redirect URL
   `/api/shopify/callback`, webhooks to `/api/shopify/webhooks`;
 - Google Ads for keyword data (SEO Tools, Keyword ideas, Connect Google Ads,

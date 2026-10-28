@@ -3,7 +3,7 @@ import type { AiProvider } from "./settings";
 import type { StoreResource } from "./shopify";
 
 /**
- * Writes on-page improvements with Claude (or Gemini when only its key is set). Every answer comes back as JSON
+ * Writes on-page improvements with Claude (or Groq or Gemini when Claude has no key). Every answer comes back as JSON
  * matching a schema, and all HTML is cleaned before it reaches the store.
  */
 
@@ -122,7 +122,7 @@ function toGeminiSchema(schema: unknown): unknown {
 }
 
 /** Overloaded or rate limited: worth a retry, or another model. */
-const geminiBusy = (status: number) => status === 429 || status === 500 || status === 503;
+const aiBusy = (status: number) => status === 429 || status === 500 || status === 503;
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function askGemini<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
@@ -147,13 +147,70 @@ async function askGemini<T>(apiKey: string, prompt: string, schema: Record<strin
         return JSON.parse(text) as T;
       }
       lastError = body?.error?.message ?? String(res.status);
-      if (!geminiBusy(res.status)) throw new Error(`Gemini request failed: ${lastError}`);
+      if (!aiBusy(res.status)) throw new Error(`Gemini request failed: ${lastError}`);
     }
   }
   throw new Error(`Gemini is busy right now, the next run will try again. (${lastError})`);
 }
 
+// ---------- Groq ----------
+
+const GROQ_API = "https://api.groq.com/openai/v1";
+/** Preferred Groq models, best first. Any other chat model the key can use is a last resort. */
+const GROQ_PREFERRED = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile", "qwen/qwen3-32b", "openai/gpt-oss-20b"];
+let groqModels: { key: string; names: string[] } | null = null;
+
+async function pickGroqModels(apiKey: string): Promise<string[]> {
+  if (process.env.GROQ_MODEL) return [process.env.GROQ_MODEL];
+  if (groqModels?.key === apiKey) return groqModels.names;
+  const res = await fetch(`${GROQ_API}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Groq didn't accept the key: ${body?.error?.message ?? res.status}`);
+  const ids = ((body.data ?? []) as { id: string; active?: boolean }[])
+    .filter((m) => m.active !== false && !/whisper|tts|guard|embed|vision/i.test(m.id))
+    .map((m) => m.id);
+  const names = [...GROQ_PREFERRED.filter((n) => ids.includes(n)), ...ids.filter((n) => !GROQ_PREFERRED.includes(n))].slice(0, 3);
+  if (!names.length) throw new Error("No Groq model is available for this key.");
+  groqModels = { key: apiKey, names };
+  return names;
+}
+
+/** Groq's JSON mode: the schema goes in the instructions and the reply is checked here. */
+async function askGroq<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  const required = (schema.required as string[]) ?? [];
+  const messages = [
+    { role: "system", content: `${RULES}\n\nReply with only a JSON object that matches this JSON schema:\n${JSON.stringify(schema)}` },
+    { role: "user", content: prompt },
+  ];
+  let lastError = "";
+  for (const model of await pickGroqModels(apiKey)) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await pause(2000);
+      const res = await fetch(`${GROQ_API}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, messages, response_format: { type: "json_object" }, temperature: 0.4 }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const text: string = body.choices?.[0]?.message?.content ?? "";
+        if (!text) throw new Error("Groq declined to write this change.");
+        const out = JSON.parse(text);
+        const missing = required.filter((k) => !(k in out));
+        if (missing.length) throw new Error(`Groq's answer was missing ${missing.join(", ")}.`);
+        return out as T;
+      }
+      lastError = body?.error?.message ?? String(res.status);
+      // 400 here usually means the model couldn't produce valid JSON: another model may.
+      if (!aiBusy(res.status) && res.status !== 400) throw new Error(`Groq request failed: ${lastError}`);
+      if (res.status === 400) break;
+    }
+  }
+  throw new Error(`Groq couldn't write this change right now, the next run will try again. (${lastError})`);
+}
+
 function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  if (ai.kind === "groq") return askGroq<T>(ai.key, prompt, schema);
   return ai.kind === "gemini" ? askGemini<T>(ai.key, prompt, schema) : askClaude<T>(ai.key, prompt, schema);
 }
 
@@ -253,6 +310,10 @@ export function cleanHtml(html: string, linkPath?: string): string {
 export async function checkAiKey(ai: AiProvider): Promise<void> {
   if (ai.kind === "gemini") {
     await pickGeminiModels(ai.key);
+    return;
+  }
+  if (ai.kind === "groq") {
+    await pickGroqModels(ai.key);
     return;
   }
   const client = new Anthropic({ apiKey: ai.key });

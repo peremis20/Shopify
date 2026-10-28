@@ -392,6 +392,7 @@ export const savePlatform = (req: Request) =>
     await savePlatformSettings({
       anthropicKey: str("anthropicKey"),
       geminiKey: str("geminiKey"),
+      groqKey: str("groqKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
