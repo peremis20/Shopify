@@ -85,25 +85,28 @@ async function askClaude<T>(apiKey: string, prompt: string, schema: Record<strin
 // ---------- Gemini ----------
 
 const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
-let geminiModel: { key: string; name: string } | null = null;
+let geminiModels: { key: string; names: string[] } | null = null;
 
-/** Picks the newest stable Gemini "flash" model this key can use (or GEMINI_MODEL if set). */
-async function pickGeminiModel(apiKey: string): Promise<string> {
-  if (process.env.GEMINI_MODEL) return process.env.GEMINI_MODEL;
-  if (geminiModel?.key === apiKey) return geminiModel.name;
+/**
+ * Gemini models this key can use, best first: newest stable "flash", then "flash-lite", then "pro"
+ * (or just GEMINI_MODEL if set). The later ones are backups for when the first is overloaded.
+ */
+async function pickGeminiModels(apiKey: string): Promise<string[]> {
+  if (process.env.GEMINI_MODEL) return [process.env.GEMINI_MODEL];
+  if (geminiModels?.key === apiKey) return geminiModels.names;
   const res = await fetch(`${GEMINI_API}/models?pageSize=200&key=${encodeURIComponent(apiKey)}`);
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Gemini didn't accept the key: ${body?.error?.message ?? res.status}`);
   const usable = ((body.models ?? []) as { name: string; supportedGenerationMethods?: string[] }[])
     .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
     .map((m) => m.name.replace(/^models\//, ""))
-    .filter((n) => /^gemini-[\d.]+-(flash|pro)$/.test(n));
+    .filter((n) => /^gemini-[\d.]+-(flash|flash-lite|pro)$/.test(n));
+  const rank = (n: string) => (n.endsWith("flash") ? 0 : n.endsWith("flash-lite") ? 1 : 2);
   const version = (n: string) => parseFloat(n.split("-")[1]);
-  usable.sort((a, b) => version(b) - version(a) || Number(b.endsWith("flash")) - Number(a.endsWith("flash")));
-  const name = usable.find((n) => n.endsWith("flash")) ?? usable[0];
-  if (!name) throw new Error("No Gemini model is available for this key.");
-  geminiModel = { key: apiKey, name };
-  return name;
+  usable.sort((a, b) => rank(a) - rank(b) || version(b) - version(a));
+  if (!usable.length) throw new Error("No Gemini model is available for this key.");
+  geminiModels = { key: apiKey, names: usable.slice(0, 4) };
+  return geminiModels.names;
 }
 
 /** Gemini's schema format: OpenAPI style types and no additionalProperties. */
@@ -118,22 +121,36 @@ function toGeminiSchema(schema: unknown): unknown {
   return out;
 }
 
+/** Overloaded or rate limited: worth a retry, or another model. */
+const geminiBusy = (status: number) => status === 429 || status === 500 || status === 503;
+const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function askGemini<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
-  const model = await pickGeminiModel(apiKey);
-  const res = await fetch(`${GEMINI_API}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: RULES }] },
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(schema) },
-    }),
+  const payload = JSON.stringify({
+    systemInstruction: { parts: [{ text: RULES }] },
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(schema) },
   });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Gemini request failed: ${body?.error?.message ?? res.status}`);
-  const text = (body.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
-  if (!text) throw new Error("Gemini declined to write this change.");
-  return JSON.parse(text) as T;
+  let lastError = "";
+  for (const model of await pickGeminiModels(apiKey)) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await pause(2000);
+      const res = await fetch(`${GEMINI_API}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const text = (body.candidates?.[0]?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? "").join("");
+        if (!text) throw new Error("Gemini declined to write this change.");
+        return JSON.parse(text) as T;
+      }
+      lastError = body?.error?.message ?? String(res.status);
+      if (!geminiBusy(res.status)) throw new Error(`Gemini request failed: ${lastError}`);
+    }
+  }
+  throw new Error(`Gemini is busy right now, the next run will try again. (${lastError})`);
 }
 
 function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
@@ -235,7 +252,7 @@ export function cleanHtml(html: string, linkPath?: string): string {
 /** Quick check that the key works, without generating anything. */
 export async function checkAiKey(ai: AiProvider): Promise<void> {
   if (ai.kind === "gemini") {
-    await pickGeminiModel(ai.key);
+    await pickGeminiModels(ai.key);
     return;
   }
   const client = new Anthropic({ apiKey: ai.key });
