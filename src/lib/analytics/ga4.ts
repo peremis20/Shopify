@@ -39,6 +39,36 @@ export async function listGa4Properties(auth: GoogleAuth) {
   );
 }
 
+type Filter = Record<string, unknown>;
+
+/**
+ * Traffic from other websites that share this GA4 tag, listed in
+ * GA_EXCLUDE_HOSTNAMES (comma separated, e.g. "sakshijewelers.com").
+ * A hostname matches itself and its subdomains.
+ */
+function excludedHostsFilter(): Filter | undefined {
+  const hosts = (process.env.GA_EXCLUDE_HOSTNAMES ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
+  if (!hosts.length) return undefined;
+  return {
+    notExpression: {
+      orGroup: {
+        expressions: hosts.map((h) => ({
+          filter: { fieldName: "hostName", stringFilter: { matchType: "ENDS_WITH", value: h } },
+        })),
+      },
+    },
+  };
+}
+
+function allOf(...filters: (Filter | undefined)[]): Filter | undefined {
+  const list = filters.filter((f): f is Filter => Boolean(f));
+  if (list.length <= 1) return list[0];
+  return { andGroup: { expressions: list } };
+}
+
 const num = (row: Ga4Row | undefined, i: number) => Number(row?.metricValues?.[i]?.value ?? 0);
 
 const delta = (value: number, previous: number): Delta => ({
@@ -50,6 +80,7 @@ const delta = (value: number, previous: number): Delta => ({
 export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRanges): Promise<GaData> {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`;
   const current = { startDate: ranges.current.start, endDate: ranges.current.end };
+  const hosts = excludedHostsFilter();
 
   const [summary, daily, channels, pages] = await Promise.all([
     googleRequest<Ga4Report>(auth, url, {
@@ -64,17 +95,20 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
         { name: "userEngagementDuration" },
         { name: "activeUsers" },
       ],
+      dimensionFilter: hosts,
     }),
     googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
       dimensions: [{ name: "date" }],
       metrics: [{ name: "totalUsers" }, { name: "screenPageViews" }],
+      dimensionFilter: hosts,
       orderBys: [{ dimension: { dimensionName: "date" } }],
     }),
     googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
       dimensions: [{ name: "sessionDefaultChannelGroup" }],
       metrics: [{ name: "sessions" }],
+      dimensionFilter: hosts,
       orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
     }),
     googleRequest<Ga4Report>(auth, url, {
@@ -87,14 +121,14 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
       ],
       // Shopify's tracking pixel reports its sandbox frame as a page view
       // (paths like /web-pixels@abc123/...). Leave those out of the page list.
-      dimensionFilter: {
+      dimensionFilter: allOf(hosts, {
         notExpression: {
           filter: {
             fieldName: "pagePath",
             stringFilter: { matchType: "BEGINS_WITH", value: "/web-pixels@" },
           },
         },
-      },
+      }),
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
       limit: 10,
     }),
