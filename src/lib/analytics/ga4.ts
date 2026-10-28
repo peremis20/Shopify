@@ -85,6 +85,16 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
         { name: "userEngagementDuration" },
         { name: "activeUsers" },
       ],
+      // Shopify's tracking pixel reports its sandbox frame as a page view
+      // (paths like /web-pixels@abc123/...). Leave those out of the page list.
+      dimensionFilter: {
+        notExpression: {
+          filter: {
+            fieldName: "pagePath",
+            stringFilter: { matchType: "BEGINS_WITH", value: "/web-pixels@" },
+          },
+        },
+      },
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
       limit: 10,
     }),
