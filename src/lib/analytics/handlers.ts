@@ -84,10 +84,16 @@ export async function saveSettings(req: Request): Promise<Response> {
 /** Saves the Google Client ID and secret entered in Settings. */
 export async function saveGoogleClient(req: Request): Promise<Response> {
   const body = await req.json().catch(() => ({}));
-  const id = typeof body.clientId === "string" ? body.clientId.trim() : "";
-  const secret = typeof body.clientSecret === "string" ? body.clientSecret.trim() : "";
-  if (!id.endsWith(".apps.googleusercontent.com")) {
-    return json({ error: "The Client ID should end with .apps.googleusercontent.com" }, 400);
+  // Pull the ID out of whatever was pasted, since copying from Google Cloud
+  // can bring the field's label or spaces along with it.
+  const id = typeof body.clientId === "string"
+    ? body.clientId.match(/[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/)?.[0] ?? ""
+    : "";
+  const secret = typeof body.clientSecret === "string"
+    ? body.clientSecret.replace(/^[\s\S]*?(GOCSPX-)/, "$1").replace(/\s+/g, "")
+    : "";
+  if (!id) {
+    return json({ error: "That doesn't look like a Client ID. It ends with .apps.googleusercontent.com" }, 400);
   }
   if (secret.length < 10) {
     return json({ error: "Paste the full Client secret from Google Cloud." }, 400);
