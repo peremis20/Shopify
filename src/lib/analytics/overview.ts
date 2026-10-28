@@ -5,7 +5,8 @@ import { getServiceAccount, type GoogleAuth } from "./google-auth";
 import { envGscSiteUrl, fetchGsc, gscOpenUrl } from "./gsc";
 import { buildIntegrations } from "./integrations";
 import { signInAvailable, type Connection } from "./connection";
-import { db, ensureSchema, hasDatabase } from "./db";
+import { ensureSchema, hasDatabase, sql } from "./db";
+import { canSaveClient } from "./oauth-client";
 import type { ConnectionInfo, OverviewResponse, PeriodRanges, RangeKey, SourceResult } from "./types";
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -18,10 +19,10 @@ async function readCache(key: string): Promise<OverviewResponse | null> {
     return hit && Date.now() - hit.at < CACHE_TTL_MS ? hit.data : null;
   }
   await ensureSchema();
-  const [row] = await db()`
+  const [row] = await sql`
     SELECT data FROM insights_report_cache
     WHERE cache_key = ${key} AND fetched_at > now() - make_interval(secs => ${CACHE_TTL_MS / 1000})`;
-  return (row?.data as OverviewResponse) ?? null;
+  return row?.data ? (JSON.parse(row.data) as OverviewResponse) : null;
 }
 
 async function writeCache(key: string, data: OverviewResponse): Promise<void> {
@@ -29,7 +30,7 @@ async function writeCache(key: string, data: OverviewResponse): Promise<void> {
     memoryCache.set(key, { at: Date.now(), data });
     return;
   }
-  await db()`
+  await sql`
     INSERT INTO insights_report_cache (cache_key, data, fetched_at)
     VALUES (${key}, ${JSON.stringify(data)}::jsonb, now())
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`;
@@ -51,14 +52,15 @@ interface Source {
 }
 
 /** A signed in Google account wins; otherwise fall back to a server service account. */
-function resolveSource(conn: Connection | null): Source {
-  const oauthAvailable = signInAvailable();
+async function resolveSource(conn: Connection | null, redirectUri: string): Promise<Source> {
+  const oauthAvailable = await signInAvailable();
+  const setup = { canSaveClient: canSaveClient(), redirectUri };
   if (conn && oauthAvailable) {
     return {
       auth: { kind: "oauth", refreshToken: conn.refreshToken },
       gaId: conn.gaPropertyId,
       site: conn.gscSiteUrl,
-      info: { mode: "oauth", oauthAvailable, email: conn.email, gaPropertyId: conn.gaPropertyId, gscSiteUrl: conn.gscSiteUrl },
+      info: { mode: "oauth", oauthAvailable, ...setup, email: conn.email, gaPropertyId: conn.gaPropertyId, gscSiteUrl: conn.gscSiteUrl },
     };
   }
   if (hasServiceAccount()) {
@@ -68,10 +70,10 @@ function resolveSource(conn: Connection | null): Source {
       auth: { kind: "service_account" },
       gaId,
       site,
-      info: { mode: "service_account", oauthAvailable, gaPropertyId: gaId, gscSiteUrl: site },
+      info: { mode: "service_account", oauthAvailable, ...setup, gaPropertyId: gaId, gscSiteUrl: site },
     };
   }
-  return { auth: null, info: { mode: "none", oauthAvailable } };
+  return { auth: null, info: { mode: "none", oauthAvailable, ...setup } };
 }
 
 async function load<T>(
@@ -105,9 +107,10 @@ async function load<T>(
 export async function getOverview(
   rangeKey: RangeKey,
   conn: Connection | null,
+  redirectUri: string,
   refresh = false
 ): Promise<OverviewResponse> {
-  const source = resolveSource(conn);
+  const source = await resolveSource(conn, redirectUri);
   const cacheKey = [rangeKey, source.info.mode, conn?.email, source.gaId, source.site].join("|");
   if (!refresh) {
     const hit = await readCache(cacheKey).catch(() => null);

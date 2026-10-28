@@ -1,10 +1,5 @@
-import { NextResponse } from "next/server";
-import { deleteConnection, getConnection } from "@/lib/analytics/connection";
-import { revokeToken } from "@/lib/analytics/google-auth";
+import { disconnect } from "@/lib/analytics/handlers";
 
-export async function POST() {
-  const conn = await getConnection();
-  if (conn) await revokeToken(conn.refreshToken);
-  await deleteConnection();
-  return NextResponse.json({ ok: true });
-}
+export const dynamic = "force-dynamic";
+
+export const POST = () => disconnect();

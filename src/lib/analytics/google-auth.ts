@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { getOAuthClient } from "./oauth-client";
 
 /**
  * Minimal Google auth for two ways of connecting: "Sign in with Google"
@@ -48,12 +49,6 @@ export function getServiceAccount(): ServiceAccount | null {
 export type GoogleAuth =
   | { kind: "service_account" }
   | { kind: "oauth"; refreshToken: string };
-
-export function oauthClient(): { id: string; secret: string } | null {
-  const id = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim();
-  const secret = process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
-  return id && secret ? { id, secret } : null;
-}
 
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
 
@@ -108,7 +103,7 @@ async function getAccessToken(auth: GoogleAuth): Promise<string> {
 
   let body;
   if (auth.kind === "oauth") {
-    const client = oauthClient();
+    const client = await getOAuthClient();
     if (!client) throw new Error("Google sign in is not set up on the server.");
     body = await requestToken({
       grant_type: "refresh_token",
@@ -129,7 +124,7 @@ async function getAccessToken(auth: GoogleAuth): Promise<string> {
 
 /** Trades the one time code from Google's consent screen for long lived access. */
 export async function exchangeAuthCode(code: string, redirectUri: string) {
-  const client = oauthClient();
+  const client = await getOAuthClient();
   if (!client) throw new Error("Google sign in is not set up on the server.");
   const body = await requestToken({
     grant_type: "authorization_code",

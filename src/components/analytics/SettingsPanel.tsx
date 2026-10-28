@@ -159,7 +159,14 @@ export function SettingsPanel({ connection, onClose, onChanged }: {
         {mode === "none" && (
           <div className="space-y-5 text-sm">
             <p>Connect the Google account that has access to your Analytics and Search Console. The dashboard only reads data and never changes anything.</p>
-            {connection?.oauthAvailable ? <ConnectButton /> : <SetupSteps />}
+            {connection?.oauthAvailable ? (
+              <ConnectButton />
+            ) : (
+              <>
+                <SetupSteps redirectUri={connection?.redirectUri} canSaveClient={connection?.canSaveClient} />
+                {connection?.canSaveClient && <GoogleClientForm onSaved={onChanged} />}
+              </>
+            )}
           </div>
         )}
       </div>
@@ -184,9 +191,76 @@ export function ConnectButton({ label = "Connect with Google" }: { label?: strin
   );
 }
 
-export function SetupSteps() {
+function GoogleClientForm({ onSaved }: { onSaved: () => void }) {
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/analytics/google-client", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, clientSecret }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Couldn't save");
+      setClientSecret("");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3 rounded-xl border border-dash-line bg-white p-4">
+      <p className="font-semibold">Paste your Google credentials</p>
+      <label className="block">
+        <span className="mb-1 block text-xs text-dash-muted">Client ID</span>
+        <input
+          id="google-client-id"
+          value={clientId}
+          onChange={(e) => setClientId(e.target.value)}
+          placeholder="1234-abc.apps.googleusercontent.com"
+          autoComplete="off"
+          className="w-full rounded-lg border border-dash-line px-3 py-2 text-sm"
+        />
+      </label>
+      <label className="block">
+        <span className="mb-1 block text-xs text-dash-muted">Client secret</span>
+        <input
+          id="google-client-secret"
+          type="password"
+          value={clientSecret}
+          onChange={(e) => setClientSecret(e.target.value)}
+          placeholder="GOCSPX-..."
+          autoComplete="off"
+          className="w-full rounded-lg border border-dash-line px-3 py-2 text-sm"
+        />
+      </label>
+      {error && <p className="text-sm text-dash-down">{error}</p>}
+      <p className="text-xs text-dash-muted">Stored encrypted in your Neon database. Only this dashboard can read it.</p>
+      <button
+        type="submit"
+        disabled={saving || !clientId || !clientSecret}
+        className="rounded-xl bg-dash-green px-5 py-2.5 text-sm font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
+      >
+        {saving ? "Saving…" : "Save credentials"}
+      </button>
+    </form>
+  );
+}
+
+export function SetupSteps({ redirectUri, canSaveClient }: { redirectUri?: string; canSaveClient?: boolean }) {
   const [origin, setOrigin] = useState("https://your-site.com");
   useEffect(() => setOrigin(window.location.origin), []);
+  const callback = redirectUri ?? `${origin}/api/auth/google/callback`;
   return (
     <div className="space-y-3">
       <p className="font-semibold">One time setup (about 10 minutes)</p>
@@ -201,14 +275,18 @@ export function SetupSteps() {
         </li>
         <li>
           Under Credentials, create an <b>OAuth client ID</b> of type Web application, with this redirect URI:
-          <code className="mt-1 block break-all rounded bg-white px-2 py-1 text-xs">{origin}/api/auth/google/callback</code>
+          <code className="mt-1 block break-all rounded bg-white px-2 py-1 text-xs">{callback}</code>
         </li>
-        <li>
-          Add <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_ID</code>,{" "}
-          <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> and your Neon{" "}
-          <code className="rounded bg-white px-1">DATABASE_URL</code> to your environment settings and restart. A{" "}
-          <b>Connect with Google</b> button then appears here.
-        </li>
+        {canSaveClient ? (
+          <li>Paste the Client ID and Client secret below and save. A <b>Connect with Google</b> button then appears.</li>
+        ) : (
+          <li>
+            Add <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_ID</code>,{" "}
+            <code className="rounded bg-white px-1">GOOGLE_OAUTH_CLIENT_SECRET</code> and your Neon{" "}
+            <code className="rounded bg-white px-1">DATABASE_URL</code> to your environment settings and restart. A{" "}
+            <b>Connect with Google</b> button then appears here.
+          </li>
+        )}
       </ol>
     </div>
   );

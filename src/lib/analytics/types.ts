@@ -79,6 +79,10 @@ export interface ConnectionInfo {
   mode: "oauth" | "service_account" | "none";
   /** Whether "Connect with Google" is set up on the server. */
   oauthAvailable: boolean;
+  /** Whether the Google Client ID and secret can be entered in Settings. */
+  canSaveClient: boolean;
+  /** The address to register in Google Cloud as the OAuth redirect URI. */
+  redirectUri: string;
   email?: string;
   gaPropertyId?: string;
   gscSiteUrl?: string;

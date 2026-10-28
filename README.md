@@ -111,6 +111,24 @@ Data is cached for 10 minutes; the Refresh button pulls fresh numbers.
 Search Console reports about 3 days behind, so its date range ends earlier
 than the Analytics one.
 
+### Run it on Neon (no other host needed)
+
+The dashboard can run as a [Neon Function](https://neon.com/docs/compute/functions/overview)
+in the same Neon project as its database. `DATABASE_URL` is injected automatically.
+
+1. `npm run build:neon` builds the page files into `neon/insights/public`
+   (commit them) and the function into `neon/dist/insights.zip`.
+2. Deploy the zip as a function (slug `insights`) with these variables:
+   - `ASSET_BASE_URL`: `https://cdn.jsdelivr.net/gh/peremis20/Shopify@<commit>/neon/insights/public`
+   - `APP_URL`: the function's invocation URL
+   - `SESSION_SECRET`: a long random string (encrypts stored Google credentials and tokens)
+   - `DASHBOARD_PASSWORD`: the password for the page
+   ```bash
+   neon functions deploy insights --src neon/dist/index.mjs --no-bundle --env KEY=VALUE ...
+   ```
+3. Open the function URL, then paste your Google Client ID and secret under
+   **Settings**. They're stored encrypted in the `insights_settings` table.
+
 ### Adding more apps later
 
 The data layer lives in `src/lib/analytics/`:

@@ -203,7 +203,12 @@ export function DashboardView() {
               </div>
               {showSetup && !connection?.oauthAvailable && (
                 <div className="mt-4">
-                  <SetupSteps />
+                  <SetupSteps redirectUri={connection?.redirectUri} canSaveClient={connection?.canSaveClient} />
+                  {connection?.canSaveClient && (
+                    <button onClick={() => setSettingsOpen(true)} className="mt-3 font-semibold text-dash-green hover:underline">
+                      Open Settings to paste your credentials
+                    </button>
+                  )}
                 </div>
               )}
             </div>
