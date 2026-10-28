@@ -14,8 +14,10 @@ export const SCOPES = [
 ];
 /** Keyword Planner data comes through the Google Ads API. */
 export const ADS_SCOPE = "https://www.googleapis.com/auth/adwords";
-/** Sign in also asks for the email address, to show which account is connected. */
-export const OAUTH_SCOPES = ["openid", "email", ...SCOPES, ADS_SCOPE];
+/** Customer sign-in: who they are, plus read-only Analytics and Search Console. */
+export const OAUTH_SCOPES = ["openid", "email", ...SCOPES];
+/** The platform owner's one-time Google Ads connection for keyword data. */
+export const ADS_OAUTH_SCOPES = ["openid", "email", ADS_SCOPE];
 
 interface ServiceAccount {
   email: string;

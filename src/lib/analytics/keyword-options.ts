@@ -28,7 +28,7 @@ export interface KeywordIdea {
   trend: { month: string; searches: number }[];
 }
 
-export type KeywordSetupStep = "connect" | "reconnect" | "token" | "account" | "ready";
+export type KeywordSetupStep = "connect" | "reconnect" | "token" | "account" | "ready" | "unavailable";
 
 export interface KeywordStatus {
   step: KeywordSetupStep;

@@ -5,8 +5,9 @@ import type { ConnectionInfo, PropertyOptions } from "@/lib/analytics/types";
 import { CloseIcon } from "./Icons";
 import { GaLogo, GscLogo } from "./ui";
 
-export function SettingsPanel({ connection, onClose, onChanged }: {
+export function SettingsPanel({ connection, account, onClose, onChanged }: {
   connection: ConnectionInfo | undefined;
+  account?: { email: string; admin: boolean };
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -58,9 +59,12 @@ export function SettingsPanel({ connection, onClose, onChanged }: {
   async function disconnect() {
     setSaving(true);
     await fetch("/api/auth/google/disconnect", { method: "POST" }).catch(() => undefined);
-    setSaving(false);
-    onChanged();
-    onClose();
+    window.location.href = "/analytics";
+  }
+
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    window.location.href = "/analytics";
   }
 
   return (
@@ -77,8 +81,13 @@ export function SettingsPanel({ connection, onClose, onChanged }: {
         {mode === "oauth" && (
           <div className="space-y-5">
             <div className="rounded-xl border border-dash-line bg-white p-4 text-sm">
-              <p className="text-dash-muted">Connected Google account</p>
-              <p className="mt-0.5 font-semibold">{connection?.email ?? "Google account"}</p>
+              <p className="text-dash-muted">Signed in as</p>
+              <div className="mt-0.5 flex items-center justify-between gap-3">
+                <p className="font-semibold">{account?.email ?? connection?.email ?? "Google account"}</p>
+                <button onClick={signOut} className="text-sm font-semibold text-dash-green hover:underline">
+                  Sign out
+                </button>
+              </div>
             </div>
 
             {loadError && <p className="rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{loadError}</p>}
@@ -131,7 +140,7 @@ export function SettingsPanel({ connection, onClose, onChanged }: {
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
               <button onClick={disconnect} disabled={saving} className="text-sm font-semibold text-dash-down hover:underline disabled:opacity-60">
-                Disconnect Google
+                Disconnect Google and sign out
               </button>
               <button
                 onClick={save}
@@ -141,6 +150,17 @@ export function SettingsPanel({ connection, onClose, onChanged }: {
                 {saving ? "Saving…" : "Save"}
               </button>
             </div>
+          </div>
+        )}
+
+        {account?.admin && (
+          <div className="mt-8 space-y-4 border-t border-dash-line pt-6 text-sm">
+            <p className="font-serif text-xl">Platform owner</p>
+            <p className="text-dash-muted">
+              Google sign in for all customers uses this OAuth client. Replace it only if you move to a new Google Cloud
+              project.
+            </p>
+            <GoogleClientForm onSaved={onChanged} />
           </div>
         )}
 
@@ -191,7 +211,7 @@ export function ConnectButton({ label = "Connect with Google" }: { label?: strin
   );
 }
 
-function GoogleClientForm({ onSaved }: { onSaved: () => void }) {
+export function GoogleClientForm({ onSaved }: { onSaved: () => void }) {
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [saving, setSaving] = useState(false);

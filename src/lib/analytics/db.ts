@@ -96,6 +96,46 @@ export function ensureSchema(): Promise<void> {
       value text NOT NULL,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
+    // ---- multi-account (SaaS) tables ----
+    await sql`CREATE TABLE IF NOT EXISTS insights_accounts (
+      id bigserial PRIMARY KEY,
+      email text NOT NULL UNIQUE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      last_login_at timestamptz NOT NULL DEFAULT now()
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_account_google (
+      account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      refresh_token_enc text NOT NULL,
+      email text,
+      ga_property_id text,
+      gsc_site_url text,
+      connected_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_account_autopilot (
+      account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      enabled boolean NOT NULL DEFAULT false,
+      max_pages_per_week integer NOT NULL DEFAULT 4,
+      allow_content boolean NOT NULL DEFAULT true,
+      shop_domain text,
+      shop_token_enc text,
+      last_run_at timestamptz
+    )`;
+    await sql`ALTER TABLE insights_keyword_lists ADD COLUMN IF NOT EXISTS account_id bigint`;
+    await sql`ALTER TABLE insights_autopilot_runs ADD COLUMN IF NOT EXISTS account_id bigint`;
+    await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS account_id bigint`;
+    // Carry over the single-owner setup from before accounts existed.
+    await sql`INSERT INTO insights_accounts (email)
+      SELECT email FROM insights_google_connection WHERE id = 'default' AND email IS NOT NULL
+      ON CONFLICT (email) DO NOTHING`;
+    await sql`INSERT INTO insights_account_google (account_id, refresh_token_enc, email, ga_property_id, gsc_site_url)
+      SELECT a.id, g.refresh_token_enc, g.email, g.ga_property_id, g.gsc_site_url
+      FROM insights_google_connection g JOIN insights_accounts a ON a.email = g.email
+      WHERE g.id = 'default'
+      ON CONFLICT (account_id) DO NOTHING`;
+    await sql`UPDATE insights_keyword_lists SET account_id = (SELECT min(id) FROM insights_accounts) WHERE account_id IS NULL`;
+    await sql`UPDATE insights_autopilot_runs SET account_id = (SELECT min(id) FROM insights_accounts) WHERE account_id IS NULL`;
+    await sql`UPDATE insights_autopilot_changes SET account_id = (SELECT min(id) FROM insights_accounts) WHERE account_id IS NULL`;
   })().catch((err) => {
     schemaReady = null;
     throw err;

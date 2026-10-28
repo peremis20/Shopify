@@ -1,41 +1,116 @@
-import type { AutopilotSettings } from "./settings";
+
+import crypto from "crypto";
+import {
+  decryptShopTokens,
+  encryptShopTokens,
+  readAccountAutopilot,
+  readPlatformSettings,
+  saveAccountAutopilot,
+} from "./settings";
 
 /**
- * Shopify Admin GraphQL client for the autopilot. Uses a Dev Dashboard app's
- * client credentials grant: Client ID + secret exchanged for a 24 hour token.
+ * Shopify Admin GraphQL client for the autopilot. Each customer connects
+ * their store to the platform's public Shopify app (OAuth authorization code
+ * grant with expiring offline tokens); tokens refresh automatically.
  */
 
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-07";
-const tokens = new Map<string, { token: string; expiresAt: number }>();
+export const SHOPIFY_SCOPES = "write_content,write_products,write_online_store_pages,write_files";
+export const SHOPIFY_STATE_COOKIE = "insights_shopify_state";
 
-async function accessToken(s: AutopilotSettings): Promise<string> {
-  if (!s.shopDomain || !s.shopifyClientId || !s.shopifyClientSecret) {
-    throw new Error("Add your Shopify store, Client ID and Client secret in Autopilot settings.");
-  }
-  const hit = tokens.get(s.shopDomain);
-  if (hit && hit.expiresAt > Date.now() + 5 * 60_000) return hit.token;
+/** Which store to act on: the customer's account. */
+export interface StoreAccess {
+  accountId: string;
+  shopDomain: string;
+}
 
-  const res = await fetch(`https://${s.shopDomain}/admin/oauth/access_token`, {
+interface ShopTokens {
+  accessToken: string;
+  expiresAt: number;
+  refreshToken?: string;
+}
+
+/** Accepts "peremis", "peremis.myshopify.com" or a full admin URL; returns the myshopify domain or null. */
+export function normalizeShopDomain(input: string): string | null {
+  const v = input.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const name = v.endsWith(".myshopify.com") ? v.slice(0, -".myshopify.com".length) : v.includes(".") ? "" : v;
+  return /^[a-z0-9][a-z0-9-]*$/.test(name) ? `${name}.myshopify.com` : null;
+}
+
+async function platformApp() {
+  const p = await readPlatformSettings();
+  if (!p.shopifyClientId || !p.shopifyClientSecret) throw new Error("Shopify connections aren't available yet.");
+  return { id: p.shopifyClientId, secret: p.shopifyClientSecret };
+}
+
+export async function authorizeUrl(shop: string, redirectUri: string, state: string): Promise<string> {
+  const app = await platformApp();
+  const url = new URL(`https://${shop}/admin/oauth/authorize`);
+  url.search = new URLSearchParams({ client_id: app.id, scope: SHOPIFY_SCOPES, redirect_uri: redirectUri, state }).toString();
+  return url.toString();
+}
+
+/** Checks the hmac Shopify adds to the OAuth callback. */
+export async function verifyCallbackHmac(params: URLSearchParams): Promise<boolean> {
+  const app = await platformApp();
+  const hmac = params.get("hmac");
+  if (!hmac) return false;
+  const message = [...params.entries()]
+    .filter(([k]) => k !== "hmac" && k !== "signature")
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+  const digest = crypto.createHmac("sha256", app.secret).update(message).digest("hex");
+  return digest.length === hmac.length && crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmac));
+}
+
+/** Checks the X-Shopify-Hmac-Sha256 header on a webhook body. */
+export async function verifyWebhookHmac(rawBody: string, header: string | null): Promise<boolean> {
+  if (!header) return false;
+  const app = await platformApp();
+  const digest = crypto.createHmac("sha256", app.secret).update(rawBody, "utf8").digest("base64");
+  return digest.length === header.length && crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(header));
+}
+
+async function tokenRequest(shop: string, params: Record<string, string>): Promise<ShopTokens> {
+  const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: s.shopifyClientId,
-      client_secret: s.shopifyClientSecret,
-    }),
+    body: new URLSearchParams(params),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok || !body.access_token) {
-    throw new Error(
-      `Shopify didn't accept the app credentials (${body.error_description ?? body.error ?? res.status}). ` +
-        "Check the store address, Client ID and secret, and that the app is installed on the store."
-    );
+    throw new Error(`Shopify didn't return access (${body.error_description ?? body.error ?? res.status}). Reconnect your store.`);
   }
-  tokens.set(s.shopDomain, { token: body.access_token, expiresAt: Date.now() + (body.expires_in ?? 86_399) * 1000 });
-  return body.access_token;
+  return { accessToken: body.access_token, refreshToken: body.refresh_token, expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000 };
 }
 
-export async function shopifyGql<T>(s: AutopilotSettings, query: string, variables: Record<string, unknown> = {}): Promise<T> {
+/** Finishes the OAuth flow and saves the store connection on the account. */
+export async function completeInstall(accountId: string, shop: string, code: string): Promise<void> {
+  const app = await platformApp();
+  const tokens = await tokenRequest(shop, { client_id: app.id, client_secret: app.secret, code, expiring: "1" });
+  await saveAccountAutopilot(accountId, { shopDomain: shop, shopTokenEnc: await encryptShopTokens(tokens) });
+}
+
+async function accessToken(access: StoreAccess): Promise<string> {
+  const acct = await readAccountAutopilot(access.accountId);
+  const tokens = acct.shopTokenEnc ? await decryptShopTokens<ShopTokens>(acct.shopTokenEnc) : null;
+  if (!tokens) throw new Error("Connect your Shopify store first.");
+  if (tokens.expiresAt > Date.now() + 5 * 60_000) return tokens.accessToken;
+  if (!tokens.refreshToken) throw new Error("Your Shopify connection expired. Reconnect your store.");
+  const app = await platformApp();
+  const fresh = await tokenRequest(access.shopDomain, {
+    client_id: app.id,
+    client_secret: app.secret,
+    grant_type: "refresh_token",
+    refresh_token: tokens.refreshToken,
+  });
+  // Shopify rotates the refresh token on every use; keep the new one.
+  await saveAccountAutopilot(access.accountId, { shopTokenEnc: await encryptShopTokens({ ...fresh, refreshToken: fresh.refreshToken ?? tokens.refreshToken }) });
+  return fresh.accessToken;
+}
+
+export async function shopifyGql<T>(s: StoreAccess, query: string, variables: Record<string, unknown> = {}): Promise<T> {
   const res = await fetch(`https://${s.shopDomain}/admin/api/${API_VERSION}/graphql.json`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": await accessToken(s) },
@@ -53,7 +128,7 @@ export async function shopifyGql<T>(s: AutopilotSettings, query: string, variabl
   return body.data as T;
 }
 
-export async function shopName(s: AutopilotSettings): Promise<string> {
+export async function shopName(s: StoreAccess): Promise<string> {
   const d = await shopifyGql<{ shop: { name: string } }>(s, "{ shop { name } }");
   return d.shop.name;
 }
@@ -78,7 +153,7 @@ const SEO_FIELDS = `
   descTag: metafield(namespace: "global", key: "description_tag") { value }`;
 
 /** Finds the store item behind a page address, or null for pages the autopilot can't edit. */
-export async function resolveResource(s: AutopilotSettings, url: string): Promise<StoreResource | null> {
+export async function resolveResource(s: StoreAccess, url: string): Promise<StoreResource | null> {
   const path = new URL(url).pathname.replace(/\/$/, "");
   const parts = path.split("/").filter(Boolean);
   const handle = parts.at(-1);
@@ -136,7 +211,7 @@ export interface ArticleSummary {
 }
 
 /** Published blog posts, used as sources for internal links. */
-export async function listArticles(s: AutopilotSettings): Promise<ArticleSummary[]> {
+export async function listArticles(s: StoreAccess): Promise<ArticleSummary[]> {
   const d = await shopifyGql<{ articles: { nodes: { id: string; handle: string; title: string; body: string; isPublished: boolean; blog: { handle: string } }[] } }>(
     s,
     `{ articles(first: 100, sortKey: PUBLISHED_AT, reverse: true) { nodes { id handle title body isPublished blog { handle } } } }`
@@ -146,7 +221,7 @@ export async function listArticles(s: AutopilotSettings): Promise<ArticleSummary
     .map((a) => ({ id: a.id, title: a.title, body: a.body ?? "", url: `/blogs/${a.blog.handle}/${a.handle}` }));
 }
 
-export async function setSeoField(s: AutopilotSettings, ownerId: string, field: "title_tag" | "description_tag", value: string | null) {
+export async function setSeoField(s: StoreAccess, ownerId: string, field: "title_tag" | "description_tag", value: string | null) {
   if (value === null || value === "") {
     await shopifyGql(s, `mutation($m: [MetafieldIdentifierInput!]!) { metafieldsDelete(metafields: $m) { userErrors { message } } }`, {
       m: [{ ownerId, namespace: "global", key: field }],
@@ -158,13 +233,13 @@ export async function setSeoField(s: AutopilotSettings, ownerId: string, field: 
   });
 }
 
-export async function getBody(s: AutopilotSettings, type: "article" | "page", id: string): Promise<string> {
+export async function getBody(s: StoreAccess, type: "article" | "page", id: string): Promise<string> {
   const field = type === "article" ? "article" : "page";
   const d = await shopifyGql<Record<string, { body: string } | null>>(s, `query($id: ID!) { ${field}(id: $id) { body } }`, { id });
   return d[field]?.body ?? "";
 }
 
-export async function setBody(s: AutopilotSettings, type: "article" | "page", id: string, body: string) {
+export async function setBody(s: StoreAccess, type: "article" | "page", id: string, body: string) {
   if (type === "article") {
     await shopifyGql(s, `mutation($id: ID!, $a: ArticleUpdateInput!) { articleUpdate(id: $id, article: $a) { userErrors { message } } }`, { id, a: { body } });
   } else {
@@ -172,7 +247,7 @@ export async function setBody(s: AutopilotSettings, type: "article" | "page", id
   }
 }
 
-export async function setImageAlt(s: AutopilotSettings, fileId: string, alt: string) {
+export async function setImageAlt(s: StoreAccess, fileId: string, alt: string) {
   await shopifyGql(s, `mutation($f: [FileUpdateInput!]!) { fileUpdate(files: $f) { userErrors { message } } }`, {
     f: [{ id: fileId, alt }],
   });

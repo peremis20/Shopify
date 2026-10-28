@@ -67,10 +67,13 @@ export async function findOpportunities(conn: Connection, rangeKey: RangeKey): P
 
 export const normalizeKeyword = (k: string) => k.trim().toLowerCase().replace(/\s+/g, " ");
 
-export async function getLists(): Promise<KeywordList[]> {
+export async function getLists(accountId: string): Promise<KeywordList[]> {
   await ensureSchema();
-  const lists = await sql`SELECT id, name FROM insights_keyword_lists ORDER BY created_at`;
-  const words = await sql`SELECT list_id, keyword FROM insights_tracked_keywords ORDER BY added_at`;
+  const lists = await sql`SELECT id, name FROM insights_keyword_lists WHERE account_id = ${accountId} ORDER BY created_at`;
+  const words = await sql`
+    SELECT k.list_id, k.keyword FROM insights_tracked_keywords k
+    JOIN insights_keyword_lists l ON l.id = k.list_id
+    WHERE l.account_id = ${accountId} ORDER BY k.added_at`;
   return lists.map((l) => ({
     id: l.id!,
     name: l.name!,
@@ -78,19 +81,25 @@ export async function getLists(): Promise<KeywordList[]> {
   }));
 }
 
-export async function createList(name: string): Promise<KeywordList> {
+export async function createList(accountId: string, name: string): Promise<KeywordList> {
   await ensureSchema();
-  const [row] = await sql`INSERT INTO insights_keyword_lists (name) VALUES (${name}) RETURNING id, name`;
+  const [row] = await sql`INSERT INTO insights_keyword_lists (account_id, name) VALUES (${accountId}, ${name}) RETURNING id, name`;
   return { id: row.id!, name: row.name!, keywords: [] };
 }
 
-export async function deleteList(id: string): Promise<void> {
+export async function deleteList(accountId: string, id: string): Promise<void> {
   await ensureSchema();
-  await sql`DELETE FROM insights_keyword_lists WHERE id = ${id}`;
+  await sql`DELETE FROM insights_keyword_lists WHERE id = ${id} AND account_id = ${accountId}`;
 }
 
-export async function addKeywords(listId: string, keywords: string[]): Promise<void> {
+async function ownsList(accountId: string, listId: string): Promise<boolean> {
+  const [row] = await sql`SELECT 1 AS ok FROM insights_keyword_lists WHERE id = ${listId} AND account_id = ${accountId}`;
+  return Boolean(row);
+}
+
+export async function addKeywords(accountId: string, listId: string, keywords: string[]): Promise<void> {
   await ensureSchema();
+  if (!(await ownsList(accountId, listId))) throw new Error("That list doesn't exist.");
   for (const k of [...new Set(keywords.map(normalizeKeyword).filter(Boolean))].slice(0, 500)) {
     await sql`
       INSERT INTO insights_tracked_keywords (list_id, keyword) VALUES (${listId}, ${k})
@@ -98,8 +107,9 @@ export async function addKeywords(listId: string, keywords: string[]): Promise<v
   }
 }
 
-export async function removeKeyword(listId: string, keyword: string): Promise<void> {
+export async function removeKeyword(accountId: string, listId: string, keyword: string): Promise<void> {
   await ensureSchema();
+  if (!(await ownsList(accountId, listId))) throw new Error("That list doesn't exist.");
   await sql`DELETE FROM insights_tracked_keywords WHERE list_id = ${listId} AND keyword = ${normalizeKeyword(keyword)}`;
 }
 

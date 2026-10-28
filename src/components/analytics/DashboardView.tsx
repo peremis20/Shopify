@@ -9,6 +9,7 @@ import { ClockIcon, CloseIcon, FileIcon, InfoIcon, KeyIcon, MenuIcon, PlusIcon, 
 import { Legend, LineChart } from "./LineChart";
 import { Autopilot } from "./Autopilot";
 import { KeywordResearch } from "./KeywordResearch";
+import { SignInScreen } from "./SignIn";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
 import { SortHeader, useSort } from "./sorting";
@@ -29,18 +30,29 @@ export function DashboardView() {
   const [showSetup, setShowSetup] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notice, setNotice] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
 
   // Show the result of a Google sign in, then tidy the address bar.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const authError = params.get("auth_error");
-    if (params.get("connected")) {
-      setNotice({ tone: "good", text: "Google account connected. You can change properties any time in Settings." });
+    const shop = params.get("shopify");
+    const shopError = params.get("shopify_error");
+    if (params.get("connected") === "ads") {
+      setNotice({ tone: "good", text: "Google Ads connected for keyword data." });
+    } else if (params.get("connected")) {
+      setNotice({ tone: "good", text: "Welcome! Your Google account is connected. You can change properties any time in Settings." });
     } else if (authError) {
-      setNotice({ tone: "bad", text: `Couldn't connect Google: ${authError}` });
+      setNotice({ tone: "bad", text: `Couldn't sign in with Google: ${authError}` });
+      setSignInError(`Couldn't sign in with Google: ${authError}`);
+    } else if (shop) {
+      setNotice({ tone: "good", text: `Shopify store connected: ${shop}. Turn on the autopilot when you're ready.` });
+    } else if (shopError) {
+      setNotice({ tone: "bad", text: `Couldn't connect Shopify: ${shopError}` });
     }
-    if (params.has("connected") || authError) {
-      window.history.replaceState(null, "", window.location.pathname);
+    if (params.has("connected") || authError || shop || shopError) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.hash);
     }
   }, []);
 
@@ -59,6 +71,10 @@ export function DashboardView() {
     try {
       const res = await fetch(`/api/analytics/overview?range=${key}${refresh ? "&refresh=1" : ""}`);
       const body = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        setSignedOut(true);
+        return;
+      }
       if (!res.ok) throw new Error(body.error ?? `Server responded with ${res.status}`);
       setData(body);
     } catch (err) {
@@ -86,6 +102,8 @@ export function DashboardView() {
     setMenuOpen(false);
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  if (signedOut) return <SignInScreen error={signInError} />;
 
   const ga = data?.ga;
   const gsc = data?.gsc;
@@ -351,7 +369,7 @@ export function DashboardView() {
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
           </div>
 
-          <Autopilot connected={connection?.mode === "oauth"} />
+          <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
 
           <KeywordResearch
             connection={connection}
@@ -370,6 +388,7 @@ export function DashboardView() {
       {settingsOpen && (
         <SettingsPanel
           connection={connection}
+          account={data?.account}
           onClose={() => setSettingsOpen(false)}
           onChanged={() => load(range, true)}
         />

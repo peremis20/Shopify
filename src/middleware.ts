@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requirePassword } from "@/lib/analytics/basic-auth";
 
-/** Optional password for the analytics dashboard (see DASHBOARD_PASSWORD). */
+/**
+ * Optional extra password in front of the dashboard (DASHBOARD_PASSWORD), for
+ * private deployments. Shopify and Google callbacks and webhooks stay open
+ * because they are verified on their own.
+ */
 export function middleware(req: NextRequest) {
-  return requirePassword(req) ?? NextResponse.next();
+  const open = ["/api/shopify/", "/api/auth/google/callback"].some((p) => req.nextUrl.pathname.startsWith(p));
+  return open ? NextResponse.next() : requirePassword(req) ?? NextResponse.next();
 }
 
 export const config = {
-  matcher: ["/analytics/:path*", "/api/analytics/:path*", "/api/auth/google/:path*", "/api/keywords/:path*", "/api/seo/:path*", "/api/autopilot/:path*"],
+  matcher: ["/analytics/:path*", "/api/:path*"],
 };

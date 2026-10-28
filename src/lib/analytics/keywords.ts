@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import type { Connection } from "./connection";
 import { ensureSchema, hasDatabase, sql } from "./db";
 import { ADS_SCOPE, GoogleApiError, googleRequest, hasScope, type GoogleAuth } from "./google-auth";
 import type { Competition, KeywordIdea, KeywordStatus } from "./keyword-options";
@@ -8,11 +7,13 @@ import { decrypt, encrypt } from "./secrets";
 
 /**
  * Google Keyword Planner data through the Google Ads API: keyword ideas
- * and search volume. Needs a Google Ads developer token, a Google Ads
- * account ID, and a connection that granted the adwords scope.
+ * and search volume. This runs on the platform owner's Google Ads account
+ * (developer token, Ads account ID and a Google login with the adwords
+ * scope), so customers need nothing of their own.
  */
 
 const SETTING_KEY = "google_ads";
+const PLATFORM_TOKEN_KEY = "platform_ads_token";
 const CACHE_HOURS = 24;
 
 interface AdsSettings {
@@ -97,10 +98,41 @@ async function listAccounts(auth: GoogleAuth, s: AdsSettings): Promise<string[]>
   return (body.resourceNames ?? []).map((r) => r.replace("customers/", ""));
 }
 
-export async function keywordStatus(conn: Connection | null): Promise<KeywordStatus> {
-  if (!conn) return { step: "connect" };
-  const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
-  if (!(await hasScope(auth, ADS_SCOPE))) return { step: "reconnect" };
+/** The platform's Google login for Ads, saved by the admin's "Connect Google Ads" step. */
+async function platformAuth(): Promise<GoogleAuth | null> {
+  if (!hasDatabase()) return null;
+  await ensureSchema();
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${PLATFORM_TOKEN_KEY}`;
+  let enc = row?.value;
+  if (!enc) {
+    // Before accounts existed, the owner's own sign-in carried the Ads permission.
+    const [legacy] = await sql`SELECT refresh_token_enc FROM insights_google_connection WHERE id = 'default'`.catch(() => []);
+    enc = legacy?.refresh_token_enc ?? null;
+  }
+  const token = enc ? decrypt(enc, await tokenSecret()) : null;
+  return token ? { kind: "oauth", refreshToken: token } : null;
+}
+
+export async function savePlatformAdsToken(refreshToken: string): Promise<void> {
+  await ensureSchema();
+  const value = encrypt(refreshToken, await tokenSecret());
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${PLATFORM_TOKEN_KEY}, ${value})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
+
+const UNAVAILABLE = "Keyword data is being set up and will appear here soon.";
+
+/** Setup progress. Customers only ever see "ready" or "unavailable"; the admin sees each step. */
+export async function keywordStatus(admin: boolean): Promise<KeywordStatus> {
+  const status = await adminKeywordStatus();
+  if (admin || status.step === "ready") return status;
+  return { step: "unavailable", error: UNAVAILABLE };
+}
+
+async function adminKeywordStatus(): Promise<KeywordStatus> {
+  const auth = await platformAuth();
+  if (!auth || !(await hasScope(auth, ADS_SCOPE).catch(() => false))) return { step: "reconnect" };
 
   const s = await readSettings();
   if (!s.developerToken) return { step: "token" };
@@ -127,11 +159,11 @@ export async function keywordStatus(conn: Connection | null): Promise<KeywordSta
 }
 
 /** Whether keyword research is fully set up, without calling Google Ads. */
-export async function keywordsReady(conn: Connection | null): Promise<boolean> {
-  if (!conn) return false;
+export async function keywordsReady(): Promise<boolean> {
   const s = await readSettings();
   if (!s.developerToken || !s.customerId) return false;
-  return hasScope({ kind: "oauth", refreshToken: conn.refreshToken }, ADS_SCOPE).catch(() => false);
+  const auth = await platformAuth();
+  return auth ? hasScope(auth, ADS_SCOPE).catch(() => false) : false;
 }
 
 interface Metrics {
@@ -183,10 +215,10 @@ async function cached<T>(key: string, load: () => Promise<T>): Promise<T> {
   return data;
 }
 
-async function adsCall<T>(conn: Connection, method: string, body: Record<string, unknown>): Promise<T> {
+async function adsCall<T>(method: string, body: Record<string, unknown>): Promise<T> {
   const s = await readSettings();
-  if (!s.developerToken || !s.customerId) throw new Error("Finish the Keyword Planner setup first.");
-  const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
+  const auth = await platformAuth();
+  if (!s.developerToken || !s.customerId || !auth) throw new Error(UNAVAILABLE);
   await ensureSchema();
   return cached(`${s.customerId}|${method}|${JSON.stringify(body)}`, () =>
     googleRequest<T>(auth, `${apiBase()}/customers/${s.customerId}:${method}`, body, adsHeaders(s))
@@ -200,7 +232,7 @@ const targeting = (q: KeywordQuery) => ({
 });
 
 /** Keyword ideas from seed keywords, a website address, or both. */
-export async function keywordIdeas(conn: Connection, q: KeywordQuery): Promise<KeywordIdea[]> {
+export async function keywordIdeas(q: KeywordQuery): Promise<KeywordIdea[]> {
   const keywords = q.keywords.slice(0, 20);
   const url = q.url ? (/^https?:\/\//.test(q.url) ? q.url : `https://${q.url}`) : undefined;
   const seed = url && keywords.length
@@ -210,7 +242,6 @@ export async function keywordIdeas(conn: Connection, q: KeywordQuery): Promise<K
       : { keywordSeed: { keywords } };
 
   const body = await adsCall<{ results?: { text: string; keywordIdeaMetrics?: Metrics }[] }>(
-    conn,
     "generateKeywordIdeas",
     { ...targeting(q), includeAdultKeywords: false, pageSize: 200, ...seed }
   );
@@ -220,10 +251,9 @@ export async function keywordIdeas(conn: Connection, q: KeywordQuery): Promise<K
 }
 
 /** Search volume and competition for an exact list of keywords. */
-export async function keywordVolumes(conn: Connection, q: KeywordQuery): Promise<KeywordIdea[]> {
+export async function keywordVolumes(q: KeywordQuery): Promise<KeywordIdea[]> {
   const keywords = [...new Set(q.keywords.map((k) => k.trim().toLowerCase()).filter(Boolean))].slice(0, 1000);
   const body = await adsCall<{ results?: { text: string; keywordMetrics?: Metrics }[] }>(
-    conn,
     "generateKeywordHistoricalMetrics",
     { ...targeting(q), keywords }
   );

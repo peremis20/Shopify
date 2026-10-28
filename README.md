@@ -194,6 +194,24 @@ Claude API key; both are entered in the dashboard and stored encrypted, or
 set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
 `ANTHROPIC_API_KEY`.
 
+### Running it as a SaaS
+
+Customers only click **Sign in with Google** (creates their account and
+connects Analytics and Search Console) and **Connect Shopify** (OAuth
+install of the platform's public Shopify app, expiring offline tokens that
+refresh automatically). All data is scoped to the signed-in account.
+
+The platform owner (emails in `ADMIN_EMAILS`) sets up, once:
+- the Google OAuth client (Settings, Platform owner);
+- the Claude API key and the public Shopify app's Client ID and secret
+  (SEO Autopilot, Platform keys); app redirect URL
+  `/api/shopify/callback`, webhooks to `/api/shopify/webhooks`;
+- Google Ads for keyword data (SEO Tools, Keyword ideas, Connect Google Ads,
+  then the developer token).
+
+Sessions are signed with `SESSION_SECRET`. The scheduled trigger runs
+hourly and processes up to three customers whose daily run is due.
+
 ### Adding more apps later
 
 The data layer lives in `src/lib/analytics/`:

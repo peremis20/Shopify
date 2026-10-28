@@ -17,7 +17,6 @@ import { Opportunities } from "./Opportunities";
 import { RankTracker } from "./RankTracker";
 import { api, TrackButton } from "./seo-ui";
 import { TopicsView } from "./TopicsView";
-import { ConnectButton } from "./SettingsPanel";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, Skeleton } from "./ui";
@@ -199,14 +198,23 @@ function KeywordSetup({ status, onSaved }: { status: KeywordStatus; onSaved: () 
     }
   }
 
+  if (status.step === "unavailable") {
+    return <p className="text-sm text-dash-muted">{status.error ?? "Keyword data will appear here soon."}</p>;
+  }
+
   if (status.step === "connect" || status.step === "reconnect") {
     return (
       <div className="space-y-3 text-sm">
         <p>
-          Keyword research reads Google&apos;s Keyword Planner, which needs one more permission on your Google account.
-          Reconnect once to allow it. Your Analytics and Search Console choices stay the same.
+          <b>Platform owner:</b> keyword data for all customers runs on your Google Ads account. Connect the Google
+          account that owns it once. Customers never see this step.
         </p>
-        <ConnectButton label="Reconnect Google" />
+        <a
+          href="/api/auth/google/start?purpose=ads"
+          className="inline-flex rounded-xl bg-dash-green px-4 py-2.5 font-semibold text-white hover:bg-dash-deep"
+        >
+          Connect Google Ads
+        </a>
       </div>
     );
   }

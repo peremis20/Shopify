@@ -1,9 +1,9 @@
-import { requirePassword } from "@/lib/analytics/basic-auth";
 import * as api from "@/lib/analytics/handlers";
 
 /**
  * The Insights dashboard as a Neon Function. Serves the page and the same
- * API the Next.js app has. The page's script and styles are built by
+ * API the Next.js app has. Customers sign in with Google; there is no
+ * shared password. The page's script and styles are built by
  * `npm run build:neon` and loaded from ASSET_BASE_URL (a CDN copy of
  * neon/insights/public pinned to a commit).
  */
@@ -11,26 +11,32 @@ import * as api from "@/lib/analytics/handlers";
 type Handler = (req: Request) => Promise<Response>;
 
 const routes: Record<string, Handler> = {
-  "GET /api/analytics/overview": api.overview,
-  "GET /api/analytics/properties": () => api.properties(),
-  "POST /api/analytics/settings": api.saveSettings,
-  "POST /api/analytics/google-client": api.saveGoogleClient,
+  "GET /api/session": api.session,
   "GET /api/auth/google/start": api.authStart,
   "GET /api/auth/google/callback": api.authCallback,
-  "POST /api/auth/google/disconnect": () => api.disconnect(),
-  "GET /api/keywords/status": () => api.keywordSetup(),
+  "POST /api/auth/google/disconnect": api.disconnect,
+  "POST /api/auth/logout": api.logout,
+  "GET /api/analytics/overview": api.overview,
+  "GET /api/analytics/properties": api.properties,
+  "POST /api/analytics/settings": api.saveSettings,
+  "POST /api/analytics/google-client": api.saveGoogleClient,
+  "GET /api/keywords/status": api.keywordSetup,
   "POST /api/keywords/settings": api.saveKeywordSettings,
   "POST /api/keywords/ideas": api.keywordIdeasHandler,
   "POST /api/keywords/volumes": api.keywordVolumesHandler,
   "GET /api/seo/opportunities": api.opportunities,
-  "GET /api/seo/lists": () => api.keywordLists(),
+  "GET /api/seo/lists": api.keywordLists,
   "POST /api/seo/lists/update": api.updateKeywordLists,
   "GET /api/seo/rankings": api.rankings,
-  "GET /api/autopilot": () => api.autopilotStatus(),
+  "GET /api/autopilot": api.autopilotStatus,
   "POST /api/autopilot/settings": api.saveAutopilot,
-  "POST /api/autopilot/test": () => api.testAutopilot(),
-  "POST /api/autopilot/run": () => api.runAutopilotNow(),
+  "POST /api/autopilot/platform": api.savePlatform,
+  "POST /api/autopilot/run": api.runAutopilotNow,
   "POST /api/autopilot/revert": api.revertAutopilot,
+  "GET /api/shopify/install": api.shopifyInstall,
+  "GET /api/shopify/callback": api.shopifyCallback,
+  "POST /api/shopify/disconnect": api.shopifyDisconnect,
+  "POST /api/shopify/webhooks": api.shopifyWebhook,
 };
 
 function page(): Response {
@@ -67,8 +73,6 @@ export default {
       return api.autopilotTick();
     }
 
-    const denied = requirePassword(req);
-    if (denied) return denied;
     const handler = routes[`${req.method} ${path}`];
     if (handler) {
       try {

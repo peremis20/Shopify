@@ -106,13 +106,14 @@ async function load<T>(
 }
 
 export async function getOverview(
+  accountId: string,
   rangeKey: RangeKey,
   conn: Connection | null,
   redirectUri: string,
   refresh = false
 ): Promise<OverviewResponse> {
   const source = await resolveSource(conn, redirectUri);
-  const cacheKey = [rangeKey, source.info.mode, conn?.email, source.gaId, source.site].join("|");
+  const cacheKey = [accountId, rangeKey, source.info.mode, source.gaId, source.site].join("|");
   if (!refresh) {
     const hit = await readCache(cacheKey).catch(() => null);
     if (hit) return hit;
@@ -135,7 +136,7 @@ export async function getOverview(
     integrations: buildIntegrations({
       ga: ga.status,
       gsc: gsc.status,
-      keywords: await keywordsReady(conn).catch(() => false),
+      keywords: await keywordsReady().catch(() => false),
     }),
   };
   // Sample data is cheap to rebuild, so only live results are stored.

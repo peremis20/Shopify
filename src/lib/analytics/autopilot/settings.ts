@@ -3,81 +3,117 @@ import { tokenSecret } from "../oauth-client";
 import { decrypt, encrypt } from "../secrets";
 
 /**
- * Autopilot settings and credentials, stored encrypted in Neon. Environment
- * variables (SHOPIFY_STORE_DOMAIN, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET,
- * ANTHROPIC_API_KEY) take precedence when set.
+ * Two layers of settings:
+ * - Platform (the SaaS owner, set once): Claude API key and the Shopify app's
+ *   Client ID and secret. Environment variables win when set.
+ * - Account (each customer): on/off, pages per week, content sections, and
+ *   their connected Shopify store.
  */
 
-export interface AutopilotSettings {
-  enabled: boolean;
-  /** Pages improved per rolling 7 days. */
-  maxPagesPerWeek: number;
-  /** Whether new content sections may be added to blog posts and pages. */
-  allowContent: boolean;
-  shopDomain?: string;
+export interface PlatformSettings {
+  anthropicKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
-  anthropicKey?: string;
+}
+
+export interface AccountAutopilot {
+  enabled: boolean;
+  maxPagesPerWeek: number;
+  allowContent: boolean;
+  shopDomain?: string;
 }
 
 /** What the page may see: no secrets. */
-export interface AutopilotSettingsView {
-  enabled: boolean;
-  maxPagesPerWeek: number;
-  allowContent: boolean;
-  shopDomain?: string;
-  hasShopify: boolean;
-  hasAnthropic: boolean;
+export interface AutopilotSettingsView extends AccountAutopilot {
+  shopConnected: boolean;
+  platformReady: boolean;
+  /** Only filled in for admins. */
+  platform?: { hasAnthropic: boolean; hasShopifyApp: boolean };
 }
 
-const KEY = "autopilot";
-const DEFAULTS: AutopilotSettings = { enabled: false, maxPagesPerWeek: 4, allowContent: true };
+const PLATFORM_KEY = "platform_autopilot";
 
-export const normalizeShop = (d?: string) =>
-  d?.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\/.*$/, "") || undefined;
-
-export async function readAutopilotSettings(): Promise<AutopilotSettings> {
-  let stored: Partial<AutopilotSettings> = {};
+export async function readPlatformSettings(): Promise<PlatformSettings> {
+  let stored: PlatformSettings = {};
   if (hasDatabase()) {
     await ensureSchema();
-    const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY}`;
+    const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${PLATFORM_KEY}`;
     const json = row?.value ? decrypt(row.value, await tokenSecret()) : null;
     if (json) stored = JSON.parse(json);
   }
-  const s = { ...DEFAULTS, ...stored };
   return {
-    ...s,
-    shopDomain: normalizeShop(process.env.SHOPIFY_STORE_DOMAIN) ?? s.shopDomain,
-    shopifyClientId: process.env.SHOPIFY_CLIENT_ID ?? s.shopifyClientId,
-    shopifyClientSecret: process.env.SHOPIFY_CLIENT_SECRET ?? s.shopifyClientSecret,
-    anthropicKey: process.env.ANTHROPIC_API_KEY ?? s.anthropicKey,
+    anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
+    shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
+    shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
   };
 }
 
-export async function saveAutopilotSettings(patch: Partial<AutopilotSettings>): Promise<void> {
-  const current = await readAutopilotSettings();
-  const next: AutopilotSettings = { ...current };
-  for (const [k, v] of Object.entries(patch) as [keyof AutopilotSettings, unknown][]) {
-    if (v === undefined) continue;
-    // Blank secret fields mean "keep what's saved".
-    if (typeof v === "string" && !v.trim() && k !== "shopDomain") continue;
-    (next as unknown as Record<string, unknown>)[k] = typeof v === "string" ? v.trim() : v;
+export async function savePlatformSettings(patch: PlatformSettings): Promise<void> {
+  const next = { ...(await readPlatformSettings()) };
+  for (const [k, v] of Object.entries(patch) as [keyof PlatformSettings, string | undefined][]) {
+    if (v?.trim()) next[k] = v.trim(); // blank means keep what's saved
   }
-  next.shopDomain = normalizeShop(next.shopDomain);
-  next.maxPagesPerWeek = Math.min(14, Math.max(1, Math.round(next.maxPagesPerWeek || DEFAULTS.maxPagesPerWeek)));
   const value = encrypt(JSON.stringify(next), await tokenSecret());
   await sql`
-    INSERT INTO insights_settings (key, value) VALUES (${KEY}, ${value})
+    INSERT INTO insights_settings (key, value) VALUES (${PLATFORM_KEY}, ${value})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-export function viewOf(s: AutopilotSettings): AutopilotSettingsView {
+export const platformReady = (p: PlatformSettings) => Boolean(p.anthropicKey && p.shopifyClientId && p.shopifyClientSecret);
+
+export async function readAccountAutopilot(accountId: string): Promise<AccountAutopilot & { shopTokenEnc: string | null }> {
+  await ensureSchema();
+  const [row] = await sql`SELECT * FROM insights_account_autopilot WHERE account_id = ${accountId}`;
+  // Postgres sends booleans as text: "t" or "f".
+  const yes = (v: string | null | undefined) => v === "t" || v === "true";
   return {
-    enabled: s.enabled,
-    maxPagesPerWeek: s.maxPagesPerWeek,
-    allowContent: s.allowContent,
-    shopDomain: s.shopDomain,
-    hasShopify: Boolean(s.shopDomain && s.shopifyClientId && s.shopifyClientSecret),
-    hasAnthropic: Boolean(s.anthropicKey),
+    enabled: yes(row?.enabled),
+    maxPagesPerWeek: Number(row?.max_pages_per_week ?? 4),
+    allowContent: row ? yes(row.allow_content) : true,
+    shopDomain: row?.shop_domain ?? undefined,
+    shopTokenEnc: row?.shop_token_enc ?? null,
   };
+}
+
+export async function saveAccountAutopilot(
+  accountId: string,
+  patch: Partial<AccountAutopilot> & { shopTokenEnc?: string | null }
+): Promise<void> {
+  const cur = await readAccountAutopilot(accountId);
+  const next = {
+    enabled: patch.enabled ?? cur.enabled,
+    max: Math.min(14, Math.max(1, Math.round(patch.maxPagesPerWeek ?? cur.maxPagesPerWeek))),
+    allowContent: patch.allowContent ?? cur.allowContent,
+    shop: patch.shopDomain !== undefined ? patch.shopDomain || null : cur.shopDomain ?? null,
+    token: patch.shopTokenEnc !== undefined ? patch.shopTokenEnc : cur.shopTokenEnc,
+  };
+  await sql`
+    INSERT INTO insights_account_autopilot (account_id, enabled, max_pages_per_week, allow_content, shop_domain, shop_token_enc)
+    VALUES (${accountId}, ${next.enabled}, ${next.max}, ${next.allowContent}, ${next.shop}, ${next.token})
+    ON CONFLICT (account_id) DO UPDATE SET enabled = EXCLUDED.enabled, max_pages_per_week = EXCLUDED.max_pages_per_week,
+      allow_content = EXCLUDED.allow_content, shop_domain = EXCLUDED.shop_domain, shop_token_enc = EXCLUDED.shop_token_enc`;
+}
+
+export async function autopilotView(accountId: string, admin: boolean): Promise<AutopilotSettingsView> {
+  const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
+  return {
+    enabled: acct.enabled,
+    maxPagesPerWeek: acct.maxPagesPerWeek,
+    allowContent: acct.allowContent,
+    shopDomain: acct.shopDomain,
+    shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
+    platformReady: platformReady(platform),
+    platform: admin
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      : undefined,
+  };
+}
+
+export async function encryptShopTokens(tokens: object): Promise<string> {
+  return encrypt(JSON.stringify(tokens), await tokenSecret());
+}
+
+export async function decryptShopTokens<T>(enc: string): Promise<T | null> {
+  const json = decrypt(enc, await tokenSecret());
+  return json ? (JSON.parse(json) as T) : null;
 }

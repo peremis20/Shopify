@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import type { AutopilotChange, AutopilotRun, ChangeField } from "@/lib/analytics/autopilot/types";
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import { BoltIcon } from "./Icons";
+import { PlatformForm } from "./PlatformSettings";
 import { api, pathOf } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
 import { Card, CardHeader, Skeleton } from "./ui";
@@ -43,12 +44,12 @@ const when = (iso: string) =>
 
 const textOf = (html: string | null) => (html ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-export function Autopilot({ connected }: { connected: boolean }) {
+export function Autopilot({ connected, admin }: { connected: boolean; admin: boolean }) {
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
+  const [platformOpen, setPlatformOpen] = useState(false);
 
   const load = useCallback(() => {
     api<State>("/api/autopilot").then(setState).catch((e) => setError(e.message));
@@ -76,7 +77,7 @@ export function Autopilot({ connected }: { connected: boolean }) {
       setState((s) => (s ? { ...s, settings: d.settings } : s));
     });
 
-  const ready = state?.settings.hasShopify && state?.settings.hasAnthropic;
+  const ready = state?.settings.platformReady && state?.settings.shopConnected;
 
   return (
     <Card id="autopilot" className="mt-5">
@@ -98,16 +99,20 @@ export function Autopilot({ connected }: { connected: boolean }) {
         <p className="text-sm text-dash-down">{error}</p>
       ) : !state ? (
         <Skeleton className="h-32" />
-      ) : !ready || editing ? (
-        <SetupForm
-          settings={state.settings}
-          busy={busy === "save"}
-          onSave={async (body) => {
-            await save(body);
-            setEditing(false);
-          }}
-          onCancel={ready ? () => setEditing(false) : undefined}
-        />
+      ) : !state.settings.platformReady || (admin && platformOpen) ? (
+        admin ? (
+          <PlatformForm
+            settings={state.settings}
+            onSaved={(settings) => {
+              setState((s) => (s ? { ...s, settings } : s));
+              if (settings.platformReady) setPlatformOpen(false);
+            }}
+          />
+        ) : (
+          <p className="text-sm text-dash-muted">The SEO Autopilot is almost ready. It will appear here soon.</p>
+        )
+      ) : !state.settings.shopConnected ? (
+        <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} />
       ) : (
         <div className="space-y-5 text-sm">
           <p className="max-w-3xl text-dash-muted">
@@ -164,30 +169,31 @@ export function Autopilot({ connected }: { connected: boolean }) {
               >
                 {busy === "run" ? "Working, this takes a minute or two…" : "Run now"}
               </button>
-              <button
-                onClick={() =>
-                  act("test", async () => {
-                    const r = await api<{ shopify?: string; shopifyError?: string; claudeError?: string }>("/api/autopilot/test", {});
-                    setNotice(
-                      [
-                        r.shopify ? `Shopify: connected to ${r.shopify}.` : `Shopify: ${r.shopifyError}`,
-                        r.claudeError ? `Claude: ${r.claudeError}` : "Claude: key works.",
-                      ].join(" ")
-                    );
-                  })
-                }
-                disabled={busy !== null}
-                className="rounded-xl border border-dash-line bg-white px-4 py-2.5 font-semibold text-dash-ink hover:border-dash-green/40 disabled:opacity-60"
-              >
-                {busy === "test" ? "Checking…" : "Test connection"}
-              </button>
-              <button onClick={() => setEditing(true)} className="px-2 font-semibold text-dash-green hover:underline">
-                Edit keys
-              </button>
+              {admin && (
+                <button onClick={() => setPlatformOpen(true)} className="px-2 font-semibold text-dash-green hover:underline">
+                  Platform keys
+                </button>
+              )}
             </div>
           </div>
 
           {notice && <p className="rounded-lg bg-[#FBF1E1] p-3 text-dash-ink" role="status">{notice}</p>}
+
+          <p className="text-dash-muted">
+            Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
+            {" · "}
+            <button
+              onClick={() =>
+                act("disconnect", async () => {
+                  const d = await api<{ settings: AutopilotSettingsView }>("/api/shopify/disconnect", {});
+                  setState((s) => (s ? { ...s, settings: d.settings } : s));
+                })
+              }
+              className="font-semibold text-dash-down hover:underline"
+            >
+              Disconnect store
+            </button>
+          </p>
 
           {state.runs.length > 0 && (
             <div>
@@ -313,80 +319,50 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
   );
 }
 
-function SetupForm({ settings, busy, onSave, onCancel }: {
-  settings: AutopilotSettingsView;
-  busy: boolean;
-  onSave: (body: Record<string, string>) => Promise<void>;
-  onCancel?: () => void;
-}) {
-  const [shop, setShop] = useState(settings.shopDomain ?? "");
-  const [clientId, setClientId] = useState("");
-  const [clientSecret, setClientSecret] = useState("");
-  const [claudeKey, setClaudeKey] = useState("");
-
-  const field = (id: string, label: string, value: string, set: (v: string) => void, placeholder: string, secret = false) => (
-    <label className="block">
-      <span className="mb-1 block text-xs text-dash-muted">{label}</span>
-      <input
-        id={id}
-        type={secret ? "password" : "text"}
-        value={value}
-        onChange={(e) => set(e.target.value)}
-        placeholder={placeholder}
-        autoComplete="off"
-        className="w-full rounded-lg border border-dash-line bg-white px-3 py-2"
-      />
-    </label>
-  );
-
+function ConnectShopify({ adminLink }: { adminLink?: () => void }) {
+  const [shop, setShop] = useState("");
   return (
     <div className="grid gap-5 text-sm lg:grid-cols-2">
-      <div className="space-y-3">
-        <p className="font-semibold">Connect your store (about 5 minutes, once)</p>
-        <ol className="list-decimal space-y-1.5 pl-5 marker:text-dash-muted">
-          <li>
-            Open <b>dev.shopify.com</b>, sign in with your Shopify login, and create an app called &ldquo;Insights
-            Autopilot&rdquo;.
-          </li>
-          <li>
-            Create a version with these access scopes: <code className="rounded bg-white px-1 text-xs">write_content</code>,{" "}
-            <code className="rounded bg-white px-1 text-xs">write_products</code>,{" "}
-            <code className="rounded bg-white px-1 text-xs">write_online_store_pages</code> and{" "}
-            <code className="rounded bg-white px-1 text-xs">write_files</code>. Release it.
-          </li>
-          <li>Install the app on your Peremis store.</li>
-          <li>In the app&apos;s settings, copy the <b>Client ID</b> and <b>Client secret</b> into the form.</li>
-          <li>
-            For Claude, open <b>console.anthropic.com</b>, go to <b>API keys</b>, create a key and paste it here.
-          </li>
-        </ol>
+      <div className="space-y-2">
+        <p className="font-semibold">Connect your Shopify store</p>
+        <p className="text-dash-muted">
+          Type your store name and click Connect. Shopify will ask you to approve access to edit your blog posts, pages,
+          SEO titles and image descriptions. Prices, product names and checkout are never changed.
+        </p>
+        {adminLink && (
+          <button onClick={adminLink} className="font-semibold text-dash-green hover:underline">
+            Platform keys
+          </button>
+        )}
       </div>
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          onSave({ shopDomain: shop, shopifyClientId: clientId, shopifyClientSecret: clientSecret, anthropicKey: claudeKey });
+          window.location.href = `/api/shopify/install?shop=${encodeURIComponent(shop)}`;
         }}
         className="space-y-3 rounded-xl border border-dash-line bg-white p-4"
       >
-        {field("ap-shop", "Store address", shop, setShop, "peremis.myshopify.com")}
-        {field("ap-client-id", "Shopify Client ID", clientId, setClientId, settings.hasShopify ? "Saved. Leave blank to keep" : "From the app's settings")}
-        {field("ap-client-secret", "Shopify Client secret", clientSecret, setClientSecret, settings.hasShopify ? "Saved. Leave blank to keep" : "From the app's settings", true)}
-        {field("ap-claude", "Claude API key", claudeKey, setClaudeKey, settings.hasAnthropic ? "Saved. Leave blank to keep" : "sk-ant-…", true)}
-        <p className="text-xs text-dash-muted">Stored encrypted in your Neon database. Only this dashboard can read them.</p>
-        <div className="flex gap-3">
-          <button
-            type="submit"
-            disabled={busy || !shop}
-            className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
-          >
-            {busy ? "Saving…" : "Save"}
-          </button>
-          {onCancel && (
-            <button type="button" onClick={onCancel} className="px-2 font-semibold text-dash-muted hover:underline">
-              Cancel
-            </button>
-          )}
-        </div>
+        <label className="block">
+          <span className="mb-1 block text-xs text-dash-muted">Store name</span>
+          <div className="flex items-center rounded-lg border border-dash-line focus-within:ring-2 focus-within:ring-dash-green/30">
+            <input
+              id="ap-shop"
+              value={shop}
+              onChange={(e) => setShop(e.target.value)}
+              placeholder="mystore"
+              autoComplete="off"
+              className="w-full min-w-0 rounded-l-lg px-3 py-2 outline-none"
+            />
+            <span className="whitespace-nowrap pr-3 text-dash-muted">.myshopify.com</span>
+          </div>
+        </label>
+        <button
+          type="submit"
+          disabled={!shop.trim()}
+          className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
+        >
+          Connect Shopify
+        </button>
       </form>
     </div>
   );

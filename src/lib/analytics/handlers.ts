@@ -1,25 +1,50 @@
 import crypto from "crypto";
-import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
-import { isRangeKey } from "./dates";
-import { exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
-import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
-import { explainAdsError, keywordIdeas, keywordStatus, keywordVolumes, saveAdsSettings, type KeywordQuery } from "./keywords";
-import { getOAuthClient, saveOAuthClient } from "./oauth-client";
-import { autopilotHistory, revertChange, runAutopilot } from "./autopilot/engine";
-import { readAutopilotSettings, saveAutopilotSettings, viewOf } from "./autopilot/settings";
-import { shopName } from "./autopilot/shopify";
+import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { accountsDueForRun, autopilotHistory, revertChange, runAutopilot } from "./autopilot/engine";
+import {
+  autopilotView,
+  readPlatformSettings,
+  saveAccountAutopilot,
+  savePlatformSettings,
+} from "./autopilot/settings";
+import {
+  authorizeUrl,
+  completeInstall,
+  normalizeShopDomain,
+  shopName,
+  SHOPIFY_STATE_COOKIE,
+  verifyCallbackHmac,
+  verifyWebhookHmac,
+} from "./autopilot/shopify";
 import { checkAnthropicKey } from "./autopilot/writer";
-import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
+import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
+import { ensureSchema, sql } from "./db";
+import { isRangeKey } from "./dates";
+import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
+import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
+import {
+  explainAdsError,
+  keywordIdeas,
+  keywordStatus,
+  keywordVolumes,
+  saveAdsSettings,
+  savePlatformAdsToken,
+  type KeywordQuery,
+} from "./keywords";
+import { getOAuthClient, saveOAuthClient } from "./oauth-client";
 import { getOverview } from "./overview";
 import { listProperties } from "./properties";
+import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
 
 /**
- * Every API route of the dashboard as a plain web handler (Request in,
- * Response out), shared by the Next.js routes and the Neon Function.
+ * Every API route as a plain web handler (Request in, Response out), shared
+ * by the Next.js routes and the Neon Function. Customers are identified by
+ * the signed session cookie set when they sign in with Google; all data is
+ * scoped to their account.
  */
 
-const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
+const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -33,113 +58,77 @@ export function appOrigin(req: Request): string {
 }
 
 export const redirectUri = (req: Request) => `${appOrigin(req)}/api/auth/google/callback`;
+const shopifyRedirectUri = (req: Request) => `${appOrigin(req)}/api/shopify/callback`;
 
-function readCookie(req: Request, name: string): string | undefined {
-  const match = req.headers.get("cookie")?.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : undefined;
-}
-
-function stateCookie(req: Request, value: string, maxAge: number): string {
+function tempCookie(req: Request, name: string, value: string, maxAge: number): string {
   const secure = appOrigin(req).startsWith("https:") ? "; Secure" : "";
-  return `${STATE_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }
 
-function redirect(location: string, cookie?: string): Response {
+function redirect(location: string, ...cookies: string[]): Response {
   const headers = new Headers({ Location: location });
-  if (cookie) headers.append("Set-Cookie", cookie);
+  cookies.forEach((c) => headers.append("Set-Cookie", c));
   return new Response(null, { status: 302, headers });
 }
 
-export async function overview(req: Request): Promise<Response> {
-  const params = new URL(req.url).searchParams;
-  const range = params.get("range");
+const signedOut = () => json({ error: "Please sign in.", signedIn: false }, 401);
+
+/** Runs a handler only for a signed-in account. */
+async function withAccount(req: Request, run: (account: Account) => Promise<Response>): Promise<Response> {
+  const account = await currentAccount(req);
+  if (!account) return signedOut();
   try {
-    const data = await getOverview(
-      isRangeKey(range) ? range : "28d",
-      await getConnection(),
-      redirectUri(req),
-      params.get("refresh") === "1"
-    );
-    return json(data);
+    return await run(account);
   } catch (err) {
-    return json({ error: `Couldn't reach the database: ${message(err)}` }, 500);
+    return json({ error: message(err) }, 500);
   }
 }
 
-export async function properties(): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return json({ error: "Connect your Google account first." }, 401);
-  return json(await listProperties({ kind: "oauth", refreshToken: conn.refreshToken }));
+const withAdmin = (req: Request, run: (account: Account) => Promise<Response>) =>
+  withAccount(req, (a) => (a.admin ? run(a) : Promise.resolve(json({ error: "Only the platform owner can do this." }, 403))));
+
+// ---------- session and Google sign-in ----------
+
+export async function session(req: Request): Promise<Response> {
+  const account = await currentAccount(req).catch(() => null);
+  return json({
+    signedIn: Boolean(account),
+    email: account?.email,
+    admin: account?.admin ?? false,
+    signInAvailable: await signInAvailable().catch(() => false),
+  });
 }
 
-/** Saves which GA4 property and Search Console site the dashboard reads. */
-export async function saveSettings(req: Request): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return json({ error: "Connect your Google account first." }, 401);
-
-  const body = await req.json().catch(() => ({}));
-  const gaPropertyId = typeof body.gaPropertyId === "string" ? body.gaPropertyId.trim() : "";
-  const gscSiteUrl = typeof body.gscSiteUrl === "string" ? body.gscSiteUrl.trim() : "";
-  if (gaPropertyId && !/^\d+$/.test(gaPropertyId)) {
-    return json({ error: "That Google Analytics property ID doesn't look right." }, 400);
-  }
-
-  await saveConnection({ ...conn, gaPropertyId: gaPropertyId || undefined, gscSiteUrl: gscSiteUrl || undefined });
-  return json({ ok: true });
-}
-
-/** Saves the Google Client ID and secret entered in Settings. */
-export async function saveGoogleClient(req: Request): Promise<Response> {
-  const body = await req.json().catch(() => ({}));
-  // Pull the ID out of whatever was pasted, since copying from Google Cloud
-  // can bring the field's label or spaces along with it.
-  const id = typeof body.clientId === "string"
-    ? body.clientId.match(/[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/)?.[0] ?? ""
-    : "";
-  const secret = typeof body.clientSecret === "string"
-    ? body.clientSecret.replace(/^[\s\S]*?(GOCSPX-)/, "$1").replace(/\s+/g, "")
-    : "";
-  if (!id) {
-    return json({ error: "That doesn't look like a Client ID. It ends with .apps.googleusercontent.com" }, 400);
-  }
-  if (secret.length < 10) {
-    return json({ error: "Paste the full Client secret from Google Cloud." }, 400);
-  }
-  try {
-    await saveOAuthClient({ id, secret });
-    return json({ ok: true });
-  } catch (err) {
-    return json({ error: message(err) }, 400);
-  }
-}
-
-/** Sends the user to Google's consent screen. */
+/** Sends the visitor to Google. purpose=ads is the owner's one-time Google Ads connection. */
 export async function authStart(req: Request): Promise<Response> {
   const client = await getOAuthClient();
   if (!client || !(await signInAvailable())) {
-    return redirect(`${appOrigin(req)}/analytics?auth_error=Google+sign+in+is+not+set+up+yet`);
+    return redirect(`${appOrigin(req)}/analytics?auth_error=Sign+in+is+not+set+up+yet`);
   }
-
-  const state = crypto.randomBytes(16).toString("hex");
+  const purpose = new URL(req.url).searchParams.get("purpose") === "ads" ? "ads" : "signin";
+  if (purpose === "ads" && !(await currentAccount(req))?.admin) {
+    return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
+  }
+  const state = `${purpose}.${crypto.randomBytes(16).toString("hex")}`;
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: client.id,
     redirect_uri: redirectUri(req),
     response_type: "code",
-    scope: OAUTH_SCOPES.join(" "),
+    scope: (purpose === "ads" ? ADS_OAUTH_SCOPES : OAUTH_SCOPES).join(" "),
     access_type: "offline",
     prompt: "consent",
-    include_granted_scopes: "true",
     state,
   }).toString();
-  return redirect(url.toString(), stateCookie(req, state, 600));
+  return redirect(url.toString(), tempCookie(req, STATE_COOKIE, state, 600));
 }
 
-/** Google redirects here after consent. Saves the connection and picks a starting property. */
+/** Google redirects here. Signs the customer in (creating the account) and saves their connection. */
 export async function authCallback(req: Request): Promise<Response> {
   const params = new URL(req.url).searchParams;
-  const back = (p: Record<string, string>) =>
-    redirect(`${appOrigin(req)}/analytics?${new URLSearchParams(p)}`, stateCookie(req, "", 0));
+  const clearState = tempCookie(req, STATE_COOKIE, "", 0);
+  const back = (p: Record<string, string>, ...cookies: string[]) =>
+    redirect(`${appOrigin(req)}/analytics?${new URLSearchParams(p)}`, clearState, ...cookies);
 
   const error = params.get("error");
   if (error) return back({ auth_error: error === "access_denied" ? "Google access was not granted" : error });
@@ -152,59 +141,124 @@ export async function authCallback(req: Request): Promise<Response> {
 
   try {
     const { refreshToken, email } = await exchangeAuthCode(code, redirectUri(req));
-    if (!refreshToken) throw new Error("Google did not return offline access. Please try again.");
+    if (!refreshToken || !email) throw new Error("Google didn't return the needed access. Please try again.");
 
-    // Keep the properties already chosen when the same account reconnects;
-    // otherwise start with the first of each kind so data shows up right away.
-    const previous = await getConnection().catch(() => null);
-    const same = previous && previous.email === email;
-    const options = same && previous.gaPropertyId && previous.gscSiteUrl
+    if (state.startsWith("ads.")) {
+      if (!(await currentAccount(req))?.admin) throw new Error("Only the platform owner can connect Google Ads.");
+      await savePlatformAdsToken(refreshToken);
+      return back({ connected: "ads" });
+    }
+
+    const account = await upsertAccount(email);
+    // Keep the properties already chosen when a customer signs in again.
+    const previous = await getConnection(account.id).catch(() => null);
+    const options = previous?.gaPropertyId && previous.gscSiteUrl
       ? null
       : await listProperties({ kind: "oauth", refreshToken });
-    await saveConnection({
+    await saveConnection(account.id, {
       refreshToken,
       email,
-      gaPropertyId: (same && previous.gaPropertyId) || options?.ga.items[0]?.id,
-      gscSiteUrl: (same && previous.gscSiteUrl) || options?.gsc.items[0],
+      gaPropertyId: previous?.gaPropertyId || options?.ga.items[0]?.id,
+      gscSiteUrl: previous?.gscSiteUrl || options?.gsc.items[0],
     });
-    return back({ connected: "1" });
+    return back(previous ? {} : { connected: "1" }, sessionCookie(req, account.id));
   } catch (err) {
     return back({ auth_error: message(err) });
   }
 }
 
-export async function disconnect(): Promise<Response> {
-  const conn = await getConnection();
-  if (conn) await revokeToken(conn.refreshToken);
-  await deleteConnection();
-  return json({ ok: true });
+export async function logout(req: Request): Promise<Response> {
+  return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
 }
 
-/** Where Keyword Planner setup stands, and the Ads accounts to choose from. */
-export async function keywordSetup(): Promise<Response> {
-  try {
-    return json(await keywordStatus(await getConnection()));
-  } catch (err) {
-    return json({ step: "token", error: explainAdsError(err) });
-  }
-}
-
-/** Saves the Google Ads developer token, account ID or manager account ID. */
-export async function saveKeywordSettings(req: Request): Promise<Response> {
-  if (!(await getConnection())) return json({ error: "Connect your Google account first." }, 401);
-  const body = await req.json().catch(() => ({}));
-  const pick = (k: string) => (typeof body[k] === "string" ? body[k] : undefined);
-  const developerToken = pick("developerToken")?.replace(/\s+/g, "");
-  if (developerToken !== undefined && developerToken.length < 15) {
-    return json({ error: "Paste the full developer token from Google Ads (Admin, then API Center)." }, 400);
-  }
-  await saveAdsSettings({
-    developerToken,
-    customerId: pick("customerId"),
-    loginCustomerId: pick("loginCustomerId"),
+/** Removes the customer's Google connection and signs them out. */
+export async function disconnect(req: Request): Promise<Response> {
+  return withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    if (conn) await revokeToken(conn.refreshToken);
+    await deleteConnection(account.id);
+    return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
   });
-  return json({ ok: true });
 }
+
+/** Saves the platform's Google OAuth client: by the admin, or once at first setup. */
+export async function saveGoogleClient(req: Request): Promise<Response> {
+  const account = await currentAccount(req).catch(() => null);
+  if (!account?.admin && (await getOAuthClient())) return json({ error: "Only the platform owner can do this." }, 403);
+  const body = await req.json().catch(() => ({}));
+  const id = typeof body.clientId === "string"
+    ? body.clientId.match(/[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/)?.[0] ?? ""
+    : "";
+  const secret = typeof body.clientSecret === "string"
+    ? body.clientSecret.replace(/^[\s\S]*?(GOCSPX-)/, "$1").replace(/\s+/g, "")
+    : "";
+  if (!id) return json({ error: "That doesn't look like a Client ID. It ends with .apps.googleusercontent.com" }, 400);
+  if (secret.length < 10) return json({ error: "Paste the full Client secret from Google Cloud." }, 400);
+  try {
+    await saveOAuthClient({ id, secret });
+    return json({ ok: true });
+  } catch (err) {
+    return json({ error: message(err) }, 400);
+  }
+}
+
+// ---------- analytics ----------
+
+export async function overview(req: Request): Promise<Response> {
+  return withAccount(req, async (account) => {
+    const params = new URL(req.url).searchParams;
+    const range = params.get("range");
+    const data = await getOverview(
+      account.id,
+      isRangeKey(range) ? range : "28d",
+      await getConnection(account.id),
+      redirectUri(req),
+      params.get("refresh") === "1"
+    );
+    return json({ ...data, account: { email: account.email, admin: account.admin } });
+  });
+}
+
+export async function properties(req: Request): Promise<Response> {
+  return withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    if (!conn) return json({ error: "Sign in with Google again." }, 401);
+    return json(await listProperties({ kind: "oauth", refreshToken: conn.refreshToken }));
+  });
+}
+
+/** Saves which GA4 property and Search Console site the dashboard reads. */
+export async function saveSettings(req: Request): Promise<Response> {
+  return withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    if (!conn) return json({ error: "Sign in with Google again." }, 401);
+    const body = await req.json().catch(() => ({}));
+    const gaPropertyId = typeof body.gaPropertyId === "string" ? body.gaPropertyId.trim() : "";
+    const gscSiteUrl = typeof body.gscSiteUrl === "string" ? body.gscSiteUrl.trim() : "";
+    if (gaPropertyId && !/^\d+$/.test(gaPropertyId)) {
+      return json({ error: "That Google Analytics property ID doesn't look right." }, 400);
+    }
+    await saveConnection(account.id, { ...conn, gaPropertyId: gaPropertyId || undefined, gscSiteUrl: gscSiteUrl || undefined });
+    return json({ ok: true });
+  });
+}
+
+// ---------- keyword research (runs on the platform's Google Ads account) ----------
+
+export const keywordSetup = (req: Request) =>
+  withAccount(req, async (account) => json(await keywordStatus(account.admin)));
+
+export const saveKeywordSettings = (req: Request) =>
+  withAdmin(req, async () => {
+    const body = await req.json().catch(() => ({}));
+    const pick = (k: string) => (typeof body[k] === "string" ? body[k] : undefined);
+    const developerToken = pick("developerToken")?.replace(/\s+/g, "");
+    if (developerToken !== undefined && developerToken.length < 15) {
+      return json({ error: "Paste the full developer token from Google Ads (Admin, then API Center)." }, 400);
+    }
+    await saveAdsSettings({ developerToken, customerId: pick("customerId"), loginCustomerId: pick("loginCustomerId") });
+    return json({ ok: true });
+  });
 
 function readKeywordQuery(body: Record<string, unknown>): KeywordQuery {
   const list = Array.isArray(body.keywords)
@@ -224,160 +278,211 @@ function readKeywordQuery(body: Record<string, unknown>): KeywordQuery {
   };
 }
 
-/** Keyword ideas for seed keywords and/or a website. */
-export async function keywordIdeasHandler(req: Request): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return json({ error: "Connect your Google account first." }, 401);
-  const q = readKeywordQuery(await req.json().catch(() => ({})));
-  if (!q.keywords.length && !q.url) return json({ error: "Enter a keyword or a website address." }, 400);
-  try {
-    return json({ ideas: await keywordIdeas(conn, q) });
-  } catch (err) {
-    return json({ error: explainAdsError(err) }, 502);
-  }
-}
+/** Customers get a plain message; the platform owner gets the exact reason. */
+const keywordError = (account: Account, err: unknown) =>
+  json({ error: account.admin ? explainAdsError(err) : "Keyword data isn't available right now. Please try again later." }, 502);
 
-/** Search volume for an exact list of keywords, such as your Search Console queries. */
-export async function keywordVolumesHandler(req: Request): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return json({ error: "Connect your Google account first." }, 401);
-  const q = readKeywordQuery(await req.json().catch(() => ({})));
-  if (!q.keywords.length) return json({ error: "There are no keywords to look up yet." }, 400);
-  try {
-    return json({ ideas: await keywordVolumes(conn, q) });
-  } catch (err) {
-    return json({ error: explainAdsError(err) }, 502);
-  }
-}
+export const keywordIdeasHandler = (req: Request) =>
+  withAccount(req, async (account) => {
+    const q = readKeywordQuery(await req.json().catch(() => ({})));
+    if (!q.keywords.length && !q.url) return json({ error: "Enter a keyword or a website address." }, 400);
+    try {
+      return json({ ideas: await keywordIdeas(q) });
+    } catch (err) {
+      return keywordError(account, err);
+    }
+  });
 
-const needConnection = () => json({ error: "Connect your Google account first." }, 401);
+export const keywordVolumesHandler = (req: Request) =>
+  withAccount(req, async (account) => {
+    const q = readKeywordQuery(await req.json().catch(() => ({})));
+    if (!q.keywords.length) return json({ error: "There are no keywords to look up yet." }, 400);
+    try {
+      return json({ ideas: await keywordVolumes(q) });
+    } catch (err) {
+      return keywordError(account, err);
+    }
+  });
 
-/** Searches ranking just outside Google's top results, sorted by upside. */
-export async function opportunities(req: Request): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return needConnection();
-  const range = new URL(req.url).searchParams.get("range");
-  try {
-    return json({ opportunities: await findOpportunities(conn, isRangeKey(range) ? range : "28d") });
-  } catch (err) {
-    return json({ error: message(err) }, 502);
-  }
-}
+// ---------- SEO tools ----------
 
-export async function keywordLists(): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  return json({ lists: await getLists() });
-}
+export const opportunities = (req: Request) =>
+  withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    if (!conn) return json({ error: "Sign in with Google again." }, 401);
+    const range = new URL(req.url).searchParams.get("range");
+    try {
+      return json({ opportunities: await findOpportunities(conn, isRangeKey(range) ? range : "28d") });
+    } catch (err) {
+      return json({ error: message(err) }, 502);
+    }
+  });
+
+export const keywordLists = (req: Request) =>
+  withAccount(req, async (account) => json({ lists: await getLists(account.id) }));
 
 /** One endpoint for list changes: create, delete, add keywords, remove a keyword. */
-export async function updateKeywordLists(req: Request): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  const body = await req.json().catch(() => ({}));
-  const str = (k: string) => (typeof body[k] === "string" ? body[k].trim() : "");
-  switch (body.action) {
-    case "create": {
-      const name = str("name").slice(0, 80);
-      if (!name) return json({ error: "Give the list a name." }, 400);
-      const list = await createList(name);
-      if (Array.isArray(body.keywords)) await addKeywords(list.id, body.keywords.map(String));
-      break;
+export const updateKeywordLists = (req: Request) =>
+  withAccount(req, async (account) => {
+    const body = await req.json().catch(() => ({}));
+    const str = (k: string) => (typeof body[k] === "string" ? body[k].trim() : "");
+    switch (body.action) {
+      case "create": {
+        const name = str("name").slice(0, 80);
+        if (!name) return json({ error: "Give the list a name." }, 400);
+        const list = await createList(account.id, name);
+        if (Array.isArray(body.keywords)) await addKeywords(account.id, list.id, body.keywords.map(String));
+        break;
+      }
+      case "delete":
+        await deleteList(account.id, str("listId"));
+        break;
+      case "add":
+        if (!Array.isArray(body.keywords)) return json({ error: "No keywords to add." }, 400);
+        await addKeywords(account.id, str("listId"), body.keywords.map(String));
+        break;
+      case "remove":
+        await removeKeyword(account.id, str("listId"), str("keyword"));
+        break;
+      default:
+        return json({ error: "Unknown action." }, 400);
     }
-    case "delete":
-      await deleteList(str("listId"));
-      break;
-    case "add":
-      if (!Array.isArray(body.keywords)) return json({ error: "No keywords to add." }, 400);
-      await addKeywords(str("listId"), body.keywords.map(String));
-      break;
-    case "remove":
-      await removeKeyword(str("listId"), str("keyword"));
-      break;
-    default:
-      return json({ error: "Unknown action." }, 400);
-  }
-  return json({ lists: await getLists() });
-}
+    return json({ lists: await getLists(account.id) });
+  });
 
-/** Weekly Google positions for the keywords in a saved list. */
-export async function rankings(req: Request): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return needConnection();
-  const listId = new URL(req.url).searchParams.get("listId");
-  const list = (await getLists()).find((l) => l.id === listId);
-  if (!list) return json({ error: "That list doesn't exist anymore." }, 404);
-  try {
-    return json({ rankings: await trackRankings(conn, list.keywords) });
-  } catch (err) {
-    return json({ error: message(err) }, 502);
-  }
-}
+export const rankings = (req: Request) =>
+  withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    if (!conn) return json({ error: "Sign in with Google again." }, 401);
+    const listId = new URL(req.url).searchParams.get("listId");
+    const list = (await getLists(account.id)).find((l) => l.id === listId);
+    if (!list) return json({ error: "That list doesn't exist anymore." }, 404);
+    try {
+      return json({ rankings: await trackRankings(conn, list.keywords) });
+    } catch (err) {
+      return json({ error: message(err) }, 502);
+    }
+  });
 
 // ---------- autopilot ----------
 
-export async function autopilotStatus(): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  return json({ settings: viewOf(await readAutopilotSettings()), ...(await autopilotHistory()) });
-}
+export const autopilotStatus = (req: Request) =>
+  withAccount(req, async (account) =>
+    json({ settings: await autopilotView(account.id, account.admin), ...(await autopilotHistory(account.id)) })
+  );
 
-export async function saveAutopilot(req: Request): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  const b = await req.json().catch(() => ({}));
-  const str = (k: string) => (typeof b[k] === "string" ? b[k] : undefined);
-  await saveAutopilotSettings({
-    enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
-    maxPagesPerWeek: typeof b.maxPagesPerWeek === "number" ? b.maxPagesPerWeek : undefined,
-    allowContent: typeof b.allowContent === "boolean" ? b.allowContent : undefined,
-    shopDomain: str("shopDomain"),
-    shopifyClientId: str("shopifyClientId"),
-    shopifyClientSecret: str("shopifyClientSecret"),
-    anthropicKey: str("anthropicKey"),
+/** The customer's own choices: on/off, pages per week, content sections. */
+export const saveAutopilot = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    await saveAccountAutopilot(account.id, {
+      enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
+      maxPagesPerWeek: typeof b.maxPagesPerWeek === "number" ? b.maxPagesPerWeek : undefined,
+      allowContent: typeof b.allowContent === "boolean" ? b.allowContent : undefined,
+    });
+    return json({ settings: await autopilotView(account.id, account.admin) });
   });
-  return json({ settings: viewOf(await readAutopilotSettings()) });
-}
 
-/** Checks the Shopify app and Claude key without changing anything. */
-export async function testAutopilot(): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  const s = await readAutopilotSettings();
-  const result: { shopify?: string; claude?: string; shopifyError?: string; claudeError?: string } = {};
-  await Promise.all([
-    shopName(s).then((n) => (result.shopify = n)).catch((e) => (result.shopifyError = message(e))),
-    s.anthropicKey
-      ? checkAnthropicKey(s.anthropicKey).then(() => (result.claude = "ok")).catch((e) => (result.claudeError = message(e)))
-      : Promise.resolve((result.claudeError = "Add your Claude API key.")),
-  ]);
-  return json(result);
-}
+/** The platform owner's keys: Claude, and the public Shopify app. */
+export const savePlatform = (req: Request) =>
+  withAdmin(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    const str = (k: string) => (typeof b[k] === "string" ? b[k] : undefined);
+    await savePlatformSettings({
+      anthropicKey: str("anthropicKey"),
+      shopifyClientId: str("shopifyClientId"),
+      shopifyClientSecret: str("shopifyClientSecret"),
+    });
+    const p = await readPlatformSettings();
+    let claude: string | undefined;
+    if (p.anthropicKey) await checkAnthropicKey(p.anthropicKey).catch((e) => (claude = message(e)));
+    return json({ settings: await autopilotView(account.id, true), claudeError: claude });
+  });
 
-export async function runAutopilotNow(): Promise<Response> {
-  const conn = await getConnection();
-  if (!conn) return needConnection();
-  try {
-    return json(await runAutopilot(conn, "manual"));
-  } catch (err) {
-    return json({ error: message(err) }, 500);
-  }
-}
+export const runAutopilotNow = (req: Request) =>
+  withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "manual")));
 
-/** Called by the daily scheduled trigger. */
+export const revertAutopilot = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    try {
+      await revertChange(account.id, String(b.id ?? ""));
+      return json(await autopilotHistory(account.id));
+    } catch (err) {
+      return json({ error: message(err) }, 400);
+    }
+  });
+
+/** Called by the scheduled trigger: runs a few customers whose daily run is due. */
 export async function autopilotTick(): Promise<Response> {
+  const results: string[] = [];
   try {
-    const result = await runAutopilot(await getConnection(), "schedule");
-    console.log(`autopilot: ${result.message}`);
-    return json(result);
+    for (const accountId of await accountsDueForRun(3)) {
+      const r = await runAutopilot(accountId, await getConnection(accountId), "schedule").catch((e) => ({ message: message(e) }));
+      results.push(`account ${accountId}: ${r.message}`);
+    }
+    console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
+    return json({ results });
   } catch (err) {
-    console.error(`autopilot failed: ${message(err)}`);
+    console.error(`autopilot tick failed: ${message(err)}`);
     return json({ error: message(err) }, 500);
   }
 }
 
-export async function revertAutopilot(req: Request): Promise<Response> {
-  if (!(await getConnection())) return needConnection();
-  const b = await req.json().catch(() => ({}));
+// ---------- Shopify connection ----------
+
+/** "Connect Shopify": sends the customer to their store to approve the app. */
+export async function shopifyInstall(req: Request): Promise<Response> {
+  const account = await currentAccount(req);
+  if (!account) return redirect(`${appOrigin(req)}/analytics`);
+  const shop = normalizeShopDomain(new URL(req.url).searchParams.get("shop") ?? "");
+  if (!shop) return redirect(`${appOrigin(req)}/analytics?shopify_error=Enter+your+store+name,+like+mystore.myshopify.com#autopilot`);
   try {
-    await revertChange(String(b.id ?? ""));
-    return json(await autopilotHistory());
+    const state = crypto.randomBytes(16).toString("hex");
+    return redirect(await authorizeUrl(shop, shopifyRedirectUri(req), state), tempCookie(req, SHOPIFY_STATE_COOKIE, state, 600));
   } catch (err) {
-    return json({ error: message(err) }, 400);
+    return redirect(`${appOrigin(req)}/analytics?${new URLSearchParams({ shopify_error: message(err) })}#autopilot`);
   }
+}
+
+export async function shopifyCallback(req: Request): Promise<Response> {
+  const params = new URL(req.url).searchParams;
+  const back = (p: Record<string, string>) =>
+    redirect(`${appOrigin(req)}/analytics?${new URLSearchParams(p)}#autopilot`, tempCookie(req, SHOPIFY_STATE_COOKIE, "", 0));
+  const account = await currentAccount(req);
+  if (!account) return back({ shopify_error: "Please sign in, then connect your store again." });
+  const shop = normalizeShopDomain(params.get("shop") ?? "");
+  const code = params.get("code");
+  if (!shop || !code || params.get("state") !== readCookie(req, SHOPIFY_STATE_COOKIE) || !(await verifyCallbackHmac(params))) {
+    return back({ shopify_error: "The connection link expired or was invalid. Please try again." });
+  }
+  try {
+    await completeInstall(account.id, shop, code);
+    const name = await shopName({ accountId: account.id, shopDomain: shop }).catch(() => shop);
+    return back({ shopify: name });
+  } catch (err) {
+    return back({ shopify_error: message(err) });
+  }
+}
+
+export const shopifyDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    await saveAccountAutopilot(account.id, { shopDomain: "", shopTokenEnc: null, enabled: false });
+    return json({ settings: await autopilotView(account.id, account.admin) });
+  });
+
+/** Shopify's app and privacy webhooks (app/uninstalled, shop/redact, customers/*). */
+export async function shopifyWebhook(req: Request): Promise<Response> {
+  const raw = await req.text();
+  if (!(await verifyWebhookHmac(raw, req.headers.get("x-shopify-hmac-sha256")).catch(() => false))) {
+    return new Response("Invalid signature", { status: 401 });
+  }
+  const topic = req.headers.get("x-shopify-topic") ?? "";
+  const shop = req.headers.get("x-shopify-shop-domain") ?? "";
+  if (topic === "app/uninstalled" || topic === "shop/redact") {
+    await ensureSchema();
+    // We keep no customer data from stores; forgetting the store connection is all there is to erase.
+    await sql`UPDATE insights_account_autopilot SET shop_domain = NULL, shop_token_enc = NULL, enabled = false WHERE shop_domain = ${shop}`;
+  }
+  return new Response(null, { status: 200 });
 }
