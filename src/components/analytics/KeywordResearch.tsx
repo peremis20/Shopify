@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   KEYWORD_LANGUAGES,
   KEYWORD_LOCATIONS,
@@ -18,6 +18,7 @@ import { RankTracker } from "./RankTracker";
 import { api, TrackButton } from "./seo-ui";
 import { TopicsView } from "./TopicsView";
 import { ConnectButton } from "./SettingsPanel";
+import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, Skeleton } from "./ui";
 
@@ -36,8 +37,6 @@ const COMPETITION_STYLE: Record<Competition, string> = {
   UNSPECIFIED: "bg-[#F1ECE3] text-dash-muted",
   UNKNOWN: "bg-[#F1ECE3] text-dash-muted",
 };
-
-type SortKey = "searches" | "bid" | "competition";
 
 const siteFromProperty = (site?: string) =>
   site ? site.replace(/^sc-domain:/, "").replace(/^https?:\/\//, "").replace(/\/$/, "") : "";
@@ -328,7 +327,6 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
   const [label, setLabel] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sort, setSort] = useState<SortKey>("searches");
 
   async function run(kind: "ideas" | "volumes", body: Record<string, unknown>, what: string) {
     setLoading(true);
@@ -344,16 +342,16 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
     }
   }
 
-  const sorted = useMemo(() => {
-    if (!ideas) return [];
-    const rank = { HIGH: 3, MEDIUM: 2, LOW: 1, UNSPECIFIED: 0, UNKNOWN: 0 };
-    const by: Record<SortKey, (i: KeywordIdea) => number> = {
-      searches: (i) => i.avgMonthlySearches ?? -1,
-      bid: (i) => i.highBid ?? -1,
-      competition: (i) => rank[i.competition],
-    };
-    return [...ideas].sort((a, b) => by[sort](b) - by[sort](a));
-  }, [ideas, sort]);
+  const { sorted, sort } = useSort(
+    ideas ?? [],
+    {
+      keyword: (i) => i.keyword,
+      searches: (i) => i.avgMonthlySearches,
+      competition: (i) => ({ HIGH: 3, MEDIUM: 2, LOW: 1, UNSPECIFIED: null, UNKNOWN: null })[i.competition],
+      bid: (i) => i.highBid,
+    },
+    { key: "searches", dir: "desc" }
+  );
 
   function downloadCsv() {
     const rows = [
@@ -374,13 +372,6 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
     link.click();
     URL.revokeObjectURL(link.href);
   }
-
-  const header = (key: SortKey, text: string) => (
-    <button onClick={() => setSort(key)} className={`font-semibold ${sort === key ? "text-dash-green" : ""}`}>
-      {text}
-      {sort === key ? " ↓" : ""}
-    </button>
-  );
 
   return (
     <div className="space-y-4">
@@ -502,11 +493,11 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
               <table className="w-full text-sm">
                 <thead className="sticky top-0 bg-dash-card">
                   <tr className="border-b border-dash-line text-left text-xs text-dash-ink">
-                    <th className="px-1 pb-2 font-semibold">Keyword</th>
-                    <th className="px-1 pb-2 text-right">{header("searches", "Monthly searches")}</th>
+                    <th className="px-1 pb-2"><SortHeader label="Keyword" column="keyword" sort={sort} /></th>
+                    <th className="px-1 pb-2 text-right"><SortHeader label="Monthly searches" column="searches" sort={sort} align="right" /></th>
                     <th className="hidden px-1 pb-2 font-semibold sm:table-cell">12 month trend</th>
-                    <th className="px-1 pb-2 text-left">{header("competition", "Competition")}</th>
-                    <th className="hidden px-1 pb-2 text-right md:table-cell">{header("bid", "Top of page bid")}</th>
+                    <th className="px-1 pb-2 text-left"><SortHeader label="Competition" column="competition" sort={sort} /></th>
+                    <th className="hidden px-1 pb-2 text-right md:table-cell"><SortHeader label="Top of page bid" column="bid" sort={sort} align="right" /></th>
                     <th className="px-1 pb-2" />
                   </tr>
                 </thead>

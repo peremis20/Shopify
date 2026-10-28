@@ -5,6 +5,7 @@ import type { KeywordList, Ranking } from "@/lib/analytics/seo-types";
 import { formatNumber } from "./format";
 import { ArrowDownIcon, ArrowUpIcon, CloseIcon } from "./Icons";
 import { api, Explainer, pathOf } from "./seo-ui";
+import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Skeleton } from "./ui";
 
@@ -36,6 +37,18 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
     // keywordKey reloads when keywords are added or removed
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active?.id, keywordKey]);
+
+  const { sorted, sort } = useSort(
+    rankings ?? [],
+    {
+      keyword: (r) => r.keyword,
+      position: (r) => r.position,
+      change: (r) => r.change,
+      clicks: (r) => r.clicks,
+      page: (r) => (r.topPage ? pathOf(r.topPage) : null),
+    },
+    { key: "position", dir: "asc" }
+  );
 
   if (!lists) return <Skeleton className="h-48" />;
 
@@ -134,17 +147,17 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-dash-card">
               <tr className="border-b border-dash-line text-left text-xs font-semibold text-dash-ink">
-                <th className="px-1 pb-2">Keyword</th>
-                <th className="px-1 pb-2 text-right">Position</th>
-                <th className="px-1 pb-2 text-right">4 weeks</th>
+                <th className="px-1 pb-2"><SortHeader label="Keyword" column="keyword" sort={sort} /></th>
+                <th className="px-1 pb-2 text-right"><SortHeader label="Position" column="position" sort={sort} align="right" /></th>
+                <th className="px-1 pb-2 text-right"><SortHeader label="4 weeks" column="change" sort={sort} align="right" /></th>
                 <th className="hidden px-1 pb-2 sm:table-cell">12 weeks</th>
-                <th className="hidden px-1 pb-2 text-right sm:table-cell">Clicks</th>
-                <th className="hidden px-1 pb-2 md:table-cell">Ranking page</th>
+                <th className="hidden px-1 pb-2 text-right sm:table-cell"><SortHeader label="Clicks" column="clicks" sort={sort} align="right" /></th>
+                <th className="hidden px-1 pb-2 md:table-cell"><SortHeader label="Ranking page" column="page" sort={sort} /></th>
                 <th className="px-1 pb-2" />
               </tr>
             </thead>
             <tbody>
-              {rankings.map((r) => (
+              {sorted.map((r) => (
                 <tr key={r.keyword} className="border-b border-dash-line/70 last:border-0">
                   <td className="max-w-[220px] truncate px-1 py-2 text-dash-ink" title={r.keyword}>{r.keyword}</td>
                   <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">

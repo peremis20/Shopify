@@ -10,6 +10,7 @@ import { Legend, LineChart } from "./LineChart";
 import { KeywordResearch } from "./KeywordResearch";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
+import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, DeltaBadge, GaLogo, GscLogo, Skeleton, SourceError } from "./ui";
 
@@ -335,7 +336,10 @@ export function DashboardView() {
               {ga?.data ? (
                 <Table
                   head={["Page", "Views", "Avg. Time"]}
-                  rows={ga.data.topPages.map((p) => [p.path, formatNumber(p.views), formatDuration(p.avgTimeSec)])}
+                  rows={ga.data.topPages.map((p) => ({
+                    cells: [p.path, formatNumber(p.views), formatDuration(p.avgTimeSec)],
+                    values: [p.path, p.views, p.avgTimeSec],
+                  }))}
                   empty="No page views in this period yet."
                 />
               ) : (
@@ -413,22 +417,34 @@ function MiniStat({ label, value, badge }: { label: string; value: string; badge
   );
 }
 
-function Table({ head, rows, empty }: { head: string[]; rows: (string | number)[][]; empty: string }) {
+interface TableRow {
+  /** What each cell shows. */
+  cells: (string | number)[];
+  /** What each column sorts by (raw numbers, not formatted text). */
+  values: (string | number)[];
+}
+
+function Table({ head, rows, empty }: { head: string[]; rows: TableRow[]; empty: string }) {
+  const columns = Object.fromEntries(head.map((_, i) => [String(i), (r: TableRow) => r.values[i]]));
+  const { sorted, sort } = useSort(rows, columns, { key: "1", dir: "desc" });
+
   if (!rows.length) return <p className="py-8 text-center text-sm text-dash-muted">{empty}</p>;
   return (
     <div className="-mx-1 overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-dash-line text-left text-xs font-semibold text-dash-ink">
+          <tr className="border-b border-dash-line text-left text-xs text-dash-ink">
             {head.map((h, i) => (
-              <th key={h} className={`px-1 pb-2 ${i ? "text-right" : ""}`}>{h}</th>
+              <th key={h} className={`px-1 pb-2 ${i ? "text-right" : ""}`}>
+                <SortHeader label={h} column={String(i)} sort={sort} align={i ? "right" : "left"} />
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, r) => (
-            <tr key={r} className="border-b border-dash-line/70 last:border-0">
-              {row.map((cell, i) => (
+          {sorted.map((row) => (
+            <tr key={String(row.values[0])} className="border-b border-dash-line/70 last:border-0">
+              {row.cells.map((cell, i) => (
                 <td
                   key={i}
                   className={`px-1 py-2.5 ${i ? "whitespace-nowrap text-right tabular-nums" : "max-w-[220px] truncate text-dash-ink"}`}
@@ -475,13 +491,19 @@ function QueriesCard({ data, openUrl, loading }: {
       ) : tab === "queries" ? (
         <Table
           head={["Query", "Clicks", "Impr.", "CTR", "Pos."]}
-          rows={data.topQueries.map((q) => [q.query, formatNumber(q.clicks), formatNumber(q.impressions), formatPct(q.ctr), q.position.toFixed(1)])}
+          rows={data.topQueries.map((q) => ({
+            cells: [q.query, formatNumber(q.clicks), formatNumber(q.impressions), formatPct(q.ctr), q.position.toFixed(1)],
+            values: [q.query, q.clicks, q.impressions, q.ctr, q.position],
+          }))}
           empty="No search queries in this period yet."
         />
       ) : (
         <Table
           head={["Page", "Clicks", "Impr."]}
-          rows={data.topPages.map((p) => [shortUrl(p.page), formatNumber(p.clicks), formatNumber(p.impressions)])}
+          rows={data.topPages.map((p) => ({
+            cells: [shortUrl(p.page), formatNumber(p.clicks), formatNumber(p.impressions)],
+            values: [shortUrl(p.page), p.clicks, p.impressions],
+          }))}
           empty="No pages with search clicks in this period yet."
         />
       )}
