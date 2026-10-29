@@ -7,6 +7,7 @@ import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from 
 import { keyOf } from "./apps/types";
 import { clickGain } from "./keyword-boost";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider, type PlatformSettings } from "./settings";
+import { undoLinkFix } from "./link-fixer";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import {
   getBody,
@@ -68,9 +69,9 @@ function unwrap(id: string, body: string): string | null {
   return body.slice(0, i) + body.slice(j + end.length);
 }
 
-async function logChange(c: {
+export async function logChange(c: {
   accountId: string;
-  runId: string;
+  runId: string | null;
   pageUrl: string;
   resourceType: string;
   resourceId: string;
@@ -426,7 +427,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field <> 'internal_link'
+      WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field NOT IN ('internal_link', 'link_fix')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
     if (capped && !preview) {
@@ -524,6 +525,11 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     await setSeoField(ctx.store, c.resource_id!, field === "meta_title" ? "title_tag" : "description_tag", c.before_value);
   } else if (field === "alt") {
     await setImageAlt(ctx.store, c.target_id!, c.before_value ?? "");
+  } else if (field === "link_fix") {
+    if (!(await undoLinkFix(ctx.store, c.resource_type as "article" | "page", c.resource_id!, c.before_value!, c.after_value!))) {
+      await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The post was edited after the fix, so it was left as is.' WHERE id = ${c.id}`;
+      return "Left as is.";
+    }
   } else {
     const type = field === "internal_link" ? "article" : (c.resource_type as "article" | "page");
     const id = field === "internal_link" ? c.target_id! : c.resource_id!;
@@ -570,8 +576,8 @@ export async function autopilotHistory(accountId: string): Promise<{ changes: Au
       pageUrl: c.page_url!,
       query: c.query!,
       field: c.field as ChangeField,
-      before: c.field === "content" || c.field === "internal_link" ? null : c.before_value,
-      after: c.after_value?.replace(/<!--[\s\S]*?-->/g, "") ?? null,
+      before: c.field === "content" || c.field === "internal_link" || c.field === "link_fix" ? null : c.before_value,
+      after: c.field === "link_fix" ? c.reason : (c.after_value?.replace(/<!--[\s\S]*?-->/g, "") ?? null),
       reason: c.reason,
       status: c.status as AutopilotChange["status"],
       baselinePosition: num(c.baseline_position),

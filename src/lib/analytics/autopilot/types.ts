@@ -1,7 +1,10 @@
 /** Autopilot shapes shared by the server and the page. */
 
-/** "intent" records a content gap: the page can't give searchers what they want, so nothing was changed. */
-export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link" | "schema" | "intent";
+/**
+ * "intent" records a content gap: the page can't give searchers what they want, so nothing was changed.
+ * "link_fix" points links at a renamed product's live address instead of its redirect.
+ */
+export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link" | "schema" | "intent" | "link_fix";
 export type ChangeStatus = "applied" | "kept" | "reverted" | "failed" | "skipped";
 
 export interface AutopilotChange {

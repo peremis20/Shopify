@@ -23,6 +23,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   content: "New section",
   alt: "Image alt text",
   internal_link: "Internal link",
+  link_fix: "Link fix",
   schema: "Structured data",
   intent: "Content gap",
 };
@@ -395,7 +396,7 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
                       {c.before !== null && c.field !== "alt" && (
                         <p><span className="font-semibold">Before: </span><span className="text-dash-muted">{c.before || "(empty)"}</span></p>
                       )}
-                      <p><span className="font-semibold">{c.field === "content" || c.field === "internal_link" ? "Added: " : "After: "}</span>{textOf(c.after)}</p>
+                      <p><span className="font-semibold">{c.field === "content" || c.field === "internal_link" ? "Added: " : c.field === "link_fix" ? "" : "After: "}</span>{textOf(c.after)}</p>
                       {c.note && <p className="text-dash-muted">{c.note}</p>}
                       <a href={c.pageUrl} target="_blank" rel="noreferrer" className="font-semibold text-dash-green hover:underline">
                         Open the page

@@ -226,6 +226,13 @@ set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
   post has article markup, checked against the live page) and FAQPage (from
   question headings with answers). It is rebuilt on later runs and can be undone
   like any other change.
+- **Link fixer:** once a week (and on "Check now") blog posts and pages are
+  scanned for links to product addresses that are no longer live. The live
+  store is asked where each one redirects, and the link is pointed straight at
+  the live product, so clicks and link credit skip the redirect. Only the
+  address changes, never the wording, and links to other sites are left alone.
+  Each fixed post shows as a "Link fix" in the history and can be undone while
+  nobody has edited the post since.
 
 ### Adding an app to the autopilot
 

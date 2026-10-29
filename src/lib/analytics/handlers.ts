@@ -1,9 +1,11 @@
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
-import { accountsDueForRun, autopilotHistory, revertChange, runAutopilot } from "./autopilot/engine";
+import { accountsDueForRun, autopilotHistory, logChange, revertChange, runAutopilot } from "./autopilot/engine";
+import { applyLinkFix, describeFix, findLinkFixes, linkFixDue, markLinkFixChecked } from "./autopilot/link-fixer";
 import {
   aiProvider,
   autopilotView,
+  readAccountAutopilot,
   readPlatformSettings,
   saveAccountAutopilot,
   savePlatformSettings,
@@ -426,13 +428,32 @@ export const savePlatform = (req: Request) =>
 
 const domainOf = (site: string) => new URL(site.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "");
 
-/** Today's rank check and a few page health checks for one account. Each part runs at most once a day. */
+/** Weekly: points blog and page links at renamed products' live addresses. Only with autopilot on, or on "Check now". */
+async function fixLinks(accountId: string, force: boolean): Promise<number> {
+  const acct = await readAccountAutopilot(accountId);
+  if (!acct.shopDomain || !acct.shopTokenEnc || !(acct.enabled || force) || !(force || (await linkFixDue(accountId)))) return 0;
+  const store = { accountId, shopDomain: acct.shopDomain };
+  let fixed = 0;
+  for (const f of await findLinkFixes(store)) {
+    if (!(await applyLinkFix(store, f).catch(() => false))) continue;
+    await logChange({
+      accountId, runId: null, pageUrl: f.url, resourceType: f.type, resourceId: f.id, query: "", field: "link_fix",
+      before: f.before, after: f.after, reason: describeFix(f), status: "kept",
+    });
+    fixed += f.links.reduce((a, l) => a + l.count, 0);
+  }
+  await markLinkFixChecked(accountId);
+  return fixed;
+}
+
+/** Today's rank check, a few page health checks and the weekly link fix for one account. Each part runs at most once a day. */
 async function maintain(accountId: string, force = false): Promise<string> {
   const [conn, platform] = await Promise.all([getConnection(accountId), readPlatformSettings()]);
-  if (!conn?.gscSiteUrl) return "no Search Console property";
+  const links = await fixLinks(accountId, force).catch((e) => (console.error(`link fix failed: ${message(e)}`), 0));
+  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}`;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
   const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
-  return `ranks ${ranks}, health ${pages}`;
+  return `ranks ${ranks}, health ${pages}, links ${links}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */
