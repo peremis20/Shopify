@@ -257,6 +257,27 @@ set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
   posts that repeat each other and searches split between pages, with what to
   do about each.
 
+### Onboarding
+
+A checklist at the top of the dashboard walks each customer through setup:
+Google, Shopify, what the business sells, Search Console, Analytics, the first
+site check, the first preview and turning the autopilot on. Each open step has
+its one action right there.
+
+- **Properties are found, not picked.** After Google sign in and again after
+  Shopify connects, the app reads the store's own domain from Shopify and
+  chooses the Search Console property and the Analytics property whose web
+  stream is that domain (`src/lib/analytics/onboarding.ts`). A choice already
+  made is never changed.
+- **No access yet?** When the signed-in Google account can't see the site, the
+  checklist writes a ready-to-send message to the site owner with the exact
+  clicks to add that account, plus Email and Copy buttons and a Check again
+  button.
+- **Per business, not per Peremis.** `insights_account_profile` holds the
+  brand name (titles end with " | Brand"), what the business sells (the writer
+  is told this), the store domain and other sites sharing the Analytics tag
+  (the old `GA_EXCLUDE_HOSTNAMES` now only seeds the platform owner's account).
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

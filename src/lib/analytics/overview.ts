@@ -110,10 +110,12 @@ export async function getOverview(
   rangeKey: RangeKey,
   conn: Connection | null,
   redirectUri: string,
-  refresh = false
+  refresh = false,
+  /** Other sites sharing the Analytics tag, left out of the numbers. */
+  excludeHosts: string[] = []
 ): Promise<OverviewResponse> {
   const source = await resolveSource(conn, redirectUri);
-  const cacheKey = [accountId, rangeKey, source.info.mode, source.gaId, source.site].join("|");
+  const cacheKey = [accountId, rangeKey, source.info.mode, source.gaId, source.site, excludeHosts.join(",")].join("|");
   if (!refresh) {
     const hit = await readCache(cacheKey).catch(() => null);
     if (hit) return hit;
@@ -122,7 +124,7 @@ export async function getOverview(
   // GA4 is complete through yesterday; Search Console lags about 3 days.
   const [ga, gsc] = await Promise.all([
     load(source.auth, source.gaId, "Choose a Google Analytics property in Settings.",
-      resolveRange(rangeKey, 1), fetchGa4, demoGa, ga4OpenUrl),
+      resolveRange(rangeKey, 1), (auth, id, ranges) => fetchGa4(auth, id, ranges, excludeHosts), demoGa, ga4OpenUrl),
     load(source.auth, source.site, "Choose a Search Console property in Settings.",
       resolveRange(rangeKey, 3), fetchGsc, demoGsc, gscOpenUrl),
   ]);

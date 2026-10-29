@@ -2,6 +2,7 @@ import type { Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
+import { readProfile, siteBrief } from "../profile";
 import type { Opportunity } from "../seo-types";
 import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from "./apps";
 import { keyOf } from "./apps/types";
@@ -468,12 +469,17 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
   if (trigger === "schedule" && !acct.enabled) return { run: null, message: "Autopilot is turned off." };
   if (!conn?.gscSiteUrl) return { run: null, message: "Choose a Search Console property in Settings first." };
-  const ai = aiProvider(platform);
-  if (!ai) return { run: null, message: "Autopilot isn't available yet." };
+  const baseAi = aiProvider(platform);
+  if (!baseAi) return { run: null, message: "Autopilot isn't available yet." };
   if (!acct.shopDomain || !acct.shopTokenEnc) return { run: null, message: "Connect your Shopify store first." };
+  const store = { accountId, shopDomain: acct.shopDomain };
+  // The writer signs titles with the customer's own brand and fits what they sell.
+  const profile = await readProfile(accountId);
+  const site = siteBrief({ ...profile, brandName: profile.brandName ?? (await shopName(store).catch(() => null)) });
+  const ai = { ...baseAi, site };
   const ctx: Ctx = {
     accountId,
-    store: { accountId, shopDomain: acct.shopDomain },
+    store,
     ai,
     platform,
     ourDomain: new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, ""),

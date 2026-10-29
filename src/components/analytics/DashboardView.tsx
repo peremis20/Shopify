@@ -10,6 +10,7 @@ import { Legend, LineChart } from "./LineChart";
 import { Autopilot } from "./Autopilot";
 import { RankHealth } from "./RankHealth";
 import { KeywordResearch } from "./KeywordResearch";
+import { Onboarding } from "./Onboarding";
 import { SignInScreen } from "./SignIn";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { Sidebar } from "./Sidebar";
@@ -207,6 +208,8 @@ export function DashboardView() {
               </button>
             </div>
           )}
+
+          <Onboarding onOpenSettings={() => setSettingsOpen(true)} onChanged={() => load(range, true)} />
 
           {usingDemo && (
             <div className="mt-6 rounded-2xl border border-[#E7D3B4] bg-[#FBF1E1] p-4 text-sm">

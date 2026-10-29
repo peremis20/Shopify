@@ -11,9 +11,15 @@ import type { StoreResource } from "./shopify";
 
 const MODEL = "claude-opus-5-5";
 
-const RULES = `You are the SEO editor for a Shopify store that sells dietary supplements.
+/** Instructions for every request, fitted to the customer's business (see AiProvider.site). */
+function rulesFor(site: AiProvider["site"]): string {
+  const who = site?.brand ? `"${site.brand}", a website` : "a website";
+  return `You are the SEO editor for ${who} that sells ${site?.sells ?? "health and wellness products"}.
 Write for real shoppers first, search engines second.
+${site?.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`;
+}
 
+const RULES = `
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
 - Never write "FDA approved", "clinically proven", "doctor recommended", "miracle", "no side effects", "guaranteed results", a number of pounds to lose, or anything suggesting people replace or stop medication. Everything you write is checked for these and dropped if found.
@@ -40,7 +46,7 @@ export interface PageImprovement {
 const IMPROVEMENT_SCHEMA = {
   type: "object",
   properties: {
-    metaTitle: { type: "string", description: "SEO title, 60 characters or fewer, ending with ' | Peremis' when it fits." },
+    metaTitle: { type: "string", description: "SEO title, 60 characters or fewer, ending with the brand name after ' | ' when it fits." },
     metaDescription: { type: "string", description: "Meta description, 120 to 155 characters, with a reason to click." },
     contentSectionHtml: {
       type: "string",
@@ -137,7 +143,7 @@ const CHECK_SCHEMA = {
 async function factCheck(ai: AiProvider, html: string, pageBody: string): Promise<string> {
   const blocks = blocksOf(html);
   if (!blocks.length) return html;
-  const prompt = `You are fact checking a new section before it's added to a supplement store's page.
+  const prompt = `You are fact checking a new section before it's added to a store's page.
 
 Page text (the only source of truth):
 """
@@ -160,7 +166,7 @@ Keep blocks that only restate or reorganize what the page says. When unsure, rem
 
 const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-async function askClaude<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askClaude<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const client = new Anthropic({ apiKey });
   const response = await client.beta.messages.create({
     model: MODEL,
@@ -168,7 +174,7 @@ async function askClaude<T>(apiKey: string, prompt: string, schema: Record<strin
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
     output_config: { effort: "medium", format: { type: "json_schema", schema } },
-    system: RULES,
+    system,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -220,9 +226,9 @@ function toGeminiSchema(schema: unknown): unknown {
 const aiBusy = (status: number) => status === 429 || status === 500 || status === 503;
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function askGemini<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askGemini<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const payload = JSON.stringify({
-    systemInstruction: { parts: [{ text: RULES }] },
+    systemInstruction: { parts: [{ text: system }] },
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     generationConfig: { responseMimeType: "application/json", responseSchema: toGeminiSchema(schema) },
   });
@@ -349,12 +355,12 @@ const GITHUB: ChatService = {
  * again in plain mode and the JSON is read out of its reply. Only then is the
  * next model tried.
  */
-async function askChat<T>(svc: ChatService, apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askChat<T>(svc: ChatService, apiKey: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const required = (schema.required as string[]) ?? [];
   const messages = [
     {
       role: "system",
-      content: `${RULES}\n\nReply with only one JSON object, no other text, that matches this JSON schema:\n${JSON.stringify(schema)}\nInside strings, escape double quotes and don't use raw line breaks.`,
+      content: `${system}\n\nReply with only one JSON object, no other text, that matches this JSON schema:\n${JSON.stringify(schema)}\nInside strings, escape double quotes and don't use raw line breaks.`,
     },
     { role: "user", content: prompt },
   ];
@@ -400,18 +406,19 @@ async function askChat<T>(svc: ChatService, apiKey: string, prompt: string, sche
   throw new Error(`${svc.name} couldn't write this change right now. (${lastError})`);
 }
 
-function askOne<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
-  if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, prompt, schema);
-  if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, prompt, schema);
-  return ai.kind === "gemini" ? askGemini<T>(ai.key, prompt, schema) : askClaude<T>(ai.key, prompt, schema);
+function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, system, prompt, schema);
+  if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, system, prompt, schema);
+  return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema);
 }
 
 /** Asks the main AI, and each backup in turn if it fails. */
 async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const errors: string[] = [];
+  const system = rulesFor(ai.site);
   for (const one of [ai, ...(ai.backups ?? [])]) {
     try {
-      return await askOne<T>(one, prompt, schema);
+      return await askOne<T>(one, system, prompt, schema);
     } catch (err) {
       errors.push((err as Error).message);
     }

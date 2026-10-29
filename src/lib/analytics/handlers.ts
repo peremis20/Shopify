@@ -41,7 +41,9 @@ import {
   type KeywordQuery,
 } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
+import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
+import { readProfile, saveProfile } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
 
@@ -159,17 +161,11 @@ export async function authCallback(req: Request): Promise<Response> {
     }
 
     const account = await upsertAccount(email);
-    // Keep the properties already chosen when a customer signs in again.
+    // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
     const previous = await getConnection(account.id).catch(() => null);
-    const options = previous?.gaPropertyId && previous.gscSiteUrl
-      ? null
-      : await listProperties({ kind: "oauth", refreshToken });
-    await saveConnection(account.id, {
-      refreshToken,
-      email,
-      gaPropertyId: previous?.gaPropertyId || options?.ga.items[0]?.id,
-      gscSiteUrl: previous?.gscSiteUrl || options?.gsc.items[0],
-    });
+    const conn = { refreshToken, email, gaPropertyId: previous?.gaPropertyId, gscSiteUrl: previous?.gscSiteUrl };
+    await saveConnection(account.id, conn);
+    await autoMatch(account.id, conn).catch(() => undefined);
     return back(previous ? {} : { connected: "1" }, sessionCookie(req, account.id));
   } catch (err) {
     return back({ auth_error: message(err) });
@@ -211,6 +207,31 @@ export async function saveGoogleClient(req: Request): Promise<Response> {
   }
 }
 
+// ---------- onboarding ----------
+
+/** The setup checklist, with the owner access message when needed. */
+export const onboarding = (req: Request) => withAccount(req, async (account) => json(await onboardingStatus(account.id, account.email)));
+
+/** Saves what the business is (and hides or shows the checklist). */
+export const saveOnboardingProfile = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    await saveProfile(account.id, {
+      brandName: typeof b.brandName === "string" ? b.brandName : undefined,
+      businessType: typeof b.businessType === "string" ? b.businessType : undefined,
+      gaExcludeHosts: typeof b.gaExcludeHosts === "string" ? b.gaExcludeHosts.split(",") : undefined,
+      onboardingDismissed: typeof b.dismissed === "boolean" ? b.dismissed : undefined,
+    });
+    return json(await onboardingStatus(account.id, account.email));
+  });
+
+/** Looks for the Search Console and Analytics properties again (after the owner granted access). */
+export const rematchProperties = (req: Request) =>
+  withAccount(req, async (account) => {
+    await autoMatch(account.id);
+    return json(await onboardingStatus(account.id, account.email));
+  });
+
 // ---------- analytics ----------
 
 export async function overview(req: Request): Promise<Response> {
@@ -222,7 +243,8 @@ export async function overview(req: Request): Promise<Response> {
       isRangeKey(range) ? range : "28d",
       await getConnection(account.id),
       redirectUri(req),
-      params.get("refresh") === "1"
+      params.get("refresh") === "1",
+      (await readProfile(account.id, account.email)).gaExcludeHosts
     );
     return json({ ...data, account: { email: account.email, admin: account.admin } });
   });
@@ -570,6 +592,8 @@ export async function shopifyCallback(req: Request): Promise<Response> {
   }
   try {
     await completeInstall(account.id, shop, code);
+    // The store's domain is known now: find its Search Console and Analytics properties.
+    await autoMatch(account.id).catch(() => undefined);
     const name = await shopName({ accountId: account.id, shopDomain: shop }).catch(() => shop);
     return back({ shopify: name });
   } catch (err) {

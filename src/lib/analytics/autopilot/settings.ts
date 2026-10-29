@@ -92,6 +92,8 @@ export interface AiProvider {
   key: string;
   /** Tried in order when this one fails. */
   backups?: AiProvider[];
+  /** The customer's business, so the writer fits it (brand for titles, what they sell). */
+  site?: { brand: string | null; sells: string };
 }
 
 export const platformReady = (p: PlatformSettings) => Boolean(aiProvider(p) && p.shopifyClientId && p.shopifyClientSecret);

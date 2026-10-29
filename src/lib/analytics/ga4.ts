@@ -42,15 +42,11 @@ export async function listGa4Properties(auth: GoogleAuth) {
 type Filter = Record<string, unknown>;
 
 /**
- * Traffic from other websites that share this GA4 tag, listed in
- * GA_EXCLUDE_HOSTNAMES (comma separated, e.g. "sakshijewelers.com").
- * A hostname matches itself and its subdomains.
+ * Traffic from other websites that share this GA4 tag (each account lists
+ * them in its profile, e.g. "sakshijewelers.com"). A hostname matches itself
+ * and its subdomains.
  */
-function excludedHostsFilter(): Filter | undefined {
-  const hosts = (process.env.GA_EXCLUDE_HOSTNAMES ?? "")
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
+function excludedHostsFilter(hosts: string[]): Filter | undefined {
   if (!hosts.length) return undefined;
   return {
     notExpression: {
@@ -77,10 +73,10 @@ const delta = (value: number, previous: number): Delta => ({
   change: pctChange(value, previous),
 });
 
-export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRanges): Promise<GaData> {
+export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRanges, excludeHosts: string[] = []): Promise<GaData> {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`;
   const current = { startDate: ranges.current.start, endDate: ranges.current.end };
-  const hosts = excludedHostsFilter();
+  const hosts = excludedHostsFilter(excludeHosts);
 
   const [summary, daily, channels, pages] = await Promise.all([
     googleRequest<Ga4Report>(auth, url, {

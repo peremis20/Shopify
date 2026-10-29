@@ -407,7 +407,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
             id="kw-url"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="peremis.com"
+            placeholder="yourstore.com"
             className="w-full rounded-lg border border-dash-line bg-white px-3 py-2 text-sm"
           />
         </label>

@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS insights_rank_daily (
 );
 
 -- Index status, rich results and mobile speed per page.
+-- What each customer's business is, for onboarding and the writer.
+CREATE TABLE IF NOT EXISTS insights_account_profile (
+  account_id           bigint PRIMARY KEY,
+  brand_name           text,
+  business_type        text,
+  site_domain          text,               -- the store's own domain, e.g. peremis.com
+  ga_exclude_hosts     text,               -- other sites sharing the Analytics tag, comma separated
+  onboarding_dismissed boolean NOT NULL DEFAULT false,
+  updated_at           timestamptz NOT NULL DEFAULT now()
+);
+
 -- Claim guard: risky health claims found in the store's posts, pages and products (weekly).
 CREATE TABLE IF NOT EXISTS insights_claim_flags (
   account_id bigint NOT NULL,
