@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AiProvider } from "./settings";
+import type { RelatedPhrase } from "./keyword-boost";
 import type { StoreResource } from "./shopify";
 
 /**
@@ -220,12 +221,19 @@ export async function writeImprovement(
   page: StoreResource,
   target: { query: string; position: number; impressions: number },
   relatedQueries: string[],
-  allowContent: boolean
+  allowContent: boolean,
+  phrases: RelatedPhrase[] = []
 ): Promise<PageImprovement> {
   const editableBody = page.type === "article" || page.type === "page";
   const prompt = `Improve this page so it ranks higher on Google for the search "${target.query}".
 It currently ranks around position ${target.position.toFixed(1)} with ${target.impressions} impressions in the last 28 days.
 Other searches this page appears for: ${relatedQueries.slice(0, 15).join(", ") || "none"}.
+${
+  phrases.length
+    ? `Related phrases people search on Google each month (from Keyword Planner): ${phrases.map((p) => `${p.keyword} (${p.monthlySearches})`).join(", ")}.
+Work the most relevant one or two into the description, and cover the others naturally in any new section. Only use phrases that fit the page; never stuff keywords.`
+    : ""
+}
 
 Page type: ${page.type}
 Address: ${page.url}

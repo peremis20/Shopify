@@ -4,6 +4,7 @@ import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
 import { findOpportunities } from "../seo-tools";
 import type { Opportunity } from "../seo-types";
+import { rankByVolume, relatedPhrases, type BoostedOpportunity } from "./keyword-boost";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./settings";
 import {
   getBody,
@@ -137,7 +138,7 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
 
 // ---------- improving ----------
 
-function pickTarget(ops: Opportunity[], brand: string, rested: Set<string>): { op: Opportunity; related: string[] } | null {
+function pickTarget(ops: BoostedOpportunity[], brand: string, rested: Set<string>): { op: BoostedOpportunity; related: string[] } | null {
   const usable = ops.filter((o) => {
     const path = new URL(o.page).pathname;
     return !(brand && o.query.includes(brand)) && !rested.has(o.page) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
@@ -150,7 +151,8 @@ function pickTarget(ops: Opportunity[], brand: string, rested: Set<string>): { o
 
 async function improvePage(ctx: Ctx, runId: string, op: Opportunity, related: string[], page: StoreResource) {
   const done: string[] = [];
-  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent);
+  const phrases = await relatedPhrases(op.query, op.page);
+  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent, phrases);
   const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: plan.reason, op };
 
   const apply = async (field: ChangeField, before: string | null, after: string, run: () => Promise<void>, targetId?: string) => {
@@ -245,7 +247,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
           WHERE account_id = ${accountId} AND created_at > now() - make_interval(days => ${REST_DAYS_PER_PAGE})`).map((r) => r.page_url!)
       );
       const brand = new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "").split(".")[0];
-      const ops = await findOpportunities(conn, "28d");
+      const ops: BoostedOpportunity[] = await rankByVolume(await findOpportunities(conn, "28d"));
       let picked = pickTarget(ops, brand, rested);
       let page: StoreResource | null = null;
       // Skip pages that don't map to an editable store item (up to a few tries).
@@ -259,9 +261,11 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         summary.push("No new opportunities to work on right now.");
       } else {
         const done = await improvePage(ctx, runId, picked.op, picked.related, page);
+        const searches = picked.op.monthlySearches;
+        const volume = searches ? ` (${searches.toLocaleString("en-US")} searches a month)` : "";
         summary.push(
           done.length
-            ? `Improved ${new URL(picked.op.page).pathname} for “${picked.op.query}”: ${done.join(", ").replace(/_/g, " ")}.`
+            ? `Improved ${new URL(picked.op.page).pathname} for “${picked.op.query}”${volume}: ${done.join(", ").replace(/_/g, " ")}.`
             : `Checked ${new URL(picked.op.page).pathname}; it already looked good, nothing changed.`
         );
       }
