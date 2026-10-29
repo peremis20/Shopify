@@ -199,35 +199,83 @@ async function pickGroqModels(apiKey: string): Promise<string[]> {
   return names;
 }
 
-/** Groq's JSON mode: the schema goes in the instructions and the reply is checked here. */
+/** The first complete JSON object in a reply, ignoring any text or code fences around it. */
+function extractJson(text: string): Record<string, unknown> | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "\\") i++;
+      else if (ch === '"') inString = false;
+    } else if (ch === '"') inString = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}" && --depth === 0) {
+      try {
+        return JSON.parse(text.slice(start, i + 1));
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Groq: the schema goes in the instructions and the reply is checked here.
+ * Each model is tried in JSON mode first; when Groq rejects its JSON, the
+ * rejected text is salvaged if it's complete, then the same model is asked
+ * again in plain mode and the JSON is read out of its reply. Only then is the
+ * next model tried.
+ */
 async function askGroq<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const required = (schema.required as string[]) ?? [];
   const messages = [
-    { role: "system", content: `${RULES}\n\nReply with only a JSON object that matches this JSON schema:\n${JSON.stringify(schema)}` },
+    {
+      role: "system",
+      content: `${RULES}\n\nReply with only one JSON object, no other text, that matches this JSON schema:\n${JSON.stringify(schema)}\nInside strings, escape double quotes and don't use raw line breaks.`,
+    },
     { role: "user", content: prompt },
   ];
+  const valid = (out: Record<string, unknown> | null): out is Record<string, unknown> =>
+    Boolean(out) && required.every((k) => k in out!);
+
   let lastError = "";
   for (const model of await pickGroqModels(apiKey)) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) await pause(2000);
-      const res = await fetch(`${GROQ_API}/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, response_format: { type: "json_object" }, temperature: 0.4 }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const text: string = body.choices?.[0]?.message?.content ?? "";
-        if (!text) throw new Error("Groq declined to write this change.");
-        const out = JSON.parse(text);
-        const missing = required.filter((k) => !(k in out));
-        if (missing.length) throw new Error(`Groq's answer was missing ${missing.join(", ")}.`);
-        return out as T;
+    for (const jsonMode of [true, false]) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt) await pause(2000);
+        const res = await fetch(`${GROQ_API}/chat/completions`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.3,
+            max_completion_tokens: 8192,
+            ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+            ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (res.ok) {
+          const text: string = body.choices?.[0]?.message?.content ?? "";
+          const out = extractJson(text);
+          if (valid(out)) return out as T;
+          lastError = text ? "the answer wasn't complete JSON" : "the answer was empty";
+          break; // try plain mode, or the next model
+        }
+        lastError = body?.error?.message ?? String(res.status);
+        if (res.status === 400) {
+          // Groq rejected the JSON; what the model wrote is often fine apart from a stray character or a cut off end.
+          const salvaged = extractJson(String(body?.error?.failed_generation ?? ""));
+          if (valid(salvaged)) return salvaged as T;
+          break;
+        }
+        if (!aiBusy(res.status)) throw new Error(`Groq request failed: ${lastError}`);
       }
-      lastError = body?.error?.message ?? String(res.status);
-      // 400 here usually means the model couldn't produce valid JSON: another model may.
-      if (!aiBusy(res.status) && res.status !== 400) throw new Error(`Groq request failed: ${lastError}`);
-      if (res.status === 400) break;
     }
   }
   throw new Error(`Groq couldn't write this change right now, the next run will try again. (${lastError})`);
