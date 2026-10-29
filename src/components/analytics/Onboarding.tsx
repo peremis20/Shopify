@@ -32,12 +32,11 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
     setBusy(id);
     setError(null);
     try {
-      const next = await run();
-      if (next) setStatus(next);
-      else load();
+      const next = (await run()) || (await api<Status>("/api/onboarding"));
+      setStatus(next);
       if (refreshDashboard) onChanged();
-      // Setup can stop halfway (a click only the owner can make), so its step stays open.
-      if (id !== "setup") setOpen(null);
+      // Straight on to the next step, open and ready. Setup can stop halfway (a click only the owner can make), so its step stays open.
+      if (id !== "setup") setOpen(next.steps.find((x) => !x.done)?.id ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That didn't work. Please try again.");
     } finally {
@@ -104,6 +103,15 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
                 <span className={`font-semibold ${step.done ? "text-dash-muted" : "text-dash-ink"}`}>{step.title}</span>
                 <span className="block text-dash-muted">{step.detail}</span>
               </span>
+              {!step.done && open !== step.id && (
+                <span
+                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
+                    step.id === next?.id ? "bg-dash-green text-white" : "border border-dash-line text-dash-ink"
+                  }`}
+                >
+                  {step.id === next?.id ? "Start" : "Open"}
+                </span>
+              )}
             </button>
             {open === step.id && (
               <div className="mt-3 pl-9">
