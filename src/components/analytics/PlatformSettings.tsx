@@ -18,6 +18,7 @@ export function PlatformForm({ settings, onSaved }: {
   const [groqKey, setGroqKey] = useState("");
   const [serperKey, setSerperKey] = useState("");
   const [githubKey, setGithubKey] = useState("");
+  const [pagespeedKey, setPagespeedKey] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -37,6 +38,7 @@ export function PlatformForm({ settings, onSaved }: {
         groqKey,
         serperKey,
         githubModelsKey: githubKey,
+        pagespeedKey,
         shopifyClientId: clientId,
         shopifyClientSecret: clientSecret,
       });
@@ -45,6 +47,7 @@ export function PlatformForm({ settings, onSaved }: {
       setGroqKey("");
       setSerperKey("");
       setGithubKey("");
+      setPagespeedKey("");
       setClientSecret("");
       setNote(d.claudeError ? `Saved, but a key didn't work: ${d.claudeError}` : "Saved.");
       onSaved?.(d.settings);
@@ -106,12 +109,13 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-github", "or GitHub Models token", githubKey, setGithubKey, has?.hasGithub)}
         {input("pf-gemini", "or Gemini API key", geminiKey, setGeminiKey, has?.hasGemini)}
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
+        {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-shop-id", "Shopify app Client ID", clientId, setClientId, has?.hasShopifyApp, false)}
         {input("pf-shop-secret", "Shopify app Client secret", clientSecret, setClientSecret, has?.hasShopifyApp)}
         {note && <p className="text-dash-ink">{note}</p>}
         <button
           type="submit"
-          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !clientId && !clientSecret)}
+          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !pagespeedKey && !clientId && !clientSecret)}
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           {busy ? "Saving…" : "Save platform keys"}

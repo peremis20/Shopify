@@ -7,6 +7,7 @@ import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from 
 import { keyOf } from "./apps/types";
 import { clickGain } from "./keyword-boost";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider, type PlatformSettings } from "./settings";
+import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import {
   getBody,
   listArticles,
@@ -14,6 +15,7 @@ import {
   setBody,
   setImageAlt,
   setSeoField,
+  shopName,
   type StoreAccess,
   type StoreResource,
 } from "./shopify";
@@ -185,7 +187,12 @@ async function gatherCandidates(hub: Hub, apps: RankingApp[], notes: string[]): 
       return [];
     });
     for (const c of found) {
-      if (seen.has(keyOf(c.op))) continue;
+      if (seen.has(keyOf(c.op))) {
+        // A later app may know it's slipping when an earlier one only saw room to climb.
+        const existing = cands.find((x) => keyOf(x.op) === keyOf(c.op))!;
+        if (c.mode === "defend" && existing.mode !== "defend") Object.assign(existing, { mode: "defend", previousPosition: c.previousPosition });
+        continue;
+      }
       seen.add(keyOf(c.op));
       cands.push(c);
     }
@@ -294,6 +301,12 @@ async function linkSource(ctx: Ctx, cand: Candidate, page: StoreResource) {
     .sort((x, y) => y.score - x.score)[0]?.a;
 }
 
+/** Structured data the page should get, or null. */
+async function schemaFor(ctx: Ctx, page: StoreResource, body: string): Promise<string | null> {
+  const [live, name] = await Promise.all([liveHtml(page.url), shopName(ctx.store).catch(() => ctx.ourDomain)]);
+  return buildSchema(page, body, live, name);
+}
+
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
   const { cand, page, improvement } = plan;
   const op = cand.op;
@@ -325,6 +338,19 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     const blockId = `${runId}-content`;
     const block = wrap(blockId, improvement.contentSectionHtml);
     await apply("content", blockId, block, () => setBody(ctx.store, page.type as "article" | "page", page.id, `${page.body}\n${block}`));
+  }
+
+  // Structured data, rebuilt from the page as it is now (including any new FAQ).
+  if (page.type === "article" || page.type === "page") {
+    const type = page.type;
+    const current = await getBody(ctx.store, type, page.id).catch(() => null);
+    const updated = { ...page, metaDescription: improvement.metaDescription || page.metaDescription };
+    const plan = current === null ? null : await schemaFor(ctx, updated, current);
+    if (current !== null && plan) {
+      const blockId = `${runId}-schema`;
+      const block = wrap(blockId, plan);
+      await apply("schema", blockId, block, () => setBody(ctx.store, type, page.id, `${withoutAutopilotSchema(current)}\n${block}`));
+    }
   }
 
   const source = await linkSource(ctx, cand, page);
@@ -437,6 +463,14 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         for (const a of improvement.altTexts) changes.push({ field: "alt", before: null, after: a.alt });
         if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page"))
           changes.push({ field: "content", before: null, after: improvement.contentSectionHtml });
+        if (page.type === "article" || page.type === "page") {
+          const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
+          const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
+          if (schema) {
+            const types = [...schema.matchAll(/"@type":"(BlogPosting|FAQPage)"/g)].map((m) => m[1]).join(" and ");
+            changes.push({ field: "schema", before: null, after: `Adds ${types} structured data built from the page.` });
+          }
+        }
         const source = await linkSource(ctx, cand, page).catch(() => undefined);
         if (source) changes.push({ field: "internal_link", before: null, after: `A closing paragraph in “${source.title}” linking here.` });
         previewOut = {

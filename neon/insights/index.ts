@@ -33,6 +33,8 @@ const routes: Record<string, Handler> = {
   "POST /api/autopilot/platform": api.savePlatform,
   "POST /api/autopilot/run": api.runAutopilotNow,
   "POST /api/autopilot/preview": api.previewAutopilot,
+  "GET /api/autopilot/watch": api.autopilotWatch,
+  "POST /api/autopilot/check": api.autopilotCheckNow,
   "POST /api/autopilot/revert": api.revertAutopilot,
   "GET /api/shopify/install": api.shopifyInstall,
   "GET /api/shopify/callback": api.shopifyCallback,

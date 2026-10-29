@@ -206,6 +206,27 @@ Claude API key; both are entered in the dashboard and stored encrypted, or
 set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
 `ANTHROPIC_API_KEY`.
 
+### Page one watch, site health and structured data
+
+- **Page one watch:** every morning the scheduled trigger checks Google page
+  one (serper.dev) for up to 15 searches per account: saved keywords first,
+  then the page one searches with the most clicks. Positions are stored in
+  `insights_rank_daily`. The "Daily rank tracking" app turns a drop against the
+  best position of the week into a defend target for that day's run.
+- **Site health:** a few pages a day (the top Search Console pages plus any page
+  the autopilot changed, each rechecked weekly) go through the Search Console
+  URL Inspection API (index status, last crawl, rich results and their issues)
+  and PageSpeed Insights (mobile speed; set an optional Google API key in
+  Platform keys for higher limits). Results are in `insights_page_health`, with
+  plain fixes. Pages Google hasn't indexed are passed over by the autopilot.
+  Requesting indexing has no general API, so each page links to its Search
+  Console inspection, where the button is.
+- **Structured data:** after changing a blog post or page, the autopilot adds
+  JSON-LD built only from the page: BlogPosting (when neither the theme nor the
+  post has article markup, checked against the live page) and FAQPage (from
+  question headings with answers). It is rebuilt on later runs and can be undone
+  like any other change.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

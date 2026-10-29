@@ -23,6 +23,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   content: "New section",
   alt: "Image alt text",
   internal_link: "Internal link",
+  schema: "Structured data",
   intent: "Content gap",
 };
 

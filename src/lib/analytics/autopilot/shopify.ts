@@ -146,6 +146,8 @@ export interface StoreResource {
   metaDescription: string | null;
   /** Product images that have no alt text yet. */
   imagesMissingAlt: { id: string; url: string }[];
+  /** Blog posts only: what structured data needs. */
+  article?: { publishedAt: string | null; updatedAt: string | null; author: string | null; image: string | null };
 }
 
 const SEO_FIELDS = `
@@ -160,13 +162,19 @@ export async function resolveResource(s: StoreAccess, url: string): Promise<Stor
   if (!handle) return null;
 
   if (parts[0] === "blogs" && parts.length === 3) {
-    const d = await shopifyGql<{ articles: { nodes: { id: string; title: string; body: string; titleTag: { value: string } | null; descTag: { value: string } | null }[] } }>(
+    const d = await shopifyGql<{ articles: { nodes: {
+      id: string; title: string; body: string; titleTag: { value: string } | null; descTag: { value: string } | null;
+      publishedAt: string | null; updatedAt: string | null; author: { name: string } | null; image: { url: string } | null;
+    }[] } }>(
       s,
-      `query($q: String!) { articles(first: 1, query: $q) { nodes { id title body ${SEO_FIELDS} } } }`,
+      `query($q: String!) { articles(first: 1, query: $q) { nodes { id title body publishedAt updatedAt author { name } image { url } ${SEO_FIELDS} } } }`,
       { q: `handle:${handle}` }
     );
     const a = d.articles.nodes[0];
-    return a && { type: "article", id: a.id, title: a.title, url, body: a.body ?? "", metaTitle: a.titleTag?.value ?? null, metaDescription: a.descTag?.value ?? null, imagesMissingAlt: [] };
+    return a && {
+      type: "article", id: a.id, title: a.title, url, body: a.body ?? "", metaTitle: a.titleTag?.value ?? null, metaDescription: a.descTag?.value ?? null, imagesMissingAlt: [],
+      article: { publishedAt: a.publishedAt, updatedAt: a.updatedAt, author: a.author?.name ?? null, image: a.image?.url ?? null },
+    };
   }
   if (parts[0] === "pages" && parts.length === 2) {
     const d = await shopifyGql<{ pages: { nodes: { id: string; title: string; body: string; titleTag: { value: string } | null; descTag: { value: string } | null }[] } }>(

@@ -100,6 +100,28 @@ export function ensureSchema(): Promise<void> {
       results jsonb NOT NULL
     )`;
     await sql`CREATE INDEX IF NOT EXISTS insights_serp_snapshots_lookup ON insights_serp_snapshots (account_id, query, checked_at DESC)`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_rank_daily (
+      account_id bigint NOT NULL,
+      query text NOT NULL,
+      checked_on date NOT NULL,
+      position integer,
+      url text,
+      PRIMARY KEY (account_id, query, checked_on)
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_page_health (
+      account_id bigint NOT NULL,
+      url text NOT NULL,
+      checked_at timestamptz NOT NULL DEFAULT now(),
+      index_verdict text,
+      coverage text,
+      last_crawl timestamptz,
+      rich_results jsonb,
+      perf_score integer,
+      lcp_ms integer,
+      cls real,
+      issues jsonb NOT NULL DEFAULT '[]',
+      PRIMARY KEY (account_id, url)
+    )`;
     await sql`CREATE TABLE IF NOT EXISTS insights_settings (
       key text PRIMARY KEY,
       value text NOT NULL,

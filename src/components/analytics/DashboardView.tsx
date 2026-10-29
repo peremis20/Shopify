@@ -8,6 +8,7 @@ import { formatDuration, formatNumber, formatPct, formatRange } from "./format";
 import { ClockIcon, CloseIcon, FileIcon, InfoIcon, KeyIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
 import { Legend, LineChart } from "./LineChart";
 import { Autopilot } from "./Autopilot";
+import { RankHealth } from "./RankHealth";
 import { KeywordResearch } from "./KeywordResearch";
 import { SignInScreen } from "./SignIn";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
@@ -370,6 +371,8 @@ export function DashboardView() {
           </div>
 
           <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
+
+          <RankHealth connected={connection?.mode === "oauth"} />
 
           <KeywordResearch
             connection={connection}

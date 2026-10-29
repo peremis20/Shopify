@@ -18,7 +18,9 @@ import {
   verifyWebhookHmac,
 } from "./autopilot/shopify";
 import { appStatuses } from "./autopilot/apps";
+import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
 import { checkSerpKey } from "./autopilot/serp";
+import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -401,6 +403,7 @@ export const savePlatform = (req: Request) =>
       groqKey: str("groqKey"),
       githubModelsKey: str("githubModelsKey"),
       serperKey: str("serperKey"),
+      pagespeedKey: str("pagespeedKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
@@ -419,6 +422,34 @@ export const savePlatform = (req: Request) =>
       await checkSerpKey(p.serperKey).catch((e) => (claude = [claude, message(e)].filter(Boolean).join(" ")));
     }
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
+  });
+
+const domainOf = (site: string) => new URL(site.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "");
+
+/** Today's rank check and a few page health checks for one account. Each part runs at most once a day. */
+async function maintain(accountId: string, force = false): Promise<string> {
+  const [conn, platform] = await Promise.all([getConnection(accountId), readPlatformSettings()]);
+  if (!conn?.gscSiteUrl) return "no Search Console property";
+  const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
+  const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
+  return `ranks ${ranks}, health ${pages}`;
+}
+
+/** Rankings watch and site health for the Autopilot page. */
+export const autopilotWatch = (req: Request) =>
+  withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    const [ranks, health] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn)]);
+    return json({ ranks, health });
+  });
+
+/** "Check now": today's ranks (if not done yet) and the next pages' health. */
+export const autopilotCheckNow = (req: Request) =>
+  withAccount(req, async (account) => {
+    await maintain(account.id, true);
+    const conn = await getConnection(account.id);
+    const [ranks, health] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn)]);
+    return json({ ranks, health });
   });
 
 /** Goes through a whole run on live data and returns what it would change, without changing anything. */
@@ -443,6 +474,11 @@ export const revertAutopilot = (req: Request) =>
 export async function autopilotTick(): Promise<Response> {
   const results: string[] = [];
   try {
+    // Rank checks and health first: a drop found this morning can be defended in today's run.
+    const upkeep = [...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3))])].slice(0, 3);
+    for (const accountId of upkeep) {
+      results.push(`account ${accountId} checks: ${await maintain(accountId).catch((e) => message(e))}`);
+    }
     for (const accountId of await accountsDueForRun(3)) {
       const r = await runAutopilot(accountId, await getConnection(accountId), "schedule").catch((e) => ({ message: message(e) }));
       results.push(`account ${accountId}: ${r.message}`);

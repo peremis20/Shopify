@@ -51,7 +51,7 @@ const domainOf = (url: string) => {
   }
 };
 
-async function fetchSerp(apiKey: string, query: string): Promise<Omit<Serp, "ourPosition">> {
+export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Serp, "ourPosition">> {
   const cacheKey = `serp:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`;
   await ensureSchema();
   const [row] = await sql`
