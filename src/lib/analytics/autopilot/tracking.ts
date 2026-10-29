@@ -29,9 +29,24 @@ export interface RankWatchRow {
 const DAY = 86_400_000;
 const isOurs = (domain: string, ourDomain: string) => domain === ourDomain || domain.endsWith(`.${ourDomain}`);
 
-/** Saved keywords first, then the page one searches with the most clicks (brand searches left out). */
+/**
+ * Long, chat style questions ("help me pick out a simple, effective ...") come
+ * from AI search and never appear as ordinary Google results, so they aren't
+ * worth a daily check.
+ */
+const isKeyword = (q: string) => q.split(/\s+/).length <= 6 && !/[?.!,]$/.test(q.trim()) && !/^(help me|can you|tell me|show me|i need|i want)\b/i.test(q);
+
+/**
+ * In order: saved keywords, the searches the autopilot is working on, then the
+ * page one and page two searches with the most impressions (no brand searches).
+ */
 async function queriesToTrack(accountId: string, conn: Connection, ourDomain: string): Promise<string[]> {
   const saved = (await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords);
+  const targets = (
+    await sql`SELECT query, max(created_at) AS at FROM insights_autopilot_changes
+      WHERE account_id = ${accountId} AND field <> 'intent' AND created_at > now() - interval '120 days'
+      GROUP BY query ORDER BY at DESC LIMIT 10`
+  ).map((r) => r.query!);
   const end = new Date(Date.now() - 3 * DAY);
   const body = await googleRequest<{ rows?: { keys: string[]; clicks: number; impressions: number; position: number }[] }>(
     { kind: "oauth", refreshToken: conn.refreshToken },
@@ -39,20 +54,23 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
     { startDate: toIso(new Date(end.getTime() - 27 * DAY)), endDate: toIso(end), dimensions: ["query"], rowLimit: 500 }
   ).catch(() => ({ rows: [] }));
   const brand = ourDomain.split(".")[0];
-  const pageOne = (body.rows ?? [])
-    .filter((r) => r.position <= 12 && r.impressions >= 10 && !(brand && r.keys[0].includes(brand)))
+  const searches = (body.rows ?? [])
+    .filter((r) => r.position <= 20 && r.impressions >= 5 && isKeyword(r.keys[0]) && !(brand && r.keys[0].includes(brand)))
     .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
     .map((r) => r.keys[0]);
-  return [...new Set([...saved.slice(0, 5), ...pageOne].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
+  return [...new Set([...saved.slice(0, 5), ...targets, ...searches].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
 }
 
 /** Checks today's Google positions once a day. Returns how many searches were checked. */
 export async function trackRanks(accountId: string, conn: Connection, serpKey: string, ourDomain: string): Promise<number> {
   await ensureSchema();
   const today = toIso(new Date());
-  const [done] = await sql`SELECT 1 AS x FROM insights_rank_daily WHERE account_id = ${accountId} AND checked_on = ${today} LIMIT 1`;
-  if (done) return 0;
-  const queries = await queriesToTrack(accountId, conn, ourDomain);
+  const doneToday = new Set(
+    (await sql`SELECT query FROM insights_rank_daily WHERE account_id = ${accountId} AND checked_on = ${today}`).map((r) => r.query!)
+  );
+  if (doneToday.size >= TRACK_PER_DAY) return 0;
+  // Only searches not checked yet today, so a second run the same day costs nothing extra.
+  const queries = (await queriesToTrack(accountId, conn, ourDomain)).filter((q) => !doneToday.has(q));
   let checked = 0;
   // A few at a time, to stay friendly with the search results API.
   for (let i = 0; i < queries.length; i += 5) {
@@ -88,6 +106,7 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
   const weekAgo = toIso(new Date(Date.now() - 7 * DAY));
   const out: RankWatchRow[] = [];
   for (const [query, hist] of byQuery) {
+    if (!isKeyword(query)) continue;
     const last = hist.at(-1)!;
     const prev = hist.at(-2);
     const week = hist.filter((h) => h.day >= weekAgo && h.position !== null).map((h) => h.position!);

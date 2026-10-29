@@ -154,24 +154,31 @@ function HealthList({ pages }: { pages: PageHealth[] }) {
   if (!pages.length) {
     return <p className="py-8 text-center text-sm text-dash-muted">No pages checked yet. Click Check now, or wait for the next morning run.</p>;
   }
-  const withIssues = pages.filter((p) => p.issues.length).length;
+  const withIssues = pages.filter((p) => p.issues.some((i) => i.level !== "low")).length;
+  const noSpeed = pages.every((p) => p.perfScore === null);
   return (
     <div className="text-sm">
       <p className="mb-2 text-dash-muted">
         {pages.length} pages checked, {withIssues ? `${withIssues} need attention` : "no problems found"}.
       </p>
+      {noSpeed && (
+        <p className="mb-2 rounded-lg bg-[#FBF1E1] p-2.5 text-dash-ink">
+          Phone speed isn&apos;t available yet: Google&apos;s shared PageSpeed allowance is used up. Add a free Google API key
+          under Platform keys and speed scores will appear on the next check.
+        </p>
+      )}
       <ul className="max-h-[420px] divide-y divide-dash-line/70 overflow-auto">
         {pages.map((p) => (
           <li key={p.url} className="py-2">
             <button onClick={() => setOpen(open === p.url ? null : p.url)} className="flex w-full items-center gap-2 text-left">
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${
-                  p.issues.some((i) => i.level === "high") ? "bg-dash-down" : p.issues.length ? "bg-[#D9A23B]" : "bg-dash-up"
+                  p.issues.some((i) => i.level === "high") ? "bg-dash-down" : p.issues.some((i) => i.level === "medium") ? "bg-[#D9A23B]" : "bg-dash-up"
                 }`}
               />
               <span className="min-w-0 flex-1 truncate text-dash-ink" title={p.url}>{pathOf(p.url)}</span>
               <span className="shrink-0 text-xs text-dash-muted">
-                {p.indexed === false ? "Not indexed" : p.indexed ? "Indexed" : ""}
+                {p.coverage && /redirect/i.test(p.coverage) ? "Redirects" : p.indexed === false ? "Not indexed" : p.indexed ? "Indexed" : ""}
                 {p.perfScore !== null ? ` · speed ${p.perfScore}` : ""}
               </span>
             </button>

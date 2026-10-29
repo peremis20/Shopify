@@ -102,7 +102,7 @@ const COVERAGE_FIX: [RegExp, string][] = [
   [/crawled/i, "Google crawled it but chose not to index it, usually because it looks thin or too similar to another page. Make it more useful and distinct, then request indexing."],
   [/noindex/i, "The page tells Google not to index it. Remove the noindex setting if you want it in search."],
   [/canonical|duplicate/i, "Google treats another page as the main version. Make this page distinct, or point its canonical tag at the page you want to rank."],
-  [/redirect/i, "The address redirects. Link to the final address instead."],
+  [/redirect/i, "This old address forwards to another page, which is normal after renaming a product or post. Update any links that still use the old address."],
   [/404|not found/i, "The page returns not found. Restore it or redirect it to the closest page."],
 ];
 
@@ -114,8 +114,10 @@ function issuesFor(
   const out: HealthIssue[] = [];
   if (idx.verdict && idx.verdict !== "PASS") {
     const coverage = idx.coverageState ?? "Not indexed";
+    // Redirects and alternate versions are usually on purpose (a renamed product, a variant URL).
+    const expected = /redirect|alternate/i.test(coverage);
     out.push({
-      level: "high",
+      level: expected ? "low" : "high",
       text: `Not in Google: ${coverage}.`,
       fix: COVERAGE_FIX.find(([re]) => re.test(coverage))?.[1] ?? "Check the page in Search Console and request indexing once it's fixed.",
     });
