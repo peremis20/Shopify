@@ -9,24 +9,58 @@ import { PlatformConnect } from "./PlatformConnect";
 import { Card } from "./ui";
 
 /**
- * The setup checklist at the top of the dashboard: what's done, what's next,
- * and the one action for the next step right there, so nobody gets stuck.
+ * Guided setup at the top of the dashboard: one question at a time, about two
+ * minutes. Steps already done are skipped, optional ones can be skipped, and
+ * the first site check starts on its own at the end.
  */
+type Screen = "google" | "website" | "connect" | "business" | "data" | "finish";
+
+const SKIP_KEY = "insights.onboardingSkip";
+const readSkips = (): string[] => {
+  try {
+    return JSON.parse(localStorage.getItem(SKIP_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+};
+
+/** The screens that apply to this customer, in order, and whether each is done. */
+function screensFor(s: Status, skips: string[]): { id: Screen; done: boolean }[] {
+  const step = (id: string) => s.steps.find((x) => x.id === id)?.done ?? false;
+  const out: { id: Screen; done: boolean }[] = [
+    { id: "google", done: step("google") },
+    { id: "website", done: step("website") },
+  ];
+  if (s.platform && s.platform !== "shopify" && step("website")) out.push({ id: "connect", done: s.siteConnected || skips.includes("connect") });
+  out.push({ id: "business", done: step("business") });
+  out.push({ id: "data", done: (step("search_console") && step("analytics")) || skips.includes("data") });
+  out.push({ id: "finish", done: step("autopilot") });
+  return out;
+}
+
+const TITLES: Record<Screen, string> = {
+  google: "Sign in with Google",
+  website: "What's your website?",
+  connect: "Let the app make changes for you",
+  business: "What do you sell?",
+  data: "Your Google data",
+  finish: "Turn on the autopilot",
+};
+
 export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () => void; onChanged: () => void }) {
   const [status, setStatus] = useState<Status | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [skips, setSkips] = useState<string[]>([]);
+  const [back, setBack] = useState<Screen | null>(null);
 
   const load = useCallback(() => {
-    api<Status>("/api/onboarding")
-      .then((s) => {
-        setStatus(s);
-        setOpen((o) => o ?? s.steps.find((x) => !x.done)?.id ?? null);
-      })
-      .catch(() => setStatus(null));
+    api<Status>("/api/onboarding").then(setStatus).catch(() => setStatus(null));
   }, []);
-  useEffect(load, [load]);
+  useEffect(() => {
+    setSkips(readSkips());
+    load();
+  }, [load]);
 
   async function act(id: string, run: () => Promise<Status | void>, refreshDashboard = false) {
     setBusy(id);
@@ -35,8 +69,8 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
       const next = (await run()) || (await api<Status>("/api/onboarding"));
       setStatus(next);
       if (refreshDashboard) onChanged();
-      // Straight on to the next step, open and ready. Setup can stop halfway (a click only the owner can make), so its step stays open.
-      if (id !== "setup") setOpen(next.steps.find((x) => !x.done)?.id ?? null);
+      // Setup can stop halfway (a click only the owner can make), so it stays on its screen.
+      if (id !== "setup") setBack(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That didn't work. Please try again.");
     } finally {
@@ -44,84 +78,167 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
     }
   }
 
-  if (!status) return null;
-  const done = status.steps.filter((s) => s.done).length;
-  const total = status.steps.length;
-  if (status.complete && status.dismissed) return null;
+  function skip(id: Screen) {
+    const next = [...new Set([...skips, id])];
+    setSkips(next);
+    setBack(null);
+    try {
+      localStorage.setItem(SKIP_KEY, JSON.stringify(next));
+    } catch {
+      /* it just asks again next time */
+    }
+  }
 
+  if (!status) return null;
+  const screens = screensFor(status, skips);
+  const current = back ?? screens.find((x) => !x.done)?.id ?? null;
+  const all = (id: string) => status.steps.find((x) => x.id === id);
+
+  if (!current) {
+    if (status.dismissed) return null;
+    return (
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dash-up/30 bg-dash-up/5 p-4 text-sm">
+        <span>
+          <b>You&apos;re all set.</b> The autopilot is working on your rankings; its changes show in the Autopilot card below.
+        </span>
+        <button onClick={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} className="font-semibold text-dash-green hover:underline">
+          Close
+        </button>
+      </div>
+    );
+  }
+  const left = screens.filter((x) => !x.done).length;
   if (status.dismissed) {
     return (
       <div className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-dash-line bg-white px-4 py-3 text-sm">
         <span>
-          Setup: {done} of {total} done.
+          Setup: {left} quick {left === 1 ? "step" : "steps"} left.
         </span>
-        <button
-          onClick={() => act("show", () => api<Status>("/api/onboarding/profile", { dismissed: false }))}
-          className="font-semibold text-dash-green hover:underline"
-        >
-          Show the checklist
+        <button onClick={() => act("show", () => api<Status>("/api/onboarding/profile", { dismissed: false }))} className="font-semibold text-dash-green hover:underline">
+          Continue setup
         </button>
       </div>
     );
   }
 
-  const next = status.steps.find((s) => !s.done);
+  const index = screens.findIndex((x) => x.id === current);
+  const previous = screens.slice(0, index).reverse().find((x) => x.id !== "google")?.id ?? null;
   return (
     <Card className="mt-6">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="font-serif text-2xl">{status.complete ? "You're all set" : "Let's get you set up"}</h2>
-          <p className="text-sm text-dash-muted">
-            {status.complete
-              ? "Everything is connected and the autopilot is working on your rankings."
-              : `${done} of ${total} done. Each step takes about a minute${next ? `; next: ${next.title.toLowerCase()}` : ""}.`}
-          </p>
+      <div className="mx-auto max-w-xl py-2">
+        <div className="mb-5 flex items-center justify-between text-xs text-dash-muted">
+          <span>
+            Step {index + 1} of {screens.length}
+          </span>
+          <button onClick={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} className="hover:text-dash-ink">
+            Finish later
+          </button>
         </div>
+        <div className="mb-6 flex gap-1.5">
+          {screens.map((x, i) => (
+            <span key={x.id} className={`h-1.5 flex-1 rounded-full ${i < index || x.done ? "bg-dash-green" : i === index ? "bg-dash-green/50" : "bg-dash-line"}`} />
+          ))}
+        </div>
+        <h2 className="mb-4 font-serif text-2xl text-dash-ink sm:text-3xl">{TITLES[current]}</h2>
+        {error && <p className="mb-3 rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
+        <div className="text-sm">
+          {current === "google" && (
+            <div className="space-y-3">
+              <p className="text-dash-muted">One Google sign in covers Search Console and Analytics. The app only reads them.</p>
+              <ConnectButton />
+            </div>
+          )}
+          {current === "website" && <WebsiteConnect busy={busy === "website"} act={act} />}
+          {current === "connect" && status.domain && (
+            <div className="space-y-3">
+              <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("connected", async () => undefined, true)} />
+              <button onClick={() => skip("connect")} className="font-semibold text-dash-muted hover:text-dash-ink">
+                Skip for now: I&apos;ll paste changes in myself
+              </button>
+            </div>
+          )}
+          {current === "business" && <BusinessPicker status={status} busy={busy} act={act} />}
+          {current === "data" && (
+            <div className="space-y-3">
+              <p className="text-dash-muted">
+                {all("search_console")?.done ? "Search Console is connected. " : ""}
+                {all("analytics")?.done ? "Google Analytics is connected. " : ""}
+                {!all("search_console")?.done ? all("search_console")?.detail : all("analytics")?.detail}
+              </p>
+              <PropertyHelp step={(!all("search_console")?.done ? all("search_console") : all("analytics"))!} status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} />
+              <button onClick={() => skip("data")} className="font-semibold text-dash-muted hover:text-dash-ink">
+                Skip for now
+              </button>
+            </div>
+          )}
+          {current === "finish" && (
+            <Finish status={status} busy={busy} act={act} onLater={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} />
+          )}
+        </div>
+        {previous && current !== "google" && (
+          <button onClick={() => setBack(previous)} className="mt-6 text-sm text-dash-muted hover:text-dash-ink">
+            ← Back
+          </button>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/** The last screen: the first site check starts on its own; one button turns the autopilot on. */
+function Finish({ status, busy, act, onLater }: { status: Status; busy: string | null; act: Act; onLater: () => void }) {
+  const checked = status.steps.find((x) => x.id === "first_check")?.done;
+  useEffect(() => {
+    if (!checked) api("/api/autopilot/check", {}).catch(() => undefined);
+  }, [checked]);
+  return (
+    <div className="space-y-4">
+      <p className="text-dash-muted">
+        Your first site check is running now (rankings, site health, risky claims and overlapping pages). The autopilot then improves
+        your pages every day, at most 4 a week, and every change can be undone.
+      </p>
+      <div className="flex flex-wrap items-center gap-3">
         <button
-          onClick={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))}
-          className="text-sm text-dash-muted hover:text-dash-ink"
+          disabled={busy === "enable"}
+          onClick={() => act("enable", async () => void (await api("/api/autopilot/settings", { enabled: true })), true)}
+          className={button}
         >
-          {status.complete ? "Close" : "Hide for now"}
+          {busy === "enable" ? "Turning on…" : "Turn on the autopilot"}
+        </button>
+        <button
+          onClick={() => {
+            onLater();
+            scrollTo("autopilot");
+          }}
+          className="font-semibold text-dash-green hover:underline"
+        >
+          Preview its first change before turning it on
         </button>
       </div>
-      <div className="mb-4 h-2 overflow-hidden rounded-full bg-dash-line/60">
-        <div className="h-full rounded-full bg-dash-green transition-all" style={{ width: `${(done / total) * 100}%` }} />
-      </div>
-      {error && <p className="mb-3 rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
-      <ol className="divide-y divide-dash-line/70 text-sm">
-        {status.steps.map((step, i) => (
-          <li key={step.id} className="py-2.5">
-            <button onClick={() => setOpen(open === step.id ? null : step.id)} className="flex w-full items-center gap-3 text-left">
-              <span
-                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
-                  step.done ? "bg-dash-green text-white" : step.id === next?.id ? "border-2 border-dash-green text-dash-green" : "border border-dash-line text-dash-muted"
-                }`}
-              >
-                {step.done ? "✓" : i + 1}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className={`font-semibold ${step.done ? "text-dash-muted" : "text-dash-ink"}`}>{step.title}</span>
-                <span className="block text-dash-muted">{step.detail}</span>
-              </span>
-              {!step.done && open !== step.id && (
-                <span
-                  className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
-                    step.id === next?.id ? "bg-dash-green text-white" : "border border-dash-line text-dash-ink"
-                  }`}
-                >
-                  {step.id === next?.id ? "Start" : "Open"}
-                </span>
-              )}
-            </button>
-            {open === step.id && (
-              <div className="mt-3 pl-9">
-                <StepAction step={step} status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} />
-              </div>
-            )}
-          </li>
+    </div>
+  );
+}
+
+/** One tap: what the business sells (the brand name is filled in from the store and can be changed later). */
+function BusinessPicker({ status, busy, act }: { status: Status; busy: string | null; act: Act }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-dash-muted">So every change fits your business and stays within health claim rules.</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {status.businessTypes.map((b) => (
+          <button
+            key={b.id}
+            disabled={busy !== null}
+            onClick={() => act(`business`, () => api<Status>("/api/onboarding/profile", { businessType: b.id }), true)}
+            className={`rounded-xl border px-4 py-3 text-left font-semibold hover:border-dash-green hover:bg-dash-green/5 disabled:opacity-60 ${
+              status.businessType === b.id ? "border-dash-green bg-dash-green/5" : "border-dash-line bg-white"
+            }`}
+          >
+            {b.label}
+          </button>
         ))}
-      </ol>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -132,45 +249,6 @@ const link = "font-semibold text-dash-green hover:underline";
 
 function scrollTo(id: string) {
   document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function StepAction({ step, status, busy, act, onOpenSettings }: { step: Step; status: Status; busy: string | null; act: Act; onOpenSettings: () => void }) {
-  switch (step.id) {
-    case "google":
-      return step.done ? <button onClick={onOpenSettings} className={link}>Change Google account in Settings</button> : <ConnectButton />;
-    case "website":
-      return step.done ? (
-        !status.siteConnected && status.domain && status.platform !== "shopify" ? (
-          <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("website-connected", async () => undefined, true)} />
-        ) : (
-          <p className="text-dash-muted">Connected. You can change it any time in the Autopilot card.</p>
-        )
-      ) : (
-        <WebsiteConnect busy={busy === "website"} act={act} />
-      );
-    case "business":
-      return <BusinessForm status={status} busy={busy === "business"} act={act} />;
-    case "search_console":
-    case "analytics":
-      return <PropertyHelp step={step} status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} />;
-    case "first_check":
-      return (
-        <button
-          disabled={busy === "check"}
-          onClick={() => act("check", async () => void (await api("/api/autopilot/check", {})), true)}
-          className={button}
-        >
-          {busy === "check" ? "Checking, about a minute…" : step.done ? "Check again now" : "Run the first check"}
-        </button>
-      );
-    case "preview":
-    case "autopilot":
-      return (
-        <button onClick={() => scrollTo("autopilot")} className={button}>
-          {step.id === "preview" ? "Go to Preview next run" : "Go to the autopilot switch"}
-        </button>
-      );
-  }
 }
 
 /** Shopify connects in one click; any other website by its address (read from its sitemap, changes as a fix list). */
@@ -248,55 +326,6 @@ function ShopifyConnect() {
         Find it in your Shopify admin address: admin.shopify.com/store/<b>your-store-name</b>. Shopify asks you to approve, then
         you come right back.
       </p>
-    </form>
-  );
-}
-
-function BusinessForm({ status, busy, act }: { status: Status; busy: boolean; act: Act }) {
-  const [type, setType] = useState(status.businessType ?? "");
-  const [brand, setBrand] = useState(status.brandName ?? "");
-  const [hosts, setHosts] = useState(status.gaExcludeHosts.join(", "));
-  const [more, setMore] = useState(Boolean(status.gaExcludeHosts.length));
-  return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        act("business", () => api<Status>("/api/onboarding/profile", { businessType: type, brandName: brand, gaExcludeHosts: hosts }), true);
-      }}
-      className="max-w-lg space-y-3"
-    >
-      <label className="block">
-        <span className="mb-1 block text-dash-muted">What do you sell?</span>
-        <select value={type} onChange={(e) => setType(e.target.value)} className="w-full rounded-lg border border-dash-line bg-white px-3 py-2">
-          <option value="" disabled>
-            Choose one
-          </option>
-          {status.businessTypes.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="block">
-        <span className="mb-1 block text-dash-muted">Brand name, as it should appear in Google titles</span>
-        <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Your brand" className="w-full rounded-lg border border-dash-line px-3 py-2" />
-      </label>
-      {more ? (
-        <label className="block">
-          <span className="mb-1 block text-dash-muted">Other websites using the same Analytics tag (left out of your numbers)</span>
-          <input value={hosts} onChange={(e) => setHosts(e.target.value)} placeholder="othersite.com" className="w-full rounded-lg border border-dash-line px-3 py-2" />
-        </label>
-      ) : (
-        <button type="button" onClick={() => setMore(true)} className="text-dash-muted hover:text-dash-ink">
-          Does another website share your Google Analytics? (optional)
-        </button>
-      )}
-      <div>
-        <button type="submit" disabled={!type || busy} className={button}>
-          {busy ? "Saving…" : "Save"}
-        </button>
-      </div>
     </form>
   );
 }
