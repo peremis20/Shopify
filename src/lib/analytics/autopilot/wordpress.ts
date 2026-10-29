@@ -148,3 +148,8 @@ export async function wpSetSeo(w: WpAccess, id: string, field: "title" | "descri
 export async function wpSetSchema(w: WpAccess, id: string, schema: string | null): Promise<void> {
   await wpRequest(w, "POST", `/schema/${id}`, { schema });
 }
+
+/** Google's site verification code and Analytics tag id, which the plugin prints on every page (plugin 1.1+). */
+export async function wpSetGoogle(w: WpAccess, codes: { verification: string | null; measurement: string | null }): Promise<void> {
+  await wpRequest(w, "POST", "/google", codes);
+}

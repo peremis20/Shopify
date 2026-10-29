@@ -333,8 +333,44 @@ function ShopifyConnect() {
 type SetupState =
   | { status: "needs_permission" }
   | { status: "needs_embed"; embedUrl: string }
-  | { status: "needs_ga_account" }
+  | {
+      status: "needs_paste";
+      platform: string | null;
+      verificationTag: string | null;
+      verificationCode: string | null;
+      measurementId: string | null;
+      gtag: string | null;
+      snippet: boolean;
+    }
+  | { status: "needs_ga_account"; url: string | null }
   | { status: "done"; notes: string[] };
+
+/** Where each platform's own Google boxes are, for the one paste "Set it up for me" can't do itself. */
+const PASTE_WHERE: Record<string, { verification: string; analytics: string; separate: boolean }> = {
+  webflow: {
+    verification: "In Webflow, open Site settings, then the SEO tab. Paste the code into Google Site Verification.",
+    analytics: "Same Site settings, Integrations tab: paste the Measurement ID into Google Analytics. Then Publish.",
+    separate: true,
+  },
+  wix: {
+    verification: "In Wix, open Marketing & SEO, then SEO, then Site verification. Choose Google Search Console and paste the meta tag.",
+    analytics: "Then Settings, Marketing Integrations, Google Analytics, Connect: paste the Measurement ID. Publish.",
+    separate: true,
+  },
+  squarespace: {
+    verification: "In Squarespace, open Settings, Developer tools, Code Injection, Header. Paste the code below and Save.",
+    analytics: "",
+    separate: false,
+  },
+};
+const HEADER_WHERE: Record<string, string> = {
+  godaddy: "In GoDaddy: Website, Settings, Site-wide code. Paste the code below, then Publish.",
+  duda: "In Duda: Settings, Head HTML. Paste the code below, then Republish.",
+  weebly: "In Weebly: Settings, SEO, Header Code. Paste the code below, then Publish.",
+  ghost: "In Ghost: Settings, Code injection, Site header. Paste the code below, then Save.",
+  hubspot: "In HubSpot: Settings, Website, Pages, Site header HTML. Paste the code below, then Save.",
+  framer: "In Framer: Site Settings, General, Custom Code, Start of <head> tag. Paste the code below, then Publish.",
+};
 
 const PENDING_SETUP = "insights.pendingSetup";
 
@@ -355,13 +391,15 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
         "setup",
         async () => {
           const out = await api<{ state: SetupState; onboarding: Status }>("/api/onboarding/setup-google", {});
-          if (out.state.status === "needs_permission") {
+          const goingAway = out.state.status === "needs_permission" || (out.state.status === "needs_ga_account" && out.state.url);
+          if (goingAway) {
             try {
               localStorage.setItem(PENDING_SETUP, "1");
             } catch {
               /* it just won't continue on its own */
             }
-            await goToGoogle("setup");
+            if (out.state.status === "needs_permission") await goToGoogle("setup");
+            else if (out.state.status === "needs_ga_account" && out.state.url) window.open(out.state.url, "_top");
           }
           setState(out.state);
           return out.onboarding;
@@ -371,7 +409,7 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
     [act]
   );
 
-  // Back from Google's permission screen: carry on where it left off.
+  // Back from Google's permission or Analytics terms screen: carry on where it left off.
   useEffect(() => {
     let pending = false;
     try {
@@ -387,8 +425,8 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
   return (
     <div className="space-y-3 rounded-xl border border-dash-green/30 bg-dash-green/5 p-4">
       <p>
-        <b>Don&apos;t have it yet?</b> The app can set up Search Console and Google Analytics for your store, verify your site
-        and submit your sitemap. Google will ask you to allow it once.
+        <b>Don&apos;t have it yet? The app sets it up for you:</b> Search Console and Google Analytics, your site verified and your
+        sitemap sent to Google. Google asks you to allow it once.
       </p>
       {state?.status === "needs_embed" && (
         <div className="space-y-2">
@@ -408,15 +446,16 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
       )}
       {state?.status === "needs_ga_account" && (
         <p>
-          Google needs you to create a free Analytics account first (about two minutes):{" "}
-          <a href="https://analytics.google.com/analytics/web/provision/" target="_blank" rel="noreferrer" className={link}>
-            create it here
+          Google needs you to accept its Analytics terms once.{" "}
+          <a href={state.url ?? "https://analytics.google.com/analytics/web/provision/"} target="_top" className={link}>
+            Accept Google&apos;s terms
           </a>
-          , then click Set it up for me again.
+          , and you come straight back here.
         </p>
       )}
+      {state?.status === "needs_paste" && <PasteCodes state={state} busy={working} onDone={run} />}
       {state?.status === "done" && <p className="text-dash-green">{state.notes.join(" ")}</p>}
-      {state?.status !== "needs_embed" && (
+      {state?.status !== "needs_embed" && state?.status !== "needs_paste" && (
         <button disabled={working} onClick={run} className={button}>
           {working ? "Setting up…" : "Set it up for me"}
         </button>
@@ -425,11 +464,68 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
   );
 }
 
+/** The one paste: Google's code (and Analytics tag) into the platform's own box, then the app finishes the rest. */
+function PasteCodes({ state, busy, onDone }: { state: Extract<SetupState, { status: "needs_paste" }>; busy: boolean; onDone: () => void }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = (key: string, text: string) => navigator.clipboard?.writeText(text).then(() => setCopied(key), () => setCopied(null));
+  const where = PASTE_WHERE[state.platform ?? ""];
+  const header = [state.verificationTag, state.gtag].filter(Boolean).join("\n");
+  const box = (key: string, label: string, text: string) => (
+    <div className="space-y-1">
+      <p className="text-xs font-semibold text-dash-muted">{label}</p>
+      <div className="flex items-start gap-2">
+        <pre className="min-w-0 flex-1 overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-white p-2 font-mono text-xs">{text}</pre>
+        <button type="button" onClick={() => copy(key, text)} className="shrink-0 rounded-lg border border-dash-line bg-white px-3 py-1.5 text-xs font-semibold">
+          {copied === key ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+  return (
+    <div className="space-y-3">
+      <p>
+        <b>One paste and you&apos;re done.</b> Google needs to see this code on your site to confirm it&apos;s yours.
+      </p>
+      {where?.separate ? (
+        <>
+          {state.verificationTag && (
+            <>
+              <p>{where.verification}</p>
+              {box("v", state.platform === "wix" ? "Meta tag" : "Verification code", state.platform === "wix" ? state.verificationTag : state.verificationCode ?? "")}
+            </>
+          )}
+          {state.measurementId && (
+            <>
+              <p>{where.analytics}</p>
+              {box("m", "Measurement ID", state.measurementId)}
+            </>
+          )}
+        </>
+      ) : (
+        <>
+          <p>
+            {where?.verification ??
+              HEADER_WHERE[state.platform ?? ""] ??
+              (state.snippet
+                ? "Paste this line in your site's header, right next to the snippet line you added."
+                : "Paste this inside the <head> of every page (one shared layout or template file on most sites). Built with an AI builder? Ask it to add these lines to the <head> of every page.")}
+          </p>
+          {header && box("h", "Code", header)}
+        </>
+      )}
+      <button disabled={busy} onClick={onDone} className={button}>
+        {busy ? "Checking your site…" : "I pasted it, finish setup"}
+      </button>
+    </div>
+  );
+}
+
 function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step; status: Status; busy: string | null; act: Act; onOpenSettings: () => void }) {
   const [copied, setCopied] = useState(false);
   const [askOwner, setAskOwner] = useState(false);
   const google = status.steps.find((s) => s.id === "google")?.done;
-  const shopify = status.platform === "shopify";
+  // Set it up for me works for any connected website.
+  const canSetUp = status.platform === "shopify" || Boolean(status.domain);
   if (!google) return <p className="text-dash-muted">Connect Google first; this is then found for you.</p>;
   const access = !step.done ? status.access : null;
   const recheck = (
@@ -446,7 +542,7 @@ function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step;
   }
   return (
     <div className="max-w-2xl space-y-3">
-      {shopify ? (
+      {canSetUp ? (
         <SetupForMe act={act} busy={busy} />
       ) : (
         <p className="text-dash-muted">

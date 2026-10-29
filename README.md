@@ -317,9 +317,18 @@ then:
 3. once the tag is live, verifies the site, adds it to Search Console, submits
    `sitemap.xml` and saves both properties on the account.
 
-Each step says what's needed next (permission, the embed, or a free Analytics
-account, which only Google's own page can create). Deploy the extension with
-Shopify CLI from `shopify-app/` (`shopify app deploy`).
+Each step says what's needed next (permission, the embed, or accepting
+Google Analytics' terms once, through an account ticket that returns to the
+app). Deploy the extension with Shopify CLI from `shopify-app/`
+(`shopify app deploy`).
+
+It works for every website, not only Shopify: WordPress sites get the codes
+through the connector plugin (1.1+, nothing to paste); sites with the snippet
+get the Analytics tag through it and paste only the verification line; Webflow
+and Wix get their own "Google verification" and "Google Analytics" boxes with
+the codes to copy; anything else gets one header block to paste. The app then
+checks the live page, verifies the site, adds it to Search Console and submits
+the sitemap. Nobody sees Google's own property setup.
 
 ### Any website (WordPress, Wix, Squarespace, Webflow, custom)
 

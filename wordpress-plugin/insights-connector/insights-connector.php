@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Insights Connector
  * Description: Lets the Insights SEO autopilot improve this site's SEO titles, meta descriptions, content and structured data, with every change logged and undoable from the app.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: GPLv2 or later
@@ -24,6 +24,7 @@ const INSIGHTS_APP_OPTION = 'insights_connector_app';
 const INSIGHTS_SCHEMA_META = '_insights_schema';
 const INSIGHTS_TITLE_META = '_insights_title';
 const INSIGHTS_DESC_META = '_insights_description';
+const INSIGHTS_GOOGLE_OPTION = 'insights_connector_google';
 const INSIGHTS_DEFAULT_APP = 'https://br-weathered-mouse-b5ymo8mn-insights.compute.c-7.us-east-2.aws.neon.tech';
 
 register_activation_hook(__FILE__, function () {
@@ -80,6 +81,19 @@ add_filter('pre_get_document_title', function ($title) {
 	$custom = get_post_meta(get_queried_object_id(), INSIGHTS_TITLE_META, true);
 	return $custom !== '' ? $custom : $title;
 }, 20);
+
+// Google's site verification code and the Analytics tag the app set up ("Set it up for me"), on every page.
+add_action('wp_head', function () {
+	$google = get_option(INSIGHTS_GOOGLE_OPTION, array());
+	if (!empty($google['verification'])) {
+		echo '<meta name="google-site-verification" content="' . esc_attr($google['verification']) . "\">\n";
+	}
+	if (!empty($google['measurement']) && preg_match('/^G-[A-Z0-9]+$/', $google['measurement'])) {
+		$id = esc_js($google['measurement']);
+		echo '<script async src="https://www.googletagmanager.com/gtag/js?id=' . esc_attr($google['measurement']) . "\"></script>\n";
+		echo "<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','{$id}');</script>\n";
+	}
+}, 1);
 
 add_action('wp_head', function () {
 	if (!is_singular()) return;
@@ -140,8 +154,24 @@ add_action('rest_api_init', function () {
 				'name' => get_bloginfo('name'),
 				'home' => home_url('/'),
 				'seo_plugin' => insights_seo_plugin(),
-				'version' => '1.0.0',
+				'version' => '1.1.0',
 			);
+		},
+	));
+
+	// Google's verification code and Analytics tag id to show on every page (null clears either).
+	register_rest_route('insights/v1', '/google', $auth + array(
+		'methods' => 'POST',
+		'callback' => function (WP_REST_Request $r) {
+			$body = $r->get_json_params();
+			$google = get_option(INSIGHTS_GOOGLE_OPTION, array());
+			foreach (array('verification', 'measurement') as $field) {
+				if (array_key_exists($field, $body)) {
+					$google[$field] = $body[$field] === null ? '' : sanitize_text_field((string) $body[$field]);
+				}
+			}
+			update_option(INSIGHTS_GOOGLE_OPTION, $google);
+			return array('ok' => true);
 		},
 	));
 

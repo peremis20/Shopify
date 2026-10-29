@@ -67,6 +67,8 @@ export interface SnippetData {
   schema: string[];
   /** Small HTML blocks (a sentence with a link) to add at the end of the page's main content. */
   links: string[];
+  /** The Google Analytics tag id the app created for the site ("Set it up for me"), loaded on every page. */
+  ga: string | null;
 }
 
 const jsonLd = (block: string) =>
@@ -87,7 +89,10 @@ export async function snippetData(siteKey: string, path: string): Promise<Snippe
     ORDER BY id DESC`;
   const latest = (f: string) => rows.find((r) => r.field === f && r.resource_id === p)?.after_value ?? null;
   const schema = latest("schema");
+  const [ga] = await sql`SELECT value FROM insights_settings WHERE key = ${`gsetup:${owner.value}`}`;
+  const measurement = ga?.value ? ((JSON.parse(ga.value) as { measurementId?: string }).measurementId ?? null) : null;
   return {
+    ga: measurement && /^G-[A-Z0-9]+$/.test(measurement) ? measurement : null,
     title: latest("meta_title"),
     description: latest("meta_description"),
     schema: schema ? jsonLd(schema) : [],
@@ -101,6 +106,7 @@ var s=document.currentScript;if(!s||!window.fetch)return;
 var src=new URL(s.src),k=src.searchParams.get("k");if(!k)return;
 fetch(src.origin+"/api/snippet/data?k="+encodeURIComponent(k)+"&u="+encodeURIComponent(location.pathname),{credentials:"omit"})
 .then(function(r){return r.ok?r.json():null}).then(function(d){if(!d)return;
+if(d.ga&&!window.gtag){var g=document.createElement("script");g.async=true;g.src="https://www.googletagmanager.com/gtag/js?id="+d.ga;document.head.appendChild(g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag("js",new Date());gtag("config",d.ga)}
 if(d.title)document.title=d.title;
 if(d.description){var m=document.querySelector('meta[name="description"]');if(!m){m=document.createElement("meta");m.setAttribute("name","description");document.head.appendChild(m)}m.setAttribute("content",d.description)}
 (d.schema||[]).forEach(function(j){var t=document.createElement("script");t.type="application/ld+json";t.text=j;document.head.appendChild(t)});

@@ -171,6 +171,8 @@ export async function authCallback(req: Request): Promise<Response> {
 
   const state = params.get("state");
   const code = params.get("code");
+  // Back from accepting Google Analytics' terms (Set it up for me): no sign in to finish, just continue setup.
+  if (!code && !state) return redirect(`${appOrigin(req)}/analytics?ga_ready=1`, clearState);
   if (!code || !state || state !== readCookie(req, STATE_COOKIE)) {
     return back({ auth_error: "The sign in link expired. Please try again." });
   }
@@ -410,7 +412,8 @@ export const googleLinkStart = (req: Request) =>
 /** "Set it up for me": creates Search Console and Analytics for a store that has neither. */
 export const setupGoogleTools = (req: Request) =>
   withAccount(req, async (account) => {
-    const state = await setupGoogle(account.id);
+    // A new Analytics account comes back through the Google callback (an address the OAuth client already allows).
+    const state = await setupGoogle(account.id, redirectUri(req));
     return json({ state, onboarding: await onboardingStatus(account.id, account.email) });
   });
 
