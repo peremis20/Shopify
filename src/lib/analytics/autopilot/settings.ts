@@ -16,6 +16,8 @@ export interface PlatformSettings {
   geminiKey?: string;
   /** Groq (open models with a free tier), usable instead of Claude. */
   groqKey?: string;
+  /** A GitHub token with the models permission, for GitHub Models. */
+  githubModelsKey?: string;
   /** serper.dev, for Google page one results and competitor analysis. */
   serperKey?: string;
   shopifyClientId?: string;
@@ -34,7 +36,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   shopConnected: boolean;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasSerper: boolean; hasShopifyApp: boolean };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasShopifyApp: boolean };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -51,6 +53,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
     geminiKey: process.env.GEMINI_API_KEY || stored.geminiKey,
     groqKey: process.env.GROQ_API_KEY || stored.groqKey,
+    githubModelsKey: process.env.GITHUB_MODELS_TOKEN || stored.githubModelsKey,
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
@@ -68,19 +71,24 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-/** The AI that writes changes: Claude when its key is set, then Groq, then Gemini. */
-export const aiProvider = (p: PlatformSettings): AiProvider | null =>
-  p.anthropicKey
-    ? { kind: "claude", key: p.anthropicKey }
-    : p.groqKey
-      ? { kind: "groq", key: p.groqKey }
-      : p.geminiKey
-        ? { kind: "gemini", key: p.geminiKey }
-        : null;
+/**
+ * The AI that writes changes, with every other configured AI as a backup, in
+ * this order: Claude, Groq, GitHub Models, Gemini.
+ */
+export function aiProvider(p: PlatformSettings): AiProvider | null {
+  const all: AiProvider[] = [];
+  if (p.anthropicKey) all.push({ kind: "claude", key: p.anthropicKey });
+  if (p.groqKey) all.push({ kind: "groq", key: p.groqKey });
+  if (p.githubModelsKey) all.push({ kind: "github", key: p.githubModelsKey });
+  if (p.geminiKey) all.push({ kind: "gemini", key: p.geminiKey });
+  return all.length ? { ...all[0], backups: all.slice(1) } : null;
+}
 
 export interface AiProvider {
-  kind: "claude" | "groq" | "gemini";
+  kind: "claude" | "groq" | "github" | "gemini";
   key: string;
+  /** Tried in order when this one fails. */
+  backups?: AiProvider[];
 }
 
 export const platformReady = (p: PlatformSettings) => Boolean(aiProvider(p) && p.shopifyClientId && p.shopifyClientSecret);
@@ -128,7 +136,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasSerper: Boolean(platform.serperKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }

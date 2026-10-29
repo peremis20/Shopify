@@ -399,6 +399,7 @@ export const savePlatform = (req: Request) =>
       anthropicKey: str("anthropicKey"),
       geminiKey: str("geminiKey"),
       groqKey: str("groqKey"),
+      githubModelsKey: str("githubModelsKey"),
       serperKey: str("serperKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
@@ -406,7 +407,14 @@ export const savePlatform = (req: Request) =>
     const p = await readPlatformSettings();
     let claude: string | undefined;
     const ai = aiProvider(p);
-    if (ai) await checkAiKey(ai).catch((e) => (claude = message(e)));
+    const NAMES = { claude: "Claude", groq: "Groq", github: "GitHub Models", gemini: "Gemini" } as const;
+    if (ai) {
+      const problems: string[] = [];
+      for (const one of [ai, ...(ai.backups ?? [])]) {
+        await checkAiKey(one).catch((e) => problems.push(`${NAMES[one.kind]}: ${message(e)}`));
+      }
+      if (problems.length) claude = problems.join(" ");
+    }
     if (str("serperKey")?.trim() && p.serperKey) {
       await checkSerpKey(p.serperKey).catch((e) => (claude = [claude, message(e)].filter(Boolean).join(" ")));
     }

@@ -17,6 +17,7 @@ export function PlatformForm({ settings, onSaved }: {
   const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
   const [serperKey, setSerperKey] = useState("");
+  const [githubKey, setGithubKey] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,6 +36,7 @@ export function PlatformForm({ settings, onSaved }: {
         geminiKey,
         groqKey,
         serperKey,
+        githubModelsKey: githubKey,
         shopifyClientId: clientId,
         shopifyClientSecret: clientSecret,
       });
@@ -42,6 +44,7 @@ export function PlatformForm({ settings, onSaved }: {
       setGeminiKey("");
       setGroqKey("");
       setSerperKey("");
+      setGithubKey("");
       setClientSecret("");
       setNote(d.claudeError ? `Saved, but a key didn't work: ${d.claudeError}` : "Saved.");
       onSaved?.(d.settings);
@@ -74,8 +77,9 @@ export function PlatformForm({ settings, onSaved }: {
         <p className="text-dash-muted">Your customers never enter keys. These power the autopilot for everyone.</p>
         <ol className="list-decimal space-y-1.5 pl-5 marker:text-dash-muted">
           <li>
-            <b>AI writer:</b> a Claude API key from console.anthropic.com, a Groq API key from console.groq.com
-            (free tier), or a Gemini API key from aistudio.google.com. One is enough; the first one set, in that order, is used. Usage is billed to you, a few cents per page improved.
+            <b>AI writer:</b> any of a Claude API key (console.anthropic.com), a Groq API key (console.groq.com, free
+            tier), a GitHub token with the Models permission (github.com/settings/tokens, free tier) or a Gemini API key
+            (aistudio.google.com). One is enough. Set more and the others become backups, used in that order whenever one fails. Usage is billed to you, a few cents per page improved.
           </li>
           <li>
             <b>Google page one data (recommended):</b> a key from serper.dev (2,500 free searches). The autopilot uses it to
@@ -99,6 +103,7 @@ export function PlatformForm({ settings, onSaved }: {
       <form onSubmit={save} className="space-y-3 rounded-xl border border-dash-line bg-white p-4">
         {input("pf-claude", "Claude API key", anthropicKey, setAnthropicKey, has?.hasAnthropic)}
         {input("pf-groq", "or Groq API key", groqKey, setGroqKey, has?.hasGroq)}
+        {input("pf-github", "or GitHub Models token", githubKey, setGithubKey, has?.hasGithub)}
         {input("pf-gemini", "or Gemini API key", geminiKey, setGeminiKey, has?.hasGemini)}
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-shop-id", "Shopify app Client ID", clientId, setClientId, has?.hasShopifyApp, false)}
@@ -106,7 +111,7 @@ export function PlatformForm({ settings, onSaved }: {
         {note && <p className="text-dash-ink">{note}</p>}
         <button
           type="submit"
-          disabled={busy || (!anthropicKey && !groqKey && !geminiKey && !serperKey && !clientId && !clientSecret)}
+          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !clientId && !clientSecret)}
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           {busy ? "Saving…" : "Save platform keys"}

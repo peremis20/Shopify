@@ -174,7 +174,7 @@ async function askGemini<T>(apiKey: string, prompt: string, schema: Record<strin
       if (!aiBusy(res.status)) throw new Error(`Gemini request failed: ${lastError}`);
     }
   }
-  throw new Error(`Gemini is busy right now, the next run will try again. (${lastError})`);
+  throw new Error(`Gemini is busy right now. (${lastError})`);
 }
 
 // ---------- Groq ----------
@@ -223,14 +223,62 @@ function extractJson(text: string): Record<string, unknown> | null {
   return null;
 }
 
+// ---------- GitHub Models ----------
+
+const GITHUB_API = "https://models.github.ai";
+/** Preferred GitHub Models, best first; only ones in the catalog are used. */
+const GITHUB_PREFERRED = ["openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/gpt-4o-mini", "meta/llama-3.3-70b-instruct"];
+const githubHeaders = (token: string) => ({
+  Authorization: `Bearer ${token}`,
+  Accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28",
+});
+let githubModels: string[] | null = null;
+
+async function pickGithubModels(token: string): Promise<string[]> {
+  if (process.env.GITHUB_MODEL) return [process.env.GITHUB_MODEL];
+  if (githubModels) return githubModels;
+  const res = await fetch(`${GITHUB_API}/catalog/models`, { headers: githubHeaders(token) }).catch(() => null);
+  const ids = res?.ok ? (((await res.json().catch(() => [])) as { id: string }[]).map((m) => m.id.toLowerCase())) : [];
+  // If the catalog can't be read, try the preferred models anyway.
+  githubModels = ids.length ? GITHUB_PREFERRED.filter((n) => ids.includes(n)).slice(0, 3) : GITHUB_PREFERRED.slice(0, 3);
+  return githubModels;
+}
+
+// ---------- OpenAI style chat services (Groq, GitHub Models) ----------
+
+interface ChatService {
+  name: string;
+  url: string;
+  headers: (key: string) => Record<string, string>;
+  models: (key: string) => Promise<string[]>;
+  options: (model: string) => Record<string, unknown>;
+}
+
+const GROQ: ChatService = {
+  name: "Groq",
+  url: `${GROQ_API}/chat/completions`,
+  headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  models: pickGroqModels,
+  options: (model) => ({ max_completion_tokens: 8192, ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}) }),
+};
+
+const GITHUB: ChatService = {
+  name: "GitHub Models",
+  url: `${GITHUB_API}/inference/chat/completions`,
+  headers: githubHeaders,
+  models: pickGithubModels,
+  options: () => ({ max_tokens: 4096 }),
+};
+
 /**
- * Groq: the schema goes in the instructions and the reply is checked here.
- * Each model is tried in JSON mode first; when Groq rejects its JSON, the
+ * The schema goes in the instructions and the reply is checked here. Each
+ * model is tried in JSON mode first; when the service rejects its JSON, the
  * rejected text is salvaged if it's complete, then the same model is asked
  * again in plain mode and the JSON is read out of its reply. Only then is the
  * next model tried.
  */
-async function askGroq<T>(apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askChat<T>(svc: ChatService, apiKey: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const required = (schema.required as string[]) ?? [];
   const messages = [
     {
@@ -243,20 +291,19 @@ async function askGroq<T>(apiKey: string, prompt: string, schema: Record<string,
     Boolean(out) && required.every((k) => k in out!);
 
   let lastError = "";
-  for (const model of await pickGroqModels(apiKey)) {
+  for (const model of await svc.models(apiKey)) {
     for (const jsonMode of [true, false]) {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (attempt) await pause(2000);
-        const res = await fetch(`${GROQ_API}/chat/completions`, {
+        const res = await fetch(svc.url, {
           method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          headers: { ...svc.headers(apiKey), "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
             messages,
             temperature: 0.3,
-            max_completion_tokens: 8192,
+            ...svc.options(model),
             ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
-            ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}),
           }),
         });
         const body = await res.json().catch(() => ({}));
@@ -268,22 +315,37 @@ async function askGroq<T>(apiKey: string, prompt: string, schema: Record<string,
           break; // try plain mode, or the next model
         }
         lastError = body?.error?.message ?? String(res.status);
-        if (res.status === 400) {
-          // Groq rejected the JSON; what the model wrote is often fine apart from a stray character or a cut off end.
+        if (res.status === 401 || res.status === 403) throw new Error(`${svc.name} didn't accept the key: ${lastError}`);
+        if (res.status === 400 || res.status === 404 || res.status === 422) {
+          // Rejected JSON (often fine apart from a stray character or a cut off end), or a model this key can't use.
           const salvaged = extractJson(String(body?.error?.failed_generation ?? ""));
           if (valid(salvaged)) return salvaged as T;
           break;
         }
-        if (!aiBusy(res.status)) throw new Error(`Groq request failed: ${lastError}`);
+        if (!aiBusy(res.status)) throw new Error(`${svc.name} request failed: ${lastError}`);
       }
     }
   }
-  throw new Error(`Groq couldn't write this change right now, the next run will try again. (${lastError})`);
+  throw new Error(`${svc.name} couldn't write this change right now. (${lastError})`);
 }
 
-function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
-  if (ai.kind === "groq") return askGroq<T>(ai.key, prompt, schema);
+function askOne<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, prompt, schema);
+  if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, prompt, schema);
   return ai.kind === "gemini" ? askGemini<T>(ai.key, prompt, schema) : askClaude<T>(ai.key, prompt, schema);
+}
+
+/** Asks the main AI, and each backup in turn if it fails. */
+async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  const errors: string[] = [];
+  for (const one of [ai, ...(ai.backups ?? [])]) {
+    try {
+      return await askOne<T>(one, prompt, schema);
+    } catch (err) {
+      errors.push((err as Error).message);
+    }
+  }
+  throw new Error(`${errors.join(" ")} The next run will try again.`);
 }
 
 /** Title, description, alt text and (optionally) a new section for one page. */
@@ -404,6 +466,15 @@ export async function checkAiKey(ai: AiProvider): Promise<void> {
   }
   if (ai.kind === "groq") {
     await pickGroqModels(ai.key);
+    return;
+  }
+  if (ai.kind === "github") {
+    const res = await fetch(GITHUB.url, {
+      method: "POST",
+      headers: { ...githubHeaders(ai.key), "Content-Type": "application/json" },
+      body: JSON.stringify({ model: (await pickGithubModels(ai.key))[0], messages: [{ role: "user", content: "Say ok." }], max_tokens: 2 }),
+    });
+    if (!res.ok) throw new Error(`GitHub Models didn't accept the token (${res.status}).`);
     return;
   }
   const client = new Anthropic({ apiKey: ai.key });
