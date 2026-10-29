@@ -7,7 +7,7 @@ import { BarsIcon, BoltIcon, KeyIcon, SearchIcon } from "./Icons";
 const FEATURES = [
   { icon: BarsIcon, title: "Analytics and Search Console together", text: "Traffic, searches and top pages in one view." },
   { icon: KeyIcon, title: "Find quick SEO wins", text: "See the searches you almost rank for and track your positions weekly." },
-  { icon: BoltIcon, title: "SEO on autopilot", text: "Your Shopify pages improve every day, with every change logged and undoable." },
+  { icon: BoltIcon, title: "SEO on autopilot", text: "Your pages improve every day on Shopify, WordPress, Webflow, Wix or any site, with every change logged and undoable." },
 ];
 
 /** What a visitor sees before signing in. */
@@ -28,10 +28,10 @@ export function SignInScreen({ error }: { error?: string | null }) {
           <p className="mb-3 inline-flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.18em] text-dash-green">
             <SearchIcon className="h-4 w-4" /> Insights
           </p>
-          <h1 className="font-serif text-4xl text-dash-ink sm:text-5xl">Grow your store&apos;s search traffic, automatically</h1>
+          <h1 className="font-serif text-4xl text-dash-ink sm:text-5xl">Grow your search traffic, automatically</h1>
           <p className="mx-auto mt-4 max-w-xl text-dash-muted">
-            Sign in with the Google account that has your Analytics and Search Console. Connect your Shopify store, and
-            the autopilot does the rest.
+            Sign in with the Google account that has your Analytics and Search Console. Connect your website, and a
+            short checklist walks you through the rest.
           </p>
         </div>
 
