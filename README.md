@@ -332,6 +332,23 @@ website", or "Not on Shopify?" in the Autopilot card).
 - **Checks:** the weekly claim guard and overlap report read the same pages.
   Rankings, site health and keywords already worked for any site.
 
+### WordPress (automatic changes)
+
+`wordpress-plugin/insights-connector` is a small plugin (built into
+`neon/insights/public/insights-connector.zip`, downloadable from the
+dashboard). Activating it creates a private key; Settings > Insights >
+"Connect to Insights" opens `/api/wordpress/connect`, which signs the owner in
+if needed, checks the plugin answers with that key and saves the connection
+(encrypted). From then on the autopilot edits WordPress like a Shopify store
+(`autopilot/wordpress.ts`, `autopilot/site-source.ts`):
+
+- SEO title and description go into Yoast, Rank Math, SEOPress or All in One
+  SEO, whichever is active, or the plugin shows them itself.
+- New sections are appended only if the post is unchanged since it was read.
+- Structured data is stored apart from the content and printed in the head.
+- Everything is logged and undoable like on Shopify. Deactivating the plugin
+  disconnects it.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

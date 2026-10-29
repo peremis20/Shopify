@@ -14,25 +14,14 @@ import {
   pagesForQuery,
   plainText,
   PROTECTED_PAGE,
-  siteIndex,
   strongerRival,
   trafficCheck,
   type SiteItem,
 } from "./guards";
 import { undoLinkFix } from "./link-fixer";
-import { manualSite, shopifySite, type SiteAccess } from "./site-source";
+import { EditedMeanwhile, siteFor, type SiteAccess } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
-import {
-  getBody,
-  listArticles,
-  resolveResource,
-  setBody,
-  setImageAlt,
-  setSeoField,
-  shopName,
-  type StoreAccess,
-  type StoreResource,
-} from "./shopify";
+import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
@@ -73,18 +62,6 @@ interface Ctx {
 
 const siteOf = (ctx: Ctx) => (ctx.index ??= ctx.site.index().catch(() => []));
 
-/** Thrown when someone edited a page while the autopilot was writing; the change is skipped, not forced. */
-class EditedMeanwhile extends Error {
-  constructor() {
-    super("The page was edited while this change was being written, so it was left alone.");
-  }
-}
-
-/** Writes a new body only if the current one is still what the change was built on. */
-async function setBodyIfUnchanged(store: StoreAccess, type: "article" | "page", id: string, expected: string, next: string) {
-  if ((await getBody(store, type, id)) !== expected) throw new EditedMeanwhile();
-  await setBody(store, type, id, next);
-}
 
 const marker = (id: string) => [`<!-- autopilot:${id} -->`, `<!-- /autopilot:${id} -->`];
 
@@ -415,8 +392,8 @@ async function suggestPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[
 }
 
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
-  const store = ctx.store;
-  if (!store) return suggestPlan(ctx, runId, plan);
+  const w = ctx.site.writer;
+  if (!w) return suggestPlan(ctx, runId, plan);
   const { cand, page, improvement } = plan;
   const op = cand.op;
   const done: string[] = [];
@@ -434,32 +411,32 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
   };
 
   if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) {
-    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => setSeoField(store, page.id, "title_tag", improvement.metaTitle));
+    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => w.setSeo(page.id, "title", improvement.metaTitle));
   }
   if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
-    await apply("meta_description", page.metaDescription, improvement.metaDescription, () =>
-      setSeoField(store, page.id, "description_tag", improvement.metaDescription)
-    );
+    await apply("meta_description", page.metaDescription, improvement.metaDescription, () => w.setSeo(page.id, "description", improvement.metaDescription));
   }
-  for (const a of improvement.altTexts) {
-    await apply("alt", null, a.alt, () => setImageAlt(store, a.imageId, a.alt), a.imageId);
+  if (w.setAlt) {
+    for (const a of improvement.altTexts) await apply("alt", null, a.alt, () => w.setAlt!(a.imageId, a.alt), a.imageId);
   }
   if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
     const block = wrap(blockId, improvement.contentSectionHtml);
-    await apply("content", blockId, block, () => setBodyIfUnchanged(store, page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
+    await apply("content", blockId, block, () => w.setBodyIfUnchanged(page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
   }
 
   // Structured data, rebuilt from the page as it is now (including any new FAQ).
   if (page.type === "article" || page.type === "page") {
     const type = page.type;
-    const current = await getBody(store, type, page.id).catch(() => null);
+    const current = await w.getBody(type, page.id).catch(() => null);
     const updated = { ...page, metaDescription: improvement.metaDescription || page.metaDescription };
     const plan = current === null ? null : await schemaFor(ctx, updated, current);
     if (current !== null && plan) {
       const blockId = `${runId}-schema`;
       const block = wrap(blockId, plan);
-      await apply("schema", blockId, block, () => setBodyIfUnchanged(store, type, page.id, current, `${withoutAutopilotSchema(current)}\n${block}`));
+      await apply("schema", blockId, block, () =>
+        w.setSchema ? w.setSchema(type, page.id, block) : w.setBodyIfUnchanged(type, page.id, current, `${withoutAutopilotSchema(current)}\n${block}`)
+      );
     }
   }
 
@@ -470,7 +447,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     if (sentence) {
       const blockId = `${runId}-link`;
       const block = wrap(blockId, sentence);
-      await apply("internal_link", blockId, block, () => setBodyIfUnchanged(store, "article", source.id, source.body, `${source.body}\n${block}`), source.id);
+      await apply("internal_link", blockId, block, () => w.setBodyIfUnchanged("article", source.id, source.body, `${source.body}\n${block}`), source.id);
     }
   }
   return done;
@@ -507,12 +484,11 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const baseAi = aiProvider(platform);
   if (!baseAi) return { run: null, message: "Autopilot isn't available yet." };
   const profile = await readProfile(accountId);
-  const store = acct.shopDomain && acct.shopTokenEnc ? { accountId, shopDomain: acct.shopDomain } : null;
-  // Any other website works too: read from its sitemap, with changes handed over as a fix list.
-  if (!store && !profile.siteDomain) return { run: null, message: "Connect your website first." };
-  const brand = profile.brandName ?? (store ? await shopName(store).catch(() => null) : null);
-  const siteName = brand ?? profile.siteDomain!.split(".")[0];
-  const access = store ? shopifySite(store, siteName) : manualSite(accountId, siteName);
+  // A Shopify store or connected WordPress is edited directly; any other website gets a fix list.
+  const access = await siteFor(accountId);
+  if (!access) return { run: null, message: "Connect your website first." };
+  const store = access.store;
+  const brand = profile.brandName ?? (access.mode === "manual" ? null : await access.name().catch(() => null));
   // The writer signs titles with the customer's own brand and fits what they sell.
   const ai = { ...baseAi, site: siteBrief({ ...profile, brandName: brand }) };
   const ctx: Ctx = {
@@ -648,32 +624,34 @@ export async function accountsDueForRun(limit: number): Promise<string[]> {
 
 async function revertRow(ctx: Ctx, c: Row): Promise<string> {
   const field = c.field as ChangeField;
-  if (c.resource_type === "site") {
+  const w = ctx.site?.writer;
+  if (c.resource_type === "site" || !w) {
     // A change pasted in by hand is changed back by hand.
     const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
     return `This one didn't help; ${back}.`;
   }
-  const store = ctx.store!;
   if (field === "meta_title" || field === "meta_description") {
-    await setSeoField(store, c.resource_id!, field === "meta_title" ? "title_tag" : "description_tag", c.before_value);
+    await w.setSeo(c.resource_id!, field === "meta_title" ? "title" : "description", c.before_value);
   } else if (field === "alt") {
-    await setImageAlt(store, c.target_id!, c.before_value ?? "");
+    await w.setAlt?.(c.target_id!, c.before_value ?? "");
   } else if (field === "link_fix") {
-    if (!(await undoLinkFix(store, c.resource_type as "article" | "page", c.resource_id!, c.before_value!, c.after_value!))) {
+    if (!ctx.store || !(await undoLinkFix(ctx.store, c.resource_type as "article" | "page", c.resource_id!, c.before_value!, c.after_value!))) {
       await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The post was edited after the fix, so it was left as is.' WHERE id = ${c.id}`;
       return "Left as is.";
     }
+  } else if (field === "schema" && w.setSchema) {
+    await w.setSchema(c.resource_type as "article" | "page", c.resource_id!, null);
   } else {
     const type = field === "internal_link" ? "article" : (c.resource_type as "article" | "page");
     const id = field === "internal_link" ? c.target_id! : c.resource_id!;
-    const body = await getBody(store, type, id);
+    const body = await w.getBody(type, id);
     const restored = unwrap(c.before_value!, body);
     if (restored === null) {
       await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The added section was already removed or edited by hand.' WHERE id = ${c.id}`;
       return "Already removed.";
     }
-    await setBody(store, type, id, restored);
+    await w.setBody(type, id, restored);
   }
   await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
   return "Restored the previous version.";
@@ -695,9 +673,9 @@ export async function revertChange(accountId: string, id: string): Promise<void>
   const [c] = await sql`SELECT * FROM insights_autopilot_changes WHERE id = ${id} AND account_id = ${accountId}`;
   if (!c) throw new Error("That change doesn't exist.");
   if (c.status !== "applied" && c.status !== "kept") throw new Error("Only live changes can be undone.");
-  const acct = await readAccountAutopilot(accountId);
-  if (!acct.shopDomain && c.resource_type !== "site") throw new Error("Connect your Shopify store first.");
-  const ctx = { accountId, store: acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null } as Ctx;
+  const site = await siteFor(accountId);
+  if (!site?.writer && c.resource_type !== "site") throw new Error("Reconnect your store or website first.");
+  const ctx = { accountId, site, store: site?.store ?? null } as Ctx;
   const note = await revertRow(ctx, c);
   await sql`UPDATE insights_autopilot_changes SET note = ${`Undone by hand. ${note}`} WHERE id = ${id} AND status = 'reverted'`;
 }

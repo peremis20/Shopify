@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
+import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -190,6 +191,8 @@ export async function authCallback(req: Request): Promise<Response> {
     await autoMatch(account.id, conn).catch(() => undefined);
     // Back into Shopify admin when the sign in started there.
     if (link) return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
+    // Signed in on the way to connecting WordPress: finish that now.
+    if (readCookie(req, WP_PENDING_COOKIE)) return redirect(`${appOrigin(req)}/api/wordpress/connect`, clearState, sessionCookie(req, account.id));
     return back(previous ? {} : { connected: "1" }, sessionCookie(req, account.id));
   } catch (err) {
     return back({ auth_error: message(err) });
@@ -230,6 +233,62 @@ export async function saveGoogleClient(req: Request): Promise<Response> {
     return json({ error: message(err) }, 400);
   }
 }
+
+// ---------- WordPress ----------
+
+const WP_PENDING_COOKIE = "insights_wp_pending";
+
+/**
+ * "Connect to Insights" in the WordPress plugin lands here with the site, its
+ * private key and where to go back to. Signs in first if needed, checks the
+ * plugin answers with that key, saves the connection and returns to WordPress.
+ */
+export async function wordpressConnect(req: Request): Promise<Response> {
+  const params = new URL(req.url).searchParams;
+  const pending = readCookie(req, WP_PENDING_COOKIE);
+  const fromCookie = pending ? new URLSearchParams(pending) : null;
+  const site = params.get("site") ?? fromCookie?.get("site") ?? "";
+  const key = params.get("key") ?? fromCookie?.get("key") ?? "";
+  const backTo = params.get("back") ?? fromCookie?.get("back") ?? "";
+  const clear = tempCookie(req, WP_PENDING_COOKIE, "", 0);
+  let origin: string;
+  try {
+    origin = new URL(site).origin;
+  } catch {
+    return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent("That WordPress link was incomplete. Click Connect to Insights again.")}`, clear);
+  }
+  // Only ever send people back to their own site's admin.
+  const back = (p: Record<string, string>) =>
+    redirect(`${backTo.startsWith(origin) ? backTo : `${origin}/wp-admin/options-general.php?page=insights-connector`}&${new URLSearchParams(p)}`, clear);
+
+  const account = await currentAccount(req).catch(() => null);
+  if (!account) {
+    // Sign in first; the Google callback comes back here.
+    const keep = new URLSearchParams({ site, key, back: backTo }).toString();
+    return redirect(`${appOrigin(req)}/api/auth/google/start`, tempCookie(req, WP_PENDING_COOKIE, encodeURIComponent(keep), 900));
+  }
+  try {
+    const hello = await wpHello(site, key);
+    await saveWp(account.id, { site: hello.home || site, key, name: hello.name, seoPlugin: hello.seo_plugin });
+    await saveProfile(account.id, { siteDomain: new URL(hello.home || site).hostname, platform: "wordpress" });
+    await autoMatch(account.id).catch(() => undefined);
+    return back({ connected: "1" });
+  } catch (err) {
+    return back({ insights_error: message(err) });
+  }
+}
+
+/** The WordPress plugin to download (served with the page assets). */
+export async function wordpressPlugin(req: Request): Promise<Response> {
+  const assets = (process.env.ASSET_BASE_URL ?? "").replace(/\/$/, "");
+  return redirect(assets ? `${assets}/insights-connector.zip` : `${appOrigin(req)}/insights-connector.zip`);
+}
+
+export const wordpressDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    await deleteWp(account.id);
+    return json({ settings: await autopilotView(account.id, account.admin) });
+  });
 
 // ---------- inside Shopify admin ----------
 

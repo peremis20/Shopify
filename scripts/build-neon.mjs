@@ -54,4 +54,10 @@ mkdirSync(`${root}neon/dist/loader`, { recursive: true });
 copyFileSync(`${root}neon/insights/loader.mjs`, `${root}neon/dist/loader/index.mjs`);
 rmSync(`${root}neon/dist/loader.zip`, { force: true });
 run("zip", ["-9", "-j", "-q", "neon/dist/loader.zip", "neon/dist/loader/index.mjs"]);
+// The WordPress connector, downloadable from the dashboard (served with the page assets).
+rmSync(`${root}neon/insights/public/insights-connector.zip`, { force: true });
+execFileSync("zip", ["-9", "-X", "-q", "-r", `${root}neon/insights/public/insights-connector.zip`, "insights-connector"], {
+  cwd: `${root}wordpress-plugin`,
+  stdio: "inherit",
+});
 console.log(`Built neon/insights/public, release/server.mjs (sha256 ${sha}) and neon/dist/*.zip`);
