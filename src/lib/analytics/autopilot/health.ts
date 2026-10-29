@@ -164,9 +164,11 @@ export async function checkHealth(accountId: string, conn: Connection, pagespeed
   await ensureSchema();
   const candidates = await pagesToCheck(accountId, conn);
   if (!candidates.length) return 0;
+  // Checked this week counts as done, unless speed is missing and there's now a key to get it.
   const recent = new Set(
     (await sql`SELECT url FROM insights_page_health WHERE account_id = ${accountId}
-      AND checked_at > now() - make_interval(days => ${RECHECK_DAYS})`).map((r) => r.url!)
+      AND checked_at > now() - make_interval(days => ${RECHECK_DAYS})
+      AND (perf_score IS NOT NULL OR ${pagespeedKey ? "yes" : "no"} = 'no')`).map((r) => r.url!)
   );
   const due = candidates.filter((u) => !recent.has(u)).slice(0, limit);
   await Promise.all(

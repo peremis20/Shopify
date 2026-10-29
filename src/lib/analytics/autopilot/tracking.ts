@@ -127,10 +127,11 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
 export async function accountsDueForTracking(limit: number): Promise<string[]> {
   await ensureSchema();
   const today = toIso(new Date());
+  // Fewer checks than the daily allowance means some may still be due (finding none costs one Search Console call).
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
-    WHERE a.enabled AND NOT EXISTS (
-      SELECT 1 FROM insights_rank_daily r WHERE r.account_id = a.account_id AND r.checked_on = ${today})
+    WHERE a.enabled AND (
+      SELECT count(*) FROM insights_rank_daily r WHERE r.account_id = a.account_id AND r.checked_on = ${today}) < ${TRACK_PER_DAY}
     LIMIT ${limit}`;
   return rows.map((r) => r.account_id!);
 }
