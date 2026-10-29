@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { claimReport, claimScanDue, scanStoreClaims } from "./autopilot/claim-scan";
+import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
 import { applyLinkFix, describeFix, findLinkFixes, linkFixDue, markLinkFixChecked } from "./autopilot/link-fixer";
 import {
   aiProvider,
@@ -25,7 +26,7 @@ import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/hea
 import { checkSerpKey } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { checkAiKey } from "./autopilot/writer";
-import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
+import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
@@ -454,23 +455,37 @@ async function runClaimScan(accountId: string, force: boolean): Promise<number> 
   return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
 }
 
-/** Today's rank check, a few page health checks, the weekly link fix and claim scan for one account. Each part runs at most once a day. */
+/** Weekly overlap check: duplicate titles and descriptions, near duplicate posts, pages competing for a search. */
+async function runOverlapScan(accountId: string, conn: Connection | null, force: boolean): Promise<number> {
+  const acct = await readAccountAutopilot(accountId);
+  if (!acct.shopDomain || !acct.shopTokenEnc || !(force || (await overlapScanDue(accountId)))) return 0;
+  const brand = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl).split(".")[0] : "";
+  return scanOverlap(accountId, { accountId, shopDomain: acct.shopDomain }, conn, brand);
+}
+
+/** Today's rank check, a few page health checks, and the weekly link fix, claim and overlap checks for one account. Each part runs at most once a day. */
 async function maintain(accountId: string, force = false): Promise<string> {
   const [conn, platform] = await Promise.all([getConnection(accountId), readPlatformSettings()]);
   const links = await fixLinks(accountId, force).catch((e) => (console.error(`link fix failed: ${message(e)}`), 0));
   const claims = await runClaimScan(accountId, force).catch((e) => (console.error(`claim scan failed: ${message(e)}`), 0));
-  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}, claims ${claims}`;
+  const overlaps = await runOverlapScan(accountId, conn, force).catch((e) => (console.error(`overlap scan failed: ${message(e)}`), 0));
+  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}, claims ${claims}, overlaps ${overlaps}`;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
   const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
-  return `ranks ${ranks}, health ${pages}, links ${links}, claims ${claims}`;
+  return `ranks ${ranks}, health ${pages}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */
 export const autopilotWatch = (req: Request) =>
   withAccount(req, async (account) => {
     const conn = await getConnection(account.id);
-    const [ranks, health, claims] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn), claimReport(account.id)]);
-    return json({ ranks, health, claims });
+    const [ranks, health, claims, overlap] = await Promise.all([
+      rankWatch(account.id),
+      healthReport(account.id, conn),
+      claimReport(account.id),
+      overlapReport(account.id),
+    ]);
+    return json({ ranks, health, claims, overlap });
   });
 
 /** "Check now": today's ranks (if not done yet) and the next pages' health. */
@@ -478,8 +493,13 @@ export const autopilotCheckNow = (req: Request) =>
   withAccount(req, async (account) => {
     await maintain(account.id, true);
     const conn = await getConnection(account.id);
-    const [ranks, health, claims] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn), claimReport(account.id)]);
-    return json({ ranks, health, claims });
+    const [ranks, health, claims, overlap] = await Promise.all([
+      rankWatch(account.id),
+      healthReport(account.id, conn),
+      claimReport(account.id),
+      overlapReport(account.id),
+    ]);
+    return json({ ranks, health, claims, overlap });
   });
 
 /** Goes through a whole run on live data and returns what it would change, without changing anything. */

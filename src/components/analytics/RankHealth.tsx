@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import type { ClaimReport } from "@/lib/analytics/autopilot/claim-scan";
 import type { PageHealth } from "@/lib/analytics/autopilot/health";
+import type { OverlapReport } from "@/lib/analytics/autopilot/overlap-scan";
 import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
 import { api, Explainer, pathOf } from "./seo-ui";
@@ -14,6 +15,7 @@ interface Watch {
   ranks: RankWatchRow[];
   health: PageHealth[];
   claims: ClaimReport;
+  overlap: OverlapReport;
 }
 
 /** Daily Google positions and technical health, side by side under the autopilot. */
@@ -80,6 +82,15 @@ export function RankHealth({ connected }: { connected: boolean }) {
           a guide, not legal advice.
         </Explainer>
         {!data ? <Skeleton className="h-32" /> : <ClaimList report={data.claims} />}
+      </Card>
+      <Card className="xl:col-span-2">
+        <CardHeader title="Overlap check">{checkButton}</CardHeader>
+        <Explainer>
+          Pages that get in each other&apos;s way: the same SEO title or description on more than one page, posts that largely
+          repeat each other, and searches where Google splits clicks between several of your pages. The autopilot already avoids
+          creating these; this shows the ones already on the site. Checked weekly.
+        </Explainer>
+        {!data ? <Skeleton className="h-32" /> : <OverlapList report={data.overlap} />}
       </Card>
     </div>
   );
@@ -262,6 +273,77 @@ function ClaimList({ report }: { report: ClaimReport }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function Section({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
+  return (
+    <div className="mt-3">
+      <p className="font-semibold text-dash-ink">{title}</p>
+      <p className="mb-1 text-dash-muted">{hint}</p>
+      <ul className="max-h-[260px] divide-y divide-dash-line/70 overflow-auto">{children}</ul>
+    </div>
+  );
+}
+
+function OverlapList({ report }: { report: OverlapReport }) {
+  if (!report.checkedAt) {
+    return <p className="py-8 text-center text-sm text-dash-muted">Not checked yet. Click Check now, or wait for the next morning run.</p>;
+  }
+  const total = report.titles.length + report.descriptions.length + report.similar.length + report.competing.length;
+  return (
+    <div className="text-sm">
+      <p className="text-dash-muted">
+        {report.scanned} pages checked {new Date(report.checkedAt).toLocaleDateString()}. {total ? `${total} overlaps found.` : "No overlaps found."}
+      </p>
+      {report.competing.length > 0 && (
+        <Section
+          title="Searches split between your pages"
+          hint="Pick one page to own each search. Make the others link to it with that phrase, or merge them and redirect the old address."
+        >
+          {report.competing.map((c) => (
+            <li key={c.query} className="py-2">
+              <p className="font-semibold text-dash-ink">“{c.query}”</p>
+              {c.pages.map((p, i) => (
+                <p key={p.page} className="truncate text-dash-muted" title={p.page}>
+                  {i === 0 ? "Strongest: " : ""}
+                  {pathOf(p.page)} · {p.clicks} clicks, {p.impressions} impressions, position {p.position.toFixed(1)}
+                </p>
+              ))}
+            </li>
+          ))}
+        </Section>
+      )}
+      {report.similar.length > 0 && (
+        <Section title="Posts that repeat each other" hint="Merge them into one stronger post and redirect the other, or rewrite one for a different search.">
+          {report.similar.map((p) => (
+            <li key={p.a + p.b} className="py-2 text-dash-muted">
+              <span className="font-semibold text-dash-ink">{Math.round(p.overlap * 100)}% the same:</span> {p.a} and {p.b}
+            </li>
+          ))}
+        </Section>
+      )}
+      {report.titles.length > 0 && (
+        <Section title="Same SEO title on several pages" hint="Give each page its own title, built around the search it should win.">
+          {report.titles.map((t) => (
+            <li key={t.text} className="py-2">
+              <p className="text-dash-ink">{t.text}</p>
+              <p className="text-dash-muted">{t.paths.join(", ")}</p>
+            </li>
+          ))}
+        </Section>
+      )}
+      {report.descriptions.length > 0 && (
+        <Section title="Same meta description on several pages" hint="Write a description for each page that says what that page offers.">
+          {report.descriptions.map((t) => (
+            <li key={t.text} className="py-2">
+              <p className="text-dash-ink">{t.text}</p>
+              <p className="text-dash-muted">{t.paths.join(", ")}</p>
+            </li>
+          ))}
+        </Section>
+      )}
     </div>
   );
 }

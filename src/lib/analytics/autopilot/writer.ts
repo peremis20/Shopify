@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { isRisky } from "./claims";
+import { trimWords } from "./guards";
 import type { AiProvider } from "./settings";
 import type { StoreResource } from "./shopify";
 
@@ -95,7 +96,7 @@ const numbersIn = (text: string) =>
   new Set((text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".")));
 
 /** Removes the paragraphs and list items `drop` picks, then any list or question left with nothing under it. */
-function dropBlocks(html: string, drop: (text: string, index: number) => boolean): string {
+export function dropBlocks(html: string, drop: (text: string, index: number) => boolean): string {
   let i = 0;
   return html
     .replace(/<(p|li)>([\s\S]*?)<\/\1>/g, (block, _tag, inner: string) => (drop(plainText(inner), i++) ? "" : block))
@@ -104,7 +105,7 @@ function dropBlocks(html: string, drop: (text: string, index: number) => boolean
     .trim();
 }
 
-const blocksOf = (html: string) => [...html.matchAll(/<(p|li)>([\s\S]*?)<\/\1>/g)].map((m) => plainText(m[2]));
+export const blocksOf = (html: string) => [...html.matchAll(/<(p|li)>([\s\S]*?)<\/\1>/g)].map((m) => plainText(m[2]));
 
 /**
  * Drops paragraphs and list items from a new section that state a number
@@ -479,12 +480,12 @@ Keep the SEO title and description if they are already strong for this search; y
   // A risky title or description is never written; the current one stays.
   const safe = (text: string, current: string | null) => (isRisky(text) ? (current ?? "") : text);
   return {
-    metaTitle: safe(polish(out.metaTitle).slice(0, 70), page.metaTitle),
-    metaDescription: safe(polish(out.metaDescription).slice(0, 170), page.metaDescription),
+    metaTitle: safe(trimWords(polish(out.metaTitle), 70), page.metaTitle),
+    metaDescription: safe(trimWords(polish(out.metaDescription), 170), page.metaDescription),
     contentSectionHtml: section,
     altTexts: (out.altTexts ?? [])
       .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim() && !isRisky(a.alt))
-      .map((a) => ({ imageId: a.imageId, alt: polish(a.alt).slice(0, 140) })),
+      .map((a) => ({ imageId: a.imageId, alt: trimWords(polish(a.alt), 140) })),
     reason: out.reason.trim(),
     intentMatch: out.intentMatch !== false,
     missingForIntent: (out.missingForIntent ?? "").trim(),

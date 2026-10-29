@@ -244,6 +244,18 @@ set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
   is flagged with a safer version, never changed automatically. Warnings, myth
   busting and "talk to your doctor" sentences aren't flagged. Rules live in
   `autopilot/claims.ts`.
+- **Overlap and safety guards** (`autopilot/guards.ts`): the autopilot never
+  saves an SEO title or description another page already uses (or nearly), and
+  drops new paragraphs copied from another page or repeating the page itself.
+  When Search Console shows several of the site's pages getting the same
+  search, only the strongest one is worked on. Contact, policy, legal, review
+  and similar pages are never touched. Body edits are only written if the page
+  is still exactly as it was read, so edits made meanwhile are never
+  overwritten. Titles are trimmed at a whole word. An emergency brake holds new
+  changes when Google clicks fall 40% or more in a week (from a usual week of
+  20+ clicks). A weekly overlap report lists duplicate titles and descriptions,
+  posts that repeat each other and searches split between pages, with what to
+  do about each.
 
 ### Adding an app to the autopilot
 

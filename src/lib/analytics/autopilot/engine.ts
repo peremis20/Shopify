@@ -7,6 +7,17 @@ import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from 
 import { keyOf } from "./apps/types";
 import { clickGain } from "./keyword-boost";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider, type PlatformSettings } from "./settings";
+import {
+  copiedFrom,
+  duplicateOf,
+  pagesForQuery,
+  plainText,
+  PROTECTED_PAGE,
+  siteIndex,
+  strongerRival,
+  trafficCheck,
+  type SiteItem,
+} from "./guards";
 import { undoLinkFix } from "./link-fixer";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import {
@@ -21,7 +32,7 @@ import {
   type StoreResource,
 } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
-import { writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
+import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
  * The SEO autopilot. Each run: measure older changes and undo the ones that
@@ -51,6 +62,23 @@ interface Ctx {
   ourDomain: string;
   allowContent: boolean;
   maxPagesPerWeek: number;
+  /** The site's pages, loaded once per run for the duplicate guards. */
+  site?: Promise<SiteItem[]>;
+}
+
+const siteOf = (ctx: Ctx) => (ctx.site ??= siteIndex(ctx.store).catch(() => []));
+
+/** Thrown when someone edited a page while the autopilot was writing; the change is skipped, not forced. */
+class EditedMeanwhile extends Error {
+  constructor() {
+    super("The page was edited while this change was being written, so it was left alone.");
+  }
+}
+
+/** Writes a new body only if the current one is still what the change was built on. */
+async function setBodyIfUnchanged(store: StoreAccess, type: "article" | "page", id: string, expected: string, next: string) {
+  if ((await getBody(store, type, id)) !== expected) throw new EditedMeanwhile();
+  await setBody(store, type, id, next);
 }
 
 const marker = (id: string) => [`<!-- autopilot:${id} -->`, `<!-- /autopilot:${id} -->`];
@@ -169,7 +197,12 @@ function pickTarget(cands: Candidate[], brand: string, rested: (c: Candidate) =>
   return (
     cands.find((c) => {
       const path = new URL(c.op.page).pathname;
-      return !(brand && c.op.query.includes(brand)) && !rested(c) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
+      return (
+        !(brand && c.op.query.includes(brand)) &&
+        !rested(c) &&
+        !PROTECTED_PAGE.test(path) &&
+        /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/")
+      );
     }) ?? null
   );
 }
@@ -264,10 +297,17 @@ async function planNextChange(
   for (let writes = 0; writes < MAX_WRITES_PER_RUN; writes++) {
     let cand = pickTarget(cands, brand, rested);
     let page: StoreResource | null = null;
-    // Skip pages that don't map to an editable store item (up to a few tries).
-    for (let tries = 0; cand && tries < 5; tries++) {
+    // Skip pages that don't map to an editable store item, and pages losing a search to another of the site's pages.
+    for (let tries = 0; cand && tries < 8; tries++) {
       page = await resolveResource(ctx.store, cand.op.page).catch(() => null);
-      if (page) break;
+      const rival = page ? strongerRival(cand.op.page, await pagesForQuery(conn, cand.op.query).catch(() => [])) : null;
+      if (page && !rival) break;
+      if (rival) {
+        notes.push(
+          `Left ${new URL(cand.op.page).pathname} alone for “${cand.op.query}”: ${new URL(rival.page).pathname} gets more of that search, and two pages competing hold each other back. Only the stronger page is worked on.`
+        );
+      }
+      page = null;
       skipped.add(cand.op.page);
       cand = pickTarget(cands, brand, rested);
     }
@@ -281,7 +321,7 @@ async function planNextChange(
       briefs,
       ctx.allowContent
     );
-    if (improvement.intentMatch) return { cand, page, improvement, summaries, apps: used };
+    if (improvement.intentMatch) return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used };
 
     const idea = improvement.missingForIntent || "People searching this want something the page doesn't have yet.";
     notes.push(`Skipped “${cand.op.query}” on ${new URL(cand.op.page).pathname}: ${idea}`);
@@ -289,6 +329,38 @@ async function planNextChange(
     skipped.add(cand.op.page);
   }
   return null;
+}
+
+/** No title or description another page already uses, no section copied from another page or repeating this one. */
+async function guardDuplicates(ctx: Ctx, page: StoreResource, imp: PageImprovement, notes: string[]): Promise<PageImprovement> {
+  const site = await siteOf(ctx);
+  const path = new URL(page.url).pathname;
+  const out = { ...imp };
+  const titleTwin = out.metaTitle && out.metaTitle !== page.metaTitle ? duplicateOf(out.metaTitle, path, site, "title") : null;
+  if (titleTwin) {
+    notes.push(`Kept the current SEO title: the new one was nearly the same as ${titleTwin.path}'s.`);
+    out.metaTitle = page.metaTitle ?? "";
+  }
+  const descTwin =
+    out.metaDescription && out.metaDescription !== page.metaDescription ? duplicateOf(out.metaDescription, path, site, "description") : null;
+  if (descTwin) {
+    notes.push(`Kept the current meta description: the new one was nearly the same as ${descTwin.path}'s.`);
+    out.metaDescription = page.metaDescription ?? "";
+  }
+  if (out.contentSectionHtml) {
+    const cache = new Map<string, Set<string>>();
+    const self: SiteItem = { path: "this page", kind: page.type, title: page.title, seoTitle: "", seoDescription: null, text: plainText(page.body) };
+    const others = [self, ...site.filter((i) => i.path !== path)];
+    const sources = new Set<string>();
+    out.contentSectionHtml = dropBlocks(out.contentSectionHtml, (text) => {
+      const from = copiedFrom(text, path, others, cache);
+      if (from) sources.add(from.path);
+      return Boolean(from);
+    });
+    if (sources.size) notes.push(`Dropped new paragraphs that repeated ${[...sources].join(", ")}.`);
+    if (!blocksOf(out.contentSectionHtml).length) out.contentSectionHtml = "";
+  }
+  return out;
 }
 
 /** The other blog post most related to the page, that doesn't link to it yet. */
@@ -320,7 +392,8 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
       await logChange({ ...base, field, before, after, status: "applied", targetId });
       done.push(field);
     } catch (err) {
-      await logChange({ ...base, field, before, after, status: "failed", targetId, note: (err as Error).message });
+      const status = err instanceof EditedMeanwhile ? "skipped" : "failed";
+      await logChange({ ...base, field, before, after, status, targetId, note: (err as Error).message });
     }
   };
 
@@ -338,7 +411,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
   if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
     const block = wrap(blockId, improvement.contentSectionHtml);
-    await apply("content", blockId, block, () => setBody(ctx.store, page.type as "article" | "page", page.id, `${page.body}\n${block}`));
+    await apply("content", blockId, block, () => setBodyIfUnchanged(ctx.store, page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
   }
 
   // Structured data, rebuilt from the page as it is now (including any new FAQ).
@@ -350,7 +423,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     if (current !== null && plan) {
       const blockId = `${runId}-schema`;
       const block = wrap(blockId, plan);
-      await apply("schema", blockId, block, () => setBody(ctx.store, type, page.id, `${withoutAutopilotSchema(current)}\n${block}`));
+      await apply("schema", blockId, block, () => setBodyIfUnchanged(ctx.store, type, page.id, current, `${withoutAutopilotSchema(current)}\n${block}`));
     }
   }
 
@@ -361,7 +434,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     if (sentence) {
       const blockId = `${runId}-link`;
       const block = wrap(blockId, sentence);
-      await apply("internal_link", blockId, block, () => setBody(ctx.store, "article", source.id, `${source.body}\n${block}`), source.id);
+      await apply("internal_link", blockId, block, () => setBodyIfUnchanged(ctx.store, "article", source.id, source.body, `${source.body}\n${block}`), source.id);
     }
   }
   return done;
@@ -430,10 +503,18 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field NOT IN ('internal_link', 'link_fix')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
+    // Emergency brake: when Google clicks suddenly fall, change nothing new until it's clear why.
+    const traffic = await trafficCheck(conn).catch(() => null);
+    const brake = traffic?.sharp
+      ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}). New changes are on hold until that settles; check Search Console for a Google update or a site problem.`
+      : null;
     if (capped && !preview) {
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
+    } else if (brake && !preview) {
+      summary.push(brake);
     } else {
       if (capped) notes.push(`The weekly limit is reached (${pages} of ${ctx.maxPagesPerWeek} pages), so a real run would wait.`);
+      if (brake) notes.push(`${brake} A real run would wait.`);
       const recordGap = preview
         ? null
         : (cand: Candidate, page: StoreResource, idea: string) =>
