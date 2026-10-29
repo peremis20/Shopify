@@ -349,6 +349,25 @@ if needed, checks the plugin answers with that key and saves the connection
 - Everything is logged and undoable like on Shopify. Deactivating the plugin
   disconnects it.
 
+### Webflow and Wix
+
+- **Webflow** (`autopilot/webflow.ts`): the owner pastes a site API token
+  (Sites, Pages, CMS read and write). Static pages get SEO title and
+  description updates, published only when the site has no other unpublished
+  work (otherwise saved for the owner's next publish). CMS items (blog posts)
+  get their SEO fields (matched by name) and new sections in the rich text
+  body, written to the live item. Structured data and static page content go
+  on the fix list (site tokens can't reach custom code).
+- **Wix** (`autopilot/wix.ts`): the owner pastes an API key with Wix Blog
+  permissions and the dashboard address (holding the site id). Blog posts get
+  SEO title, meta description and structured data as SEO tags, published
+  right away. Static pages and post text have no edit API, so those go on the
+  fix list.
+
+Each platform's writer says what it supports per item (`SiteWriter.supports`);
+anything it can't do becomes a fix list item, so one run can mix automatic
+changes and suggestions.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

@@ -405,30 +405,50 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
       await logChange({ ...base, field, before, after, status: "applied", targetId });
       done.push(field);
     } catch (err) {
-      const status = err instanceof EditedMeanwhile ? "skipped" : "failed";
+      // Saved, but live only at the owner's next publish (Webflow with other unpublished work).
+      const saved = (err as Error).name === "SavedNotLive";
+      const status = saved ? "applied" : err instanceof EditedMeanwhile ? "skipped" : "failed";
       await logChange({ ...base, field, before, after, status, targetId, note: (err as Error).message });
+      if (saved) done.push(field);
     }
+  };
+  // What this platform can't change for this page goes on the fix list instead.
+  const can = async (field: ChangeField, id: string) => !w.supports || (await w.supports(field, id).catch(() => false));
+  const suggest = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
+    await logChange({ ...base, resourceType: "site", resourceId: page.url, field, before, after, status: "suggested", targetId });
+    done.push(field);
   };
 
   if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) {
-    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => w.setSeo(page.id, "title", improvement.metaTitle));
+    if (await can("meta_title", page.id)) await apply("meta_title", page.metaTitle, improvement.metaTitle, () => w.setSeo(page.id, "title", improvement.metaTitle));
+    else await suggest("meta_title", page.metaTitle, improvement.metaTitle);
   }
   if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
-    await apply("meta_description", page.metaDescription, improvement.metaDescription, () => w.setSeo(page.id, "description", improvement.metaDescription));
+    if (await can("meta_description", page.id)) {
+      await apply("meta_description", page.metaDescription, improvement.metaDescription, () => w.setSeo(page.id, "description", improvement.metaDescription));
+    } else await suggest("meta_description", page.metaDescription, improvement.metaDescription);
   }
   if (w.setAlt) {
     for (const a of improvement.altTexts) await apply("alt", null, a.alt, () => w.setAlt!(a.imageId, a.alt), a.imageId);
   }
+  const canContent = await can("content", page.id);
   if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
     const block = wrap(blockId, improvement.contentSectionHtml);
-    await apply("content", blockId, block, () => w.setBodyIfUnchanged(page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
+    if (canContent) await apply("content", blockId, block, () => w.setBodyIfUnchanged(page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
+    else await suggest("content", null, improvement.contentSectionHtml);
   }
 
   // Structured data, rebuilt from the page as it is now (including any new FAQ).
-  if (page.type === "article" || page.type === "page") {
+  if ((page.type === "article" || page.type === "page") && !(await can("schema", page.id))) {
+    const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
+    const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
+    if (schema) await suggest("schema", null, schema);
+  } else if (page.type === "article" || page.type === "page") {
     const type = page.type;
-    const current = await w.getBody(type, page.id).catch(() => null);
+    const fetched = await w.getBody(type, page.id).catch(() => null);
+    // Platforms without a text API (Wix) build structured data from the page as visitors see it.
+    const current = fetched || (w.setSchema ? `${page.body}\n${improvement.contentSectionHtml}` : fetched);
     const updated = { ...page, metaDescription: improvement.metaDescription || page.metaDescription };
     const plan = current === null ? null : await schemaFor(ctx, updated, current);
     if (current !== null && plan) {
@@ -447,7 +467,9 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     if (sentence) {
       const blockId = `${runId}-link`;
       const block = wrap(blockId, sentence);
-      await apply("internal_link", blockId, block, () => w.setBodyIfUnchanged("article", source.id, source.body, `${source.body}\n${block}`), source.id);
+      if (await can("internal_link", source.id)) {
+        await apply("internal_link", blockId, block, () => w.setBodyIfUnchanged("article", source.id, source.body, `${source.body}\n${block}`), source.id);
+      } else await suggest("internal_link", null, sentence, new URL(source.url, op.page).href);
     }
   }
   return done;
@@ -632,7 +654,9 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     return `This one didn't help; ${back}.`;
   }
   if (field === "meta_title" || field === "meta_description") {
-    await w.setSeo(c.resource_id!, field === "meta_title" ? "title" : "description", c.before_value);
+    await w.setSeo(c.resource_id!, field === "meta_title" ? "title" : "description", c.before_value).catch((e) => {
+      if ((e as Error).name !== "SavedNotLive") throw e;
+    });
   } else if (field === "alt") {
     await w.setAlt?.(c.target_id!, c.before_value ?? "");
   } else if (field === "link_fix") {

@@ -1,6 +1,7 @@
 import { ensureSchema, hasDatabase, sql } from "../db";
 import { tokenSecret } from "../oauth-client";
 import { readProfile } from "../profile";
+import { readConnection } from "./connections";
 import { readWp } from "./wordpress";
 import { decrypt, encrypt } from "../secrets";
 
@@ -39,7 +40,12 @@ export interface AccountAutopilot {
 export interface AutopilotSettingsView extends AccountAutopilot {
   shopConnected: boolean;
   /** A non-Shopify website read from its sitemap: changes come as a fix list. */
-  website: { domain: string; platform: string | null; wordpress: { connected: boolean; seoPlugin: string | null } } | null;
+  website: {
+    domain: string;
+    platform: string | null;
+    /** Connected for automatic changes (otherwise changes come as a fix list). */
+    connection: { kind: "wordpress" | "webflow" | "wix"; detail: string | null } | null;
+  } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
   platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasShopifyApp: boolean };
@@ -136,17 +142,26 @@ export async function saveAccountAutopilot(
 }
 
 export async function autopilotView(accountId: string, admin: boolean): Promise<AutopilotSettingsView> {
-  const [acct, platform, profile, wp] = await Promise.all([
+  const [acct, platform, profile, wp, wf, wx] = await Promise.all([
     readAccountAutopilot(accountId),
     readPlatformSettings(),
     readProfile(accountId),
     readWp(accountId).catch(() => null),
+    readConnection<{ name?: string }>("webflow", accountId).catch(() => null),
+    readConnection<{ siteId?: string }>("wix", accountId).catch(() => null),
   ]);
+  const connection = wp
+    ? { kind: "wordpress" as const, detail: wp.seoPlugin && wp.seoPlugin !== "none" ? wp.seoPlugin : null }
+    : wf
+      ? { kind: "webflow" as const, detail: wf.name ?? null }
+      : wx
+        ? { kind: "wix" as const, detail: "blog posts" }
+        : null;
   const shopConnected = Boolean(acct.shopDomain && acct.shopTokenEnc);
   return {
     website:
       !shopConnected && profile.siteDomain
-        ? { domain: profile.siteDomain, platform: profile.platform, wordpress: { connected: Boolean(wp), seoPlugin: wp?.seoPlugin ?? null } }
+        ? { domain: profile.siteDomain, platform: profile.platform, connection }
         : null,
     enabled: acct.enabled,
     maxPagesPerWeek: acct.maxPagesPerWeek,

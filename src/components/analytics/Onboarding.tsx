@@ -5,7 +5,7 @@ import type { Onboarding as Status, Step } from "@/lib/analytics/onboarding";
 import { api } from "./seo-ui";
 import { isEmbedded } from "./embedded-client";
 import { ConnectButton } from "./SettingsPanel";
-import { WordPressConnect } from "./WordPressConnect";
+import { PlatformConnect } from "./PlatformConnect";
 import { Card } from "./ui";
 
 /**
@@ -132,8 +132,8 @@ function StepAction({ step, status, busy, act, onOpenSettings }: { step: Step; s
       return step.done ? <button onClick={onOpenSettings} className={link}>Change Google account in Settings</button> : <ConnectButton />;
     case "website":
       return step.done ? (
-        status.platform === "wordpress" && !status.wordpressConnected && status.domain ? (
-          <WordPressConnect domain={status.domain} />
+        !status.siteConnected && status.domain && ["wordpress", "webflow", "wix"].includes(status.platform ?? "") ? (
+          <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("website-connected", async () => undefined, true)} />
         ) : (
           <p className="text-dash-muted">Connected. You can change it any time in the Autopilot card.</p>
         )

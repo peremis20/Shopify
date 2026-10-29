@@ -6,7 +6,7 @@ import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } fro
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import { fixGuide, PLATFORM_LABEL, type Platform } from "@/lib/analytics/fix-guides";
 import { BoltIcon } from "./Icons";
-import { WordPressConnect } from "./WordPressConnect";
+import { PlatformConnect } from "./PlatformConnect";
 import { PlatformForm } from "./PlatformSettings";
 import { api, pathOf } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
@@ -127,8 +127,8 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
         <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} onWebsite={load} />
       ) : (
         <div className="space-y-5 text-sm">
-          {website && !website.wordpress.connected && website.platform === "wordpress" && <WordPressConnect domain={website.domain} />}
-          {website && !website.wordpress.connected && (
+          {website && !website.connection && <PlatformConnect platform={website.platform} domain={website.domain} onConnected={load} />}
+          {website && !website.connection && (
             <p className="max-w-3xl rounded-lg bg-[#FBF1E1] p-3 text-dash-ink">
               The app reads {website.domain} like Google does but can&apos;t edit it, so each improvement lands on your{" "}
               <b>fix list</b> below, ready to paste, with where to paste it. Mark it done and it&apos;s measured like any other change.
@@ -219,21 +219,21 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
             <p className="text-dash-muted">
               Website: <span className="font-semibold text-dash-ink">{website.domain}</span>
               {website.platform ? ` (${PLATFORM_LABEL[website.platform as Platform] ?? website.platform})` : ""}
-              {website.wordpress.connected && (
+              {website.connection && (
                 <>
                   {" · connected"}
-                  {website.wordpress.seoPlugin && website.wordpress.seoPlugin !== "none" ? ` with ${website.wordpress.seoPlugin}` : ""}
+                  {website.connection.detail ? ` (${website.connection.detail})` : ""}
                   {" · "}
                   <button
                     onClick={() =>
                       act("disconnect", async () => {
-                        const d = await api<{ settings: AutopilotSettingsView }>("/api/wordpress/disconnect", {});
+                        const d = await api<{ settings: AutopilotSettingsView }>("/api/site/disconnect", { kind: website.connection!.kind });
                         setState((s) => (s ? { ...s, settings: d.settings } : s));
                       })
                     }
                     className="font-semibold text-dash-down hover:underline"
                   >
-                    Disconnect WordPress
+                    Disconnect
                   </button>
                 </>
               )}

@@ -26,6 +26,10 @@ import {
   wpSetSeo,
   type WpAccess,
 } from "./wordpress";
+import { readConnection } from "./connections";
+import type { ChangeField } from "./types";
+import { wfArticles, wfFields, wfGetBody, wfResolve, wfSetBody, wfSetSeo, type WfAccess } from "./webflow";
+import { wixResolve, wixSetTag, type WixAccess } from "./wix";
 
 /**
  * Where the autopilot reads a site from, and how it writes to it.
@@ -35,7 +39,7 @@ import {
  *   list the owner pastes in (with where to paste it for their platform).
  */
 export interface SiteAccess {
-  mode: "shopify" | "wordpress" | "manual";
+  mode: "shopify" | "wordpress" | "webflow" | "wix" | "manual";
   /** Set for Shopify only (link fixer). */
   store: StoreAccess | null;
   /** How changes are written; null means they go on the fix list. */
@@ -57,6 +61,8 @@ export interface SiteWriter {
   setBodyIfUnchanged(type: BodyType, id: string, expected: string, next: string): Promise<void>;
   /** Structured data kept apart from the content (WordPress prints it in the head). Without it, it's appended to the body. */
   setSchema?(type: BodyType, id: string, block: string | null): Promise<void>;
+  /** Whether this platform can make this kind of change to this item; when it can't, the change goes on the fix list. Everything when absent. */
+  supports?(field: ChangeField, resourceId: string): Promise<boolean>;
 }
 
 /** Thrown when someone edited a page while the autopilot was writing; the change is skipped, not forced. */
@@ -132,6 +138,89 @@ export function wordpressSite(accountId: string, wp: WpAccess, brand: string): S
   };
 }
 
+/** The JSON inside a block of JSON-LD script tags: one object, or an array when there are several. */
+export function jsonLdOf(block: string): string | null {
+  const parts = [...block.matchAll(/<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1].trim()).filter(Boolean);
+  if (!parts.length) return null;
+  return parts.length === 1 ? parts[0] : `[${parts.join(",")}]`;
+}
+
+/** Reads a page from the sitemap pages, for platforms that can't hand over this page (it then gets a fix list). */
+async function crawledResource(accountId: string, url: string): Promise<StoreResource | null> {
+  const p = await sitePage(accountId, url);
+  if (!p || p.noindex) return null;
+  return {
+    type: isPostUrl(p.url) ? "article" : "page",
+    id: `url:${p.url}`,
+    title: p.h1 || p.title,
+    url,
+    body: p.mainHtml,
+    metaTitle: p.title || null,
+    metaDescription: p.metaDescription,
+    imagesMissingAlt: [],
+    article: { publishedAt: p.publishedAt, updatedAt: null, author: null, image: p.image },
+  };
+}
+
+/** The page's text as visitors see it, for the writer, when the platform's API doesn't give it. */
+async function withPageText(accountId: string, r: StoreResource | null): Promise<StoreResource | null> {
+  if (!r || r.body) return r;
+  const p = await sitePage(accountId, r.url).catch(() => null);
+  return { ...r, body: p?.mainHtml ?? "" };
+}
+
+export function webflowSite(accountId: string, w: WfAccess, origin: string, brand: string): SiteAccess {
+  return {
+    mode: "webflow",
+    store: null,
+    writer: {
+      setSeo: (id, field, value) => wfSetSeo(w, id, field, value),
+      getBody: (_t, id) => wfGetBody(w, id),
+      setBody: (_t, id, body) => wfSetBody(w, id, body),
+      async setBodyIfUnchanged(_t, id, expected, next) {
+        if ((await wfGetBody(w, id)) !== expected) throw new EditedMeanwhile();
+        await wfSetBody(w, id, next);
+      },
+      async supports(field, id) {
+        if (id.startsWith("url:")) return false;
+        const can = await wfFields(w, id);
+        if (field === "meta_title") return can.title;
+        if (field === "meta_description") return can.description;
+        if (field === "content" || field === "internal_link") return can.body;
+        return false;
+      },
+    },
+    resolve: async (url) => (await withPageText(accountId, await wfResolve(w, url).catch(() => null))) ?? crawledResource(accountId, url),
+    articles: () => wfArticles(w, origin),
+    index: () => crawledIndex(accountId),
+    name: async () => w.name || brand,
+  };
+}
+
+export function wixSite(accountId: string, w: WixAccess, brand: string): SiteAccess {
+  return {
+    mode: "wix",
+    store: null,
+    writer: {
+      setSeo: (id, field, value) => wixSetTag(w, id, field, value),
+      getBody: async () => "",
+      setBody: async () => {
+        throw new Error("Wix has no API for page text.");
+      },
+      setBodyIfUnchanged: async () => {
+        throw new Error("Wix has no API for page text.");
+      },
+      setSchema: (_t, id, block) => wixSetTag(w, id, "schema", block ? jsonLdOf(block) : null),
+      supports: async (field, id) => id.startsWith("post:") && (field === "meta_title" || field === "meta_description" || field === "schema"),
+    },
+    resolve: async (url) => (await withPageText(accountId, await wixResolve(w, url).catch(() => null))) ?? crawledResource(accountId, url),
+    // Post text can't be edited on Wix, so internal links are suggested from the pages read from the sitemap.
+    articles: () => manualSite(accountId, brand).articles(),
+    index: () => crawledIndex(accountId),
+    name: async () => brand,
+  };
+}
+
 export function manualSite(accountId: string, brand: string): SiteAccess {
   return {
     mode: "manual",
@@ -168,6 +257,10 @@ export async function siteFor(accountId: string, brand?: string | null): Promise
   const name = brand ?? profile.brandName ?? profile.siteDomain?.split(".")[0] ?? "";
   if (acct.shopDomain && acct.shopTokenEnc) return shopifySite({ accountId, shopDomain: acct.shopDomain }, name);
   if (wp) return wordpressSite(accountId, wp, name);
+  const wfAccess = await readConnection<WfAccess>("webflow", accountId).catch(() => null);
+  if (wfAccess && profile.siteDomain) return webflowSite(accountId, wfAccess, `https://${profile.siteDomain}`, name);
+  const wixAccess = await readConnection<WixAccess>("wix", accountId).catch(() => null);
+  if (wixAccess) return wixSite(accountId, wixAccess, name);
   if (profile.siteDomain) return manualSite(accountId, name);
   return null;
 }

@@ -3,6 +3,9 @@ import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account 
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
+import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
+import { connectWebflow } from "./autopilot/webflow";
+import { connectWix } from "./autopilot/wix";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -287,6 +290,54 @@ export async function wordpressPlugin(req: Request): Promise<Response> {
 export const wordpressDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
     await deleteWp(account.id);
+    return json({ settings: await autopilotView(account.id, account.admin) });
+  });
+
+// ---------- Webflow and Wix ----------
+
+/** Webflow: a site token (Sites, Pages and CMS read and write) for the site at the account's domain. */
+export const webflowConnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    const token = typeof b.token === "string" ? b.token.trim() : "";
+    const profile = await readProfile(account.id);
+    if (!profile.siteDomain) return json({ error: "Connect your website by its address first." }, 400);
+    if (token.length < 20) return json({ error: "Paste the whole API token from Webflow." }, 400);
+    try {
+      await saveConnectionFor("webflow", account.id, await connectWebflow(token, profile.siteDomain));
+      await saveProfile(account.id, { platform: "webflow" });
+      return json({ settings: await autopilotView(account.id, account.admin) });
+    } catch (err) {
+      return json({ error: message(err) }, 400);
+    }
+  });
+
+/** Wix: an API key with Wix Blog permissions, and the site's id. */
+export const wixConnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    const apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
+    // The site id is the long id in the Wix dashboard address; accept the whole address too.
+    const siteId = (typeof b.siteId === "string" ? b.siteId : "").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)?.[0] ?? "";
+    if (apiKey.length < 20) return json({ error: "Paste the whole API key from Wix." }, 400);
+    if (!siteId) return json({ error: "Paste the site id (or your Wix dashboard address, which contains it)." }, 400);
+    if (!(await readProfile(account.id)).siteDomain) return json({ error: "Connect your website by its address first." }, 400);
+    try {
+      await connectWix({ apiKey, siteId });
+      await saveConnectionFor("wix", account.id, { apiKey, siteId });
+      await saveProfile(account.id, { platform: "wix" });
+      return json({ settings: await autopilotView(account.id, account.admin) });
+    } catch (err) {
+      return json({ error: message(err) }, 400);
+    }
+  });
+
+/** Disconnects WordPress, Webflow or Wix (changes go back to the fix list). */
+export const siteDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    if (b.kind === "webflow" || b.kind === "wix") await deleteConnectionFor(b.kind, account.id);
+    else await deleteWp(account.id);
     return json({ settings: await autopilotView(account.id, account.admin) });
   });
 

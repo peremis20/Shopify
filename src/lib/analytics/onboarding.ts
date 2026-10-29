@@ -7,6 +7,7 @@ import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listProperties } from "./properties";
 import { bareDomain, BUSINESS_TYPES, readProfile, saveProfile, type Profile } from "./profile";
 import { PLATFORM_LABEL, type Platform } from "./site-crawl";
+import { readConnection } from "./autopilot/connections";
 import { readWp } from "./autopilot/wordpress";
 
 /**
@@ -166,8 +167,8 @@ export interface Onboarding {
   businessTypes: { id: string; label: string }[];
   /** Detected platform of a site connected by address (not Shopify). */
   platform: string | null;
-  /** WordPress sites: whether the connector plugin is connected (changes made automatically). */
-  wordpressConnected: boolean;
+  /** WordPress, Webflow or Wix sites: connected for automatic changes. */
+  siteConnected: boolean;
   gaExcludeHosts: string[];
   /** Filled in when the Google account can't see the site's Search Console or Analytics. */
   access: AccessRequest | null;
@@ -187,6 +188,11 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     readProfile(accountId, email),
     readWp(accountId).catch(() => null),
   ]);
+  const [wf, wx] = await Promise.all([
+    readConnection("webflow", accountId).catch(() => null),
+    readConnection("wix", accountId).catch(() => null),
+  ]);
+  const connectedTo = wp ? "WordPress" : wf ? "Webflow" : wx ? "Wix" : null;
   const shopConnected = Boolean(acct.shopDomain && acct.shopTokenEnc);
   const domain = await storeDomain(accountId, profile).catch(() => profile.siteDomain);
   const store = acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null;
@@ -211,8 +217,8 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       done: shopConnected || Boolean(profile.siteDomain && profile.platform),
       detail: shopConnected
         ? `Connected to ${acct.shopDomain}. Approved improvements are made for you.`
-        : wp
-          ? `Connected to WordPress (${profile.siteDomain}). Approved improvements are made for you.`
+        : connectedTo
+          ? `Connected to ${connectedTo} (${profile.siteDomain}). Approved improvements are made for you${wx ? " on blog posts; the rest comes as a fix list" : ""}.`
           : profile.siteDomain && profile.platform
           ? `Reading ${profile.siteDomain} (${PLATFORM_LABEL[profile.platform as Platform] ?? profile.platform}). Changes come as a fix list you paste in, with where to paste each one.`
           : "Shopify stores connect in one click; any other website works too.",
@@ -282,7 +288,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     businessType: profile.businessType,
     businessTypes: BUSINESS_TYPES.map(({ id, label }) => ({ id, label })),
     platform: shopConnected ? "shopify" : profile.platform,
-    wordpressConnected: Boolean(wp),
+    siteConnected: Boolean(connectedTo),
     gaExcludeHosts: profile.gaExcludeHosts,
     access: needGsc || needGa ? accessRequest(domain!, googleEmail, { gsc: needGsc, ga: needGa }) : null,
     email: googleEmail,
