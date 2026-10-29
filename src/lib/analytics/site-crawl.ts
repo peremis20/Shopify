@@ -113,7 +113,9 @@ const attr = (html: string, re: RegExp) => {
 export const toText = (html: string) =>
   decode(html.replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 
-export function parsePage(url: string, html: string): ParsedPage {
+export function parsePage(url: string, rawHtml: string): ParsedPage {
+  // Null characters break Postgres text columns; some pages contain them.
+  const html = rawHtml.replace(/\u0000/g, "");
   const head = html.slice(0, Math.max(html.search(/<body/i), 0) || 60_000);
   const meta = (name: string) =>
     attr(head, new RegExp(`<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=["']([^"']*)`, "i")) ??
@@ -179,12 +181,15 @@ export async function crawlSite(accountId: string, domain: string, budget = 60):
         }
         if (!platform) platform = detectPlatform(res.text);
         const p = parsePage(url, res.text);
+        // One page that can't be saved never stops the others.
         await sql`
           INSERT INTO insights_site_pages (account_id, url, status, title, meta_description, h1, main_html, text, data, fetched_at)
           VALUES (${accountId}, ${url}, ${res.status}, ${p.title}, ${p.metaDescription}, ${p.h1}, ${p.mainHtml}, ${p.text},
             ${JSON.stringify({ canonical: p.canonical, noindex: p.noindex, schemaTypes: p.schemaTypes, siteName: p.siteName, publishedAt: p.publishedAt, image: p.image, disclaimer: p.disclaimer })}::jsonb, now())
           ON CONFLICT (account_id, url) DO UPDATE SET status = EXCLUDED.status, title = EXCLUDED.title, meta_description = EXCLUDED.meta_description,
-            h1 = EXCLUDED.h1, main_html = EXCLUDED.main_html, text = EXCLUDED.text, data = EXCLUDED.data, fetched_at = now()`;
+            h1 = EXCLUDED.h1, main_html = EXCLUDED.main_html, text = EXCLUDED.text, data = EXCLUDED.data, fetched_at = now()`.catch((e) =>
+          console.error(`couldn't save ${url}: ${(e as Error).message}`)
+        );
         read++;
       })
     );
