@@ -1,5 +1,6 @@
 "use client";
 
+import { connectGoogleEmbedded, isEmbedded } from "./embedded-client";
 import { useEffect, useState } from "react";
 import type { ConnectionInfo, PropertyOptions } from "@/lib/analytics/types";
 import { CloseIcon } from "./Icons";
@@ -198,6 +199,12 @@ export function ConnectButton({ label = "Connect with Google" }: { label?: strin
   return (
     <a
       href="/api/auth/google/start"
+      onClick={(e) => {
+        // Inside Shopify admin, Google opens at the top level and comes back into the app.
+        if (!isEmbedded()) return;
+        e.preventDefault();
+        connectGoogleEmbedded().catch((err) => alert(err.message));
+      }}
       className="inline-flex items-center gap-2.5 rounded-xl border border-dash-line bg-white px-4 py-2.5 text-sm font-semibold text-dash-ink shadow-sm hover:border-dash-green/40"
     >
       <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">

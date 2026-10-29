@@ -278,6 +278,21 @@ its one action right there.
   is told this), the store domain and other sites sharing the Analytics tag
   (the old `GA_EXCLUDE_HOSTNAMES` now only seeds the platform owner's account).
 
+### Inside Shopify admin (embedded app)
+
+Installing the app from Shopify is the whole signup. Shopify opens the app in
+its admin with App Bridge, which adds a session token to every API call
+(`src/lib/analytics/embedded.ts`). The server checks the token's signature
+with the app secret, finds the account already connected to that store (so
+Peremis keeps its account) or creates one named after the store, and gets the
+store's access token with Shopify's token exchange. No password, no "connect
+your store" step. "Connect Google" opens Google at the top level with a signed
+ticket for that account and comes straight back into Shopify admin.
+
+Shopify settings are in `shopify-app/shopify.app.toml`: App URL
+`<APP_URL>/analytics`, embedded on, the access scopes (Shopify installs with
+them itself), and the uninstall and privacy webhooks.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

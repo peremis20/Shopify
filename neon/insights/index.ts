@@ -14,6 +14,7 @@ const routes: Record<string, Handler> = {
   "GET /api/session": api.session,
   "GET /api/auth/google/start": api.authStart,
   "GET /api/auth/google/callback": api.authCallback,
+  "GET /api/auth/google/link": api.googleLinkStart,
   "POST /api/auth/google/disconnect": api.disconnect,
   "POST /api/auth/logout": api.logout,
   "GET /api/onboarding": api.onboarding,
@@ -45,15 +46,24 @@ const routes: Record<string, Handler> = {
   "POST /api/shopify/webhooks": api.shopifyWebhook,
 };
 
-function page(): Response {
+/**
+ * The dashboard page. Opened by Shopify inside its admin (a `shop` parameter),
+ * it loads App Bridge first and allows only Shopify admin to frame it.
+ */
+async function page(req: Request): Promise<Response> {
   const assets = (process.env.ASSET_BASE_URL ?? "").replace(/\/$/, "");
+  const shop = new URL(req.url).searchParams.get("shop") ?? "";
+  const embedded = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/.test(shop) ? await api.embeddedAppKey() : null;
+  const bridge = embedded
+    ? `<meta name="shopify-api-key" content="${embedded}">\n<script src="https://cdn.shopify.com/shopifycloud/app-bridge.js"></script>\n`
+    : "";
   const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Insights Dashboard</title>
+${bridge}<title>${api.APP_NAME}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="${assets}/app.css">
@@ -65,7 +75,11 @@ function page(): Response {
 </body>
 </html>`;
   return new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": embedded ? `frame-ancestors https://${shop} https://admin.shopify.com` : "frame-ancestors 'none'",
+    },
   });
 }
 
@@ -91,7 +105,7 @@ export default {
         });
       }
     }
-    if (req.method === "GET" && (path === "/" || path === "/analytics")) return page();
+    if (req.method === "GET" && (path === "/" || path === "/analytics")) return page(req);
     return new Response("Not found", { status: 404 });
   },
 };

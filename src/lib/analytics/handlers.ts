@@ -41,6 +41,7 @@ import {
   type KeywordQuery,
 } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
+import { adminAppUrl, embeddedAccount, googleLinkTicket, readLinkTicket } from "./embedded";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
 import { readProfile, saveProfile } from "./profile";
@@ -85,8 +86,18 @@ function redirect(location: string, ...cookies: string[]): Response {
 const signedOut = () => json({ error: "Please sign in.", signedIn: false }, 401);
 
 /** Runs a handler only for a signed-in account. */
+/** The signed-in account: the session cookie, or inside Shopify admin the store's session token. */
+async function accountOf(req: Request): Promise<Account | null> {
+  return (await currentAccount(req)) ?? (await embeddedAccount(req));
+}
+
 async function withAccount(req: Request, run: (account: Account) => Promise<Response>): Promise<Response> {
-  const account = await currentAccount(req);
+  let account: Account | null;
+  try {
+    account = await accountOf(req);
+  } catch (err) {
+    return json({ error: message(err) }, 500);
+  }
   if (!account) return signedOut();
   try {
     return await run(account);
@@ -101,7 +112,7 @@ const withAdmin = (req: Request, run: (account: Account) => Promise<Response>) =
 // ---------- session and Google sign-in ----------
 
 export async function session(req: Request): Promise<Response> {
-  const account = await currentAccount(req).catch(() => null);
+  const account = await accountOf(req).catch(() => null);
   return json({
     signedIn: Boolean(account),
     email: account?.email,
@@ -120,7 +131,10 @@ export async function authStart(req: Request): Promise<Response> {
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
   }
-  const state = `${purpose}.${crypto.randomBytes(16).toString("hex")}`;
+  // From inside Shopify admin: a signed ticket says which account the Google connection is for.
+  const ticket = new URL(req.url).searchParams.get("link");
+  const linked = purpose === "signin" && readLinkTicket(ticket) ? `link~${ticket}` : purpose;
+  const state = `${linked}.${crypto.randomBytes(16).toString("hex")}`;
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: client.id,
@@ -160,12 +174,16 @@ export async function authCallback(req: Request): Promise<Response> {
       return back({ connected: "ads" });
     }
 
-    const account = await upsertAccount(email);
+    const link = state.startsWith("link~") ? readLinkTicket(state.slice(5, state.lastIndexOf("."))) : null;
+    if (state.startsWith("link~") && !link) throw new Error("The link from Shopify expired. Please try again from the app.");
+    const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
     const previous = await getConnection(account.id).catch(() => null);
     const conn = { refreshToken, email, gaPropertyId: previous?.gaPropertyId, gscSiteUrl: previous?.gscSiteUrl };
     await saveConnection(account.id, conn);
     await autoMatch(account.id, conn).catch(() => undefined);
+    // Back into Shopify admin when the sign in started there.
+    if (link) return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
     return back(previous ? {} : { connected: "1" }, sessionCookie(req, account.id));
   } catch (err) {
     return back({ auth_error: message(err) });
@@ -206,6 +224,23 @@ export async function saveGoogleClient(req: Request): Promise<Response> {
     return json({ error: message(err) }, 400);
   }
 }
+
+// ---------- inside Shopify admin ----------
+
+export { APP_NAME } from "./onboarding";
+
+/** The Shopify app's public key, for App Bridge on the embedded page. */
+export async function embeddedAppKey(): Promise<string | null> {
+  return (await readPlatformSettings()).shopifyClientId ?? null;
+}
+
+/** A Google sign in link for the embedded app; it opens at the top level and comes back into Shopify admin. */
+export const googleLinkStart = (req: Request) =>
+  withAccount(req, async (account) => {
+    const acct = await readAccountAutopilot(account.id);
+    const back = acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
+    return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back))}` });
+  });
 
 // ---------- onboarding ----------
 

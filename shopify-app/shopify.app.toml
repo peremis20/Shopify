@@ -1,0 +1,33 @@
+# The Shopify app's configuration, for Shopify CLI (`shopify app deploy`) or
+# to copy into a new app version in the Shopify Dev Dashboard by hand.
+# Fill in client_id (Dev Dashboard > your app > Settings > Client ID), or run
+# `shopify app config link` in this folder to fill it in.
+
+client_id = ""
+name = "Insights"
+application_url = "https://br-weathered-mouse-b5ymo8mn-insights.compute.c-7.us-east-2.aws.neon.tech/analytics"
+# Opens inside Shopify admin: installing is the whole signup.
+embedded = true
+
+[access_scopes]
+# Shopify installs the app with these scopes itself (managed installation),
+# then the app gets its token by token exchange; no install redirects.
+scopes = "write_content,write_products,write_online_store_pages,write_files"
+
+[auth]
+# Still used by the "Connect Shopify" form on the standalone dashboard.
+redirect_urls = ["https://br-weathered-mouse-b5ymo8mn-insights.compute.c-7.us-east-2.aws.neon.tech/api/shopify/callback"]
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  topics = ["app/uninstalled"]
+  uri = "https://br-weathered-mouse-b5ymo8mn-insights.compute.c-7.us-east-2.aws.neon.tech/api/shopify/webhooks"
+
+  [[webhooks.subscriptions]]
+  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
+  uri = "https://br-weathered-mouse-b5ymo8mn-insights.compute.c-7.us-east-2.aws.neon.tech/api/shopify/webhooks"
+
+[build]
+include_config_on_deploy = true
