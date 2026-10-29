@@ -96,6 +96,17 @@ CREATE TABLE IF NOT EXISTS insights_rank_daily (
 );
 
 -- Index status, rich results and mobile speed per page.
+-- Claim guard: risky health claims found in the store's posts, pages and products (weekly).
+CREATE TABLE IF NOT EXISTS insights_claim_flags (
+  account_id bigint NOT NULL,
+  url text NOT NULL,
+  title text NOT NULL,
+  kind text NOT NULL,          -- article, page, product
+  flags jsonb NOT NULL,
+  checked_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, url)
+);
+
 CREATE TABLE IF NOT EXISTS insights_page_health (
   account_id bigint NOT NULL,
   url text NOT NULL,

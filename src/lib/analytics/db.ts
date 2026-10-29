@@ -122,6 +122,15 @@ export function ensureSchema(): Promise<void> {
       issues jsonb NOT NULL DEFAULT '[]',
       PRIMARY KEY (account_id, url)
     )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_claim_flags (
+      account_id bigint NOT NULL,
+      url text NOT NULL,
+      title text NOT NULL,
+      kind text NOT NULL,
+      flags jsonb NOT NULL,
+      checked_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, url)
+    )`;
     await sql`CREATE TABLE IF NOT EXISTS insights_settings (
       key text PRIMARY KEY,
       value text NOT NULL,

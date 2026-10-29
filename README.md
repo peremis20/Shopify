@@ -233,6 +233,17 @@ set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
   address changes, never the wording, and links to other sites are left alone.
   Each fixed post shows as a "Link fix" in the history and can be undone while
   nobody has edited the post since.
+- **Claim guard:** built for health and wellness stores. Everything the
+  autopilot writes is checked for wording the FTC and FDA treat as risky
+  (disease claims such as "treats diabetes", "FDA approved", "clinically
+  proven", "no side effects", guaranteed results, pounds to lose, replacing
+  medication); a risky paragraph is dropped and a risky title or description is
+  never written. Once a week every published post, page and active product is
+  scanned too (`insights_claim_flags`), including whether product pages carry
+  the FDA disclaimer when the theme doesn't show it sitewide. Existing wording
+  is flagged with a safer version, never changed automatically. Warnings, myth
+  busting and "talk to your doctor" sentences aren't flagged. Rules live in
+  `autopilot/claims.ts`.
 
 ### Adding an app to the autopilot
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { ClaimReport } from "@/lib/analytics/autopilot/claim-scan";
 import type { PageHealth } from "@/lib/analytics/autopilot/health";
 import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
@@ -12,6 +13,7 @@ import { Card, CardHeader, Skeleton } from "./ui";
 interface Watch {
   ranks: RankWatchRow[];
   health: PageHealth[];
+  claims: ClaimReport;
 }
 
 /** Daily Google positions and technical health, side by side under the autopilot. */
@@ -68,6 +70,16 @@ export function RankHealth({ connected }: { connected: boolean }) {
           A few pages are checked each day, so each one is rechecked about weekly.
         </Explainer>
         {!data ? <Skeleton className="h-48" /> : <HealthList pages={data.health} />}
+      </Card>
+      <Card className="xl:col-span-2">
+        <CardHeader title="Claim guard">{checkButton}</CardHeader>
+        <Explainer>
+          Health claims the FTC and FDA treat as risky, found in your blog posts, pages and product descriptions: disease
+          claims, &quot;FDA approved&quot;, &quot;clinically proven&quot;, guaranteed results and missing disclaimers. Checked
+          weekly. The autopilot never writes these; existing wording is yours to change, with a safer version for each. This is
+          a guide, not legal advice.
+        </Explainer>
+        {!data ? <Skeleton className="h-32" /> : <ClaimList report={data.claims} />}
       </Card>
     </div>
   );
@@ -197,6 +209,53 @@ function HealthList({ pages }: { pages: PageHealth[] }) {
                 ))}
                 <a href={p.inspectUrl} target="_blank" rel="noreferrer" className="inline-block font-semibold text-dash-green hover:underline">
                   Open in Search Console (request indexing there)
+                </a>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ClaimList({ report }: { report: ClaimReport }) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (!report.checkedAt) {
+    return <p className="py-8 text-center text-sm text-dash-muted">Not checked yet. Click Check now, or wait for the next morning run.</p>;
+  }
+  const high = report.pages.filter((p) => p.flags.some((f) => f.level === "high")).length;
+  return (
+    <div className="text-sm">
+      <p className="mb-2 text-dash-muted">
+        {report.scanned} posts, pages and products checked {new Date(report.checkedAt).toLocaleDateString()}.{" "}
+        {report.pages.length
+          ? `${report.pages.length} need a look${high ? `, ${high} with serious claims` : ""}.`
+          : "Nothing risky found."}
+      </p>
+      <ul className="max-h-[420px] divide-y divide-dash-line/70 overflow-auto">
+        {report.pages.map((p) => (
+          <li key={p.url} className="py-2">
+            <button onClick={() => setOpen(open === p.url ? null : p.url)} className="flex w-full items-center gap-2 text-left">
+              <span className={`h-2 w-2 shrink-0 rounded-full ${p.flags.some((f) => f.level === "high") ? "bg-dash-down" : "bg-[#D9A23B]"}`} />
+              <span className="min-w-0 flex-1 truncate text-dash-ink" title={p.url}>{p.title}</span>
+              <span className="shrink-0 text-xs text-dash-muted">
+                {p.kind} · {p.flags.length} {p.flags.length === 1 ? "flag" : "flags"}
+              </span>
+            </button>
+            {open === p.url && (
+              <div className="mt-2 space-y-3 pl-4">
+                {p.flags.map((f, n) => (
+                  <div key={n}>
+                    <span className={`mr-2 rounded px-1.5 py-0.5 text-xs font-semibold ${LEVEL_STYLE[f.level]}`}>{f.level}</span>
+                    <span className="font-semibold text-dash-ink">{f.phrase}</span>
+                    {f.excerpt && <p className="mt-1 italic text-dash-muted">{f.excerpt}</p>}
+                    <p className="mt-1 text-dash-ink">{f.why}</p>
+                    <p className="text-dash-muted">Safer: {f.fix}</p>
+                  </div>
+                ))}
+                <a href={p.url} target="_blank" rel="noreferrer" className="inline-block font-semibold text-dash-green hover:underline">
+                  Open the page
                 </a>
               </div>
             )}

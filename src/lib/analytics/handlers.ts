@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, revertChange, runAutopilot } from "./autopilot/engine";
+import { claimReport, claimScanDue, scanStoreClaims } from "./autopilot/claim-scan";
 import { applyLinkFix, describeFix, findLinkFixes, linkFixDue, markLinkFixChecked } from "./autopilot/link-fixer";
 import {
   aiProvider,
@@ -446,22 +447,30 @@ async function fixLinks(accountId: string, force: boolean): Promise<number> {
   return fixed;
 }
 
-/** Today's rank check, a few page health checks and the weekly link fix for one account. Each part runs at most once a day. */
+/** Weekly claim guard scan of the whole store (read only), whenever a store is connected. */
+async function runClaimScan(accountId: string, force: boolean): Promise<number> {
+  const acct = await readAccountAutopilot(accountId);
+  if (!acct.shopDomain || !acct.shopTokenEnc || !(force || (await claimScanDue(accountId)))) return 0;
+  return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
+}
+
+/** Today's rank check, a few page health checks, the weekly link fix and claim scan for one account. Each part runs at most once a day. */
 async function maintain(accountId: string, force = false): Promise<string> {
   const [conn, platform] = await Promise.all([getConnection(accountId), readPlatformSettings()]);
   const links = await fixLinks(accountId, force).catch((e) => (console.error(`link fix failed: ${message(e)}`), 0));
-  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}`;
+  const claims = await runClaimScan(accountId, force).catch((e) => (console.error(`claim scan failed: ${message(e)}`), 0));
+  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}, claims ${claims}`;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
   const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
-  return `ranks ${ranks}, health ${pages}, links ${links}`;
+  return `ranks ${ranks}, health ${pages}, links ${links}, claims ${claims}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */
 export const autopilotWatch = (req: Request) =>
   withAccount(req, async (account) => {
     const conn = await getConnection(account.id);
-    const [ranks, health] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn)]);
-    return json({ ranks, health });
+    const [ranks, health, claims] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn), claimReport(account.id)]);
+    return json({ ranks, health, claims });
   });
 
 /** "Check now": today's ranks (if not done yet) and the next pages' health. */
@@ -469,8 +478,8 @@ export const autopilotCheckNow = (req: Request) =>
   withAccount(req, async (account) => {
     await maintain(account.id, true);
     const conn = await getConnection(account.id);
-    const [ranks, health] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn)]);
-    return json({ ranks, health });
+    const [ranks, health, claims] = await Promise.all([rankWatch(account.id), healthReport(account.id, conn), claimReport(account.id)]);
+    return json({ ranks, health, claims });
   });
 
 /** Goes through a whole run on live data and returns what it would change, without changing anything. */

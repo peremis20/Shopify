@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { isRisky } from "./claims";
 import type { AiProvider } from "./settings";
 import type { StoreResource } from "./shopify";
 
@@ -14,6 +15,7 @@ Write for real shoppers first, search engines second.
 
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
+- Never write "FDA approved", "clinically proven", "doctor recommended", "miracle", "no side effects", "guaranteed results", a number of pounds to lose, or anything suggesting people replace or stop medication. Everything you write is checked for these and dropped if found.
 - Never invent studies, statistics, quotes, reviews, prices, guarantees, certifications or ingredients. Only state facts present in the page text you are given.
 - That includes doses, percentages, purity levels, timelines and plant or species names: if the page text doesn't state it, don't write it (any number the page doesn't contain is removed automatically).
 - Match the existing brand voice. Plain, friendly, confident. No hype, no exclamation marks, no emojis.
@@ -470,14 +472,18 @@ Keep the SEO title and description if they are already strong for this search; y
   let section = allowContent && editableBody ? onlyKnownNumbers(cleanHtml(polish(out.contentSectionHtml)), page.body) : "";
   // Nothing goes on the page unchecked: if the check itself fails, the section is left out.
   if (section) section = await factCheck(ai, section, page.body).catch(() => "");
+  // Claim guard: no paragraph that reads as a disease claim or an unprovable promise.
+  if (section) section = dropBlocks(section, (text) => isRisky(text));
   // A section reduced to headings alone isn't worth adding.
   if (!blocksOf(section).length) section = "";
+  // A risky title or description is never written; the current one stays.
+  const safe = (text: string, current: string | null) => (isRisky(text) ? (current ?? "") : text);
   return {
-    metaTitle: polish(out.metaTitle).slice(0, 70),
-    metaDescription: polish(out.metaDescription).slice(0, 170),
+    metaTitle: safe(polish(out.metaTitle).slice(0, 70), page.metaTitle),
+    metaDescription: safe(polish(out.metaDescription).slice(0, 170), page.metaDescription),
     contentSectionHtml: section,
     altTexts: (out.altTexts ?? [])
-      .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim())
+      .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim() && !isRisky(a.alt))
       .map((a) => ({ imageId: a.imageId, alt: polish(a.alt).slice(0, 140) })),
     reason: out.reason.trim(),
     intentMatch: out.intentMatch !== false,
@@ -504,7 +510,8 @@ ${plainText(source.body).slice(0, 6000)}
 If the link would feel forced in this article, return an empty string.`;
 
   const out = await askJson<{ sentenceHtml: string }>(ai, prompt, LINK_SCHEMA);
-  return cleanHtml(out.sentenceHtml, target.path);
+  const html = cleanHtml(out.sentenceHtml, target.path);
+  return isRisky(html) ? "" : html;
 }
 
 const ALLOWED = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a"]);

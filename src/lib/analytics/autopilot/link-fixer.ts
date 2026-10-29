@@ -23,7 +23,7 @@ interface Item {
   body: string;
 }
 
-async function paged<N>(s: StoreAccess, field: "articles" | "pages" | "products", nodeFields: string): Promise<N[]> {
+export async function paged<N>(s: StoreAccess, field: "articles" | "pages" | "products", nodeFields: string): Promise<N[]> {
   const out: N[] = [];
   let after: string | null = null;
   for (let i = 0; i < 20; i++) {
