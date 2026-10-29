@@ -2,6 +2,7 @@ import { ensureSchema, hasDatabase, sql } from "../db";
 import { tokenSecret } from "../oauth-client";
 import { readProfile } from "../profile";
 import { readConnection } from "./connections";
+import { snippetInstalled } from "./snippet";
 import { readWp } from "./wordpress";
 import { decrypt, encrypt } from "../secrets";
 
@@ -44,7 +45,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
     domain: string;
     platform: string | null;
     /** Connected for automatic changes (otherwise changes come as a fix list). */
-    connection: { kind: "wordpress" | "webflow" | "wix"; detail: string | null } | null;
+    connection: { kind: "wordpress" | "webflow" | "wix" | "snippet"; detail: string | null } | null;
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
@@ -150,13 +151,16 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     readConnection<{ name?: string }>("webflow", accountId).catch(() => null),
     readConnection<{ siteId?: string }>("wix", accountId).catch(() => null),
   ]);
+  const snippet = await snippetInstalled(accountId).catch(() => false);
   const connection = wp
     ? { kind: "wordpress" as const, detail: wp.seoPlugin && wp.seoPlugin !== "none" ? wp.seoPlugin : null }
     : wf
       ? { kind: "webflow" as const, detail: wf.name ?? null }
       : wx
         ? { kind: "wix" as const, detail: "blog posts" }
-        : null;
+        : snippet
+          ? { kind: "snippet" as const, detail: "with the snippet" }
+          : null;
   const shopConnected = Boolean(acct.shopDomain && acct.shopTokenEnc);
   return {
     website:

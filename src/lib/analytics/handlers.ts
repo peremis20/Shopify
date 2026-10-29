@@ -6,6 +6,7 @@ import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
+import { checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -337,8 +338,50 @@ export const siteDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     if (b.kind === "webflow" || b.kind === "wix") await deleteConnectionFor(b.kind, account.id);
+    else if (b.kind === "snippet") await removeSnippet(account.id);
     else await deleteWp(account.id);
     return json({ settings: await autopilotView(account.id, account.admin) });
+  });
+
+// ---------- the one-line snippet ----------
+
+/** The snippet script sites load (public). */
+export async function snippetScript(): Promise<Response> {
+  return new Response(SNIPPET_JS, {
+    headers: { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" },
+  });
+}
+
+/** What the snippet changes on one page (public, readable from any site). */
+export async function snippetDataHandler(req: Request): Promise<Response> {
+  const params = new URL(req.url).searchParams;
+  const data = await snippetData(params.get("k") ?? "", params.get("u") ?? "/").catch(() => null);
+  return new Response(JSON.stringify(data ?? {}), {
+    status: data ? 200 : 404,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=300" },
+  });
+}
+
+/** The account's snippet tag and whether it's on the site. */
+export const snippetStatus = (req: Request) =>
+  withAccount(req, async (account) => {
+    const siteKey = await snippetKey(account.id);
+    return json({ tag: snippetTag(appOrigin(req), siteKey), installed: await snippetInstalled(account.id) });
+  });
+
+/** "Check installation": looks for the snippet on the live home page. */
+export const snippetCheck = (req: Request) =>
+  withAccount(req, async (account) => {
+    const profile = await readProfile(account.id);
+    if (!profile.siteDomain) return json({ error: "Connect your website by its address first." }, 400);
+    const installed = await checkSnippet(account.id, profile.siteDomain);
+    const siteKey = await snippetKey(account.id);
+    return json({
+      tag: snippetTag(appOrigin(req), siteKey),
+      installed,
+      error: installed ? undefined : `The snippet isn't on ${profile.siteDomain}'s home page yet. Publish your site after adding it, then check again.`,
+      settings: await autopilotView(account.id, account.admin),
+    });
   });
 
 // ---------- inside Shopify admin ----------

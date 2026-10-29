@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./seo-ui";
 import { WordPressConnect } from "./WordPressConnect";
 
@@ -13,7 +13,61 @@ export function PlatformConnect({ platform, domain, onConnected }: { platform: s
   if (platform === "wordpress") return <WordPressConnect domain={domain} />;
   if (platform === "webflow") return <WebflowConnect onConnected={onConnected} />;
   if (platform === "wix") return <WixConnect onConnected={onConnected} />;
-  return null;
+  return <SnippetConnect platform={platform} onConnected={onConnected} />;
+}
+
+/** Where the header code goes, per platform. */
+const WHERE: Record<string, string> = {
+  squarespace: "Squarespace: Settings, Advanced, Code Injection, Header. Paste, then Save. (Needs a Business plan or higher.)",
+  framer: "Framer: Site Settings, General, Custom Code, Start of <head> tag. Paste, then Publish.",
+  godaddy: "GoDaddy: Website, Settings, Site-wide code. Paste, then Publish.",
+  duda: "Duda: Settings, Head HTML. Paste, then Republish.",
+  weebly: "Weebly: Settings, SEO, Header Code. Paste, then Publish.",
+  ghost: "Ghost: Settings, Code injection, Site header. Paste, then Save.",
+  hubspot: "HubSpot: Settings, Website, Pages, Site header HTML. Paste, then Save.",
+  custom:
+    "Paste it inside the <head> of every page (in most sites that's one shared layout or template file). Built with an AI builder like Lovable, Bolt or Replit? Ask it: \"Add this script tag to the <head> of every page\" and paste the line.",
+};
+
+function SnippetConnect({ platform, onConnected }: { platform: string | null; onConnected: () => void }) {
+  const [tag, setTag] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const { busy, error, run } = useConnect("/api/snippet/check", onConnected);
+  const [checkError, setCheckError] = useState<string | null>(null);
+  useEffect(() => {
+    api<{ tag: string }>("/api/snippet").then((d) => setTag(d.tag), () => setTag(null));
+  }, []);
+  if (!tag) return null;
+  return (
+    <div className={box}>
+      <p>
+        <b>Let the autopilot change your site itself.</b> Add one line to your site&apos;s header, once. Then SEO titles,
+        descriptions, structured data and internal links update automatically, and undo removes them right away. Page text still
+        comes as a fix list.
+      </p>
+      <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-white p-3 font-mono text-xs">{tag}</pre>
+      <p className="text-dash-muted">{WHERE[platform ?? ""] ?? WHERE.custom}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <button type="button" onClick={() => navigator.clipboard?.writeText(tag).then(() => setCopied(true), () => setCopied(false))} className={button}>
+          {copied ? "Copied" : "Copy the line"}
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setCheckError(null);
+            const d = await api<{ installed: boolean; error?: string }>("/api/snippet/check", {}).catch((e: Error) => ({ installed: false, error: e.message }));
+            if (d.installed) run({});
+            else setCheckError(d.error ?? "Not found yet.");
+          }}
+          className="font-semibold text-dash-green hover:underline"
+        >
+          {busy ? "Checking…" : "I added it, check my site"}
+        </button>
+      </div>
+      {(checkError || error) && <p className="text-dash-down">{checkError ?? error}</p>}
+    </div>
+  );
 }
 
 const box = "space-y-2 rounded-xl border border-dash-green/30 bg-dash-green/5 p-4 text-sm";

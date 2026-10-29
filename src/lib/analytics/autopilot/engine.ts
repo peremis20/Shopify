@@ -397,7 +397,9 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
   const { cand, page, improvement } = plan;
   const op = cand.op;
   const done: string[] = [];
-  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: improvement.reason, op };
+  // Snippet sites: the logged change is what the snippet serves on that page.
+  const resourceType = ctx.site.mode === "snippet" ? "snippet" : page.type;
+  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType, resourceId: page.id, query: op.query, reason: improvement.reason, op };
 
   const apply = async (field: ChangeField, before: string | null, after: string, run: () => Promise<void>, targetId?: string) => {
     try {
@@ -647,6 +649,11 @@ export async function accountsDueForRun(limit: number): Promise<string[]> {
 async function revertRow(ctx: Ctx, c: Row): Promise<string> {
   const field = c.field as ChangeField;
   const w = ctx.site?.writer;
+  if (c.resource_type === "snippet") {
+    // The snippet only serves live changes, so marking it undone removes it from the site.
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    return "Removed from your site (the snippet stops showing it right away).";
+  }
   if (c.resource_type === "site" || !w) {
     // A change pasted in by hand is changed back by hand.
     const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
@@ -698,7 +705,7 @@ export async function revertChange(accountId: string, id: string): Promise<void>
   if (!c) throw new Error("That change doesn't exist.");
   if (c.status !== "applied" && c.status !== "kept") throw new Error("Only live changes can be undone.");
   const site = await siteFor(accountId);
-  if (!site?.writer && c.resource_type !== "site") throw new Error("Reconnect your store or website first.");
+  if (!site?.writer && c.resource_type !== "site" && c.resource_type !== "snippet") throw new Error("Reconnect your store or website first.");
   const ctx = { accountId, site, store: site?.store ?? null } as Ctx;
   const note = await revertRow(ctx, c);
   await sql`UPDATE insights_autopilot_changes SET note = ${`Undone by hand. ${note}`} WHERE id = ${id} AND status = 'reverted'`;

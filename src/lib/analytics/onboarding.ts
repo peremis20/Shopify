@@ -8,6 +8,7 @@ import { listProperties } from "./properties";
 import { bareDomain, BUSINESS_TYPES, readProfile, saveProfile, type Profile } from "./profile";
 import { PLATFORM_LABEL, type Platform } from "./site-crawl";
 import { readConnection } from "./autopilot/connections";
+import { snippetInstalled } from "./autopilot/snippet";
 import { readWp } from "./autopilot/wordpress";
 
 /**
@@ -192,7 +193,8 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     readConnection("webflow", accountId).catch(() => null),
     readConnection("wix", accountId).catch(() => null),
   ]);
-  const connectedTo = wp ? "WordPress" : wf ? "Webflow" : wx ? "Wix" : null;
+  const snippet = await snippetInstalled(accountId).catch(() => false);
+  const connectedTo = wp ? "WordPress" : wf ? "Webflow" : wx ? "Wix" : snippet ? "the snippet" : null;
   const shopConnected = Boolean(acct.shopDomain && acct.shopTokenEnc);
   const domain = await storeDomain(accountId, profile).catch(() => profile.siteDomain);
   const store = acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null;
@@ -218,7 +220,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       detail: shopConnected
         ? `Connected to ${acct.shopDomain}. Approved improvements are made for you.`
         : connectedTo
-          ? `Connected to ${connectedTo} (${profile.siteDomain}). Approved improvements are made for you${wx ? " on blog posts; the rest comes as a fix list" : ""}.`
+          ? `Connected to ${connectedTo} (${profile.siteDomain}). Approved improvements are made for you${wx ? " on blog posts; the rest comes as a fix list" : snippet && !wp && !wf ? " (titles, descriptions, structured data, links); page text comes as a fix list" : ""}.`
           : profile.siteDomain && profile.platform
           ? `Reading ${profile.siteDomain} (${PLATFORM_LABEL[profile.platform as Platform] ?? profile.platform}). Changes come as a fix list you paste in, with where to paste each one.`
           : "Shopify stores connect in one click; any other website works too.",

@@ -368,6 +368,19 @@ Each platform's writer says what it supports per item (`SiteWriter.supports`);
 anything it can't do becomes a fix list item, so one run can mix automatic
 changes and suggestions.
 
+### The one-line snippet (custom code, AI builders, any site)
+
+`autopilot/snippet.ts`. Sites with no usable API add
+`<script async src="<APP_URL>/s.js?k=<site key>"></script>` to their header
+once (the dashboard shows where for Squarespace, Framer, GoDaddy, Duda,
+Weebly, Ghost, HubSpot, custom code and AI builders, and checks the live home
+page for it). On each page view the script asks `/api/snippet/data` for that
+page's live changes and applies them: SEO title, meta description, structured
+data and internal link sentences. Nothing is stored on the site: the snippet
+serves the autopilot's applied or kept changes (`resource_type = 'snippet'`),
+so Undo removes a change from the site at once. Page text stays on the fix
+list.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

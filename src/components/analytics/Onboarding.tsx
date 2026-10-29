@@ -132,7 +132,7 @@ function StepAction({ step, status, busy, act, onOpenSettings }: { step: Step; s
       return step.done ? <button onClick={onOpenSettings} className={link}>Change Google account in Settings</button> : <ConnectButton />;
     case "website":
       return step.done ? (
-        !status.siteConnected && status.domain && ["wordpress", "webflow", "wix"].includes(status.platform ?? "") ? (
+        !status.siteConnected && status.domain && status.platform !== "shopify" ? (
           <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("website-connected", async () => undefined, true)} />
         ) : (
           <p className="text-dash-muted">Connected. You can change it any time in the Autopilot card.</p>

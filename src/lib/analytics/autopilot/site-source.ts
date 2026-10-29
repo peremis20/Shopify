@@ -27,6 +27,7 @@ import {
   type WpAccess,
 } from "./wordpress";
 import { readConnection } from "./connections";
+import { pathKey, snippetInstalled } from "./snippet";
 import type { ChangeField } from "./types";
 import { wfArticles, wfFields, wfGetBody, wfResolve, wfSetBody, wfSetSeo, type WfAccess } from "./webflow";
 import { wixResolve, wixSetTag, type WixAccess } from "./wix";
@@ -39,7 +40,7 @@ import { wixResolve, wixSetTag, type WixAccess } from "./wix";
  *   list the owner pastes in (with where to paste it for their platform).
  */
 export interface SiteAccess {
-  mode: "shopify" | "wordpress" | "webflow" | "wix" | "manual";
+  mode: "shopify" | "wordpress" | "webflow" | "wix" | "snippet" | "manual";
   /** Set for Shopify only (link fixer). */
   store: StoreAccess | null;
   /** How changes are written; null means they go on the fix list. */
@@ -221,6 +222,35 @@ export function wixSite(accountId: string, w: WixAccess, brand: string): SiteAcc
   };
 }
 
+/**
+ * A site with the one-line snippet: changes are kept in the change log and
+ * served to the snippet on each page view, so writing is only logging and
+ * undoing removes the change from the site. Page text stays on the fix list.
+ */
+export function snippetSite(accountId: string, brand: string): SiteAccess {
+  const manual = manualSite(accountId, brand);
+  const none = async () => undefined;
+  return {
+    mode: "snippet",
+    store: null,
+    writer: {
+      setSeo: none,
+      getBody: async () => "",
+      setBody: none,
+      setBodyIfUnchanged: none,
+      setSchema: none,
+      supports: async (field) => field === "meta_title" || field === "meta_description" || field === "schema" || field === "internal_link",
+    },
+    async resolve(url) {
+      const r = await manual.resolve(url);
+      return r && { ...r, id: pathKey(new URL(r.url).pathname) };
+    },
+    articles: async () => (await manual.articles()).map((a) => ({ ...a, id: pathKey(a.url) })),
+    index: () => crawledIndex(accountId),
+    name: async () => brand,
+  };
+}
+
 export function manualSite(accountId: string, brand: string): SiteAccess {
   return {
     mode: "manual",
@@ -261,6 +291,7 @@ export async function siteFor(accountId: string, brand?: string | null): Promise
   if (wfAccess && profile.siteDomain) return webflowSite(accountId, wfAccess, `https://${profile.siteDomain}`, name);
   const wixAccess = await readConnection<WixAccess>("wix", accountId).catch(() => null);
   if (wixAccess) return wixSite(accountId, wixAccess, name);
+  if (profile.siteDomain && (await snippetInstalled(accountId).catch(() => false))) return snippetSite(accountId, name);
   if (profile.siteDomain) return manualSite(accountId, name);
   return null;
 }
