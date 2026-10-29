@@ -128,6 +128,14 @@ in the same Neon project as its database. `DATABASE_URL` is injected automatical
    - `SESSION_SECRET`: a long random string (encrypts stored Google credentials and tokens)
    - `DASHBOARD_PASSWORD`: the password for the page
    - `GA_EXCLUDE_HOSTNAMES` (optional): other sites sharing your GA4 tag to leave out, e.g. `sakshijewelers.com`
+   After that first deploy, new versions don't need a redeploy: set the
+   release row and every instance switches within a minute (a version that
+   fails its SHA-256 check is never run):
+   ```sql
+   INSERT INTO insights_settings (key, value) VALUES ('release',
+     '{"url":".../release/server.mjs","sha":"<sha256>","assets":".../public"}')
+   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();
+   ```
    Or skip the loader and deploy the whole server with the CLI:
    ```bash
    neon functions deploy insights --src neon/dist/index.mjs --no-bundle --env KEY=VALUE ...
