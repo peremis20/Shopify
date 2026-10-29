@@ -23,6 +23,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   content: "New section",
   alt: "Image alt text",
   internal_link: "Internal link",
+  intent: "Content gap",
 };
 
 const STATUS_STYLE: Record<AutopilotChange["status"], string> = {

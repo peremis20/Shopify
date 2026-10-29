@@ -211,8 +211,20 @@ interface Plan {
   apps: string[];
 }
 
-/** Picks the page and has the writer plan the change. Nothing is written to the store. */
-async function planNextChange(ctx: Ctx, conn: Connection, notes: string[]): Promise<Plan | null> {
+/** Targets tried per run when the writer finds a page can't match what searchers want. */
+const MAX_WRITES_PER_RUN = 3;
+
+/**
+ * Picks the page and has the writer plan the change. Nothing is written to the
+ * store. A target whose page can't give searchers what they want is set aside
+ * as a content gap (logged unless `recordGap` is null) and the next one is tried.
+ */
+async function planNextChange(
+  ctx: Ctx,
+  conn: Connection,
+  notes: string[],
+  recordGap: ((cand: Candidate, page: StoreResource, idea: string) => Promise<void>) | null
+): Promise<Plan | null> {
   const hub: Hub = { accountId: ctx.accountId, conn, platform: ctx.platform, ourDomain: ctx.ourDomain, shared: new Map() };
   const apps = await readyApps(hub);
   const cands = await gatherCandidates(hub, apps, notes);
@@ -220,7 +232,7 @@ async function planNextChange(ctx: Ctx, conn: Connection, notes: string[]): Prom
   const changedSince = async (days: number) =>
     new Set(
       (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
-        WHERE account_id = ${ctx.accountId} AND status IN ('applied', 'kept', 'reverted') AND created_at > now() - make_interval(days => ${days})`).map(
+        WHERE account_id = ${ctx.accountId} AND status IN ('applied', 'kept', 'reverted', 'skipped') AND created_at > now() - make_interval(days => ${days})`).map(
         (r) => r.page_url!
       )
     );
@@ -229,26 +241,34 @@ async function planNextChange(ctx: Ctx, conn: Connection, notes: string[]): Prom
   const rested = (c: Candidate) => skipped.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
   const brand = ctx.ourDomain.split(".")[0];
 
-  let cand = pickTarget(cands, brand, rested);
-  let page: StoreResource | null = null;
-  // Skip pages that don't map to an editable store item (up to a few tries).
-  for (let tries = 0; cand && tries < 5; tries++) {
-    page = await resolveResource(ctx.store, cand.op.page).catch(() => null);
-    if (page) break;
-    skipped.add(cand.op.page);
-    cand = pickTarget(cands, brand, rested);
-  }
-  if (!cand || !page) return null;
+  for (let writes = 0; writes < MAX_WRITES_PER_RUN; writes++) {
+    let cand = pickTarget(cands, brand, rested);
+    let page: StoreResource | null = null;
+    // Skip pages that don't map to an editable store item (up to a few tries).
+    for (let tries = 0; cand && tries < 5; tries++) {
+      page = await resolveResource(ctx.store, cand.op.page).catch(() => null);
+      if (page) break;
+      skipped.add(cand.op.page);
+      cand = pickTarget(cands, brand, rested);
+    }
+    if (!cand || !page) return null;
 
-  const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
-  const improvement = await writeImprovement(
-    ctx.ai,
-    page,
-    { query: cand.op.query, position: cand.op.position, impressions: cand.op.impressions, mode: cand.mode, previousPosition: cand.previousPosition },
-    briefs,
-    ctx.allowContent
-  );
-  return { cand, page, improvement, summaries, apps: used };
+    const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
+    const improvement = await writeImprovement(
+      ctx.ai,
+      page,
+      { query: cand.op.query, position: cand.op.position, impressions: cand.op.impressions, mode: cand.mode, previousPosition: cand.previousPosition },
+      briefs,
+      ctx.allowContent
+    );
+    if (improvement.intentMatch) return { cand, page, improvement, summaries, apps: used };
+
+    const idea = improvement.missingForIntent || "People searching this want something the page doesn't have yet.";
+    notes.push(`Skipped “${cand.op.query}” on ${new URL(cand.op.page).pathname}: ${idea}`);
+    await recordGap?.(cand, page, idea).catch(() => undefined);
+    skipped.add(cand.op.page);
+  }
+  return null;
 }
 
 /** The other blog post most related to the page, that doesn't link to it yet. */
@@ -375,9 +395,27 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
     } else {
       if (capped) notes.push(`The weekly limit is reached (${pages} of ${ctx.maxPagesPerWeek} pages), so a real run would wait.`);
-      const plan = await planNextChange(ctx, conn, notes);
+      const recordGap = preview
+        ? null
+        : (cand: Candidate, page: StoreResource, idea: string) =>
+            logChange({
+              accountId,
+              runId,
+              pageUrl: cand.op.page,
+              resourceType: page.type,
+              resourceId: page.id,
+              query: cand.op.query,
+              field: "intent",
+              before: null,
+              after: idea,
+              reason: "Searchers want something this page can't honestly offer yet, so the autopilot left it unchanged.",
+              status: "skipped",
+              op: cand.op,
+            }).then(() => undefined);
+      const plan = await planNextChange(ctx, conn, notes, recordGap);
+      const gaps = notes.filter((n) => n.startsWith("Skipped “"));
       if (!plan) {
-        summary.push("No new opportunities to work on right now.");
+        summary.push(gaps.length ? `No change made. ${gaps.join(" ")}` : "No new opportunities to work on right now.");
       } else if (preview) {
         const { cand, page, improvement } = plan;
         const changes: AutopilotPreview["changes"] = [];
@@ -403,7 +441,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         summary.push(`Preview: ${describe(cand).replace(/^(Defended|Pushed|Improved)/, (w) => `would have ${w.toLowerCase()}`)}. ${changes.length} change${changes.length === 1 ? "" : "s"} planned, nothing written.`);
       } else {
         const done = await applyPlan(ctx, runId, plan);
-        const extra = plan.summaries.length ? ` ${plan.summaries.join(" ")}` : "";
+        const extra = [...plan.summaries, ...gaps].length ? ` ${[...plan.summaries, ...gaps].join(" ")}` : "";
         summary.push(
           done.length
             ? `${describe(plan.cand)}: ${done.join(", ").replace(/_/g, " ")}.${extra}`

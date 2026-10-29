@@ -16,7 +16,9 @@ Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
 - Never invent studies, statistics, quotes, reviews, prices, guarantees, certifications or ingredients. Only state facts present in the page text you are given.
 - Match the existing brand voice. Plain, friendly, confident. No hype, no exclamation marks, no emojis.
-- Use the target search phrase naturally once in the title and once in the description. Never repeat keywords unnaturally.`;
+- Use the target search phrase naturally once in the title and once in the description. Never repeat keywords unnaturally.
+- The title and description may only promise what the page actually delivers. Don't use words like "brands", "top 10", "best of", "reviews", "ranked", "vs", "prices" or a year unless the page text really contains that (named brands, a ranked list, a comparison, prices, that year).
+- Fix obvious spelling and terminology mistakes instead of copying them (for example "berberine HCl", hydrochloride, never "HCI").`;
 
 export interface PageImprovement {
   metaTitle: string;
@@ -25,6 +27,10 @@ export interface PageImprovement {
   contentSectionHtml: string;
   altTexts: { imageId: string; alt: string }[];
   reason: string;
+  /** False when searchers want something the page can't honestly give (e.g. a list of named brands it doesn't have). */
+  intentMatch: boolean;
+  /** When intentMatch is false: what the page would need, as a content idea. */
+  missingForIntent: string;
 }
 
 const IMPROVEMENT_SCHEMA = {
@@ -46,8 +52,17 @@ const IMPROVEMENT_SCHEMA = {
       },
     },
     reason: { type: "string", description: "One or two sentences on what was missing and what this change fixes." },
+    intentMatch: {
+      type: "boolean",
+      description:
+        "True if this page can honestly give people searching the target phrase what they want, using only its own facts. False if they want something it lacks and can't add from its facts, for example a list of named brands, a ranking, prices or product comparisons the page doesn't have.",
+    },
+    missingForIntent: {
+      type: "string",
+      description: "If intentMatch is false: one sentence on what the page would need (a content idea for the store owner). Otherwise an empty string.",
+    },
   },
-  required: ["metaTitle", "metaDescription", "contentSectionHtml", "altTexts", "reason"],
+  required: ["metaTitle", "metaDescription", "contentSectionHtml", "altTexts", "reason", "intentMatch", "missingForIntent"],
   additionalProperties: false,
 };
 
@@ -62,6 +77,15 @@ const LINK_SCHEMA = {
   required: ["sentenceHtml"],
   additionalProperties: false,
 };
+
+/** Fixes mistakes writers copy from existing text: chemical forms, doubled brand suffixes, stray spaces. */
+export function polish(text: string): string {
+  return (text ?? "")
+    .replace(/\bHCI\b/g, "HCl") // hydrochloride salts (berberine HCl), often mistyped with a capital i
+    .replace(/(\s*\|\s*[^|]+)\1+$/, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
 
 const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
@@ -266,13 +290,15 @@ Keep the SEO title and description if they are already strong for this search; y
 
   const out = await askJson<PageImprovement>(ai, prompt, IMPROVEMENT_SCHEMA);
   return {
-    metaTitle: out.metaTitle.trim().slice(0, 70),
-    metaDescription: out.metaDescription.trim().slice(0, 170),
-    contentSectionHtml: allowContent && editableBody ? cleanHtml(out.contentSectionHtml) : "",
-    altTexts: out.altTexts
+    metaTitle: polish(out.metaTitle).slice(0, 70),
+    metaDescription: polish(out.metaDescription).slice(0, 170),
+    contentSectionHtml: allowContent && editableBody ? cleanHtml(polish(out.contentSectionHtml)) : "",
+    altTexts: (out.altTexts ?? [])
       .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim())
-      .map((a) => ({ imageId: a.imageId, alt: a.alt.trim().slice(0, 140) })),
+      .map((a) => ({ imageId: a.imageId, alt: polish(a.alt).slice(0, 140) })),
     reason: out.reason.trim(),
+    intentMatch: out.intentMatch !== false,
+    missingForIntent: (out.missingForIntent ?? "").trim(),
   };
 }
 

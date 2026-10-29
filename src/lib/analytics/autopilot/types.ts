@@ -1,6 +1,7 @@
 /** Autopilot shapes shared by the server and the page. */
 
-export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link";
+/** "intent" records a content gap: the page can't give searchers what they want, so nothing was changed. */
+export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link" | "intent";
 export type ChangeStatus = "applied" | "kept" | "reverted" | "failed" | "skipped";
 
 export interface AutopilotChange {
