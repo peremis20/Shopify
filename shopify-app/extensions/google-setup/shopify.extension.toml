@@ -1,0 +1,10 @@
+# An app embed the store owner turns on once in the theme editor. It adds
+# Google's site verification tag and, when the app created the store's
+# Analytics property, its tag. The values come from the app's own data on the
+# store (set by the app), so the theme code is never edited.
+api_version = "2026-07"
+
+[[extensions]]
+name = "Google setup"
+handle = "google-setup"
+type = "theme"

@@ -16,6 +16,15 @@ export const SCOPES = [
 export const ADS_SCOPE = "https://www.googleapis.com/auth/adwords";
 /** Customer sign-in: who they are, plus read-only Analytics and Search Console. */
 export const OAUTH_SCOPES = ["openid", "email", ...SCOPES];
+/**
+ * Asked for only when a customer clicks "Set it up for me": verify their site
+ * in Search Console, add it with its sitemap, and create an Analytics property.
+ */
+export const SETUP_SCOPES = [
+  "https://www.googleapis.com/auth/siteverification",
+  "https://www.googleapis.com/auth/webmasters",
+  "https://www.googleapis.com/auth/analytics.edit",
+];
 /** The platform owner's one-time Google Ads connection for keyword data. */
 export const ADS_OAUTH_SCOPES = ["openid", "email", ADS_SCOPE];
 
@@ -185,11 +194,13 @@ export async function googleRequest<T>(
   auth: GoogleAuth,
   url: string,
   payload?: unknown,
-  headers: Record<string, string> = {}
+  headers: Record<string, string> = {},
+  /** Defaults to POST with a body, GET without. */
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
 ): Promise<T> {
   const { token } = await getToken(auth);
   const res = await fetch(url, {
-    method: payload === undefined ? "GET" : "POST",
+    method: method ?? (payload === undefined ? "GET" : "POST"),
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
     body: payload === undefined ? undefined : JSON.stringify(payload),
     cache: "no-store",

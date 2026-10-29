@@ -20,6 +20,7 @@ const routes: Record<string, Handler> = {
   "GET /api/onboarding": api.onboarding,
   "POST /api/onboarding/profile": api.saveOnboardingProfile,
   "POST /api/onboarding/match": api.rematchProperties,
+  "POST /api/onboarding/setup-google": api.setupGoogleTools,
   "GET /api/analytics/overview": api.overview,
   "GET /api/analytics/properties": api.properties,
   "POST /api/analytics/settings": api.saveSettings,

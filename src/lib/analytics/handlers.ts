@@ -29,7 +29,7 @@ import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
-import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken } from "./google-auth";
+import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import {
   explainAdsError,
@@ -42,6 +42,7 @@ import {
 } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
 import { adminAppUrl, embeddedAccount, googleLinkTicket, readLinkTicket } from "./embedded";
+import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
 import { readProfile, saveProfile } from "./profile";
@@ -127,20 +128,23 @@ export async function authStart(req: Request): Promise<Response> {
   if (!client || !(await signInAvailable())) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Sign+in+is+not+set+up+yet`);
   }
-  const purpose = new URL(req.url).searchParams.get("purpose") === "ads" ? "ads" : "signin";
+  const asked = new URL(req.url).searchParams.get("purpose");
+  // "setup" adds the permissions "Set it up for me" needs, on top of what was already granted.
+  const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : "signin";
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
   const ticket = new URL(req.url).searchParams.get("link");
-  const linked = purpose === "signin" && readLinkTicket(ticket) ? `link~${ticket}` : purpose;
+  const linked = purpose !== "ads" && readLinkTicket(ticket) ? `link~${ticket}` : purpose;
   const state = `${linked}.${crypto.randomBytes(16).toString("hex")}`;
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: client.id,
     redirect_uri: redirectUri(req),
     response_type: "code",
-    scope: (purpose === "ads" ? ADS_OAUTH_SCOPES : OAUTH_SCOPES).join(" "),
+    scope: (purpose === "ads" ? ADS_OAUTH_SCOPES : purpose === "setup" ? [...OAUTH_SCOPES, ...SETUP_SCOPES] : OAUTH_SCOPES).join(" "),
+    include_granted_scopes: "true",
     access_type: "offline",
     prompt: "consent",
     state,
@@ -234,12 +238,25 @@ export async function embeddedAppKey(): Promise<string | null> {
   return (await readPlatformSettings()).shopifyClientId ?? null;
 }
 
-/** A Google sign in link for the embedded app; it opens at the top level and comes back into Shopify admin. */
+/**
+ * A Google sign in link tied to this account: from inside Shopify admin it
+ * opens at the top level and comes back into the app; purpose=setup also asks
+ * for the "Set it up for me" permissions.
+ */
 export const googleLinkStart = (req: Request) =>
   withAccount(req, async (account) => {
     const acct = await readAccountAutopilot(account.id);
-    const back = acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
-    return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back))}` });
+    const embedded = Boolean(req.headers.get("authorization"));
+    const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
+    const purpose = new URL(req.url).searchParams.get("purpose") === "setup" ? "&purpose=setup" : "";
+    return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back))}${purpose}` });
+  });
+
+/** "Set it up for me": creates Search Console and Analytics for a store that has neither. */
+export const setupGoogleTools = (req: Request) =>
+  withAccount(req, async (account) => {
+    const state = await setupGoogle(account.id);
+    return json({ state, onboarding: await onboardingStatus(account.id, account.email) });
   });
 
 // ---------- onboarding ----------

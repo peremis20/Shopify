@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Onboarding as Status, Step } from "@/lib/analytics/onboarding";
 import { api } from "./seo-ui";
+import { isEmbedded } from "./embedded-client";
 import { ConnectButton } from "./SettingsPanel";
 import { Card } from "./ui";
 
@@ -34,7 +35,8 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
       if (next) setStatus(next);
       else load();
       if (refreshDashboard) onChanged();
-      setOpen(null);
+      // Setup can stop halfway (a click only the owner can make), so its step stays open.
+      if (id !== "setup") setOpen(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "That didn't work. Please try again.");
     } finally {
@@ -234,53 +236,163 @@ function BusinessForm({ status, busy, act }: { status: Status; busy: boolean; ac
   );
 }
 
+type SetupState =
+  | { status: "needs_permission" }
+  | { status: "needs_embed"; embedUrl: string }
+  | { status: "needs_ga_account" }
+  | { status: "done"; notes: string[] };
+
+const PENDING_SETUP = "insights.pendingSetup";
+
+/** Leaves the page for Google (at the top level when inside Shopify admin). */
+async function goToGoogle(purpose: "setup") {
+  const { url } = await api<{ url: string }>(`/api/auth/google/link?purpose=${purpose}`);
+  if (isEmbedded()) window.open(url, "_top");
+  else window.location.href = url;
+}
+
+/** "Set it up for me": creates Search Console and Analytics, guiding through the one or two clicks only the owner can do. */
+function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
+  const [state, setState] = useState<SetupState | null>(null);
+
+  const run = useCallback(
+    () =>
+      act(
+        "setup",
+        async () => {
+          const out = await api<{ state: SetupState; onboarding: Status }>("/api/onboarding/setup-google", {});
+          if (out.state.status === "needs_permission") {
+            try {
+              localStorage.setItem(PENDING_SETUP, "1");
+            } catch {
+              /* it just won't continue on its own */
+            }
+            await goToGoogle("setup");
+          }
+          setState(out.state);
+          return out.onboarding;
+        },
+        true
+      ),
+    [act]
+  );
+
+  // Back from Google's permission screen: carry on where it left off.
+  useEffect(() => {
+    let pending = false;
+    try {
+      pending = localStorage.getItem(PENDING_SETUP) === "1";
+      localStorage.removeItem(PENDING_SETUP);
+    } catch {
+      /* storage unavailable */
+    }
+    if (pending) run();
+  }, [run]);
+
+  const working = busy === "setup";
+  return (
+    <div className="space-y-3 rounded-xl border border-dash-green/30 bg-dash-green/5 p-4">
+      <p>
+        <b>Don&apos;t have it yet?</b> The app can set up Search Console and Google Analytics for your store, verify your site
+        and submit your sitemap. Google will ask you to allow it once.
+      </p>
+      {state?.status === "needs_embed" && (
+        <div className="space-y-2">
+          <p>
+            One last click: turn on <b>Google setup</b> in your theme, then press <b>Save</b>. It adds Google&apos;s tags to your
+            store without editing your theme.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <a href={state.embedUrl} target="_blank" rel="noreferrer" className={button}>
+              Open the theme editor
+            </a>
+            <button disabled={working} onClick={run} className={link}>
+              {working ? "Checking…" : "I turned it on, finish setup"}
+            </button>
+          </div>
+        </div>
+      )}
+      {state?.status === "needs_ga_account" && (
+        <p>
+          Google needs you to create a free Analytics account first (about two minutes):{" "}
+          <a href="https://analytics.google.com/analytics/web/provision/" target="_blank" rel="noreferrer" className={link}>
+            create it here
+          </a>
+          , then click Set it up for me again.
+        </p>
+      )}
+      {state?.status === "done" && <p className="text-dash-green">{state.notes.join(" ")}</p>}
+      {state?.status !== "needs_embed" && (
+        <button disabled={working} onClick={run} className={button}>
+          {working ? "Setting up…" : "Set it up for me"}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step; status: Status; busy: string | null; act: Act; onOpenSettings: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [askOwner, setAskOwner] = useState(false);
   const google = status.steps.find((s) => s.id === "google")?.done;
+  const shopify = status.steps.find((s) => s.id === "shopify")?.done;
   if (!google) return <p className="text-dash-muted">Connect Google first; this is then found for you.</p>;
   const access = !step.done ? status.access : null;
   const recheck = (
-    <button disabled={busy === "match"} onClick={() => act("match", () => api<Status>("/api/onboarding/match", {}), true)} className={button}>
+    <button disabled={busy === "match"} onClick={() => act("match", () => api<Status>("/api/onboarding/match", {}), true)} className={link}>
       {busy === "match" ? "Looking…" : "Check again"}
     </button>
   );
+  if (step.done) {
+    return (
+      <button onClick={onOpenSettings} className={link}>
+        Change it in Settings
+      </button>
+    );
+  }
   return (
     <div className="max-w-2xl space-y-3">
-      {access ? (
-        <>
-          <p>
-            The Google account <b>{status.email}</b> doesn&apos;t have access to {status.domain} yet. If someone else set up your
-            Google tools, send them this message. Once they add you, click Check again.
-          </p>
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-[#FBF8F2] p-3 font-dash text-xs">
-            {access.body}
-          </pre>
-          <div className="flex flex-wrap items-center gap-3">
-            <a href={`mailto:?subject=${encodeURIComponent(access.subject)}&body=${encodeURIComponent(access.body)}`} className={button}>
-              Email it
-            </a>
-            <button
-              onClick={() => {
-                navigator.clipboard?.writeText(`${access.subject}\n\n${access.body}`).then(() => setCopied(true), () => setCopied(false));
-              }}
-              className={link}
-            >
-              {copied ? "Copied" : "Copy the message"}
-            </button>
-            {recheck}
-          </div>
-          <p className="text-dash-muted">
-            Signed in with the wrong Google account? <button onClick={onOpenSettings} className={link}>Switch it in Settings</button>.
-          </p>
-        </>
-      ) : (
-        <div className="flex flex-wrap items-center gap-3">
-          {recheck}
-          <button onClick={onOpenSettings} className={link}>
-            {step.done ? "Change it in Settings" : "Pick it yourself in Settings"}
+      {shopify ? <SetupForMe act={act} busy={busy} /> : <p className="text-dash-muted">Connect your Shopify store and the app can set this up for you.</p>}
+      {access && (
+        <div className="space-y-2">
+          <button onClick={() => setAskOwner((v) => !v)} className={link}>
+            Already set up under someone else&apos;s Google login? Ask them for access
           </button>
+          {askOwner && (
+            <>
+              <p>
+                The Google account <b>{status.email}</b> can&apos;t see {status.domain} yet. Send this to whoever set up your Google
+                tools, then click Check again once they&apos;ve added you.
+              </p>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-[#FBF8F2] p-3 font-dash text-xs">
+                {access.body}
+              </pre>
+              <div className="flex flex-wrap items-center gap-3">
+                <a href={`mailto:?subject=${encodeURIComponent(access.subject)}&body=${encodeURIComponent(access.body)}`} className={button}>
+                  Email it
+                </a>
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(`${access.subject}\n\n${access.body}`).then(() => setCopied(true), () => setCopied(false));
+                  }}
+                  className={link}
+                >
+                  {copied ? "Copied" : "Copy the message"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
+      <div className="flex flex-wrap items-center gap-4">
+        {recheck}
+        <button onClick={onOpenSettings} className={link}>
+          Pick it yourself in Settings
+        </button>
+      </div>
+      <p className="text-dash-muted">
+        Signed in with the wrong Google account? <button onClick={onOpenSettings} className={link}>Switch it in Settings</button>.
+      </p>
     </div>
   );
 }

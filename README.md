@@ -293,6 +293,26 @@ Shopify settings are in `shopify-app/shopify.app.toml`: App URL
 `<APP_URL>/analytics`, embedded on, the access scopes (Shopify installs with
 them itself), and the uninstall and privacy webhooks.
 
+### "Set it up for me" (stores without Search Console or Analytics)
+
+`src/lib/analytics/google-setup.ts`. Asks Google for three more permissions
+only at that moment (site verification, Search Console write, Analytics edit),
+then:
+
+1. gets a Search Console verification code and, when no Analytics property for
+   the site is visible, creates a GA4 property and web stream in the
+   customer's Analytics account;
+2. stores both on the shop as app data (namespace `insights`), which the
+   **Google setup** theme app embed (`shopify-app/extensions/google-setup`)
+   prints in the page head, so the theme code is never edited. The owner turns
+   the embed on once from a link that opens the theme editor with it switched on;
+3. once the tag is live, verifies the site, adds it to Search Console, submits
+   `sitemap.xml` and saves both properties on the account.
+
+Each step says what's needed next (permission, the embed, or a free Analytics
+account, which only Google's own page can create). Deploy the extension with
+Shopify CLI from `shopify-app/` (`shopify app deploy`).
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

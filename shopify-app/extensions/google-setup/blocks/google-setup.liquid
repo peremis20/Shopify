@@ -1,0 +1,30 @@
+{%- comment -%}
+  Set by the app during "Set it up for me":
+  - insights.gsc_verification: Google's site verification code (Search Console)
+  - insights.ga_measurement_id: the G- id of the Analytics property the app created
+  Each is only output when set. The app only sets the Analytics id for a
+  property it created, so stores that already have Analytics never get a
+  second tag.
+{%- endcomment -%}
+{%- assign verification = app.metafields.insights.gsc_verification.value -%}
+{%- assign measurement = app.metafields.insights.ga_measurement_id.value -%}
+{%- if verification != blank -%}
+  <meta name="google-site-verification" content="{{ verification | escape }}">
+{%- endif -%}
+{%- if measurement != blank -%}
+  <script async src="https://www.googletagmanager.com/gtag/js?id={{ measurement | escape }}"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', {{ measurement | json }});
+  </script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Google setup",
+  "target": "head",
+  "settings": []
+}
+{% endschema %}
