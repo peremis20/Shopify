@@ -92,6 +92,18 @@ export function polish(text: string): string {
 const numbersIn = (text: string) =>
   new Set((text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".")));
 
+/** Removes the paragraphs and list items `drop` picks, then any list or question left with nothing under it. */
+function dropBlocks(html: string, drop: (text: string, index: number) => boolean): string {
+  let i = 0;
+  return html
+    .replace(/<(p|li)>([\s\S]*?)<\/\1>/g, (block, _tag, inner: string) => (drop(plainText(inner), i++) ? "" : block))
+    .replace(/<(ul|ol)>\s*<\/\1>/g, "")
+    .replace(/<h3>(?:(?!<\/h3>)[\s\S])*<\/h3>\s*(?=<h[23]>|$)/g, "")
+    .trim();
+}
+
+const blocksOf = (html: string) => [...html.matchAll(/<(p|li)>([\s\S]*?)<\/\1>/g)].map((m) => plainText(m[2]));
+
 /**
  * Drops paragraphs and list items from a new section that state a number
  * (a dose, a percentage, a study figure) the page itself doesn't have, so the
@@ -99,14 +111,48 @@ const numbersIn = (text: string) =>
  */
 export function onlyKnownNumbers(html: string, pageBody: string): string {
   const known = numbersIn(plainText(pageBody));
-  const kept = html.replace(/<(p|li)>([\s\S]*?)<\/\1>/g, (block, _tag, inner: string) =>
-    [...numbersIn(plainText(inner))].every((n) => known.has(n)) ? block : ""
-  );
-  // A list or question left with nothing under it goes too.
-  return kept
-    .replace(/<(ul|ol)>\s*<\/\1>/g, "")
-    .replace(/<h3>(?:(?!<\/h3>)[\s\S])*<\/h3>\s*(?=<h[23]>|$)/g, "")
-    .trim();
+  return dropBlocks(html, (text) => ![...numbersIn(text)].every((n) => known.has(n)));
+}
+
+const CHECK_SCHEMA = {
+  type: "object",
+  properties: {
+    unsupported: {
+      type: "array",
+      items: { type: "integer" },
+      description: "Numbers of the blocks to remove.",
+    },
+  },
+  required: ["unsupported"],
+  additionalProperties: false,
+};
+
+/**
+ * A second, separate pass: checks every paragraph and list item of a new
+ * section against the page and removes the ones the page doesn't support.
+ */
+async function factCheck(ai: AiProvider, html: string, pageBody: string): Promise<string> {
+  const blocks = blocksOf(html);
+  if (!blocks.length) return html;
+  const prompt = `You are fact checking a new section before it's added to a supplement store's page.
+
+Page text (the only source of truth):
+"""
+${plainText(pageBody).slice(0, 12000)}
+"""
+
+New section, numbered:
+${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
+
+List the numbers of blocks to remove. Remove a block if it:
+- states a health effect, benefit, timeline, dose, usage advice, safety advice or combination advice (for example with coffee or medication) that the page text doesn't state
+- claims what "many users", customers, studies or experts say or do, unless the page says it
+- names ingredients, species or products the page doesn't mention
+- is filler that says nothing (for example "below are answers to common questions")
+Keep blocks that only restate or reorganize what the page says. When unsure, remove it.`;
+  const out = await askJson<{ unsupported: number[] }>(ai, prompt, CHECK_SCHEMA);
+  const remove = new Set((out.unsupported ?? []).map(Number));
+  return dropBlocks(html, (_t, i) => remove.has(i));
 }
 
 const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -421,10 +467,15 @@ ${
 Keep the SEO title and description if they are already strong for this search; you may return them unchanged.`;
 
   const out = await askJson<PageImprovement>(ai, prompt, IMPROVEMENT_SCHEMA);
+  let section = allowContent && editableBody ? onlyKnownNumbers(cleanHtml(polish(out.contentSectionHtml)), page.body) : "";
+  // Nothing goes on the page unchecked: if the check itself fails, the section is left out.
+  if (section) section = await factCheck(ai, section, page.body).catch(() => "");
+  // A section reduced to headings alone isn't worth adding.
+  if (!blocksOf(section).length) section = "";
   return {
     metaTitle: polish(out.metaTitle).slice(0, 70),
     metaDescription: polish(out.metaDescription).slice(0, 170),
-    contentSectionHtml: allowContent && editableBody ? onlyKnownNumbers(cleanHtml(polish(out.contentSectionHtml)), page.body) : "",
+    contentSectionHtml: section,
     altTexts: (out.altTexts ?? [])
       .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim())
       .map((a) => ({ imageId: a.imageId, alt: polish(a.alt).slice(0, 140) })),
