@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Neon_Database__deploy_function",
+      "mcp__Neon_Database__get_function",
+      "mcp__Neon_Database__query_logs",
+      "mcp__Neon_Database__run_sql",
+      "mcp__Shopify__graphql_query",
+      "mcp__Shopify__graphql_mutation",
+      "mcp__Shopify__graphql_schema",
+      "mcp__Shopify__search_docs_chunks"
+    ]
+  }
+}
