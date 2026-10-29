@@ -1,5 +1,6 @@
 import { ensureSchema, hasDatabase, sql } from "../db";
 import { tokenSecret } from "../oauth-client";
+import { readProfile } from "../profile";
 import { decrypt, encrypt } from "../secrets";
 
 /**
@@ -36,6 +37,8 @@ export interface AccountAutopilot {
 /** What the page may see: no secrets. */
 export interface AutopilotSettingsView extends AccountAutopilot {
   shopConnected: boolean;
+  /** A non-Shopify website read from its sitemap: changes come as a fix list. */
+  website: { domain: string; platform: string | null } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
   platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasShopifyApp: boolean };
@@ -132,8 +135,10 @@ export async function saveAccountAutopilot(
 }
 
 export async function autopilotView(accountId: string, admin: boolean): Promise<AutopilotSettingsView> {
-  const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
+  const [acct, platform, profile] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings(), readProfile(accountId)]);
+  const shopConnected = Boolean(acct.shopDomain && acct.shopTokenEnc);
   return {
+    website: !shopConnected && profile.siteDomain ? { domain: profile.siteDomain, platform: profile.platform } : null,
     enabled: acct.enabled,
     maxPagesPerWeek: acct.maxPagesPerWeek,
     allowContent: acct.allowContent,

@@ -1,5 +1,6 @@
 import { ensureSchema, sql } from "../db";
 import { hasDisclaimer, scanClaims, type ClaimFlag } from "./claims";
+import { isPostUrl, sitePages } from "../site-crawl";
 import { paged } from "./link-fixer";
 import { shopifyGql, type StoreAccess } from "./shopify";
 
@@ -65,13 +66,31 @@ export async function scanStoreClaims(accountId: string, s: StoreAccess): Promis
   for (const p of pages) if (p.isPublished) check("page", `/pages/${p.handle}`, p.title, p.body ?? "");
   for (const p of products) if (p.status === "ACTIVE") check("product", `/products/${p.handle}`, p.title, p.descriptionHtml ?? "");
 
+  const scanned = articles.filter((a) => a.isPublished).length + pages.filter((p) => p.isPublished).length + products.filter((p) => p.status === "ACTIVE").length;
+  return saveFindings(accountId, found, scanned);
+}
+
+/** The same check for any website, from the pages read from its sitemap. */
+export async function scanSiteClaims(accountId: string): Promise<number> {
+  const pages = await sitePages(accountId, true);
+  const sitewide = pages.some((p) => new URL(p.url).pathname === "/" && p.disclaimer);
+  const found: ClaimPage[] = [];
+  for (const p of pages) {
+    const flags = scanClaims(p.mainHtml || p.text);
+    const product = /\/(products?|shop|store)\//i.test(new URL(p.url).pathname);
+    if (product && !sitewide && !p.disclaimer && /\bsupports?\b|\bpromotes?\b|\bhelps?\b/i.test(p.text)) flags.push(MISSING_DISCLAIMER);
+    if (flags.length) found.push({ kind: product ? "product" : isPostUrl(p.url) ? "article" : "page", url: p.url, title: p.h1 || p.title, flags });
+  }
+  return saveFindings(accountId, found, pages.length);
+}
+
+async function saveFindings(accountId: string, found: ClaimPage[], scanned: number): Promise<number> {
   await sql`DELETE FROM insights_claim_flags WHERE account_id = ${accountId}`;
   for (const f of found) {
     await sql`
       INSERT INTO insights_claim_flags (account_id, url, title, kind, flags)
       VALUES (${accountId}, ${f.url}, ${f.title}, ${f.kind}, ${JSON.stringify(f.flags)}::jsonb)`;
   }
-  const scanned = articles.filter((a) => a.isPublished).length + pages.filter((p) => p.isPublished).length + products.filter((p) => p.status === "ACTIVE").length;
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${settingKey(accountId)}, ${String(Date.now())}), (${`claims_scanned:${accountId}`}, ${String(scanned)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import type { AppStatus } from "@/lib/analytics/autopilot/apps";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "@/lib/analytics/autopilot/types";
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
+import { fixGuide, PLATFORM_LABEL, type Platform } from "@/lib/analytics/fix-guides";
 import { BoltIcon } from "./Icons";
 import { PlatformForm } from "./PlatformSettings";
 import { api, pathOf } from "./seo-ui";
@@ -34,6 +35,7 @@ const STATUS_STYLE: Record<AutopilotChange["status"], string> = {
   reverted: "bg-[#F1ECE3] text-dash-muted",
   failed: "bg-dash-down/10 text-dash-down",
   skipped: "bg-[#F1ECE3] text-dash-muted",
+  suggested: "bg-[#FBF1E1] text-[#8A5A12]",
 };
 
 const STATUS_LABEL: Record<AutopilotChange["status"], string> = {
@@ -42,6 +44,7 @@ const STATUS_LABEL: Record<AutopilotChange["status"], string> = {
   reverted: "Undone",
   failed: "Failed",
   skipped: "Skipped",
+  suggested: "On the fix list",
 };
 
 const when = (iso: string) =>
@@ -83,7 +86,9 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
       setState((s) => (s ? { ...s, settings: d.settings } : s));
     });
 
-  const ready = state?.settings.platformReady && state?.settings.shopConnected;
+  const website = state?.settings.website ?? null;
+  const ready = state?.settings.platformReady && (state?.settings.shopConnected || website);
+  const fixes = state?.changes.filter((c) => c.status === "suggested") ?? [];
 
   return (
     <Card id="autopilot" className="mt-5">
@@ -117,10 +122,16 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
         ) : (
           <p className="text-sm text-dash-muted">The SEO Autopilot is almost ready. It will appear here soon.</p>
         )
-      ) : !state.settings.shopConnected ? (
-        <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} />
+      ) : !state.settings.shopConnected && !website ? (
+        <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} onWebsite={load} />
       ) : (
         <div className="space-y-5 text-sm">
+          {website && (
+            <p className="max-w-3xl rounded-lg bg-[#FBF1E1] p-3 text-dash-ink">
+              The app reads {website.domain} like Google does but can&apos;t edit it, so each improvement lands on your{" "}
+              <b>fix list</b> below, ready to paste, with where to paste it. Mark it done and it&apos;s measured like any other change.
+            </p>
+          )}
           <p className="max-w-3xl text-dash-muted">
             Every day the autopilot works to win page one and keep it. It first defends any page that&apos;s slipping,
             then pushes your #2 and #3 results for #1 and your page two results into the top 3. It studies the pages
@@ -202,6 +213,12 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           {notice && <p className="rounded-lg bg-[#FBF1E1] p-3 text-dash-ink" role="status">{notice}</p>}
           {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
 
+          {website ? (
+            <p className="text-dash-muted">
+              Website: <span className="font-semibold text-dash-ink">{website.domain}</span>
+              {website.platform ? ` (${PLATFORM_LABEL[website.platform as Platform] ?? website.platform})` : ""}
+            </p>
+          ) : (
           <p className="text-dash-muted">
             Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
             {" · "}
@@ -217,6 +234,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
               Disconnect store
             </button>
           </p>
+          )}
 
           {state.runs.length > 0 && (
             <div>
@@ -233,8 +251,22 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
             </div>
           )}
 
+          {fixes.length > 0 && (
+            <FixList
+              fixes={fixes}
+              platform={website?.platform ?? (state.settings.shopConnected ? "shopify" : null)}
+              busy={busy !== null}
+              onMark={(id, done) =>
+                act(`fix-${id}`, async () => {
+                  const d = await api<Omit<State, "settings">>("/api/autopilot/fix", { id, done });
+                  setState((s) => (s ? { ...s, ...d } : s));
+                })
+              }
+            />
+          )}
+
           <ChangeLog
-            changes={state.changes}
+            changes={state.changes.filter((c) => c.status !== "suggested")}
             busy={busy !== null}
             onUndo={(id) =>
               act(`undo-${id}`, async () => {
@@ -247,6 +279,67 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
         </div>
       )}
     </Card>
+  );
+}
+
+/** Improvements for a site the app can't edit: each ready to paste, with where it goes on the owner's platform. */
+function FixList({
+  fixes,
+  platform,
+  busy,
+  onMark,
+}: {
+  fixes: AutopilotChange[];
+  platform: string | null;
+  busy: boolean;
+  onMark: (id: string, done: boolean) => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+  const html = (f: AutopilotChange) => f.field === "content" || f.field === "schema" || f.field === "internal_link";
+  return (
+    <div>
+      <p className="mb-1 font-semibold">Fix list ({fixes.length})</p>
+      <p className="mb-3 text-dash-muted">Paste each one in, then mark it done. Biggest wins first: titles and descriptions take a minute each.</p>
+      <ul className="space-y-3">
+        {fixes.map((f) => (
+          <li key={f.id} className="rounded-xl border border-dash-line bg-white p-4">
+            <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+              <p>
+                <span className="font-semibold">{FIELD_LABEL[f.field]}</span>
+                <span className="text-dash-muted"> on </span>
+                <a href={f.field === "internal_link" && f.targetId ? f.targetId : f.pageUrl} target="_blank" rel="noreferrer" className="font-semibold text-dash-green hover:underline">
+                  {pathOf(f.field === "internal_link" && f.targetId ? f.targetId : f.pageUrl)}
+                </a>
+              </p>
+              {f.query && <span className="text-xs text-dash-muted">for “{f.query}”</span>}
+            </div>
+            {f.field === "internal_link" && <p className="mb-2 text-dash-muted">Links to {pathOf(f.pageUrl)}, which the search above should find.</p>}
+            {f.before && !html(f) && <p className="mb-1 text-dash-muted line-through">{f.before}</p>}
+            {html(f) ? (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-[#FBF8F2] p-3 font-mono text-xs">{f.after}</pre>
+            ) : (
+              <p className="rounded-lg border border-dash-line bg-[#FBF8F2] p-3 text-dash-ink">{f.after}</p>
+            )}
+            <p className="mt-2 text-dash-muted">{fixGuide(platform, f.field)}</p>
+            {f.reason && <p className="mt-1 text-xs text-dash-muted">Why: {f.reason}</p>}
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                onClick={() => navigator.clipboard?.writeText(f.after ?? "").then(() => setCopied(f.id), () => setCopied(null))}
+                className="rounded-xl border border-dash-line px-3 py-1.5 font-semibold text-dash-ink hover:border-dash-green/40"
+              >
+                {copied === f.id ? "Copied" : "Copy"}
+              </button>
+              <button onClick={() => onMark(f.id, true)} disabled={busy} className="rounded-xl bg-dash-green px-3 py-1.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+                Done, I pasted it
+              </button>
+              <button onClick={() => onMark(f.id, false)} disabled={busy} className="font-semibold text-dash-muted hover:text-dash-ink">
+                Skip
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -413,8 +506,11 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
   );
 }
 
-function ConnectShopify({ adminLink }: { adminLink?: () => void }) {
+function ConnectShopify({ adminLink, onWebsite }: { adminLink?: () => void; onWebsite: () => void }) {
   const [shop, setShop] = useState("");
+  const [domain, setDomain] = useState("");
+  const [reading, setReading] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   return (
     <div className="grid gap-5 text-sm lg:grid-cols-2">
       <div className="space-y-2">
@@ -456,6 +552,39 @@ function ConnectShopify({ adminLink }: { adminLink?: () => void }) {
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           Connect Shopify
+        </button>
+      </form>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setReading(true);
+          setFailed(null);
+          try {
+            await api("/api/onboarding/site", { domain });
+            onWebsite();
+          } catch (err) {
+            setFailed(err instanceof Error ? err.message : "Couldn't read that website.");
+          } finally {
+            setReading(false);
+          }
+        }}
+        className="space-y-3 rounded-xl border border-dash-line bg-white p-4 lg:col-start-2"
+      >
+        <p className="font-semibold">Not on Shopify?</p>
+        <p className="text-dash-muted">
+          WordPress, Wix, Squarespace, Webflow, AI builders and custom sites work too. The app reads your pages and hands you
+          each improvement ready to paste.
+        </p>
+        <input
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          placeholder="yourwebsite.com"
+          aria-label="Website address"
+          className="w-full rounded-lg border border-dash-line px-3 py-2"
+        />
+        {failed && <p className="text-dash-down">{failed}</p>}
+        <button type="submit" disabled={!domain.trim() || reading} className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+          {reading ? "Reading your site…" : "Connect website"}
         </button>
       </form>
     </div>

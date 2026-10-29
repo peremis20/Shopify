@@ -6,6 +6,7 @@ import { ensureSchema, sql } from "./db";
 import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listProperties } from "./properties";
 import { bareDomain, BUSINESS_TYPES, readProfile, saveProfile, type Profile } from "./profile";
+import { PLATFORM_LABEL, type Platform } from "./site-crawl";
 
 /**
  * Guided setup, so nobody gets stuck: the app finds the customer's own
@@ -144,7 +145,7 @@ Thank you!`;
 
 // ---------- the checklist ----------
 
-export type StepId = "google" | "shopify" | "business" | "search_console" | "analytics" | "first_check" | "preview" | "autopilot";
+export type StepId = "google" | "website" | "business" | "search_console" | "analytics" | "first_check" | "preview" | "autopilot";
 
 export interface Step {
   id: StepId;
@@ -162,6 +163,8 @@ export interface Onboarding {
   brandName: string | null;
   businessType: string | null;
   businessTypes: { id: string; label: string }[];
+  /** Detected platform of a site connected by address (not Shopify). */
+  platform: string | null;
   gaExcludeHosts: string[];
   /** Filled in when the Google account can't see the site's Search Console or Analytics. */
   access: AccessRequest | null;
@@ -195,10 +198,14 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       detail: conn ? `Connected as ${conn.email ?? email}.` : "One Google sign in covers Search Console and Analytics.",
     },
     {
-      id: "shopify",
-      title: "Connect your Shopify store",
-      done: shopConnected,
-      detail: shopConnected ? `Connected to ${acct.shopDomain}.` : "Lets the app make approved improvements to your store.",
+      id: "website",
+      title: "Connect your website",
+      done: shopConnected || Boolean(profile.siteDomain && profile.platform),
+      detail: shopConnected
+        ? `Connected to ${acct.shopDomain}. Approved improvements are made for you.`
+        : profile.siteDomain && profile.platform
+          ? `Reading ${profile.siteDomain} (${PLATFORM_LABEL[profile.platform as Platform] ?? profile.platform}). Changes come as a fix list you paste in, with where to paste each one.`
+          : "Shopify stores connect in one click; any other website works too.",
     },
     {
       id: "business",
@@ -264,6 +271,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     brandName: brand,
     businessType: profile.businessType,
     businessTypes: BUSINESS_TYPES.map(({ id, label }) => ({ id, label })),
+    platform: shopConnected ? "shopify" : profile.platform,
     gaExcludeHosts: profile.gaExcludeHosts,
     access: needGsc || needGa ? accessRequest(domain!, googleEmail, { gsc: needGsc, ga: needGa }) : null,
     email: googleEmail,

@@ -131,6 +131,20 @@ export function ensureSchema(): Promise<void> {
       onboarding_dismissed boolean NOT NULL DEFAULT false,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_site_pages (
+      account_id bigint NOT NULL,
+      url text NOT NULL,
+      status integer NOT NULL DEFAULT 0,
+      title text,
+      meta_description text,
+      h1 text,
+      main_html text,
+      text text,
+      data jsonb,
+      fetched_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, url)
+    )`;
+    await sql`ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS platform text`;
     await sql`CREATE TABLE IF NOT EXISTS insights_claim_flags (
       account_id bigint NOT NULL,
       url text NOT NULL,

@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
-import { accountsDueForRun, autopilotHistory, logChange, revertChange, runAutopilot } from "./autopilot/engine";
-import { claimReport, claimScanDue, scanStoreClaims } from "./autopilot/claim-scan";
+import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
+import { manualSite } from "./autopilot/site-source";
+import { crawlSite } from "./site-crawl";
+import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
 import { applyLinkFix, describeFix, findLinkFixes, linkFixDue, markLinkFixChecked } from "./autopilot/link-fixer";
 import {
@@ -45,7 +47,7 @@ import { adminAppUrl, embeddedAccount, googleLinkTicket, readLinkTicket } from "
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { readProfile, saveProfile } from "./profile";
+import { bareDomain, readProfile, saveProfile } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
 
@@ -274,6 +276,23 @@ export const saveOnboardingProfile = (req: Request) =>
       gaExcludeHosts: typeof b.gaExcludeHosts === "string" ? b.gaExcludeHosts.split(",") : undefined,
       onboardingDismissed: typeof b.dismissed === "boolean" ? b.dismissed : undefined,
     });
+    return json(await onboardingStatus(account.id, account.email));
+  });
+
+/**
+ * "Another website": any site the app reads but can't edit (WordPress, Wix,
+ * custom...). Saves its address, reads its first pages and detects the
+ * platform, then finds its Google properties.
+ */
+export const connectWebsite = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    const domain = bareDomain(typeof b.domain === "string" ? b.domain : "");
+    if (!domain) return json({ error: "Enter your website address, like example.com." }, 400);
+    await saveProfile(account.id, { siteDomain: domain });
+    const { platform } = await crawlSite(account.id, domain, 15);
+    await saveProfile(account.id, { platform: platform ?? "custom" });
+    await autoMatch(account.id).catch(() => undefined);
     return json(await onboardingStatus(account.id, account.email));
   });
 
@@ -525,28 +544,44 @@ async function fixLinks(accountId: string, force: boolean): Promise<number> {
 /** Weekly claim guard scan of the whole store (read only), whenever a store is connected. */
 async function runClaimScan(accountId: string, force: boolean): Promise<number> {
   const acct = await readAccountAutopilot(accountId);
-  if (!acct.shopDomain || !acct.shopTokenEnc || !(force || (await claimScanDue(accountId)))) return 0;
-  return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
+  if (!(force || (await claimScanDue(accountId)))) return 0;
+  if (acct.shopDomain && acct.shopTokenEnc) return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
+  return (await readProfile(accountId)).siteDomain ? scanSiteClaims(accountId) : 0;
 }
 
 /** Weekly overlap check: duplicate titles and descriptions, near duplicate posts, pages competing for a search. */
 async function runOverlapScan(accountId: string, conn: Connection | null, force: boolean): Promise<number> {
   const acct = await readAccountAutopilot(accountId);
-  if (!acct.shopDomain || !acct.shopTokenEnc || !(force || (await overlapScanDue(accountId)))) return 0;
+  if (!(force || (await overlapScanDue(accountId)))) return 0;
   const brand = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl).split(".")[0] : "";
-  return scanOverlap(accountId, { accountId, shopDomain: acct.shopDomain }, conn, brand);
+  if (acct.shopDomain && acct.shopTokenEnc) return scanOverlap(accountId, { accountId, shopDomain: acct.shopDomain }, conn, brand);
+  const profile = await readProfile(accountId);
+  if (!profile.siteDomain) return 0;
+  return scanOverlap(accountId, await manualSite(accountId, brand).index(), conn, brand);
+}
+
+/** Websites the app can't edit: read their pages from the sitemap (new and week-old pages, a batch a day). */
+async function readSite(accountId: string, force: boolean): Promise<number> {
+  const acct = await readAccountAutopilot(accountId);
+  if (acct.shopDomain && acct.shopTokenEnc) return 0;
+  const profile = await readProfile(accountId);
+  if (!profile.siteDomain) return 0;
+  const { read, platform } = await crawlSite(accountId, profile.siteDomain, force ? 25 : 60);
+  if (platform && platform !== profile.platform) await saveProfile(accountId, { platform });
+  return read;
 }
 
 /** Today's rank check, a few page health checks, and the weekly link fix, claim and overlap checks for one account. Each part runs at most once a day. */
 async function maintain(accountId: string, force = false): Promise<string> {
   const [conn, platform] = await Promise.all([getConnection(accountId), readPlatformSettings()]);
   const links = await fixLinks(accountId, force).catch((e) => (console.error(`link fix failed: ${message(e)}`), 0));
+  const read = await readSite(accountId, force).catch((e) => (console.error(`site read failed: ${message(e)}`), 0));
   const claims = await runClaimScan(accountId, force).catch((e) => (console.error(`claim scan failed: ${message(e)}`), 0));
   const overlaps = await runOverlapScan(accountId, conn, force).catch((e) => (console.error(`overlap scan failed: ${message(e)}`), 0));
-  if (!conn?.gscSiteUrl) return `no Search Console property, links ${links}, claims ${claims}, overlaps ${overlaps}`;
+  if (!conn?.gscSiteUrl) return `no Search Console property, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
   const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
-  return `ranks ${ranks}, health ${pages}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
+  return `ranks ${ranks}, health ${pages}, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */
@@ -582,6 +617,18 @@ export const previewAutopilot = (req: Request) =>
 
 export const runAutopilotNow = (req: Request) =>
   withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "manual")));
+
+/** Fix list: the owner pasted a change in, or skipped it. */
+export const markFix = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = await req.json().catch(() => ({}));
+    try {
+      await markSuggestion(account.id, String(b.id ?? ""), b.done !== false);
+      return json(await autopilotHistory(account.id));
+    } catch (err) {
+      return json({ error: message(err) }, 400);
+    }
+  });
 
 export const revertAutopilot = (req: Request) =>
   withAccount(req, async (account) => {

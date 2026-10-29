@@ -25,6 +25,8 @@ export interface Profile {
   siteDomain: string | null;
   gaExcludeHosts: string[];
   onboardingDismissed: boolean;
+  /** What the site is built with (detected): shopify, wordpress, wix, squarespace, webflow, custom, ... */
+  platform: string | null;
 }
 
 const hostsOf = (v: string | null | undefined) =>
@@ -51,6 +53,7 @@ export async function readProfile(accountId: string, email?: string): Promise<Pr
     siteDomain: row?.site_domain ?? null,
     gaExcludeHosts: row?.ga_exclude_hosts != null ? hostsOf(row.ga_exclude_hosts) : envHosts,
     onboardingDismissed: yes(row?.onboarding_dismissed),
+    platform: row?.platform ?? null,
   };
 }
 
@@ -63,16 +66,18 @@ export async function saveProfile(accountId: string, patch: Partial<Profile>): P
     domain: patch.siteDomain !== undefined ? bareDomain(patch.siteDomain) : cur.siteDomain,
     hosts: patch.gaExcludeHosts !== undefined ? hostsOf(patch.gaExcludeHosts.join(",")).join(",") : null,
     dismissed: patch.onboardingDismissed ?? cur.onboardingDismissed,
+    platform: patch.platform !== undefined ? patch.platform : cur.platform,
   };
   await sql`
-    INSERT INTO insights_account_profile (account_id, brand_name, business_type, site_domain, ga_exclude_hosts, onboarding_dismissed)
-    VALUES (${accountId}, ${next.brand}, ${next.type}, ${next.domain}, ${next.hosts}, ${next.dismissed})
+    INSERT INTO insights_account_profile (account_id, brand_name, business_type, site_domain, ga_exclude_hosts, onboarding_dismissed, platform)
+    VALUES (${accountId}, ${next.brand}, ${next.type}, ${next.domain}, ${next.hosts}, ${next.dismissed}, ${next.platform})
     ON CONFLICT (account_id) DO UPDATE SET
       brand_name = EXCLUDED.brand_name,
       business_type = EXCLUDED.business_type,
       site_domain = EXCLUDED.site_domain,
       ga_exclude_hosts = COALESCE(EXCLUDED.ga_exclude_hosts, insights_account_profile.ga_exclude_hosts),
       onboarding_dismissed = EXCLUDED.onboarding_dismissed,
+      platform = EXCLUDED.platform,
       updated_at = now()`;
 }
 

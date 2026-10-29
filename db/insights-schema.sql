@@ -107,6 +107,22 @@ CREATE TABLE IF NOT EXISTS insights_account_profile (
   updated_at           timestamptz NOT NULL DEFAULT now()
 );
 
+-- Pages of sites the app reads but doesn't edit (from their sitemap), rechecked weekly.
+CREATE TABLE IF NOT EXISTS insights_site_pages (
+  account_id       bigint NOT NULL,
+  url              text NOT NULL,
+  status           integer NOT NULL DEFAULT 0,
+  title            text,
+  meta_description text,
+  h1               text,
+  main_html        text,
+  text             text,
+  data             jsonb,             -- canonical, noindex, schema types, site name, published date, image
+  fetched_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, url)
+);
+ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS platform text;   -- shopify, wordpress, wix, ...
+
 -- Claim guard: risky health claims found in the store's posts, pages and products (weekly).
 CREATE TABLE IF NOT EXISTS insights_claim_flags (
   account_id bigint NOT NULL,

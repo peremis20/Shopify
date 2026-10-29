@@ -20,6 +20,7 @@ import {
   type SiteItem,
 } from "./guards";
 import { undoLinkFix } from "./link-fixer";
+import { manualSite, shopifySite, type SiteAccess } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import {
   getBody,
@@ -57,17 +58,20 @@ const WORSE_BY_POSITIONS = 3;
 /** Everything a run needs for one customer. */
 interface Ctx {
   accountId: string;
-  store: StoreAccess;
+  /** Where pages are read from; on a Shopify store also where changes are written. */
+  site: SiteAccess;
+  /** Shopify only. */
+  store: StoreAccess | null;
   ai: AiProvider;
   platform: PlatformSettings;
   ourDomain: string;
   allowContent: boolean;
   maxPagesPerWeek: number;
   /** The site's pages, loaded once per run for the duplicate guards. */
-  site?: Promise<SiteItem[]>;
+  index?: Promise<SiteItem[]>;
 }
 
-const siteOf = (ctx: Ctx) => (ctx.site ??= siteIndex(ctx.store).catch(() => []));
+const siteOf = (ctx: Ctx) => (ctx.index ??= ctx.site.index().catch(() => []));
 
 /** Thrown when someone edited a page while the autopilot was writing; the change is skipped, not forced. */
 class EditedMeanwhile extends Error {
@@ -286,7 +290,7 @@ async function planNextChange(
   const changedSince = async (days: number) =>
     new Set(
       (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
-        WHERE account_id = ${ctx.accountId} AND status IN ('applied', 'kept', 'reverted', 'skipped') AND created_at > now() - make_interval(days => ${days})`).map(
+        WHERE account_id = ${ctx.accountId} AND status IN ('applied', 'kept', 'reverted', 'skipped', 'suggested') AND created_at > now() - make_interval(days => ${days})`).map(
         (r) => r.page_url!
       )
     );
@@ -300,7 +304,7 @@ async function planNextChange(
     let page: StoreResource | null = null;
     // Skip pages that don't map to an editable store item, and pages losing a search to another of the site's pages.
     for (let tries = 0; cand && tries < 8; tries++) {
-      page = await resolveResource(ctx.store, cand.op.page).catch(() => null);
+      page = await ctx.site.resolve(cand.op.page).catch(() => null);
       const rival = page ? strongerRival(cand.op.page, await pagesForQuery(conn, cand.op.query).catch(() => [])) : null;
       if (page && !rival) break;
       if (rival) {
@@ -368,7 +372,7 @@ async function guardDuplicates(ctx: Ctx, page: StoreResource, imp: PageImproveme
 async function linkSource(ctx: Ctx, cand: Candidate, page: StoreResource) {
   const path = new URL(cand.op.page).pathname;
   const topic = words(`${cand.op.query} ${page.title}`);
-  return (await listArticles(ctx.store))
+  return (await ctx.site.articles())
     .filter((a) => a.url !== path && !a.body.includes(path))
     .map((a) => ({ a, score: [...words(a.title)].filter((w) => topic.has(w)).length }))
     .filter((x) => x.score > 0)
@@ -377,11 +381,42 @@ async function linkSource(ctx: Ctx, cand: Candidate, page: StoreResource) {
 
 /** Structured data the page should get, or null. */
 async function schemaFor(ctx: Ctx, page: StoreResource, body: string): Promise<string | null> {
-  const [live, name] = await Promise.all([liveHtml(page.url), shopName(ctx.store).catch(() => ctx.ourDomain)]);
+  const [live, name] = await Promise.all([liveHtml(page.url), ctx.site.name().catch(() => ctx.ourDomain)]);
   return buildSchema(page, body, live, name);
 }
 
+/**
+ * For sites the app can't edit: the same changes, saved as a fix list for the
+ * owner to paste in. Marked done, they're measured like any other change.
+ */
+async function suggestPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
+  const { cand, page, improvement } = plan;
+  const op = cand.op;
+  const done: string[] = [];
+  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: "site", resourceId: page.url, query: op.query, reason: improvement.reason, op };
+  const suggest = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
+    await logChange({ ...base, field, before, after, status: "suggested", targetId });
+    done.push(field);
+  };
+  if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) await suggest("meta_title", page.metaTitle, improvement.metaTitle);
+  if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
+    await suggest("meta_description", page.metaDescription, improvement.metaDescription);
+  }
+  if (improvement.contentSectionHtml) await suggest("content", null, improvement.contentSectionHtml);
+  const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
+  const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
+  if (schema) await suggest("schema", null, withoutAutopilotSchema(schema).trim() || schema);
+  const source = await linkSource(ctx, cand, page).catch(() => undefined);
+  if (source) {
+    const sentence = await writeInternalLink(ctx.ai, source, { path: new URL(op.page).pathname, query: op.query, title: page.title });
+    if (sentence) await suggest("internal_link", null, sentence, source.id);
+  }
+  return done;
+}
+
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
+  const store = ctx.store;
+  if (!store) return suggestPlan(ctx, runId, plan);
   const { cand, page, improvement } = plan;
   const op = cand.op;
   const done: string[] = [];
@@ -399,32 +434,32 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
   };
 
   if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) {
-    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => setSeoField(ctx.store, page.id, "title_tag", improvement.metaTitle));
+    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => setSeoField(store, page.id, "title_tag", improvement.metaTitle));
   }
   if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
     await apply("meta_description", page.metaDescription, improvement.metaDescription, () =>
-      setSeoField(ctx.store, page.id, "description_tag", improvement.metaDescription)
+      setSeoField(store, page.id, "description_tag", improvement.metaDescription)
     );
   }
   for (const a of improvement.altTexts) {
-    await apply("alt", null, a.alt, () => setImageAlt(ctx.store, a.imageId, a.alt), a.imageId);
+    await apply("alt", null, a.alt, () => setImageAlt(store, a.imageId, a.alt), a.imageId);
   }
   if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
     const block = wrap(blockId, improvement.contentSectionHtml);
-    await apply("content", blockId, block, () => setBodyIfUnchanged(ctx.store, page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
+    await apply("content", blockId, block, () => setBodyIfUnchanged(store, page.type as "article" | "page", page.id, page.body, `${page.body}\n${block}`));
   }
 
   // Structured data, rebuilt from the page as it is now (including any new FAQ).
   if (page.type === "article" || page.type === "page") {
     const type = page.type;
-    const current = await getBody(ctx.store, type, page.id).catch(() => null);
+    const current = await getBody(store, type, page.id).catch(() => null);
     const updated = { ...page, metaDescription: improvement.metaDescription || page.metaDescription };
     const plan = current === null ? null : await schemaFor(ctx, updated, current);
     if (current !== null && plan) {
       const blockId = `${runId}-schema`;
       const block = wrap(blockId, plan);
-      await apply("schema", blockId, block, () => setBodyIfUnchanged(ctx.store, type, page.id, current, `${withoutAutopilotSchema(current)}\n${block}`));
+      await apply("schema", blockId, block, () => setBodyIfUnchanged(store, type, page.id, current, `${withoutAutopilotSchema(current)}\n${block}`));
     }
   }
 
@@ -435,7 +470,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     if (sentence) {
       const blockId = `${runId}-link`;
       const block = wrap(blockId, sentence);
-      await apply("internal_link", blockId, block, () => setBodyIfUnchanged(ctx.store, "article", source.id, source.body, `${source.body}\n${block}`), source.id);
+      await apply("internal_link", blockId, block, () => setBodyIfUnchanged(store, "article", source.id, source.body, `${source.body}\n${block}`), source.id);
     }
   }
   return done;
@@ -471,14 +506,18 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   if (!conn?.gscSiteUrl) return { run: null, message: "Choose a Search Console property in Settings first." };
   const baseAi = aiProvider(platform);
   if (!baseAi) return { run: null, message: "Autopilot isn't available yet." };
-  if (!acct.shopDomain || !acct.shopTokenEnc) return { run: null, message: "Connect your Shopify store first." };
-  const store = { accountId, shopDomain: acct.shopDomain };
-  // The writer signs titles with the customer's own brand and fits what they sell.
   const profile = await readProfile(accountId);
-  const site = siteBrief({ ...profile, brandName: profile.brandName ?? (await shopName(store).catch(() => null)) });
-  const ai = { ...baseAi, site };
+  const store = acct.shopDomain && acct.shopTokenEnc ? { accountId, shopDomain: acct.shopDomain } : null;
+  // Any other website works too: read from its sitemap, with changes handed over as a fix list.
+  if (!store && !profile.siteDomain) return { run: null, message: "Connect your website first." };
+  const brand = profile.brandName ?? (store ? await shopName(store).catch(() => null) : null);
+  const siteName = brand ?? profile.siteDomain!.split(".")[0];
+  const access = store ? shopifySite(store, siteName) : manualSite(accountId, siteName);
+  // The writer signs titles with the customer's own brand and fits what they sell.
+  const ai = { ...baseAi, site: siteBrief({ ...profile, brandName: brand }) };
   const ctx: Ctx = {
     accountId,
+    site: access,
     store,
     ai,
     platform,
@@ -506,7 +545,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field NOT IN ('internal_link', 'link_fix')
+      WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
     // Emergency brake: when Google clicks suddenly fall, change nothing new until it's clear why.
@@ -597,10 +636,11 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
 export async function accountsDueForRun(limit: number): Promise<string[]> {
   await ensureSchema();
   const rows = await sql`
-    SELECT account_id FROM insights_account_autopilot
-    WHERE enabled AND shop_token_enc IS NOT NULL
-      AND (last_run_at IS NULL OR last_run_at < now() - interval '20 hours')
-    ORDER BY last_run_at NULLS FIRST LIMIT ${limit}`;
+    SELECT a.account_id FROM insights_account_autopilot a
+    LEFT JOIN insights_account_profile p ON p.account_id = a.account_id
+    WHERE a.enabled AND (a.shop_token_enc IS NOT NULL OR p.site_domain IS NOT NULL)
+      AND (a.last_run_at IS NULL OR a.last_run_at < now() - interval '20 hours')
+    ORDER BY a.last_run_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => r.account_id!);
 }
 
@@ -608,28 +648,46 @@ export async function accountsDueForRun(limit: number): Promise<string[]> {
 
 async function revertRow(ctx: Ctx, c: Row): Promise<string> {
   const field = c.field as ChangeField;
+  if (c.resource_type === "site") {
+    // A change pasted in by hand is changed back by hand.
+    const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    return `This one didn't help; ${back}.`;
+  }
+  const store = ctx.store!;
   if (field === "meta_title" || field === "meta_description") {
-    await setSeoField(ctx.store, c.resource_id!, field === "meta_title" ? "title_tag" : "description_tag", c.before_value);
+    await setSeoField(store, c.resource_id!, field === "meta_title" ? "title_tag" : "description_tag", c.before_value);
   } else if (field === "alt") {
-    await setImageAlt(ctx.store, c.target_id!, c.before_value ?? "");
+    await setImageAlt(store, c.target_id!, c.before_value ?? "");
   } else if (field === "link_fix") {
-    if (!(await undoLinkFix(ctx.store, c.resource_type as "article" | "page", c.resource_id!, c.before_value!, c.after_value!))) {
+    if (!(await undoLinkFix(store, c.resource_type as "article" | "page", c.resource_id!, c.before_value!, c.after_value!))) {
       await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The post was edited after the fix, so it was left as is.' WHERE id = ${c.id}`;
       return "Left as is.";
     }
   } else {
     const type = field === "internal_link" ? "article" : (c.resource_type as "article" | "page");
     const id = field === "internal_link" ? c.target_id! : c.resource_id!;
-    const body = await getBody(ctx.store, type, id);
+    const body = await getBody(store, type, id);
     const restored = unwrap(c.before_value!, body);
     if (restored === null) {
       await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The added section was already removed or edited by hand.' WHERE id = ${c.id}`;
       return "Already removed.";
     }
-    await setBody(ctx.store, type, id, restored);
+    await setBody(store, type, id, restored);
   }
   await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
   return "Restored the previous version.";
+}
+
+/** The owner pasted a fix list item in (it's measured from now on) or skipped it. */
+export async function markSuggestion(accountId: string, id: string, done: boolean): Promise<void> {
+  await ensureSchema();
+  const rows = done
+    ? await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = 'Done by hand.'
+        WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested' RETURNING id`
+    : await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Skipped.'
+        WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested' RETURNING id`;
+  if (!rows.length) throw new Error("That fix isn't waiting anymore.");
 }
 
 export async function revertChange(accountId: string, id: string): Promise<void> {
@@ -638,8 +696,8 @@ export async function revertChange(accountId: string, id: string): Promise<void>
   if (!c) throw new Error("That change doesn't exist.");
   if (c.status !== "applied" && c.status !== "kept") throw new Error("Only live changes can be undone.");
   const acct = await readAccountAutopilot(accountId);
-  if (!acct.shopDomain) throw new Error("Connect your Shopify store first.");
-  const ctx = { accountId, store: { accountId, shopDomain: acct.shopDomain } } as Ctx;
+  if (!acct.shopDomain && c.resource_type !== "site") throw new Error("Connect your Shopify store first.");
+  const ctx = { accountId, store: acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null } as Ctx;
   const note = await revertRow(ctx, c);
   await sql`UPDATE insights_autopilot_changes SET note = ${`Undone by hand. ${note}`} WHERE id = ${id} AND status = 'reverted'`;
 }

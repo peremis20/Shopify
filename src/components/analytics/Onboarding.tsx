@@ -129,8 +129,12 @@ function StepAction({ step, status, busy, act, onOpenSettings }: { step: Step; s
   switch (step.id) {
     case "google":
       return step.done ? <button onClick={onOpenSettings} className={link}>Change Google account in Settings</button> : <ConnectButton />;
-    case "shopify":
-      return step.done ? <p className="text-dash-muted">Connected. You can disconnect any time in the Autopilot card.</p> : <ShopifyConnect />;
+    case "website":
+      return step.done ? (
+        <p className="text-dash-muted">Connected. You can change it any time in the Autopilot card.</p>
+      ) : (
+        <WebsiteConnect busy={busy === "website"} act={act} />
+      );
     case "business":
       return <BusinessForm status={status} busy={busy === "business"} act={act} />;
     case "search_console":
@@ -154,6 +158,54 @@ function StepAction({ step, status, busy, act, onOpenSettings }: { step: Step; s
         </button>
       );
   }
+}
+
+/** Shopify connects in one click; any other website by its address (read from its sitemap, changes as a fix list). */
+function WebsiteConnect({ busy, act }: { busy: boolean; act: Act }) {
+  const [kind, setKind] = useState<"shopify" | "other">("shopify");
+  const [domain, setDomain] = useState("");
+  return (
+    <div className="space-y-3">
+      <div className="inline-flex rounded-lg border border-dash-line bg-white p-0.5">
+        {(["shopify", "other"] as const).map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setKind(k)}
+            className={`rounded-md px-3 py-1.5 font-semibold ${kind === k ? "bg-dash-green text-white" : "text-dash-muted hover:text-dash-ink"}`}
+          >
+            {k === "shopify" ? "Shopify store" : "Another website"}
+          </button>
+        ))}
+      </div>
+      {kind === "shopify" ? (
+        <ShopifyConnect />
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            act("website", () => api<Status>("/api/onboarding/site", { domain }), true);
+          }}
+          className="flex flex-wrap items-center gap-2"
+        >
+          <input
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            placeholder="yourwebsite.com"
+            aria-label="Website address"
+            className="w-56 min-w-0 rounded-lg border border-dash-line bg-white px-3 py-2"
+          />
+          <button type="submit" disabled={!domain.trim() || busy} className={button}>
+            {busy ? "Reading your site…" : "Connect"}
+          </button>
+          <p className="w-full text-dash-muted">
+            WordPress, Wix, Squarespace, Webflow, AI builders or custom code all work. The app reads your pages like Google does
+            and hands you each improvement ready to paste, with where to paste it.
+          </p>
+        </form>
+      )}
+    </div>
+  );
 }
 
 function ShopifyConnect() {
@@ -335,7 +387,7 @@ function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step;
   const [copied, setCopied] = useState(false);
   const [askOwner, setAskOwner] = useState(false);
   const google = status.steps.find((s) => s.id === "google")?.done;
-  const shopify = status.steps.find((s) => s.id === "shopify")?.done;
+  const shopify = status.platform === "shopify";
   if (!google) return <p className="text-dash-muted">Connect Google first; this is then found for you.</p>;
   const access = !step.done ? status.access : null;
   const recheck = (
@@ -352,7 +404,22 @@ function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step;
   }
   return (
     <div className="max-w-2xl space-y-3">
-      {shopify ? <SetupForMe act={act} busy={busy} /> : <p className="text-dash-muted">Connect your Shopify store and the app can set this up for you.</p>}
+      {shopify ? (
+        <SetupForMe act={act} busy={busy} />
+      ) : (
+        <p className="text-dash-muted">
+          No {step.id === "analytics" ? "Google Analytics" : "Search Console"} yet? Set it up free at{" "}
+          <a
+            href={step.id === "analytics" ? "https://analytics.google.com" : "https://search.google.com/search-console/welcome"}
+            target="_blank"
+            rel="noreferrer"
+            className={link}
+          >
+            {step.id === "analytics" ? "analytics.google.com" : "search.google.com/search-console"}
+          </a>{" "}
+          with the same Google account, then click Check again.
+        </p>
+      )}
       {access && (
         <div className="space-y-2">
           <button onClick={() => setAskOwner((v) => !v)} className={link}>

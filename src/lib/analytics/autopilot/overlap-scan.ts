@@ -53,8 +53,9 @@ export async function overlapScanDue(accountId: string): Promise<boolean> {
   return !row?.updated_at || Date.now() - new Date(row.updated_at).getTime() > RECHECK_DAYS * 864e5;
 }
 
-export async function scanOverlap(accountId: string, store: StoreAccess, conn: Connection | null, brand: string): Promise<number> {
-  const site = await siteIndex(store);
+/** Scans a site's pages: a Shopify store's, or (with `items`) any website's read from its sitemap. */
+export async function scanOverlap(accountId: string, source: StoreAccess | SiteItem[], conn: Connection | null, brand: string): Promise<number> {
+  const site = Array.isArray(source) ? source : await siteIndex(source);
   const titles = groupSame(site, (i) => i.seoTitle);
   const descriptions = groupSame(site, (i) => i.seoDescription);
 

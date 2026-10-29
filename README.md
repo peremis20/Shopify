@@ -313,6 +313,25 @@ Each step says what's needed next (permission, the embed, or a free Analytics
 account, which only Google's own page can create). Deploy the extension with
 Shopify CLI from `shopify-app/` (`shopify app deploy`).
 
+### Any website (WordPress, Wix, Squarespace, Webflow, custom)
+
+Sites that aren't Shopify connect by address (checklist step "Connect your
+website", or "Not on Shopify?" in the Autopilot card).
+
+- **Reading:** `src/lib/analytics/site-crawl.ts` reads the sitemap (robots.txt,
+  sitemap indexes followed, same site only), then each page's title, meta
+  description, H1, main content, structured data and whether the supplement
+  disclaimer shows, into `insights_site_pages` (about 60 pages a day, each
+  reread weekly). It detects the platform from the HTML.
+- **Fix list mode:** the autopilot plans exactly as for Shopify, through
+  `autopilot/site-source.ts`, but saves each change as `suggested`: new SEO
+  title, description, section, structured data and an internal link sentence,
+  each with Copy and where to paste it on that platform
+  (`src/lib/analytics/fix-guides.ts`). "Done, I pasted it" starts the 4 week
+  measurement; a change that didn't help is flagged to change back by hand.
+- **Checks:** the weekly claim guard and overlap report read the same pages.
+  Rankings, site health and keywords already worked for any site.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in
