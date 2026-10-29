@@ -93,8 +93,20 @@ async function logChange(c: {
   return row.id!;
 }
 
+/** Words every post shares, which say nothing about whether two posts are on the same topic. */
+const GENERIC = new Set(
+  "best top guide guides buyer buyers review reviews supplement supplements vitamin vitamins what when which with your that this from about does work works ways tips need know complete ultimate review 2024 2025 2026 2027 benefits".split(" ")
+);
+
+/** Topic words of a title or search: no filler, no generic shopping words, plurals folded. */
 const words = (s: string) =>
-  new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 3));
+  new Set(
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 3 && !GENERIC.has(w))
+      .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w))
+  );
 
 // ---------- measuring ----------
 
