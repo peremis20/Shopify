@@ -43,7 +43,7 @@ const TITLES: Record<Screen, string> = {
   website: "What's your website?",
   connect: "Let the app make changes for you",
   business: "What do you sell?",
-  data: "Your Google data",
+  data: "Search Console and Google Analytics",
   finish: "Turn on the autopilot",
 };
 
@@ -94,6 +94,31 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
   const current = back ?? screens.find((x) => !x.done)?.id ?? null;
   const all = (id: string) => status.steps.find((x) => x.id === id);
 
+  // Skipped the Google data: a quiet reminder stays until it's added.
+  const dataMissing = !all("search_console")?.done || !all("analytics")?.done;
+  if (!current && dataMissing && all("google")?.done) {
+    const unskip = () => {
+      const nextSkips = skips.filter((x) => x !== "data");
+      setSkips(nextSkips);
+      setBack("data");
+      try {
+        localStorage.setItem(SKIP_KEY, JSON.stringify(nextSkips));
+      } catch {
+        /* fine */
+      }
+    };
+    return (
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E7D3B4] bg-[#FBF1E1] p-4 text-sm">
+        <span>
+          <b>Add Search Console and Google Analytics</b> to see your search data and let the autopilot measure every change. It
+          takes a minute.
+        </span>
+        <button onClick={unskip} className={button}>
+          Set it up
+        </button>
+      </div>
+    );
+  }
   if (!current) {
     if (status.dismissed) return null;
     return (
@@ -158,19 +183,7 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
             </div>
           )}
           {current === "business" && <BusinessPicker status={status} busy={busy} act={act} />}
-          {current === "data" && (
-            <div className="space-y-3">
-              <p className="text-dash-muted">
-                {all("search_console")?.done ? "Search Console is connected. " : ""}
-                {all("analytics")?.done ? "Google Analytics is connected. " : ""}
-                {!all("search_console")?.done ? all("search_console")?.detail : all("analytics")?.detail}
-              </p>
-              <PropertyHelp step={(!all("search_console")?.done ? all("search_console") : all("analytics"))!} status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} />
-              <button onClick={() => skip("data")} className="font-semibold text-dash-muted hover:text-dash-ink">
-                Skip for now
-              </button>
-            </div>
-          )}
+          {current === "data" && <DataScreen status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} onSkip={() => skip("data")} />}
           {current === "finish" && (
             <Finish status={status} busy={busy} act={act} onLater={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} />
           )}
@@ -182,6 +195,79 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
         )}
       </div>
     </Card>
+  );
+}
+
+/**
+ * One question: do they have Search Console and Analytics? The app has already
+ * looked (at sign in), so this only shows when something wasn't found.
+ */
+function DataScreen({
+  status,
+  busy,
+  act,
+  onOpenSettings,
+  onSkip,
+}: {
+  status: Status;
+  busy: string | null;
+  act: Act;
+  onOpenSettings: () => void;
+  onSkip: () => void;
+}) {
+  const pending = (() => {
+    try {
+      return localStorage.getItem(PENDING_SETUP) === "1";
+    } catch {
+      return false;
+    }
+  })();
+  const [mode, setMode] = useState<"choose" | "setup" | "have">(pending ? "setup" : "choose");
+  const sc = status.steps.find((x) => x.id === "search_console")!;
+  const ga = status.steps.find((x) => x.id === "analytics")!;
+  const missing = [!sc.done && "Search Console", !ga.done && "Google Analytics"].filter(Boolean).join(" or ");
+  const site = status.domain ?? "your site";
+  const choice = "w-full rounded-xl border px-4 py-3 text-left hover:border-dash-green hover:bg-dash-green/5";
+  const otherOptions = (
+    <button onClick={() => setMode("choose")} className="text-sm text-dash-muted hover:text-dash-ink">
+      ← Other options
+    </button>
+  );
+  if (mode === "setup") {
+    return (
+      <div className="space-y-3">
+        <SetupForMe act={act} busy={busy} autoStart={!pending} />
+        {otherOptions}
+      </div>
+    );
+  }
+  if (mode === "have") {
+    return (
+      <div className="space-y-3">
+        <PropertyHelp step={!sc.done ? sc : ga} status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} hideSetup />
+        {otherOptions}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-dash-muted">
+        We couldn&apos;t find {missing} for {site} on {status.email}. {sc.done ? "Search Console is connected. " : ""}
+        {ga.done ? "Google Analytics is connected. " : ""}
+      </p>
+      <button onClick={() => setMode("setup")} className={`${choice} border-dash-green bg-dash-green/5`}>
+        <span className="block font-semibold text-dash-ink">I don&apos;t have them, set them up for me</span>
+        <span className="block text-dash-muted">About a minute. The app creates them and connects your site to Google.</span>
+      </button>
+      <button onClick={() => setMode("have")} className={`${choice} border-dash-line bg-white`}>
+        <span className="block font-semibold text-dash-ink">I already have them on another Google account</span>
+        <span className="block text-dash-muted">Switch accounts, or send the owner a quick message to add you.</span>
+      </button>
+      <button onClick={onSkip} className={`${choice} border-dash-line bg-white`}>
+        <span className="block font-semibold text-dash-ink">Skip for now, I&apos;ll add them later</span>
+        <span className="block text-dash-muted">The autopilot still works; a reminder stays on your dashboard.</span>
+      </button>
+    </div>
   );
 }
 
@@ -382,7 +468,7 @@ async function goToGoogle(purpose: "setup") {
 }
 
 /** "Set it up for me": creates Search Console and Analytics, guiding through the one or two clicks only the owner can do. */
-function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
+function SetupForMe({ act, busy, autoStart = false }: { act: Act; busy: string | null; autoStart?: boolean }) {
   const [state, setState] = useState<SetupState | null>(null);
 
   const run = useCallback(
@@ -418,8 +504,10 @@ function SetupForMe({ act, busy }: { act: Act; busy: string | null }) {
     } catch {
       /* storage unavailable */
     }
-    if (pending) run();
-  }, [run]);
+    if (pending || autoStart) run();
+    // Only on arrival: later runs come from the buttons.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const working = busy === "setup";
   return (
@@ -520,9 +608,23 @@ function PasteCodes({ state, busy, onDone }: { state: Extract<SetupState, { stat
   );
 }
 
-function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step; status: Status; busy: string | null; act: Act; onOpenSettings: () => void }) {
+function PropertyHelp({
+  step,
+  status,
+  busy,
+  act,
+  onOpenSettings,
+  hideSetup = false,
+}: {
+  step: Step;
+  status: Status;
+  busy: string | null;
+  act: Act;
+  onOpenSettings: () => void;
+  hideSetup?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
-  const [askOwner, setAskOwner] = useState(false);
+  const [askOwner, setAskOwner] = useState(hideSetup);
   const google = status.steps.find((s) => s.id === "google")?.done;
   // Set it up for me works for any connected website.
   const canSetUp = status.platform === "shopify" || Boolean(status.domain);
@@ -542,27 +644,15 @@ function PropertyHelp({ step, status, busy, act, onOpenSettings }: { step: Step;
   }
   return (
     <div className="max-w-2xl space-y-3">
-      {canSetUp ? (
-        <SetupForMe act={act} busy={busy} />
-      ) : (
-        <p className="text-dash-muted">
-          No {step.id === "analytics" ? "Google Analytics" : "Search Console"} yet? Set it up free at{" "}
-          <a
-            href={step.id === "analytics" ? "https://analytics.google.com" : "https://search.google.com/search-console/welcome"}
-            target="_blank"
-            rel="noreferrer"
-            className={link}
-          >
-            {step.id === "analytics" ? "analytics.google.com" : "search.google.com/search-console"}
-          </a>{" "}
-          with the same Google account, then click Check again.
-        </p>
-      )}
+      {/* Never Google's own setup screens: the app sets it up, or the owner adds this account. */}
+      {!hideSetup && canSetUp && <SetupForMe act={act} busy={busy} />}
       {access && (
         <div className="space-y-2">
-          <button onClick={() => setAskOwner((v) => !v)} className={link}>
-            Already set up under someone else&apos;s Google login? Ask them for access
-          </button>
+          {!hideSetup && (
+            <button onClick={() => setAskOwner((v) => !v)} className={link}>
+              Already set up under someone else&apos;s Google login? Ask them for access
+            </button>
+          )}
           {askOwner && (
             <>
               <p>
