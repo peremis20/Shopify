@@ -1,7 +1,8 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useState } from "react";
-import type { AutopilotChange, AutopilotRun, ChangeField } from "@/lib/analytics/autopilot/types";
+import type { AppStatus } from "@/lib/analytics/autopilot/apps";
+import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "@/lib/analytics/autopilot/types";
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import { BoltIcon } from "./Icons";
 import { PlatformForm } from "./PlatformSettings";
@@ -11,6 +12,7 @@ import { Card, CardHeader, Skeleton } from "./ui";
 
 interface State {
   settings: AutopilotSettingsView;
+  apps?: AppStatus[];
   changes: AutopilotChange[];
   runs: AutopilotRun[];
 }
@@ -50,6 +52,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [platformOpen, setPlatformOpen] = useState(false);
+  const [preview, setPreview] = useState<AutopilotPreview | null>(null);
 
   const load = useCallback(() => {
     api<State>("/api/autopilot").then(setState).catch((e) => setError(e.message));
@@ -116,12 +119,14 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
       ) : (
         <div className="space-y-5 text-sm">
           <p className="max-w-3xl text-dash-muted">
-            Every day the autopilot picks your best opportunity, rewrites the page&apos;s SEO title and description, adds
-            missing image descriptions and, on blog posts and pages, a helpful new section, then links to it from a
-            related post. It never touches prices, product names or checkout. It improves at most{" "}
-            {state.settings.maxPagesPerWeek} pages a week, leaves each page alone for 45 days after changing it, and
-            undoes changes that make a page rank worse after 4 weeks.
+            Every day the autopilot works to win page one and keep it. It first defends any page that&apos;s slipping,
+            then pushes your #2 and #3 results for #1 and your page two results into the top 3. It studies the pages
+            ranking above you and rewrites your SEO title, description and content to beat them. It never touches
+            prices, product names or checkout. It changes at most {state.settings.maxPagesPerWeek} pages a week and
+            undoes any change that makes a page rank worse after 4 weeks.
           </p>
+
+          {state.apps && state.apps.length > 0 && <ConnectedApps apps={state.apps} />}
 
           <div className="flex flex-wrap items-center gap-3">
             <button
@@ -158,6 +163,20 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
             <div className="ml-auto flex flex-wrap gap-2">
               <button
                 onClick={() =>
+                  act("preview", async () => {
+                    const r = await api<{ message: string; preview?: AutopilotPreview }>("/api/autopilot/preview", {});
+                    setPreview(r.preview ?? null);
+                    if (!r.preview) setNotice(r.message);
+                    load();
+                  })
+                }
+                disabled={busy !== null}
+                className="rounded-xl border border-dash-line bg-white px-4 py-2.5 font-semibold text-dash-ink hover:border-dash-green/40 disabled:opacity-60"
+              >
+                {busy === "preview" ? "Checking live data…" : "Preview next run"}
+              </button>
+              <button
+                onClick={() =>
                   act("run", async () => {
                     const r = await api<{ message: string }>("/api/autopilot/run", {});
                     setNotice(r.message);
@@ -178,6 +197,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           </div>
 
           {notice && <p className="rounded-lg bg-[#FBF1E1] p-3 text-dash-ink" role="status">{notice}</p>}
+          {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
 
           <p className="text-dash-muted">
             Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
@@ -202,7 +222,8 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
                 {state.runs.slice(0, 4).map((r) => (
                   <li key={r.id}>
                     <span className="text-dash-ink">{when(r.startedAt)}</span>
-                    {r.trigger === "manual" ? " (manual)" : ""}: {r.status === "running" ? "Running…" : r.summary}
+                    {r.trigger === "manual" ? " (manual)" : r.trigger === "preview" ? " (preview)" : ""}:{" "}
+                    {r.status === "running" ? "Running…" : r.summary}
                   </li>
                 ))}
               </ul>
@@ -223,6 +244,76 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
         </div>
       )}
     </Card>
+  );
+}
+
+function ConnectedApps({ apps }: { apps: AppStatus[] }) {
+  return (
+    <div>
+      <p className="mb-2 font-semibold">Apps working together</p>
+      <ul className="grid gap-2 sm:grid-cols-2">
+        {apps.map((a) => (
+          <li key={a.id} className="flex items-start gap-2 rounded-lg border border-dash-line bg-white p-2.5">
+            <span
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${a.ready ? "bg-dash-up" : "bg-dash-line"}`}
+              aria-label={a.ready ? "Connected" : "Not set up"}
+            />
+            <span>
+              <span className="font-semibold text-dash-ink">{a.name}</span>
+              <span className="text-dash-muted">{a.ready ? "" : " (not set up)"}</span>
+              <span className="block text-dash-muted">{a.role}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const MODE_LABEL: Record<AutopilotPreview["mode"], string> = {
+  defend: "Defend a slipping ranking",
+  top: "Go for #1",
+  climb: "Climb into the top 3",
+};
+
+function PreviewCard({ preview, onClose }: { preview: AutopilotPreview; onClose: () => void }) {
+  return (
+    <div className="rounded-xl border border-dash-green/30 bg-dash-green/5 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="font-semibold text-dash-ink">Preview of the next run. Nothing was changed on your store.</p>
+          <p className="text-dash-muted">
+            {MODE_LABEL[preview.mode]}: <span className="text-dash-ink">“{preview.query}”</span> on{" "}
+            <span className="text-dash-ink">{pathOf(preview.page)}</span>, now position {preview.position.toFixed(1)}
+            {preview.monthlySearches ? `, ${preview.monthlySearches.toLocaleString()} searches a month` : ""}.
+          </p>
+        </div>
+        <button onClick={onClose} className="font-semibold text-dash-green hover:underline">Close</button>
+      </div>
+      {preview.apps.length > 0 && <p className="mt-2 text-dash-muted">Used: {preview.apps.join(", ")}.</p>}
+      {preview.notes.length > 0 && (
+        <ul className="mt-2 list-disc space-y-0.5 pl-5 text-dash-muted">
+          {preview.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-3 text-dash-ink">{preview.reason}</p>
+      <div className="mt-3 space-y-3">
+        {preview.changes.map((c, i) => (
+          <div key={i} className="rounded-lg border border-dash-line bg-white p-3">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-dash-muted">{FIELD_LABEL[c.field]}</p>
+            {c.before !== null && <p className="text-dash-muted line-through">{textOf(c.before)}</p>}
+            {c.field === "content" ? (
+              <div className="prose-sm text-dash-ink [&_h2]:font-semibold [&_h3]:font-semibold" dangerouslySetInnerHTML={{ __html: c.after }} />
+            ) : (
+              <p className="text-dash-ink">{textOf(c.after)}</p>
+            )}
+          </div>
+        ))}
+        {!preview.changes.length && <p className="text-dash-muted">The page already looks strong; the next run would leave it as is.</p>}
+      </div>
+    </div>
   );
 }
 

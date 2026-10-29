@@ -2,12 +2,11 @@ import type { Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
-import { findOpportunities } from "../seo-tools";
 import type { Opportunity } from "../seo-types";
-import { clickGain, relatedPhrases, withVolumes, type BoostedOpportunity } from "./keyword-boost";
-import { analyzeCompetition, type Competition } from "./serp";
-import { pageValues, topPositionSignals, valueWeight, type PageValue } from "./signals";
-import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./settings";
+import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from "./apps";
+import { keyOf } from "./apps/types";
+import { clickGain } from "./keyword-boost";
+import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider, type PlatformSettings } from "./settings";
 import {
   getBody,
   listArticles,
@@ -18,8 +17,8 @@ import {
   type StoreAccess,
   type StoreResource,
 } from "./shopify";
-import type { AutopilotChange, AutopilotRun, ChangeField } from "./types";
-import { writeImprovement, writeInternalLink } from "./writer";
+import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
+import { writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
  * The SEO autopilot. Each run: measure older changes and undo the ones that
@@ -27,10 +26,11 @@ import { writeImprovement, writeInternalLink } from "./writer";
  * section, an internal link), within the weekly page limit.
  *
  * Which page, in order:
- * 1. Defend: a page one search that is slipping (Search Console, last 7 days vs the 4 weeks before).
- * 2. Attack: the biggest gain among #2 to #3 searches going for #1, and #4 to #20 going for the top 3,
- *    sized by Keyword Planner search volume and weighted by how well the page converts (GA4).
- * The writer sees who holds page one for the search and what those pages cover.
+ * 1. Defend: a page one search that is slipping.
+ * 2. Attack: the biggest gain among #2 to #3 searches going for #1, and #4 to #20 going for the top 3.
+ * The connected apps (./apps) suggest the candidates, size and weight them,
+ * and brief the writer on the chosen one: Search Console, Analytics, Keyword
+ * Planner and Google page one today, more as they're added.
  */
 
 const MEASURE_AFTER_DAYS = 28;
@@ -44,8 +44,7 @@ interface Ctx {
   accountId: string;
   store: StoreAccess;
   ai: AiProvider;
-  /** Search results API key; competitor analysis is skipped without it. */
-  serpKey?: string;
+  platform: PlatformSettings;
   ourDomain: string;
   allowContent: boolean;
   maxPagesPerWeek: number;
@@ -151,48 +150,123 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
 
 // ---------- improving ----------
 
-type Mode = "defend" | "top" | "climb";
-
-interface Candidate {
-  op: BoostedOpportunity;
-  mode: Mode;
-  previousPosition?: number;
+function pickTarget(cands: Candidate[], brand: string, rested: (c: Candidate) => boolean): Candidate | null {
+  return (
+    cands.find((c) => {
+      const path = new URL(c.op.page).pathname;
+      return !(brand && c.op.query.includes(brand)) && !rested(c) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
+    }) ?? null
+  );
 }
 
-function pickTarget(
-  cands: Candidate[],
-  all: Opportunity[],
-  brand: string,
-  rested: (c: Candidate) => boolean
-): { cand: Candidate; related: string[] } | null {
-  const cand = cands.find((c) => {
-    const path = new URL(c.op.page).pathname;
-    return !(brand && c.op.query.includes(brand)) && !rested(c) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
-  });
-  if (!cand) return null;
-  const related = [...new Set(all.filter((o) => o.page === cand.op.page && o.query !== cand.op.query).map((o) => o.query))];
-  return { cand, related };
+const score = (c: Candidate) => clickGain(c.op) * Object.values(c.weights).reduce((a, w) => a * w, 1);
+const MODE_ORDER: Record<Mode, number> = { defend: 0, top: 1, climb: 1 };
+
+/** Every ready app suggests candidates and enriches all of them; defend comes first, then the biggest gain. */
+async function gatherCandidates(hub: Hub, apps: RankingApp[], notes: string[]): Promise<Candidate[]> {
+  const seen = new Set<string>();
+  const cands: Candidate[] = [];
+  for (const app of apps) {
+    if (!app.candidates) continue;
+    const found = await app.candidates(hub).catch((e) => {
+      notes.push(`${app.name} couldn't suggest pages: ${(e as Error).message}`);
+      return [];
+    });
+    for (const c of found) {
+      if (seen.has(keyOf(c.op))) continue;
+      seen.add(keyOf(c.op));
+      cands.push(c);
+    }
+  }
+  for (const app of apps) {
+    if (app.enrich) await app.enrich(hub, cands).catch((e) => notes.push(`${app.name} was skipped: ${(e as Error).message}`));
+  }
+  return cands.sort((a, b) => MODE_ORDER[a.mode] - MODE_ORDER[b.mode] || score(b) - score(a));
 }
 
-async function improvePage(
-  ctx: Ctx,
-  runId: string,
-  cand: Candidate,
-  related: string[],
-  page: StoreResource,
-  value: PageValue | undefined,
-  competition: Competition | null
-) {
-  const { op } = cand;
+/** Every ready app briefs the writer on the chosen target, in order. */
+async function gatherBriefs(hub: Hub, apps: RankingApp[], cand: Candidate, notes: string[]) {
+  const briefs: string[] = [];
+  const summaries: string[] = [];
+  const used: string[] = [];
+  for (const app of apps) {
+    if (!app.brief) continue;
+    const b = await app.brief(hub, cand).catch((e) => {
+      notes.push(`${app.name} was skipped: ${(e as Error).message}`);
+      return null;
+    });
+    if (!b) continue;
+    briefs.push(b.text);
+    if (b.summary) summaries.push(b.summary);
+    used.push(app.name);
+  }
+  return { briefs, summaries, used };
+}
+
+interface Plan {
+  cand: Candidate;
+  page: StoreResource;
+  improvement: PageImprovement;
+  summaries: string[];
+  apps: string[];
+}
+
+/** Picks the page and has the writer plan the change. Nothing is written to the store. */
+async function planNextChange(ctx: Ctx, conn: Connection, notes: string[]): Promise<Plan | null> {
+  const hub: Hub = { accountId: ctx.accountId, conn, platform: ctx.platform, ourDomain: ctx.ourDomain, shared: new Map() };
+  const apps = await readyApps(hub);
+  const cands = await gatherCandidates(hub, apps, notes);
+
+  const changedSince = async (days: number) =>
+    new Set(
+      (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
+        WHERE account_id = ${ctx.accountId} AND status IN ('applied', 'kept', 'reverted') AND created_at > now() - make_interval(days => ${days})`).map(
+        (r) => r.page_url!
+      )
+    );
+  const [restedLong, restedShort] = await Promise.all([changedSince(REST_DAYS_PER_PAGE), changedSince(DEFEND_REST_DAYS)]);
+  const skipped = new Set<string>();
+  const rested = (c: Candidate) => skipped.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
+  const brand = ctx.ourDomain.split(".")[0];
+
+  let cand = pickTarget(cands, brand, rested);
+  let page: StoreResource | null = null;
+  // Skip pages that don't map to an editable store item (up to a few tries).
+  for (let tries = 0; cand && tries < 5; tries++) {
+    page = await resolveResource(ctx.store, cand.op.page).catch(() => null);
+    if (page) break;
+    skipped.add(cand.op.page);
+    cand = pickTarget(cands, brand, rested);
+  }
+  if (!cand || !page) return null;
+
+  const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
+  const improvement = await writeImprovement(
+    ctx.ai,
+    page,
+    { query: cand.op.query, position: cand.op.position, impressions: cand.op.impressions, mode: cand.mode, previousPosition: cand.previousPosition },
+    briefs,
+    ctx.allowContent
+  );
+  return { cand, page, improvement, summaries, apps: used };
+}
+
+/** The other blog post most related to the page, that doesn't link to it yet. */
+async function linkSource(ctx: Ctx, cand: Candidate, page: StoreResource) {
+  const path = new URL(cand.op.page).pathname;
+  const topic = words(`${cand.op.query} ${page.title}`);
+  return (await listArticles(ctx.store))
+    .filter((a) => a.url !== path && !a.body.includes(path))
+    .map((a) => ({ a, score: [...words(a.title)].filter((w) => topic.has(w)).length }))
+    .filter((x) => x.score > 0)
+    .sort((x, y) => y.score - x.score)[0]?.a;
+}
+
+async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
+  const { cand, page, improvement } = plan;
+  const op = cand.op;
   const done: string[] = [];
-  const phrases = await relatedPhrases(op.query, op.page);
-  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent, phrases, {
-    mode: cand.mode,
-    previousPosition: cand.previousPosition,
-    value,
-    competition,
-  });
-  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: plan.reason, op };
+  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: improvement.reason, op };
 
   const apply = async (field: ChangeField, before: string | null, after: string, run: () => Promise<void>, targetId?: string) => {
     try {
@@ -204,32 +278,26 @@ async function improvePage(
     }
   };
 
-  if (plan.metaTitle && plan.metaTitle !== page.metaTitle) {
-    await apply("meta_title", page.metaTitle, plan.metaTitle, () => setSeoField(ctx.store, page.id, "title_tag", plan.metaTitle));
+  if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) {
+    await apply("meta_title", page.metaTitle, improvement.metaTitle, () => setSeoField(ctx.store, page.id, "title_tag", improvement.metaTitle));
   }
-  if (plan.metaDescription && plan.metaDescription !== page.metaDescription) {
-    await apply("meta_description", page.metaDescription, plan.metaDescription, () =>
-      setSeoField(ctx.store, page.id, "description_tag", plan.metaDescription)
+  if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
+    await apply("meta_description", page.metaDescription, improvement.metaDescription, () =>
+      setSeoField(ctx.store, page.id, "description_tag", improvement.metaDescription)
     );
   }
-  for (const a of plan.altTexts) {
+  for (const a of improvement.altTexts) {
     await apply("alt", null, a.alt, () => setImageAlt(ctx.store, a.imageId, a.alt), a.imageId);
   }
-  if (plan.contentSectionHtml && (page.type === "article" || page.type === "page")) {
+  if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
-    const block = wrap(blockId, plan.contentSectionHtml);
+    const block = wrap(blockId, improvement.contentSectionHtml);
     await apply("content", blockId, block, () => setBody(ctx.store, page.type as "article" | "page", page.id, `${page.body}\n${block}`));
   }
 
-  // One internal link from the most related other blog post that doesn't link here yet.
-  const path = new URL(op.page).pathname;
-  const topic = words(`${op.query} ${page.title}`);
-  const source = (await listArticles(ctx.store))
-    .filter((a) => a.url !== path && !a.body.includes(path))
-    .map((a) => ({ a, score: [...words(a.title)].filter((w) => topic.has(w)).length }))
-    .filter((x) => x.score > 0)
-    .sort((x, y) => y.score - x.score)[0]?.a;
+  const source = await linkSource(ctx, cand, page);
   if (source) {
+    const path = new URL(op.page).pathname;
     const sentence = await writeInternalLink(ctx.ai, source, { path, query: op.query, title: page.title });
     if (sentence) {
       const blockId = `${runId}-link`;
@@ -240,13 +308,30 @@ async function improvePage(
   return done;
 }
 
+function describe(cand: Candidate): string {
+  const path = new URL(cand.op.page).pathname;
+  const volume = cand.op.monthlySearches ? `, ${cand.op.monthlySearches.toLocaleString("en-US")} searches a month` : "";
+  return cand.mode === "defend"
+    ? `Defended ${path} for “${cand.op.query}” (slipped from ${cand.previousPosition?.toFixed(1)} to ${cand.op.position.toFixed(1)}${volume})`
+    : cand.mode === "top"
+      ? `Pushed ${path} for #1 on “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`
+      : `Improved ${path} for “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`;
+}
+
 export interface RunResult {
   run: AutopilotRun | null;
   message: string;
+  preview?: AutopilotPreview;
 }
 
-/** One autopilot pass for one customer. Improves at most one page per call. */
-export async function runAutopilot(accountId: string, conn: Connection | null, trigger: "schedule" | "manual"): Promise<RunResult> {
+type Trigger = "schedule" | "manual" | "preview";
+
+/**
+ * One autopilot pass for one customer. Improves at most one page per call.
+ * A "preview" goes through every step on live data but changes nothing: no
+ * store edits, no measuring or undoing, and it doesn't count as a run.
+ */
+export async function runAutopilot(accountId: string, conn: Connection | null, trigger: Trigger): Promise<RunResult> {
   await ensureSchema();
   const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
   if (trigger === "schedule" && !acct.enabled) return { run: null, message: "Autopilot is turned off." };
@@ -258,99 +343,71 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     accountId,
     store: { accountId, shopDomain: acct.shopDomain },
     ai,
-    serpKey: platform.serperKey,
+    platform,
     ourDomain: new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, ""),
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
   };
+  const preview = trigger === "preview";
 
-  const running = await sql`SELECT id FROM insights_autopilot_runs
-    WHERE account_id = ${accountId} AND status = 'running' AND started_at > now() - interval '30 minutes'`;
-  if (running.length) return { run: null, message: "A run is already in progress." };
+  if (!preview) {
+    const running = await sql`SELECT id FROM insights_autopilot_runs
+      WHERE account_id = ${accountId} AND status = 'running' AND trigger <> 'preview' AND started_at > now() - interval '30 minutes'`;
+    if (running.length) return { run: null, message: "A run is already in progress." };
+  }
 
   const [runRow] = await sql`INSERT INTO insights_autopilot_runs (account_id, trigger) VALUES (${accountId}, ${trigger}) RETURNING id`;
-  await sql`UPDATE insights_account_autopilot SET last_run_at = now() WHERE account_id = ${accountId}`;
+  if (!preview) await sql`UPDATE insights_account_autopilot SET last_run_at = now() WHERE account_id = ${accountId}`;
   const runId = runRow.id!;
   const summary: string[] = [];
+  const notes: string[] = [];
   let status = "done";
+  let previewOut: AutopilotPreview | undefined;
   try {
-    summary.push(...(await measureOlderChanges(ctx, conn)));
+    if (!preview) summary.push(...(await measureOlderChanges(ctx, conn)));
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
       WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field <> 'internal_link'
         AND created_at > now() - interval '7 days'`;
-    if (Number(pages) >= ctx.maxPagesPerWeek) {
+    const capped = Number(pages) >= ctx.maxPagesPerWeek;
+    if (capped && !preview) {
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
     } else {
-      const changedSince = async (days: number) =>
-        new Set(
-          (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
-            WHERE account_id = ${accountId} AND created_at > now() - make_interval(days => ${days})`).map((r) => r.page_url!)
-        );
-      const [restedLong, restedShort] = await Promise.all([changedSince(REST_DAYS_PER_PAGE), changedSince(DEFEND_REST_DAYS)]);
-      const skipped = new Set<string>();
-      const rested = (c: Candidate) =>
-        skipped.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
-      const brand = ctx.ourDomain.split(".")[0];
-
-      const [climb, signals, values] = await Promise.all([
-        findOpportunities(conn, "28d"),
-        topPositionSignals(conn).catch(() => ({ slipping: [], nearTop: [] })),
-        pageValues(conn).catch(() => new Map<string, PageValue>()),
-      ]);
-      const valueOf = (o: Opportunity) => values.get(new URL(o.page).pathname);
-      const [slipping, attack] = await Promise.all([
-        withVolumes(signals.slipping),
-        withVolumes([...signals.nearTop, ...climb]),
-      ]);
-      const nearTopKeys = new Set(signals.nearTop.map((o) => `${o.query}\n${o.page}`));
-      const score = (o: BoostedOpportunity) => clickGain(o) * valueWeight(valueOf(o));
-      const cands: Candidate[] = [
-        ...slipping
-          .sort((a, b) => score(b) - score(a))
-          .map((op) => ({ op, mode: "defend" as const, previousPosition: signals.slipping.find((s) => s.query === op.query && s.page === op.page)?.previousPosition })),
-        ...attack
-          .sort((a, b) => score(b) - score(a))
-          .map((op) => ({ op, mode: nearTopKeys.has(`${op.query}\n${op.page}`) ? ("top" as const) : ("climb" as const) })),
-      ];
-      const all = [...climb, ...signals.nearTop, ...signals.slipping];
-
-      let picked = pickTarget(cands, all, brand, rested);
-      let page: StoreResource | null = null;
-      // Skip pages that don't map to an editable store item (up to a few tries).
-      for (let tries = 0; picked && tries < 5; tries++) {
-        page = await resolveResource(ctx.store, picked.cand.op.page).catch(() => null);
-        if (page) break;
-        skipped.add(picked.cand.op.page);
-        picked = pickTarget(cands, all, brand, rested);
-      }
-      if (!picked || !page) {
+      if (capped) notes.push(`The weekly limit is reached (${pages} of ${ctx.maxPagesPerWeek} pages), so a real run would wait.`);
+      const plan = await planNextChange(ctx, conn, notes);
+      if (!plan) {
         summary.push("No new opportunities to work on right now.");
+      } else if (preview) {
+        const { cand, page, improvement } = plan;
+        const changes: AutopilotPreview["changes"] = [];
+        if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) changes.push({ field: "meta_title", before: page.metaTitle, after: improvement.metaTitle });
+        if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription)
+          changes.push({ field: "meta_description", before: page.metaDescription, after: improvement.metaDescription });
+        for (const a of improvement.altTexts) changes.push({ field: "alt", before: null, after: a.alt });
+        if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page"))
+          changes.push({ field: "content", before: null, after: improvement.contentSectionHtml });
+        const source = await linkSource(ctx, cand, page).catch(() => undefined);
+        if (source) changes.push({ field: "internal_link", before: null, after: `A closing paragraph in “${source.title}” linking here.` });
+        previewOut = {
+          page: cand.op.page,
+          query: cand.op.query,
+          mode: cand.mode,
+          position: cand.op.position,
+          monthlySearches: cand.op.monthlySearches ?? null,
+          apps: plan.apps,
+          changes,
+          reason: improvement.reason,
+          notes: [...plan.summaries, ...notes],
+        };
+        summary.push(`Preview: ${describe(cand).replace(/^(Defended|Pushed|Improved)/, (w) => `would have ${w.toLowerCase()}`)}. ${changes.length} change${changes.length === 1 ? "" : "s"} planned, nothing written.`);
       } else {
-        const { cand } = picked;
-        const competition = ctx.serpKey
-          ? await analyzeCompetition(ctx.serpKey, accountId, cand.op.query, ctx.ourDomain).catch(() => null)
-          : null;
-        const done = await improvePage(ctx, runId, cand, picked.related, page, valueOf(cand.op), competition);
-        const path = new URL(cand.op.page).pathname;
-        const volume = cand.op.monthlySearches ? `, ${cand.op.monthlySearches.toLocaleString("en-US")} searches a month` : "";
-        const where =
-          cand.mode === "defend"
-            ? `Defended ${path} for “${cand.op.query}” (slipped from ${cand.previousPosition?.toFixed(1)} to ${cand.op.position.toFixed(1)}${volume})`
-            : cand.mode === "top"
-              ? `Pushed ${path} for #1 on “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`
-              : `Improved ${path} for “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`;
-        const rivals = competition?.serp.organic
-          .filter((r) => r.position < (competition.serp.ourPosition ?? 11))
-          .slice(0, 3)
-          .map((r) => r.domain);
-        const rivalNote = rivals?.length ? ` Ahead on Google: ${rivals.join(", ")}.` : "";
-        const passedNote = competition?.newlyAbove.length ? ` New above us: ${competition.newlyAbove.join(", ")}.` : "";
+        const done = await applyPlan(ctx, runId, plan);
+        const extra = plan.summaries.length ? ` ${plan.summaries.join(" ")}` : "";
         summary.push(
           done.length
-            ? `${where}: ${done.join(", ").replace(/_/g, " ")}.${rivalNote}${passedNote}`
-            : `Checked ${path}; it already looked good, nothing changed.${rivalNote}`
+            ? `${describe(plan.cand)}: ${done.join(", ").replace(/_/g, " ")}.${extra}`
+            : `Checked ${new URL(plan.cand.op.page).pathname}; it already looked good, nothing changed.${extra}`
         );
       }
     }
@@ -361,7 +418,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}
     WHERE id = ${runId} RETURNING *`;
-  return { run: toRun(run), message: summary.join(" ") };
+  return { run: toRun(run), message: summary.join(" "), preview: previewOut };
 }
 
 /** Accounts due for their daily run (enabled, store connected, not run in the last 20 hours). */

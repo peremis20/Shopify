@@ -206,6 +206,26 @@ Claude API key; both are entered in the dashboard and stored encrypted, or
 set `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` and
 `ANTHROPIC_API_KEY`.
 
+### Adding an app to the autopilot
+
+Each data source the autopilot uses is an app in
+`src/lib/analytics/autopilot/apps/` (Search Console, Google Analytics, Keyword
+Planner, Google page one). An app implements `RankingApp` and can:
+
+- `candidates`: suggest pages and searches to work on
+- `enrich`: add facts and score weights to every candidate, whichever app found it
+- `brief`: tell the writer what it knows about the chosen target, and add a line to the run summary
+
+Apps share what they learn through `hub.shared` and run in the order listed in
+`apps/index.ts`, so a later app can build on an earlier one. To add an API,
+write one file that exports a `RankingApp` (put its key in `PlatformSettings`
+if it needs one) and add it to `RANKING_APPS`. It then shows up under "Apps
+working together" on the Autopilot page.
+
+**Preview next run** on the Autopilot page (POST `/api/autopilot/preview`)
+goes through a whole run on live data and shows what would change, without
+writing anything to the store, measuring, or counting as a run.
+
 ### Running it as a SaaS
 
 Customers only click **Sign in with Google** (creates their account and

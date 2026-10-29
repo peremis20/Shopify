@@ -29,3 +29,16 @@ export interface AutopilotRun {
   status: string;
   summary: string | null;
 }
+
+/** What the next run would change, without changing anything. */
+export interface AutopilotPreview {
+  page: string;
+  query: string;
+  mode: "defend" | "top" | "climb";
+  position: number;
+  monthlySearches: number | null;
+  apps: string[];
+  changes: { field: ChangeField; before: string | null; after: string }[];
+  reason: string;
+  notes: string[];
+}

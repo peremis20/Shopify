@@ -17,6 +17,7 @@ import {
   verifyCallbackHmac,
   verifyWebhookHmac,
 } from "./autopilot/shopify";
+import { appStatuses } from "./autopilot/apps";
 import { checkSerpKey } from "./autopilot/serp";
 import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
@@ -369,9 +370,13 @@ export const rankings = (req: Request) =>
 // ---------- autopilot ----------
 
 export const autopilotStatus = (req: Request) =>
-  withAccount(req, async (account) =>
-    json({ settings: await autopilotView(account.id, account.admin), ...(await autopilotHistory(account.id)) })
-  );
+  withAccount(req, async (account) => {
+    const [conn, platform] = await Promise.all([getConnection(account.id), readPlatformSettings()]);
+    const apps = conn
+      ? await appStatuses({ accountId: account.id, conn, platform, ourDomain: "", shared: new Map() }).catch(() => [])
+      : [];
+    return json({ settings: await autopilotView(account.id, account.admin), apps, ...(await autopilotHistory(account.id)) });
+  });
 
 /** The customer's own choices: on/off, pages per week, content sections. */
 export const saveAutopilot = (req: Request) =>
@@ -407,6 +412,10 @@ export const savePlatform = (req: Request) =>
     }
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
   });
+
+/** Goes through a whole run on live data and returns what it would change, without changing anything. */
+export const previewAutopilot = (req: Request) =>
+  withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "preview")));
 
 export const runAutopilotNow = (req: Request) =>
   withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "manual")));
