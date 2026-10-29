@@ -15,6 +15,7 @@ Write for real shoppers first, search engines second.
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
 - Never invent studies, statistics, quotes, reviews, prices, guarantees, certifications or ingredients. Only state facts present in the page text you are given.
+- That includes doses, percentages, purity levels, timelines and plant or species names: if the page text doesn't state it, don't write it (any number the page doesn't contain is removed automatically).
 - Match the existing brand voice. Plain, friendly, confident. No hype, no exclamation marks, no emojis.
 - Use the target search phrase naturally once in the title and once in the description. Never repeat keywords unnaturally.
 - The title and description may only promise what the page actually delivers. Don't use words like "brands", "top 10", "best of", "reviews", "ranked", "vs", "prices" or a year unless the page text really contains that (named brands, a ranked list, a comparison, prices, that year).
@@ -84,6 +85,27 @@ export function polish(text: string): string {
     .replace(/\bHCI\b/g, "HCl") // hydrochloride salts (berberine HCl), often mistyped with a capital i
     .replace(/(\s*\|\s*[^|]+)\1+$/, "$1")
     .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/** Numbers in a text, with thousands separators dropped ("1,500" and "1500" match) and decimal commas as points. */
+const numbersIn = (text: string) =>
+  new Set((text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".")));
+
+/**
+ * Drops paragraphs and list items from a new section that state a number
+ * (a dose, a percentage, a study figure) the page itself doesn't have, so the
+ * writer can't add health facts the store hasn't published. Headings stay.
+ */
+export function onlyKnownNumbers(html: string, pageBody: string): string {
+  const known = numbersIn(plainText(pageBody));
+  const kept = html.replace(/<(p|li)>([\s\S]*?)<\/\1>/g, (block, _tag, inner: string) =>
+    [...numbersIn(plainText(inner))].every((n) => known.has(n)) ? block : ""
+  );
+  // A list or question left with nothing under it goes too.
+  return kept
+    .replace(/<(ul|ol)>\s*<\/\1>/g, "")
+    .replace(/<h3>(?:(?!<\/h3>)[\s\S])*<\/h3>\s*(?=<h[23]>|$)/g, "")
     .trim();
 }
 
@@ -402,7 +424,7 @@ Keep the SEO title and description if they are already strong for this search; y
   return {
     metaTitle: polish(out.metaTitle).slice(0, 70),
     metaDescription: polish(out.metaDescription).slice(0, 170),
-    contentSectionHtml: allowContent && editableBody ? cleanHtml(polish(out.contentSectionHtml)) : "",
+    contentSectionHtml: allowContent && editableBody ? onlyKnownNumbers(cleanHtml(polish(out.contentSectionHtml)), page.body) : "",
     altTexts: (out.altTexts ?? [])
       .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim())
       .map((a) => ({ imageId: a.imageId, alt: polish(a.alt).slice(0, 140) })),
