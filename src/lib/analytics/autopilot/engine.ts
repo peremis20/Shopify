@@ -4,7 +4,9 @@ import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
 import { findOpportunities } from "../seo-tools";
 import type { Opportunity } from "../seo-types";
-import { rankByVolume, relatedPhrases, type BoostedOpportunity } from "./keyword-boost";
+import { clickGain, relatedPhrases, withVolumes, type BoostedOpportunity } from "./keyword-boost";
+import { analyzeCompetition, type Competition } from "./serp";
+import { pageValues, topPositionSignals, valueWeight, type PageValue } from "./signals";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./settings";
 import {
   getBody,
@@ -23,10 +25,18 @@ import { writeImprovement, writeInternalLink } from "./writer";
  * The SEO autopilot. Each run: measure older changes and undo the ones that
  * hurt, then improve one page (titles, descriptions, alt text, a new
  * section, an internal link), within the weekly page limit.
+ *
+ * Which page, in order:
+ * 1. Defend: a page one search that is slipping (Search Console, last 7 days vs the 4 weeks before).
+ * 2. Attack: the biggest gain among #2 to #3 searches going for #1, and #4 to #20 going for the top 3,
+ *    sized by Keyword Planner search volume and weighted by how well the page converts (GA4).
+ * The writer sees who holds page one for the search and what those pages cover.
  */
 
 const MEASURE_AFTER_DAYS = 28;
 const REST_DAYS_PER_PAGE = 45;
+/** A slipping page can be defended again sooner, once the last change has had time to count. */
+const DEFEND_REST_DAYS = 21;
 const WORSE_BY_POSITIONS = 3;
 
 /** Everything a run needs for one customer. */
@@ -34,6 +44,9 @@ interface Ctx {
   accountId: string;
   store: StoreAccess;
   ai: AiProvider;
+  /** Search results API key; competitor analysis is skipped without it. */
+  serpKey?: string;
+  ourDomain: string;
   allowContent: boolean;
   maxPagesPerWeek: number;
 }
@@ -138,21 +151,47 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
 
 // ---------- improving ----------
 
-function pickTarget(ops: BoostedOpportunity[], brand: string, rested: Set<string>): { op: BoostedOpportunity; related: string[] } | null {
-  const usable = ops.filter((o) => {
-    const path = new URL(o.page).pathname;
-    return !(brand && o.query.includes(brand)) && !rested.has(o.page) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
-  });
-  const op = usable[0];
-  if (!op) return null;
-  const related = ops.filter((o) => o.page === op.page && o.query !== op.query).map((o) => o.query);
-  return { op, related };
+type Mode = "defend" | "top" | "climb";
+
+interface Candidate {
+  op: BoostedOpportunity;
+  mode: Mode;
+  previousPosition?: number;
 }
 
-async function improvePage(ctx: Ctx, runId: string, op: Opportunity, related: string[], page: StoreResource) {
+function pickTarget(
+  cands: Candidate[],
+  all: Opportunity[],
+  brand: string,
+  rested: (c: Candidate) => boolean
+): { cand: Candidate; related: string[] } | null {
+  const cand = cands.find((c) => {
+    const path = new URL(c.op.page).pathname;
+    return !(brand && c.op.query.includes(brand)) && !rested(c) && /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/");
+  });
+  if (!cand) return null;
+  const related = [...new Set(all.filter((o) => o.page === cand.op.page && o.query !== cand.op.query).map((o) => o.query))];
+  return { cand, related };
+}
+
+async function improvePage(
+  ctx: Ctx,
+  runId: string,
+  cand: Candidate,
+  related: string[],
+  page: StoreResource,
+  value: PageValue | undefined,
+  competition: Competition | null
+) {
+  const { op } = cand;
   const done: string[] = [];
   const phrases = await relatedPhrases(op.query, op.page);
-  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent, phrases);
+  const plan = await writeImprovement(ctx.ai, page, op, related, ctx.allowContent, phrases, {
+    mode: cand.mode,
+    previousPosition: cand.previousPosition,
+    value,
+    competition,
+  });
   const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType: page.type, resourceId: page.id, query: op.query, reason: plan.reason, op };
 
   const apply = async (field: ChangeField, before: string | null, after: string, run: () => Promise<void>, targetId?: string) => {
@@ -219,6 +258,8 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     accountId,
     store: { accountId, shopDomain: acct.shopDomain },
     ai,
+    serpKey: platform.serperKey,
+    ourDomain: new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, ""),
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
   };
@@ -242,31 +283,74 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     if (Number(pages) >= ctx.maxPagesPerWeek) {
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
     } else {
-      const rested = new Set(
-        (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
-          WHERE account_id = ${accountId} AND created_at > now() - make_interval(days => ${REST_DAYS_PER_PAGE})`).map((r) => r.page_url!)
-      );
-      const brand = new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "").split(".")[0];
-      const ops: BoostedOpportunity[] = await rankByVolume(await findOpportunities(conn, "28d"));
-      let picked = pickTarget(ops, brand, rested);
+      const changedSince = async (days: number) =>
+        new Set(
+          (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes
+            WHERE account_id = ${accountId} AND created_at > now() - make_interval(days => ${days})`).map((r) => r.page_url!)
+        );
+      const [restedLong, restedShort] = await Promise.all([changedSince(REST_DAYS_PER_PAGE), changedSince(DEFEND_REST_DAYS)]);
+      const skipped = new Set<string>();
+      const rested = (c: Candidate) =>
+        skipped.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
+      const brand = ctx.ourDomain.split(".")[0];
+
+      const [climb, signals, values] = await Promise.all([
+        findOpportunities(conn, "28d"),
+        topPositionSignals(conn).catch(() => ({ slipping: [], nearTop: [] })),
+        pageValues(conn).catch(() => new Map<string, PageValue>()),
+      ]);
+      const valueOf = (o: Opportunity) => values.get(new URL(o.page).pathname);
+      const [slipping, attack] = await Promise.all([
+        withVolumes(signals.slipping),
+        withVolumes([...signals.nearTop, ...climb]),
+      ]);
+      const nearTopKeys = new Set(signals.nearTop.map((o) => `${o.query}\n${o.page}`));
+      const score = (o: BoostedOpportunity) => clickGain(o) * valueWeight(valueOf(o));
+      const cands: Candidate[] = [
+        ...slipping
+          .sort((a, b) => score(b) - score(a))
+          .map((op) => ({ op, mode: "defend" as const, previousPosition: signals.slipping.find((s) => s.query === op.query && s.page === op.page)?.previousPosition })),
+        ...attack
+          .sort((a, b) => score(b) - score(a))
+          .map((op) => ({ op, mode: nearTopKeys.has(`${op.query}\n${op.page}`) ? ("top" as const) : ("climb" as const) })),
+      ];
+      const all = [...climb, ...signals.nearTop, ...signals.slipping];
+
+      let picked = pickTarget(cands, all, brand, rested);
       let page: StoreResource | null = null;
       // Skip pages that don't map to an editable store item (up to a few tries).
       for (let tries = 0; picked && tries < 5; tries++) {
-        page = await resolveResource(ctx.store, picked.op.page).catch(() => null);
+        page = await resolveResource(ctx.store, picked.cand.op.page).catch(() => null);
         if (page) break;
-        rested.add(picked.op.page);
-        picked = pickTarget(ops, brand, rested);
+        skipped.add(picked.cand.op.page);
+        picked = pickTarget(cands, all, brand, rested);
       }
       if (!picked || !page) {
         summary.push("No new opportunities to work on right now.");
       } else {
-        const done = await improvePage(ctx, runId, picked.op, picked.related, page);
-        const searches = picked.op.monthlySearches;
-        const volume = searches ? ` (${searches.toLocaleString("en-US")} searches a month)` : "";
+        const { cand } = picked;
+        const competition = ctx.serpKey
+          ? await analyzeCompetition(ctx.serpKey, accountId, cand.op.query, ctx.ourDomain).catch(() => null)
+          : null;
+        const done = await improvePage(ctx, runId, cand, picked.related, page, valueOf(cand.op), competition);
+        const path = new URL(cand.op.page).pathname;
+        const volume = cand.op.monthlySearches ? `, ${cand.op.monthlySearches.toLocaleString("en-US")} searches a month` : "";
+        const where =
+          cand.mode === "defend"
+            ? `Defended ${path} for “${cand.op.query}” (slipped from ${cand.previousPosition?.toFixed(1)} to ${cand.op.position.toFixed(1)}${volume})`
+            : cand.mode === "top"
+              ? `Pushed ${path} for #1 on “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`
+              : `Improved ${path} for “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`;
+        const rivals = competition?.serp.organic
+          .filter((r) => r.position < (competition.serp.ourPosition ?? 11))
+          .slice(0, 3)
+          .map((r) => r.domain);
+        const rivalNote = rivals?.length ? ` Ahead on Google: ${rivals.join(", ")}.` : "";
+        const passedNote = competition?.newlyAbove.length ? ` New above us: ${competition.newlyAbove.join(", ")}.` : "";
         summary.push(
           done.length
-            ? `Improved ${new URL(picked.op.page).pathname} for “${picked.op.query}”${volume}: ${done.join(", ").replace(/_/g, " ")}.`
-            : `Checked ${new URL(picked.op.page).pathname}; it already looked good, nothing changed.`
+            ? `${where}: ${done.join(", ").replace(/_/g, " ")}.${rivalNote}${passedNote}`
+            : `Checked ${path}; it already looked good, nothing changed.${rivalNote}`
         );
       }
     }

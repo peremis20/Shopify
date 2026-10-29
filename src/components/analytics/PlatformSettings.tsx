@@ -16,6 +16,7 @@ export function PlatformForm({ settings, onSaved }: {
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [serperKey, setSerperKey] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -33,14 +34,16 @@ export function PlatformForm({ settings, onSaved }: {
         anthropicKey,
         geminiKey,
         groqKey,
+        serperKey,
         shopifyClientId: clientId,
         shopifyClientSecret: clientSecret,
       });
       setAnthropicKey("");
       setGeminiKey("");
       setGroqKey("");
+      setSerperKey("");
       setClientSecret("");
-      setNote(d.claudeError ? `Saved, but the AI key didn't work: ${d.claudeError}` : "Saved.");
+      setNote(d.claudeError ? `Saved, but a key didn't work: ${d.claudeError}` : "Saved.");
       onSaved?.(d.settings);
     } catch (err) {
       setNote(err instanceof Error ? err.message : "Couldn't save");
@@ -75,6 +78,10 @@ export function PlatformForm({ settings, onSaved }: {
             (free tier), or a Gemini API key from aistudio.google.com. One is enough; the first one set, in that order, is used. Usage is billed to you, a few cents per page improved.
           </li>
           <li>
+            <b>Google page one data (recommended):</b> a key from serper.dev (2,500 free searches). The autopilot uses it to
+            see who ranks above you, read their pages, and write to beat them. About one search per run.
+          </li>
+          <li>
             <b>Shopify app:</b> in the Shopify Dev Dashboard, create one app with <b>public distribution</b>. Set the App
             URL to <code className="break-all rounded bg-white px-1 text-xs">{origin}/analytics</code> and the redirect URL
             to <code className="break-all rounded bg-white px-1 text-xs">{origin}/api/shopify/callback</code>.
@@ -93,12 +100,13 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-claude", "Claude API key", anthropicKey, setAnthropicKey, has?.hasAnthropic)}
         {input("pf-groq", "or Groq API key", groqKey, setGroqKey, has?.hasGroq)}
         {input("pf-gemini", "or Gemini API key", geminiKey, setGeminiKey, has?.hasGemini)}
+        {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-shop-id", "Shopify app Client ID", clientId, setClientId, has?.hasShopifyApp, false)}
         {input("pf-shop-secret", "Shopify app Client secret", clientSecret, setClientSecret, has?.hasShopifyApp)}
         {note && <p className="text-dash-ink">{note}</p>}
         <button
           type="submit"
-          disabled={busy || (!anthropicKey && !groqKey && !geminiKey && !clientId && !clientSecret)}
+          disabled={busy || (!anthropicKey && !groqKey && !geminiKey && !serperKey && !clientId && !clientSecret)}
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           {busy ? "Saving…" : "Save platform keys"}

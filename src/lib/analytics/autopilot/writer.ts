@@ -1,6 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AiProvider } from "./settings";
 import type { RelatedPhrase } from "./keyword-boost";
+import type { Competition } from "./serp";
+import type { PageValue } from "./signals";
 import type { StoreResource } from "./shopify";
 
 /**
@@ -216,17 +218,58 @@ function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unkno
 }
 
 /** Title, description, alt text and (optionally) a new section for one page. */
+export interface WriteContext {
+  mode: "defend" | "top" | "climb";
+  previousPosition?: number;
+  value?: PageValue;
+  competition?: Competition | null;
+}
+
+function engagementNote(v: PageValue | undefined): string {
+  if (!v || v.sessions < 10) return "";
+  const rate = Math.round(v.engagementRate * 100);
+  return `Google Analytics, visitors from search over 28 days: ${v.sessions} sessions, ${rate}% engaged, ${v.keyEvents} key events (sales or sign ups).${
+    rate < 50 ? " Many leave quickly, so make the opening lines answer the search directly." : ""
+  }`;
+}
+
+function competitionNote(c: Competition | null | undefined): string {
+  if (!c?.serp.organic.length) return "";
+  const lines = c.serp.organic.map((r) => `${r.position}. ${r.title} (${r.domain})`).join("\n");
+  const pages = c.competitors
+    .map(
+      (p) => `#${p.position} ${p.domain}: about ${p.words} words${p.schemaTypes.length ? `, structured data: ${p.schemaTypes.join(", ")}` : ""}
+  Title: ${p.title}
+  Description: ${p.metaDescription || "(none)"}
+  Headings: ${p.headings.slice(0, 15).join(" | ") || "(none found)"}`
+    )
+    .join("\n");
+  return `Google page one for this search right now (this store is ${c.serp.ourPosition ? `#${c.serp.ourPosition}` : "not on page one"}):
+${lines}
+${c.newlyAbove.length ? `Moved above this store since the last check: ${c.newlyAbove.join(", ")}.\n` : ""}${pages ? `What the pages to beat do:\n${pages}\n` : ""}${c.serp.questions.length ? `People also ask: ${c.serp.questions.join(" | ")}\n` : ""}${c.serp.related.length ? `Related searches: ${c.serp.related.join(", ")}\n` : ""}
+Use this to win the click and the ranking: make the SEO title and description more specific and more useful than the titles above, without copying them. If those pages cover subtopics or questions this page doesn't, the new section should cover the most important ones (answer the "People also ask" questions briefly, as an FAQ with <h3> questions, when they fit). Only use facts consistent with this page; never claim what the competitors claim unless this page supports it.`;
+}
+
 export async function writeImprovement(
   ai: AiProvider,
   page: StoreResource,
   target: { query: string; position: number; impressions: number },
   relatedQueries: string[],
   allowContent: boolean,
-  phrases: RelatedPhrase[] = []
+  phrases: RelatedPhrase[] = [],
+  context: WriteContext = { mode: "climb" }
 ): Promise<PageImprovement> {
   const editableBody = page.type === "article" || page.type === "page";
-  const prompt = `Improve this page so it ranks higher on Google for the search "${target.query}".
-It currently ranks around position ${target.position.toFixed(1)} with ${target.impressions} impressions in the last 28 days.
+  const goal =
+    context.mode === "defend"
+      ? `This page held position ${context.previousPosition?.toFixed(1) ?? "near the top"} on Google for "${target.query}" and has slipped to ${target.position.toFixed(1)} over the last 7 days. Refresh it so it wins the spot back and keeps it.`
+      : context.mode === "top"
+        ? `This page ranks around position ${target.position.toFixed(1)} on Google for "${target.query}". Improve it so it takes position 1.`
+        : `Improve this page so it reaches the top 3 on Google for the search "${target.query}". It ranks around position ${target.position.toFixed(1)} now.`;
+  const prompt = `${goal}
+It had ${target.impressions} impressions in the last ${context.mode === "defend" ? 7 : 28} days.
+${engagementNote(context.value)}
+${competitionNote(context.competition)}
 Other searches this page appears for: ${relatedQueries.slice(0, 15).join(", ") || "none"}.
 ${
   phrases.length

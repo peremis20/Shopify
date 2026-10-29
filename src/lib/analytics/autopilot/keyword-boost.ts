@@ -23,21 +23,26 @@ export interface BoostedOpportunity extends Opportunity {
   monthlySearches?: number;
 }
 
-/** Puts the opportunities with the most monthly clicks to gain (at position 3) first. */
-export async function rankByVolume(ops: Opportunity[]): Promise<BoostedOpportunity[]> {
+/** Adds Keyword Planner monthly searches to each opportunity it knows. */
+export async function withVolumes<T extends Opportunity>(ops: T[]): Promise<(T & { monthlySearches?: number })[]> {
   if (!ops.length || !(await keywordsReady().catch(() => false))) return ops;
   const volumes = await keywordVolumes({ ...TARGETING, keywords: ops.map((o) => o.query) }).catch(() => null);
   if (!volumes) return ops;
   const byKeyword = new Map(volumes.map((v) => [v.keyword, v.avgMonthlySearches]));
-  const boosted: BoostedOpportunity[] = ops.map((o) => {
+  return ops.map((o) => {
     const searches = byKeyword.get(o.query.trim().toLowerCase().replace(/\s+/g, " "));
     return searches == null ? o : { ...o, monthlySearches: searches };
   });
-  if (!boosted.some((o) => o.monthlySearches)) return ops;
-  // Monthly clicks to gain if the page reached position 3; without a volume, fall back to Search Console impressions.
-  const gain = (o: BoostedOpportunity) =>
-    o.monthlySearches != null ? o.monthlySearches * Math.max(0, ctrAt(3) - ctrAt(o.position)) : o.potentialClicks;
-  return boosted.sort((a, b) => gain(b) - gain(a));
+}
+
+/**
+ * Monthly clicks to gain by moving up: to #1 from the top 3, otherwise to #3.
+ * Without a search volume, falls back to the Search Console estimate.
+ */
+export function clickGain(o: BoostedOpportunity): number {
+  if (o.monthlySearches == null) return o.potentialClicks;
+  const target = o.position <= 3.5 ? 1 : 3;
+  return o.monthlySearches * Math.max(0, ctrAt(target) - ctrAt(o.position));
 }
 
 const words = (s: string) => new Set(s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2));

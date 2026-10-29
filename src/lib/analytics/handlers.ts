@@ -17,6 +17,7 @@ import {
   verifyCallbackHmac,
   verifyWebhookHmac,
 } from "./autopilot/shopify";
+import { checkSerpKey } from "./autopilot/serp";
 import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -393,6 +394,7 @@ export const savePlatform = (req: Request) =>
       anthropicKey: str("anthropicKey"),
       geminiKey: str("geminiKey"),
       groqKey: str("groqKey"),
+      serperKey: str("serperKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
@@ -400,6 +402,9 @@ export const savePlatform = (req: Request) =>
     let claude: string | undefined;
     const ai = aiProvider(p);
     if (ai) await checkAiKey(ai).catch((e) => (claude = message(e)));
+    if (str("serperKey")?.trim() && p.serperKey) {
+      await checkSerpKey(p.serperKey).catch((e) => (claude = [claude, message(e)].filter(Boolean).join(" ")));
+    }
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
   });
 

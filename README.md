@@ -179,11 +179,23 @@ header is present). Each run:
 
 1. Measures pages changed at least 4 weeks ago in Search Console; if a
    page dropped more than 3 positions and lost clicks, its changes are undone.
-2. Within the weekly page limit, picks the best opportunity whose page maps
-   to a blog post, page, product or collection and hasn't been changed in 45
-   days, then asks Claude (Opus 5.5) for an SEO title, meta description,
-   missing image alt text and, for posts and pages, a new section; and adds
-   one internal link from the most related other post.
+2. Within the weekly page limit, picks one page whose URL maps to a blog
+   post, page, product or collection:
+   - **Defend first:** a page one search that slipped in the last 7 days
+     compared with the 4 weeks before (top 3 by 0.8+ positions, the rest of
+     page one by 2+). A defended page can be changed again after 21 days.
+   - **Then attack:** searches at #2 to #3 going for #1, and #4 to #20 going
+     for the top 3, sized by Keyword Planner search volume and weighted by
+     how well the page converts search visitors (GA4 key events). Pages
+     rest 45 days between changes.
+
+   With a serper.dev key it reads Google page one for the search, fetches the
+   top pages ranking above the store (headings, length, structured data),
+   notes who moved above since the last check, and adds People Also Ask
+   questions. The AI writer (Claude, Groq or Gemini) gets all of that, plus
+   related Keyword Planner phrases, and writes an SEO title, meta
+   description, missing image alt text and, for posts and pages, a new
+   section; then one internal link is added from the most related other post.
 3. Logs every change with the old value. Added sections and links are
    wrapped in `<!-- autopilot:ID -->` markers so undo removes only them.
 

@@ -73,3 +73,14 @@ CREATE TABLE IF NOT EXISTS insights_autopilot_changes (
   result_clicks        integer,
   note                 text
 );
+
+-- Google page one for searches the autopilot works on, to spot who moved above us.
+CREATE TABLE IF NOT EXISTS insights_serp_snapshots (
+  id bigserial PRIMARY KEY,
+  account_id bigint NOT NULL,
+  query text NOT NULL,
+  checked_at timestamptz NOT NULL DEFAULT now(),
+  our_position integer,
+  results jsonb NOT NULL
+);
+CREATE INDEX IF NOT EXISTS insights_serp_snapshots_lookup ON insights_serp_snapshots (account_id, query, checked_at DESC);

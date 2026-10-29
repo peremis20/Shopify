@@ -16,6 +16,8 @@ export interface PlatformSettings {
   geminiKey?: string;
   /** Groq (open models with a free tier), usable instead of Claude. */
   groqKey?: string;
+  /** serper.dev, for Google page one results and competitor analysis. */
+  serperKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
 }
@@ -32,7 +34,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   shopConnected: boolean;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasShopifyApp: boolean };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasSerper: boolean; hasShopifyApp: boolean };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -49,6 +51,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
     geminiKey: process.env.GEMINI_API_KEY || stored.geminiKey,
     groqKey: process.env.GROQ_API_KEY || stored.groqKey,
+    serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
   };
@@ -125,7 +128,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasSerper: Boolean(platform.serperKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }
