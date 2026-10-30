@@ -270,6 +270,8 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           </p>
           )}
 
+          <WeekSummary changes={state.changes} />
+
           {state.runs.length > 0 && (
             <div>
               <p className="mb-1 font-semibold">Recent runs</p>
@@ -313,6 +315,48 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
         </div>
       )}
     </Card>
+  );
+}
+
+/** What the autopilot did in the last 7 days, in one glance. */
+function WeekSummary({ changes }: { changes: AutopilotChange[] }) {
+  const since = Date.now() - 7 * 86_400_000;
+  const week = changes.filter((c) => new Date(c.createdAt).getTime() >= since);
+  const live = week.filter((c) => c.status === "applied" || c.status === "kept");
+  const pages = new Set(live.filter((c) => c.field !== "internal_link" && c.field !== "link_fix" && c.field !== "new_article").map((c) => c.pageUrl)).size;
+  const articles = week.filter((c) => c.field === "new_article" && c.status !== "reverted" && c.status !== "skipped").length;
+  const links = live.filter((c) => c.field === "internal_link").length;
+  const fixList = week.filter((c) => c.status === "suggested").length;
+  const undone = week.filter((c) => c.status === "reverted").length;
+  // Measured changes: positions where both before and after are known.
+  const measured = changes.filter((c) => c.baselinePosition !== null && c.resultPosition !== null);
+  const up = measured.filter((c) => c.resultPosition! < c.baselinePosition! - 0.5).length;
+  const down = measured.filter((c) => c.resultPosition! > c.baselinePosition! + 0.5).length;
+  const items = [
+    { n: pages, label: pages === 1 ? "page improved" : "pages improved" },
+    { n: articles, label: articles === 1 ? "new article" : "new articles" },
+    { n: links, label: links === 1 ? "link added" : "links added" },
+    { n: fixList, label: fixList === 1 ? "fix to paste in" : "fixes to paste in" },
+  ];
+  if (!week.length && !measured.length) return null;
+  return (
+    <div className="rounded-xl border border-dash-line bg-white p-4">
+      <p className="mb-2 font-semibold">This week</p>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {items.map((i) => (
+          <div key={i.label}>
+            <p className="font-serif text-2xl text-dash-ink tabular-nums">{i.n}</p>
+            <p className="text-xs text-dash-muted">{i.label}</p>
+          </div>
+        ))}
+      </div>
+      {(measured.length > 0 || undone > 0) && (
+        <p className="mt-3 text-xs text-dash-muted">
+          {measured.length > 0 && `Of ${measured.length} measured change${measured.length === 1 ? "" : "s"}, ${up} moved up on Google and ${down} moved down. `}
+          {undone > 0 && `${undone} undone because ${undone === 1 ? "it" : "they"} didn't help.`}
+        </p>
+      )}
+    </div>
   );
 }
 
