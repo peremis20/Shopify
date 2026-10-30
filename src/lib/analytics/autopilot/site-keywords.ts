@@ -39,6 +39,13 @@ const topicWords = (s: string) =>
 const worthTargeting = (url: string) =>
   !/\/(cart|checkout|account|login|search|tag|tags|author|category|categories|page\/\d|privacy|terms|refund|return|shipping|policy|policies|contact|cookie|accessibility|sitemap)(\/|$)/i.test(new URL(url).pathname);
 
+/** True while keywords picked in the last 8 days exist, i.e. the site is still worked from Keyword Planner. */
+export async function siteKeywordsActive(accountId: string): Promise<boolean> {
+  await ensureSchema();
+  const [row] = await sql`SELECT updated_at FROM insights_settings WHERE key = ${KEY(accountId)}`;
+  return Boolean(row?.updated_at && Date.now() - new Date(row.updated_at).getTime() < WEEK + 86_400_000);
+}
+
 export async function readSiteKeywords(accountId: string): Promise<SiteKeyword[]> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;

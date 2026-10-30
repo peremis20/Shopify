@@ -9,6 +9,10 @@ export interface Opportunity {
   ctr: number;
   /** Estimated extra clicks per period if the page reached position 3. */
   potentialClicks: number;
+  /** Set when the search came from Keyword Planner (no Search Console data yet). */
+  monthlySearches?: number;
+  /** False until the daily rank check has looked this search up on Google. */
+  checked?: boolean;
 }
 
 export interface KeywordList {

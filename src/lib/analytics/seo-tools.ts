@@ -63,6 +63,22 @@ export async function findOpportunities(conn: Connection, rangeKey: RangeKey): P
     .slice(0, 50);
 }
 
+/**
+ * How many searches Search Console has for the site in the last 28 days.
+ * Few means the property is new (Google takes days to report) or the site
+ * barely shows up yet; the autopilot then works from Keyword Planner too.
+ */
+export async function gscSearchCount(conn: Connection): Promise<number> {
+  if (!conn.gscSiteUrl) return 0;
+  const { auth, site } = requireSite(conn);
+  const { current } = resolveRange("28d", 3);
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query"], rowLimit: 100 });
+  return rows.length;
+}
+
+/** Below this many searches, Search Console alone is too thin to work from. */
+export const THIN_GSC = 20;
+
 // ---------- saved keyword lists ----------
 
 export const normalizeKeyword = (k: string) => k.trim().toLowerCase().replace(/\s+/g, " ");

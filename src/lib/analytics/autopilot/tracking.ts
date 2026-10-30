@@ -2,7 +2,7 @@ import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { toIso } from "../dates";
 import { googleRequest } from "../google-auth";
-import { getLists } from "../seo-tools";
+import { getLists, THIN_GSC } from "../seo-tools";
 import { fetchSerp } from "./serp";
 import { readSiteKeywords } from "./site-keywords";
 
@@ -65,6 +65,11 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
     .filter((r) => r.position <= 20 && r.impressions >= 5 && isKeyword(r.keys[0]) && !(brand && r.keys[0].includes(brand)))
     .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
     .map((r) => r.keys[0]);
+  // Search Console new or thin: the Keyword Planner picks fill the rest, taking turns like above.
+  if (searches.length < THIN_GSC) {
+    const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
+    return [...new Set([...saved.slice(0, 5), ...targets, ...searches, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
+  }
   return [...new Set([...saved.slice(0, 5), ...targets, ...searches].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
 }
 

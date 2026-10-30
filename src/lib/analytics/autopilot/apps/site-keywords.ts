@@ -1,5 +1,5 @@
 import { keywordsReady } from "../../keywords";
-import { readSiteKeywords } from "../site-keywords";
+import { readSiteKeywords, siteKeywordsActive } from "../site-keywords";
 import { rankWatch } from "../tracking";
 import type { Candidate, RankingApp } from "./types";
 
@@ -16,7 +16,11 @@ export const siteKeywords: RankingApp = {
   id: "site-keywords",
   name: "Keyword targets (no Search Console needed)",
   role: "Picks the searches each page should win and tracks where you stand on Google",
-  ready: async (hub) => !hub.conn.gscSiteUrl && Boolean(hub.platform.serperKey) && (await keywordsReady().catch(() => false)),
+  // Also while Search Console is new or has too little data (see maintain in handlers.ts).
+  ready: async (hub) =>
+    Boolean(hub.platform.serperKey) &&
+    (!hub.conn.gscSiteUrl || (await siteKeywordsActive(hub.accountId).catch(() => false))) &&
+    (await keywordsReady().catch(() => false)),
 
   async candidates(hub) {
     const [kws, rows] = await Promise.all([readSiteKeywords(hub.accountId), rankWatch(hub.accountId)]);
@@ -49,7 +53,7 @@ export const siteKeywords: RankingApp = {
 
   async brief(_hub, c) {
     return {
-      text: `This site has no Search Console data, so this search was chosen from Keyword Planner: about ${c.op.monthlySearches ?? "some"} searches a month, and the site is ${
+      text: `Search Console has little or no data for this site yet, so this search was chosen from Keyword Planner: about ${c.op.monthlySearches ?? "some"} searches a month, and the site is ${
         c.op.position >= OFF_PAGE_ONE ? "not on Google page one for it yet" : `#${c.op.position} on Google today`
       }. Make the page clearly about this search without changing what it offers.`,
     };

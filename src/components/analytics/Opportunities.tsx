@@ -20,12 +20,17 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
   const [error, setError] = useState<string | null>(null);
   const [hideBrand, setHideBrand] = useState(true);
   const [view, setView] = useState<"list" | "topics">("list");
+  /** Keyword Planner when Search Console has no data yet for this site. */
+  const [planner, setPlanner] = useState(false);
 
   useEffect(() => {
     setItems(null);
     setError(null);
-    api<{ opportunities: Opportunity[] }>(`/api/seo/opportunities?range=${range}`)
-      .then((d) => setItems(d.opportunities))
+    api<{ opportunities: Opportunity[]; source?: string }>(`/api/seo/opportunities?range=${range}`)
+      .then((d) => {
+        setItems(d.opportunities);
+        setPlanner(d.source === "keyword-planner");
+      })
       .catch((err) => setError(err.message));
   }, [range]);
 
@@ -40,7 +45,7 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
       query: (o) => o.query,
       page: (o) => pathOf(o.page),
       position: (o) => o.position,
-      impressions: (o) => o.impressions,
+      impressions: (o) => o.monthlySearches ?? o.impressions,
       clicks: (o) => o.clicks,
       potential: (o) => o.potentialClicks,
     },
@@ -52,10 +57,18 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
 
   return (
     <div>
-      <Explainer>
-        Searches where your site already shows up on Google in positions 4 to 20. These are the quickest wins: improving
-        the page so it reaches the top 3 could bring roughly the extra clicks shown, for the same period as the dashboard.
-      </Explainer>
+      {planner ? (
+        <Explainer>
+          Search Console has no data for your site yet (Google takes a few days after it&rsquo;s set up). Until then these
+          come from Keyword Planner: what people search for each of your pages, with your Google position from the daily
+          rank check. The autopilot works on them already. Extra clicks are a monthly estimate for reaching the top 3.
+        </Explainer>
+      ) : (
+        <Explainer>
+          Searches where your site already shows up on Google in positions 4 to 20. These are the quickest wins: improving
+          the page so it reaches the top 3 could bring roughly the extra clicks shown, for the same period as the dashboard.
+        </Explainer>
+      )}
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-sm">
         <div className="flex items-center gap-3">
           <span className="text-dash-muted">{formatNumber(shown.length)} opportunities</span>
@@ -80,15 +93,17 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
       </div>
       {shown.length === 0 ? (
         <p className="py-8 text-center text-sm text-dash-muted">
-          No searches in positions 4 to 20 for this period. Try a longer date range at the top of the page.
+          {planner
+            ? "Finding the searches for your pages. This runs in the background and shows here within the hour."
+            : "No searches in positions 4 to 20 for this period. Try a longer date range at the top of the page."}
         </p>
       ) : view === "topics" ? (
         <TopicsView
-          unit="impressions"
+          unit={planner ? "searches a month" : "impressions"}
           onTrack={onTrack}
           ideas={[...new Map(shown.map((o) => [o.query, o])).values()].map((o) => ({
             keyword: o.query,
-            avgMonthlySearches: shown.filter((x) => x.query === o.query).reduce((s, x) => s + x.impressions, 0),
+            avgMonthlySearches: shown.filter((x) => x.query === o.query).reduce((s, x) => s + (x.monthlySearches ?? x.impressions), 0),
             competition: "UNKNOWN" as const,
             competitionIndex: null,
             lowBid: null,
@@ -104,8 +119,10 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
                 <th className="px-1 pb-2"><SortHeader label="Search" column="query" sort={sort} /></th>
                 <th className="hidden px-1 pb-2 md:table-cell"><SortHeader label="Your page" column="page" sort={sort} /></th>
                 <th className="px-1 pb-2 text-right"><SortHeader label="Position" column="position" sort={sort} align="right" /></th>
-                <th className="hidden px-1 pb-2 text-right sm:table-cell"><SortHeader label="Impressions" column="impressions" sort={sort} align="right" /></th>
-                <th className="hidden px-1 pb-2 text-right sm:table-cell"><SortHeader label="Clicks" column="clicks" sort={sort} align="right" /></th>
+                <th className="hidden px-1 pb-2 text-right sm:table-cell"><SortHeader label={planner ? "Searches a month" : "Impressions"} column="impressions" sort={sort} align="right" /></th>
+                {!planner && (
+                  <th className="hidden px-1 pb-2 text-right sm:table-cell"><SortHeader label="Clicks" column="clicks" sort={sort} align="right" /></th>
+                )}
                 <th className="px-1 pb-2 text-right"><SortHeader label="Extra clicks" column="potential" sort={sort} align="right" /></th>
                 <th className="px-1 pb-2" />
               </tr>
@@ -117,11 +134,15 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
                   <td className="hidden max-w-[220px] truncate px-1 py-2 text-dash-muted md:table-cell" title={o.page}>
                     <a href={o.page} target="_blank" rel="noreferrer" className="hover:underline">{pathOf(o.page)}</a>
                   </td>
-                  <td className="px-1 py-2 text-right tabular-nums">{o.position.toFixed(1)}</td>
-                  <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell">{formatNumber(o.impressions)}</td>
-                  <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell" title={`CTR ${formatPct(o.ctr)}`}>
-                    {formatNumber(o.clicks)}
+                  <td className="px-1 py-2 text-right tabular-nums">
+                    {o.checked === false ? <span className="text-dash-muted">Checking</span> : o.position >= 25 ? "20+" : o.position.toFixed(1)}
                   </td>
+                  <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell">{formatNumber(o.monthlySearches ?? o.impressions)}</td>
+                  {!planner && (
+                    <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell" title={`CTR ${formatPct(o.ctr)}`}>
+                      {formatNumber(o.clicks)}
+                    </td>
+                  )}
                   <td className="px-1 py-2 text-right font-semibold tabular-nums text-dash-up">+{formatNumber(o.potentialClicks)}</td>
                   <td className="px-1 py-2 text-right">
                     <TrackButton tracked={isTracked(o.query)} onClick={() => onTrack([o.query])} />

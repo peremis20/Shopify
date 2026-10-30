@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
-import { refreshSiteKeywords } from "./autopilot/site-keywords";
+import { readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
@@ -55,7 +55,8 @@ import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
 import { bareDomain, readProfile, saveProfile } from "./profile";
 import { listProperties } from "./properties";
-import { addKeywords, createList, deleteList, findOpportunities, getLists, removeKeyword, trackRankings } from "./seo-tools";
+import { addKeywords, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
+import type { Opportunity } from "./seo-types";
 
 /**
  * Every API route as a plain web handler (Request in, Response out), shared
@@ -571,11 +572,43 @@ export const opportunities = (req: Request) =>
     if (!conn) return json({ error: "Sign in with Google again." }, 401);
     const range = new URL(req.url).searchParams.get("range");
     try {
-      return json({ opportunities: await findOpportunities(conn, isRangeKey(range) ? range : "28d") });
+      const found = conn.gscSiteUrl ? await findOpportunities(conn, isRangeKey(range) ? range : "28d").catch(() => []) : [];
+      if (found.length) return json({ opportunities: found, source: "search-console" });
+      // Search Console has nothing yet: the searches each page should win, from Keyword Planner, with today's Google position.
+      return json({ opportunities: await plannerOpportunities(account.id, conn), source: "keyword-planner" });
     } catch (err) {
       return json({ error: message(err) }, 502);
     }
   });
+
+/** Not on Google page one for a search: shown as page two or three. */
+const OFF_PAGE_ONE = 25;
+
+async function plannerOpportunities(accountId: string, conn: Connection): Promise<Opportunity[]> {
+  let kws = await readSiteKeywords(accountId);
+  if (!kws.length) {
+    const profile = await readProfile(accountId);
+    const domain = conn.gscSiteUrl ? domainOf(conn.gscSiteUrl) : profile.siteDomain;
+    if (domain) kws = await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]);
+  }
+  const ranks = new Map((await rankWatch(accountId)).map((r) => [r.query, r]));
+  return kws
+    .map((k) => {
+      const r = ranks.get(k.keyword);
+      return {
+        query: k.keyword,
+        page: (r?.url ?? k.page).split("#")[0],
+        position: r ? (r.position ?? OFF_PAGE_ONE) : 0,
+        impressions: 0,
+        clicks: 0,
+        ctr: 0,
+        potentialClicks: Math.round(k.monthlySearches * 0.1),
+        monthlySearches: k.monthlySearches,
+        checked: Boolean(r),
+      };
+    })
+    .filter((o) => o.position !== 1);
+}
 
 export const keywordLists = (req: Request) =>
   withAccount(req, async (account) => json({ lists: await getLists(account.id) }));
@@ -739,10 +772,11 @@ async function maintain(accountId: string, force = false): Promise<string> {
   const profile = await readProfile(accountId);
   const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : profile.siteDomain;
   if (!conn || !domain) return `no website yet, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
-  // Without Search Console, Keyword Planner picks the searches to track for each page.
-  const picked = conn.gscSiteUrl
-    ? 0
-    : (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length;
+  // Without Search Console, or while it has too little data (new property, small site), Keyword Planner picks the searches to track for each page.
+  const thin = !conn.gscSiteUrl || (await gscSearchCount(conn).catch(() => 0)) < THIN_GSC;
+  const picked = thin
+    ? (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length
+    : 0;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domain).catch(() => 0) : 0;
   // Index status needs Search Console's URL Inspection.
   const pages = conn.gscSiteUrl ? await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0) : 0;
