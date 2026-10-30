@@ -1,3 +1,4 @@
+import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
@@ -881,6 +882,11 @@ export const revertAutopilot = (req: Request) =>
 /** Called by the scheduled trigger: runs a few customers whose daily run is due. */
 export async function autopilotTick(): Promise<Response> {
   const results: string[] = [];
+  // Sabbath rest: nothing runs from Friday sundown to Saturday sundown.
+  if (isSabbath()) {
+    console.log("autopilot tick: Sabbath rest, nothing runs until Saturday sundown");
+    return json({ results: ["Sabbath rest"] });
+  }
   try {
     // Rank checks and health first: a drop found this morning can be defended in today's run.
     const upkeep = [
