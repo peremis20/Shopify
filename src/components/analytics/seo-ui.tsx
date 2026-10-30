@@ -90,6 +90,13 @@ export function RankForThis({ keyword, monthlySearches }: { keyword: string; mon
           </button>
           <p className="mb-1 font-semibold text-dash-ink">&ldquo;{result.target.keyword}&rdquo;</p>
           <p className={result.target.winnable === false ? "text-dash-down" : "text-dash-up"}>{result.target.why}</p>
+          {result.added.length > 0 && (
+            <p className="mt-2 text-dash-ink">
+              Added as main targets, since specific searches rank first:{" "}
+              <span className="font-semibold">{result.added.join(", ")}</span>. &ldquo;{result.target.keyword}&rdquo; is worked into
+              their pages to support them.
+            </p>
+          )}
           <p className="mt-2 text-dash-ink">
             {result.target.page ? (
               <>
@@ -106,7 +113,7 @@ export function RankForThis({ keyword, monthlySearches }: { keyword: string; mon
           </p>
           {result.easier.length > 0 && (
             <div className="mt-3">
-              <p className="mb-1 font-semibold text-dash-ink">Easier searches on the same topic</p>
+              <p className="mb-1 font-semibold text-dash-ink">More long tail searches to rank for first</p>
               <ul className="space-y-1.5">
                 {result.easier.map((e) => (
                   <li key={e.keyword} className="flex items-center justify-between gap-2">

@@ -210,15 +210,25 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
  */
 function GoogleToday() {
   const [rows, setRows] = useState<RankWatchRow[] | null>(null);
+  const [roles, setRoles] = useState<Record<string, "main" | "support">>({});
 
   useEffect(() => {
-    api<{ ranks: RankWatchRow[] }>("/api/autopilot/watch")
-      .then((d) => setRows(d.ranks))
+    api<{ ranks: RankWatchRow[]; roles?: Record<string, "main" | "support"> }>("/api/autopilot/watch")
+      .then((d) => {
+        setRows(d.ranks);
+        setRoles(d.roles ?? {});
+      })
       .catch(() => setRows([]));
   }, []);
 
   if (!rows) return <Skeleton className="mb-6 h-24" />;
-  const sorted = [...rows].sort((a, b) => (a.position ?? 999) - (b.position ?? 999) || a.query.localeCompare(b.query));
+  // Main (long tail) targets first, then the broad searches that support them.
+  const sorted = [...rows].sort(
+    (a, b) =>
+      Number(roles[a.query] === "support") - Number(roles[b.query] === "support") ||
+      (a.position ?? 999) - (b.position ?? 999) ||
+      a.query.localeCompare(b.query)
+  );
 
   return (
     <div className="mb-6">
@@ -248,7 +258,12 @@ function GoogleToday() {
                 const change = r.position !== null && r.previous !== null ? r.previous - r.position : null;
                 return (
                   <tr key={r.query} className="border-b border-dash-line/70 last:border-0">
-                    <td className="max-w-[220px] truncate px-1 py-2 text-dash-ink" title={r.query}>{r.query}</td>
+                    <td className="max-w-[240px] px-1 py-2 text-dash-ink" title={r.query}>
+                      <div className="truncate">{r.query}</div>
+                      {roles[r.query] && (
+                        <div className="text-xs text-dash-muted">{roles[r.query] === "support" ? "Supporting (broad)" : "Main target (long tail)"}</div>
+                      )}
+                    </td>
                     <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                       {r.position === null ? <span className="text-dash-muted">Not on page 1</span> : r.position}
                     </td>

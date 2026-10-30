@@ -4,7 +4,7 @@ import { analyzeCompetition } from "./serp";
 import type { AiProvider, PlatformSettings } from "./settings";
 import { createArticle, setArticlePublished, setSeoField } from "./shopify";
 import type { SiteAccess } from "./site-source";
-import { readTargets, saveTarget } from "./targets";
+import { readTargets, saveTarget, supportingTargets } from "./targets";
 import { readWp, wpCreatePost, wpSetPublished } from "./wordpress";
 import { writeNewArticle, type NewArticle } from "./writer";
 
@@ -66,8 +66,9 @@ export async function nextNewArticle(opts: {
   const { accountId, site } = opts;
   if (!opts.platform.serperKey || (await notDue(accountId, opts.perWeek))) return null;
   // Searches the owner chose that no page covers, the ones with room on page one first.
-  const due = (await readTargets(accountId))
-    .filter((t) => !t.page && !t.article && t.winnable !== false)
+  const all = await readTargets(accountId);
+  const due = all
+    .filter((t) => !t.page && !t.article && t.winnable !== false && t.role !== "support")
     .sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
   const target = due[0];
   if (!target) return null;
@@ -82,6 +83,7 @@ export async function nextNewArticle(opts: {
     questions: comp.serp.questions,
     related: comp.serp.related,
     ownTitles: own.map((a) => a.title),
+    supporting: supportingTargets(all, target.keyword),
   });
   if (!article) {
     await saveTarget(accountId, { ...target, article: { url: null, live: false, note: "The writer couldn't make a good enough article for this search." } });

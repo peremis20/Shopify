@@ -1,5 +1,5 @@
 import { keywordsReady } from "../../keywords";
-import { readSiteKeywords, siteKeywordsActive } from "../site-keywords";
+import { readSiteKeywords, siteKeywordsActive, supportFor } from "../site-keywords";
 import { rankWatch } from "../tracking";
 import type { Candidate, RankingApp } from "./types";
 
@@ -27,6 +27,8 @@ export const siteKeywords: RankingApp = {
     const byQuery = new Map(rows.map((r) => [r.query, r]));
     const out: Candidate[] = [];
     for (const k of kws) {
+      // Broad searches aren't targets of their own; they back up the main ones (see brief).
+      if (k.role === "support") continue;
       const row = byQuery.get(k.keyword);
       // Only searches checked on Google at least once, so the position is real.
       if (!row) continue;
@@ -53,11 +55,16 @@ export const siteKeywords: RankingApp = {
     return out;
   },
 
-  async brief(_hub, c) {
+  async brief(hub, c) {
+    const support = await supportFor(hub.accountId, c.op.page).catch(() => []);
     return {
       text: `Search Console has little or no data for this site yet, so this search was chosen from Keyword Planner: about ${c.op.monthlySearches ?? "some"} searches a month, and the site is ${
         c.op.position >= OFF_PAGE_ONE ? "not on Google page one for it yet" : `#${c.op.position} on Google today`
-      }. Make the page clearly about this search without changing what it offers.`,
+      }. Make the page clearly about this search without changing what it offers.${
+        support.length
+          ? ` Also use these broader related searches naturally where they fit, to support it (don't make them the focus): ${support.join(", ")}.`
+          : ""
+      }`,
     };
   },
 };

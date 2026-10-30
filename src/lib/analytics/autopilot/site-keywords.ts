@@ -29,6 +29,12 @@ export interface SiteKeyword {
   why?: string;
   /** Page one has room: smaller sites rank there, so this site can too. */
   winnable?: boolean;
+  /**
+   * "main": a specific, long tail search the page aims to rank for first.
+   * "support": a broad search (short or very high volume) used naturally in
+   * the content to back up the main ones, not chased on its own.
+   */
+  role?: "main" | "support";
 }
 
 const KEY = (accountId: string) => `sitekw:${accountId}`;
@@ -67,10 +73,29 @@ const worthTargeting = (url: string) =>
   !/\/(cart|checkout|account|login|search|tag|tags|author|category|categories|page\/\d|privacy|terms|refund|return|shipping|policy|policies|contact|cookie|accessibility|sitemap)(\/|$)/i.test(new URL(url).pathname);
 
 /** True while keywords picked in the last 8 days exist, i.e. the site is still worked from Keyword Planner. */
+/** Above this many searches a month a search is broad, whatever its length. */
+export const BROAD_VOLUME = 20_000;
+
+/**
+ * Specific searches (three words or more, not huge volume) are where a site
+ * starts ranking: less competition and clearer intent. Broad ones back them up.
+ */
+export const isLongTail = (keyword: string, monthlySearches: number) =>
+  keyword.trim().split(/\s+/).length >= 3 && monthlySearches <= BROAD_VOLUME;
+
+/** Main targets per page, and broad searches kept to support them. */
+const MAIN_PER_PAGE = 3;
+const SUPPORT_PER_PAGE = 2;
+
 export async function siteKeywordsActive(accountId: string): Promise<boolean> {
   await ensureSchema();
   const [row] = await sql`SELECT updated_at FROM insights_settings WHERE key = ${KEY(accountId)}`;
   return Boolean(row?.updated_at && Date.now() - new Date(row.updated_at).getTime() < WEEK + 86_400_000);
+}
+
+/** Broad searches that back up a page's main targets, for the writer. */
+export async function supportFor(accountId: string, page: string): Promise<string[]> {
+  return (await readSiteKeywords(accountId)).filter((k) => k.role === "support" && k.page === page).map((k) => k.keyword);
 }
 
 export async function readSiteKeywords(accountId: string): Promise<SiteKeyword[]> {
@@ -111,8 +136,8 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
       // Google's own related searches, with their volume.
       if (serp?.related.length) ideas.push(...(await keywordVolumes({ ...TARGETING, keywords: serp.related }).catch(() => [])));
     }
-    const fits = ideas
-      .filter((i) => (i.avgMonthlySearches ?? 0) >= 20 && i.keyword.split(/\s+/).length <= 6)
+    const onTopic = ideas
+      .filter((i) => (i.avgMonthlySearches ?? 0) >= 20 && i.keyword.split(/\s+/).length <= 7)
       .filter((i) => !(brandWord && i.keyword.toLowerCase().includes(brandWord)))
       // On topic: shares at least half of its meaningful words with the page's subject.
       .filter((i) => {
@@ -120,18 +145,22 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
         return w.length > 0 && w.filter((x) => topic.has(x)).length / w.length >= 0.5;
       })
       // Easier and well searched first.
-      .sort((a, b) => Number(a.competition === "HIGH") - Number(b.competition === "HIGH") || (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0))
-      .slice(0, serperKey ? 4 : 2);
-    for (const i of fits) {
-      const k = i.keyword.toLowerCase();
-      if (!found.has(k))
-        found.set(k, { keyword: k, monthlySearches: i.avgMonthlySearches ?? 0, page: p.url, why: rival ? `${rival} ranks for it` : undefined });
+      .sort((a, b) => Number(a.competition === "HIGH") - Number(b.competition === "HIGH") || (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0));
+    // Long tail searches are what the page aims at; a couple of broad ones support them.
+    const main = onTopic.filter((i) => isLongTail(i.keyword, i.avgMonthlySearches ?? 0)).slice(0, serperKey ? MAIN_PER_PAGE : 2);
+    const support = onTopic.filter((i) => !isLongTail(i.keyword, i.avgMonthlySearches ?? 0)).slice(0, SUPPORT_PER_PAGE);
+    for (const [list, role] of [[main, "main"], [support, "support"]] as const) {
+      for (const i of list) {
+        const k = i.keyword.toLowerCase();
+        if (!found.has(k))
+          found.set(k, { keyword: k, monthlySearches: i.avgMonthlySearches ?? 0, page: p.url, role, why: rival ? `${rival} ranks for it` : undefined });
+      }
     }
   }
   let items = [...found.values()].sort((a, b) => b.monthlySearches - a.monthlySearches);
   if (serperKey) {
-    // Look at page one for the best candidates: keep the ones with room for a site like this.
-    for (const k of items.slice(0, SERP_CHECKS)) {
+    // Look at page one for the main targets: keep the ones with room for a site like this.
+    for (const k of items.filter((i) => i.role === "main").slice(0, SERP_CHECKS)) {
       const serp = await fetchSerp(serperKey, k.keyword).catch(() => null);
       if (!serp) continue;
       const { small, ours } = room(serp.organic, ourDomain);
@@ -143,10 +172,11 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
             ? `${small} smaller sites on page 1${k.why ? `, ${k.why}` : ""}`
             : "Page 1 is mostly big health sites";
     }
-    // Winnable first, then by searches; the hard ones last.
-    items.sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
   }
-  items = items.slice(0, 40);
+  // Main targets first (winnable, then by searches), then the broad ones that support them.
+  const rank = (k: SiteKeyword) => (k.role === "support" ? 2 : k.winnable === false ? 1 : 0);
+  items.sort((a, b) => rank(a) - rank(b) || Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
+  items = items.slice(0, 50);
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify({ items })})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

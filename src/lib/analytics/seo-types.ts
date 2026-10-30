@@ -17,6 +17,8 @@ export interface Opportunity {
   why?: string;
   /** Page one has room for a site like this. */
   winnable?: boolean;
+  /** Long tail main target, or a broad search that supports them. */
+  role?: "main" | "support";
 }
 
 export interface KeywordList {

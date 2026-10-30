@@ -688,6 +688,8 @@ export async function writeNewArticle(
     related: string[];
     /** Titles of the site's own articles, so the new one doesn't repeat them. */
     ownTitles: string[];
+    /** Broad searches to work in naturally as support (the main search stays the focus). */
+    supporting?: string[];
   }
 ): Promise<NewArticle | null> {
   const prompt = `Write a new article for this website that can rank on Google page one for the search "${brief.keyword}".
@@ -697,7 +699,7 @@ ${brief.competitors.map((c) => `- ${c.domain}: "${c.title}". Sections: ${c.headi
 
 Questions people also ask: ${brief.questions.join(" | ") || "(none)"}
 Related searches: ${brief.related.join(" | ") || "(none)"}
-
+${brief.supporting?.length ? `Broader searches to mention naturally where they fit, to support the main one (never the focus): ${brief.supporting.join(" | ")}\n` : ""}
 The site already has these articles, so don't repeat them: ${brief.ownTitles.slice(0, 40).join(" | ") || "(none)"}
 
 Cover what searchers want better and more clearly than the pages above, in this site's own voice. Answer the main question early, in plain words.

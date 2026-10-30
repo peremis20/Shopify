@@ -609,9 +609,12 @@ async function plannerOpportunities(accountId: string, conn: Connection): Promis
         checked: Boolean(r),
         why: k.why,
         winnable: k.winnable,
+        role: k.role ?? "main",
       };
     })
-    .filter((o) => o.position !== 1);
+    .filter((o) => o.position !== 1)
+    // Long tail main targets first; broad supporting searches after.
+    .sort((a, b) => Number(a.role === "support") - Number(b.role === "support"));
 }
 
 /** "Rank for this": matches the search to a page, checks Google page one, and hands it to the autopilot. */
@@ -819,8 +822,17 @@ export const autopilotWatch = (req: Request) =>
       claimReport(account.id),
       overlapReport(account.id),
     ]);
-    return json({ ranks, health, claims, overlap });
+    return json({ ranks, health, claims, overlap, roles: await keywordRoles(account.id) });
   });
+
+/** Which tracked searches are long tail main targets and which are broad support. */
+async function keywordRoles(accountId: string): Promise<Record<string, "main" | "support">> {
+  const [kws, targets] = await Promise.all([readSiteKeywords(accountId).catch(() => []), readTargets(accountId).catch(() => [])]);
+  const roles: Record<string, "main" | "support"> = {};
+  for (const k of kws) roles[k.keyword] = k.role ?? "main";
+  for (const t of targets) roles[t.keyword] = t.role ?? "main";
+  return roles;
+}
 
 /** "Check now": today's ranks (if not done yet) and the next pages' health. */
 export const autopilotCheckNow = (req: Request) =>

@@ -1,4 +1,4 @@
-import { readTargets } from "../targets";
+import { readTargets, supportingTargets } from "../targets";
 import { rankWatch } from "../tracking";
 import type { Candidate, RankingApp } from "./types";
 
@@ -19,7 +19,8 @@ export const targets: RankingApp = {
     const byQuery = new Map(rows.map((r) => [r.query, r]));
     const out: Candidate[] = [];
     for (const t of list) {
-      if (!t.page) continue;
+      // Broad searches back up the long tail ones instead of being chased on their own.
+      if (!t.page || t.role === "support") continue;
       const row = byQuery.get(t.keyword);
       const position = row?.position ?? OFF_PAGE_ONE;
       if (position === 1) continue;
@@ -42,10 +43,14 @@ export const targets: RankingApp = {
   },
 
   async brief(hub, c) {
-    const t = (await readTargets(hub.accountId)).find((x) => x.keyword === c.op.query);
+    const all = await readTargets(hub.accountId);
+    const t = all.find((x) => x.keyword === c.op.query);
     if (!t) return null;
+    const support = supportingTargets(all, t.keyword);
     return {
-      text: `The site owner chose this search to rank for (about ${t.monthlySearches} searches a month; ${t.why}). Make this page clearly and genuinely about "${t.keyword}": use it naturally in the title, description and new section, and answer what people searching it want to know, without changing what the page offers.`,
+      text: `The site owner chose this search to rank for (about ${t.monthlySearches} searches a month; ${t.why}). Make this page clearly and genuinely about "${t.keyword}": use it naturally in the title, description and new section, and answer what people searching it want to know, without changing what the page offers.${
+        support.length ? ` Also use these broader searches naturally where they fit, to support it (not as the focus): ${support.join(", ")}.` : ""
+      }`,
     };
   },
 };
