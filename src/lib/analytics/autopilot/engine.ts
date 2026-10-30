@@ -186,16 +186,22 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
 
 // ---------- improving ----------
 
-function pickTarget(cands: Candidate[], brand: string, rested: (c: Candidate) => boolean): Candidate | null {
+/** Legal, contact, account and similar pages on any website: never rewritten. */
+const PROTECTED_ANY = /\/(contact|privacy|terms|refund|returns?|shipping|polic(y|ies)|legal|cookies?|accessibility|disclaimer|cart|checkout|account|login|search|tag|tags|author|category|categories)(\/|$)/i;
+
+/**
+ * The best candidate on a page the autopilot may change. On Shopify that's a
+ * blog post, page, product or collection; on any other website it's any
+ * content page (not the home page, legal or utility pages).
+ */
+function pickTarget(cands: Candidate[], brand: string, rested: (c: Candidate) => boolean, shopify: boolean): Candidate | null {
   return (
     cands.find((c) => {
       const path = new URL(c.op.page).pathname;
-      return (
-        !(brand && c.op.query.includes(brand)) &&
-        !rested(c) &&
-        !PROTECTED_PAGE.test(path) &&
-        /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/")
-      );
+      const editable = shopify
+        ? /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/")
+        : path.replace(/\/+$/, "") !== "" && !PROTECTED_ANY.test(path);
+      return !(brand && c.op.query.includes(brand)) && !rested(c) && !PROTECTED_PAGE.test(path) && editable;
     }) ?? null
   );
 }
@@ -288,7 +294,7 @@ async function planNextChange(
   const brand = ctx.ourDomain.split(".")[0];
 
   for (let writes = 0; writes < MAX_WRITES_PER_RUN; writes++) {
-    let cand = pickTarget(cands, brand, rested);
+    let cand = pickTarget(cands, brand, rested, ctx.site.mode === "shopify");
     let page: StoreResource | null = null;
     // Skip pages that don't map to an editable store item, and pages losing a search to another of the site's pages.
     for (let tries = 0; cand && tries < 8; tries++) {
@@ -302,7 +308,7 @@ async function planNextChange(
       }
       page = null;
       skipped.add(cand.op.page);
-      cand = pickTarget(cands, brand, rested);
+      cand = pickTarget(cands, brand, rested, ctx.site.mode === "shopify");
     }
     if (!cand || !page) return null;
 

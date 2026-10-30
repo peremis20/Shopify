@@ -92,7 +92,8 @@ const SUPPORT_PER_PAGE = 2;
 export async function siteKeywordsActive(accountId: string): Promise<boolean> {
   await ensureSchema();
   const [row] = await sql`SELECT updated_at FROM insights_settings WHERE key = ${KEY(accountId)}`;
-  return Boolean(row?.updated_at && Date.now() - new Date(row.updated_at).getTime() < WEEK + 86_400_000);
+  // Two weeks: the list is rebuilt weekly, and a late rebuild shouldn't switch the app off in between.
+  return Boolean(row?.updated_at && Date.now() - new Date(row.updated_at).getTime() < 2 * WEEK);
 }
 
 /** Broad searches that back up a page's main targets, for the writer. */
