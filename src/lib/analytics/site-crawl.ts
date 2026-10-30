@@ -186,7 +186,8 @@ export async function crawlSite(accountId: string, domain: string, budget = 60):
             ON CONFLICT (account_id, url) DO UPDATE SET status = EXCLUDED.status, fetched_at = now()`;
           return;
         }
-        if (!platform) platform = detectPlatform(res.text);
+        // The first page that shows its platform decides it (some pages carry no sign of it).
+        if (!platform || platform === "custom") platform = detectPlatform(res.text);
         const p = parsePage(url, res.text);
         // One page that can't be saved never stops the others.
         await sql`
