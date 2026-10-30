@@ -100,13 +100,19 @@ export async function snippetData(siteKey: string, path: string): Promise<Snippe
   };
 }
 
-/** The script itself: tiny, no dependencies, fails silently. */
+/**
+ * The script itself: tiny, no dependencies, fails silently.
+ * Analytics: adds Google Analytics only when the site has none of its own,
+ * the browser sends no Do Not Track or Global Privacy Control signal, and the
+ * site did not opt out with data-ga="off" on the snippet tag (sites that ask
+ * readers for consent load Analytics themselves).
+ */
 export const SNIPPET_JS = `(function(){
 var s=document.currentScript;if(!s||!window.fetch)return;
 var src=new URL(s.src),k=src.searchParams.get("k");if(!k)return;
 fetch(src.origin+"/api/snippet/data?k="+encodeURIComponent(k)+"&u="+encodeURIComponent(location.pathname),{credentials:"omit"})
 .then(function(r){return r.ok?r.json():null}).then(function(d){if(!d)return;
-if(d.ga&&!window.gtag){var g=document.createElement("script");g.async=true;g.src="https://www.googletagmanager.com/gtag/js?id="+d.ga;document.head.appendChild(g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag("js",new Date());gtag("config",d.ga)}
+var n=navigator;if(d.ga&&!window.gtag&&s.getAttribute("data-ga")!=="off"&&n.globalPrivacyControl!==true&&n.doNotTrack!=="1"&&!document.querySelector('script[src*="googletagmanager.com/gtag"]')){var g=document.createElement("script");g.async=true;g.src="https://www.googletagmanager.com/gtag/js?id="+d.ga;document.head.appendChild(g);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag("js",new Date());gtag("config",d.ga)}
 if(d.title)document.title=d.title;
 if(d.description){var m=document.querySelector('meta[name="description"]');if(!m){m=document.createElement("meta");m.setAttribute("name","description");document.head.appendChild(m)}m.setAttribute("content",d.description)}
 (d.schema||[]).forEach(function(j){var t=document.createElement("script");t.type="application/ld+json";t.text=j;document.head.appendChild(t)});
