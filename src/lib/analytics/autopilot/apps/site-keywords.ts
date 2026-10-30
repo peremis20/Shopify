@@ -1,5 +1,5 @@
 import { keywordsReady } from "../../keywords";
-import { readSiteKeywords, siteKeywordsActive, supportFor } from "../site-keywords";
+import { isLongTail, readSiteKeywords, siteKeywordsActive, supportFor } from "../site-keywords";
 import { rankWatch } from "../tracking";
 import type { Candidate, RankingApp } from "./types";
 
@@ -28,7 +28,8 @@ export const siteKeywords: RankingApp = {
     const out: Candidate[] = [];
     for (const k of kws) {
       // Broad searches aren't targets of their own; they back up the main ones (see brief).
-      if (k.role === "support") continue;
+      // Lists picked before roles existed have none: broad ones are support there too.
+      if (k.role === "support" || (!k.role && !isLongTail(k.keyword, k.monthlySearches))) continue;
       const row = byQuery.get(k.keyword);
       // Only searches checked on Google at least once, so the position is real.
       if (!row) continue;

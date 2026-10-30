@@ -101,6 +101,21 @@ export async function supportFor(accountId: string, page: string): Promise<strin
   return (await readSiteKeywords(accountId)).filter((k) => k.role === "support" && k.page === page).map((k) => k.keyword);
 }
 
+/**
+ * Accounts whose keyword list is missing or over a week old, for the hourly
+ * tick: the weekly rebuild doesn't wait for the daily rank check to be due.
+ */
+export async function accountsDueForKeywords(limit: number): Promise<string[]> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT a.account_id FROM insights_account_autopilot a
+    JOIN insights_account_profile p ON p.account_id = a.account_id
+    LEFT JOIN insights_settings s ON s.key = 'sitekw:' || a.account_id::text
+    WHERE a.enabled AND p.site_domain IS NOT NULL AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
+  return rows.map((r) => r.account_id!);
+}
+
 /** Faith topics count as on topic for a faith and health publication. */
 export const faithAllowed = async (accountId: string) => allowsFaith((await readProfile(accountId).catch(() => null))?.businessType);
 

@@ -6,6 +6,7 @@ import { getLists, THIN_GSC } from "../seo-tools";
 import { fetchSerp } from "./serp";
 import { isJunkKeyword } from "./keyword-guard";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
+import { readTargets } from "./targets";
 
 /**
  * Daily rank tracking. Search Console lags about 3 days; this checks Google
@@ -45,7 +46,9 @@ const isGoodPick = (q: string) => isKeyword(q) && !isJunkKeyword(q);
  * page one and page two searches with the most impressions (no brand searches).
  */
 async function queriesToTrack(accountId: string, conn: Connection, ourDomain: string): Promise<string[]> {
-  const saved = (await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords);
+  // The owner's Rank for this picks come first and are all checked, then a few other saved keywords.
+  const chosen = (await readTargets(accountId).catch(() => [])).map((t) => t.keyword);
+  const saved = [...chosen, ...(await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords).filter((k) => !chosen.includes(k)).slice(0, 5)];
   const targets = (
     await sql`SELECT query, max(created_at) AS at FROM insights_autopilot_changes
       WHERE account_id = ${accountId} AND field <> 'intent' AND created_at > now() - interval '120 days'
@@ -55,7 +58,7 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
   if (!conn.gscSiteUrl) {
     const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
     // More than a day's checks: they take turns (see trackRanks).
-    return [...new Set([...saved.slice(0, 5), ...targets, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
+    return [...new Set([...saved, ...targets, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
   }
   const end = new Date(Date.now() - 3 * DAY);
   const body = await googleRequest<{ rows?: { keys: string[]; clicks: number; impressions: number; position: number }[] }>(
@@ -71,9 +74,9 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
   // Search Console new or thin: the Keyword Planner picks fill the rest, taking turns like above.
   if (searches.length < THIN_GSC) {
     const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
-    return [...new Set([...saved.slice(0, 5), ...targets, ...searches, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
+    return [...new Set([...saved, ...targets, ...searches, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
   }
-  return [...new Set([...saved.slice(0, 5), ...targets, ...searches].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
+  return [...new Set([...saved, ...targets, ...searches].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
 }
 
 /** Checks today's Google positions once a day. Returns how many searches were checked. */

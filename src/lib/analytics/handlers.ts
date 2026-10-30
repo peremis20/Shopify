@@ -2,7 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
-import { readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
+import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
 import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
@@ -883,7 +883,9 @@ export async function autopilotTick(): Promise<Response> {
   const results: string[] = [];
   try {
     // Rank checks and health first: a drop found this morning can be defended in today's run.
-    const upkeep = [...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3))])].slice(0, 3);
+    const upkeep = [
+      ...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3)), ...(await accountsDueForKeywords(2))]),
+    ].slice(0, 4);
     for (const accountId of upkeep) {
       results.push(`account ${accountId} checks: ${await maintain(accountId).catch((e) => message(e))}`);
     }

@@ -4,7 +4,7 @@ import { isPostUrl, sitePages } from "../site-crawl";
 import { addKeywords, createList, getLists } from "../seo-tools";
 import { isJunkKeyword } from "./keyword-guard";
 import { fetchSerp } from "./serp";
-import { isBig, isLongTail, room, topicWords } from "./site-keywords";
+import { faithAllowed, isBig, isLongTail, room, topicWords } from "./site-keywords";
 
 /**
  * Searches the owner picked with "Rank for this". Each one is matched to the
@@ -109,6 +109,7 @@ export async function addTarget(
       // Long tail searches on the same topic: Keyword Planner ideas and Google's related searches,
       // three words or more, real volume, sharing the topic, then checked for room on page one.
       const want = [...topicWords(k)];
+      const faith = await faithAllowed(accountId);
       const ideas = [
         ...(await keywordIdeas({ ...TARGETING, keywords: [k] }).catch(() => [])),
         ...(await keywordVolumes({ ...TARGETING, keywords: serp.related }).catch(() => [])),
@@ -120,7 +121,7 @@ export async function addTarget(
           if (seen.has(kw)) return false;
           seen.add(kw);
           const have = topicWords(kw);
-          return (i.avgMonthlySearches ?? 0) >= 50 && isLongTail(kw, i.avgMonthlySearches ?? 0) && want.every((w) => have.has(w)) && !isJunkKeyword(kw);
+          return (i.avgMonthlySearches ?? 0) >= 50 && isLongTail(kw, i.avgMonthlySearches ?? 0) && want.every((w) => have.has(w)) && !isJunkKeyword(kw, { faith });
         })
         .sort((a, b) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0))
         .slice(0, 6);

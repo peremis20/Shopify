@@ -159,9 +159,10 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     LIMIT 5`;
   const notes: string[] = [];
   for (const d of due) {
-    const now = conn.gscSiteUrl
-      ? await positionFor(conn, d.query!, d.page_url!).catch(() => null)
-      : await trackedPosition(ctx.accountId, d.query!).catch(() => null);
+    // Search Console first; when it has nothing for this search yet (a new property), the daily Google rank check.
+    const now =
+      (conn.gscSiteUrl ? await positionFor(conn, d.query!, d.page_url!).catch(() => null) : null) ??
+      (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
     const worse = now ? now.position > baseline + WORSE_BY_POSITIONS && now.clicks <= baseClicks : false;
