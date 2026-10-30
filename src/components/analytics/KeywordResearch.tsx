@@ -350,6 +350,17 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
     }
   }
 
+  // Suggest keywords on open, without waiting for a click: seeds are the site
+  // itself plus up to five searches it already shows up for in Google.
+  const seeds = searchQueries.slice(0, 5);
+  const seedKey = `${site}|${seeds.join(",")}`;
+  useEffect(() => {
+    if (!site && !seeds.length) return;
+    run("ideas", { keywords: seeds, url: site }, seeds.length ? `your site and ${seeds.length} of its top searches` : site);
+    // Rerun only when the site or its top searches change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedKey]);
+
   const { sorted, sort } = useSort(
     ideas ?? [],
     {
