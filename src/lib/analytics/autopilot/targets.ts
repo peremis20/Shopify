@@ -99,7 +99,7 @@ export async function addTarget(
 
   if (opts.serperKey) {
     const serp = await fetchSerp(opts.serperKey, k);
-    const r = room(serp.organic, opts.ourDomain);
+    const r = await room(serp.organic, opts.ourDomain);
     winnable = r.ours !== null || r.small >= 3;
     why = describe(r.small, r.ours);
     // A big publisher at #1 to #3 with no small sites at all: say so plainly.
@@ -128,7 +128,7 @@ export async function addTarget(
       for (const i of longTail) {
         const s = await fetchSerp(opts.serperKey, i.keyword).catch(() => null);
         if (!s) continue;
-        const rr = room(s.organic, opts.ourDomain);
+        const rr = await room(s.organic, opts.ourDomain);
         if (rr.ours !== null || rr.small >= 3) easier.push({ keyword: i.keyword.toLowerCase(), monthlySearches: i.avgMonthlySearches ?? 0, why: describe(rr.small, rr.ours) });
         if (easier.length >= 4) break;
       }

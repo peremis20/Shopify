@@ -1,3 +1,4 @@
+import { authorityOf, authorityReady, STRONG_AUTHORITY } from "./authority";
 import { ensureSchema, sql } from "../db";
 import type { KeywordIdea } from "../keyword-options";
 import { keywordIdeas, keywordsReady, keywordVolumes } from "../keywords";
@@ -52,10 +53,20 @@ const BIG =
 export const isBig = (domain: string) => BIG.test(domain);
 
 /** How many page one results are smaller sites, and whether this site is already there. */
-export function room(results: SerpResult[], ourDomain: string): { small: number; ours: number | null } {
+/**
+ * How many page one results are smaller sites, and whether this site is
+ * already there. With Open PageRank, "smaller" means an authority score
+ * under STRONG_AUTHORITY; without it, not on the list of big publishers.
+ */
+export async function room(results: SerpResult[], ourDomain: string): Promise<{ small: number; ours: number | null }> {
   const top = results.slice(0, 10);
   const ours = top.find((r) => r.domain === ourDomain || r.domain.endsWith(`.${ourDomain}`))?.position ?? null;
-  return { small: top.filter((r) => !isBig(r.domain)).length, ours };
+  const scores = (await authorityReady()) ? await authorityOf(top.map((r) => r.domain)).catch(() => new Map<string, number>()) : new Map<string, number>();
+  const weak = (domain: string) => {
+    const score = scores.get(domain.replace(/^www\./, ""));
+    return score === undefined ? !isBig(domain) : score < STRONG_AUTHORITY && !isBig(domain);
+  };
+  return { small: top.filter((r) => weak(r.domain)).length, ours };
 }
 
 const STOP = new Set(
@@ -190,7 +201,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
     for (const k of items.filter((i) => i.role === "main").slice(0, SERP_CHECKS)) {
       const serp = await fetchSerp(serperKey, k.keyword).catch(() => null);
       if (!serp) continue;
-      const { small, ours } = room(serp.organic, ourDomain);
+      const { small, ours } = await room(serp.organic, ourDomain);
       k.winnable = ours !== null || small >= 3;
       k.why =
         ours !== null
