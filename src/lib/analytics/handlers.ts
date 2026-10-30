@@ -589,7 +589,8 @@ async function plannerOpportunities(accountId: string, conn: Connection): Promis
   if (!kws.length) {
     const profile = await readProfile(accountId);
     const domain = conn.gscSiteUrl ? domainOf(conn.gscSiteUrl) : profile.siteDomain;
-    if (domain) kws = await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]);
+    const { serperKey } = await readPlatformSettings();
+    if (domain) kws = await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0], serperKey, domain);
   }
   const ranks = new Map((await rankWatch(accountId)).map((r) => [r.query, r]));
   return kws
@@ -605,6 +606,8 @@ async function plannerOpportunities(accountId: string, conn: Connection): Promis
         potentialClicks: Math.round(k.monthlySearches * 0.1),
         monthlySearches: k.monthlySearches,
         checked: Boolean(r),
+        why: k.why,
+        winnable: k.winnable,
       };
     })
     .filter((o) => o.position !== 1);
@@ -775,7 +778,7 @@ async function maintain(accountId: string, force = false): Promise<string> {
   // Without Search Console, or while it has too little data (new property, small site), Keyword Planner picks the searches to track for each page.
   const thin = !conn.gscSiteUrl || (await gscSearchCount(conn).catch(() => 0)) < THIN_GSC;
   const picked = thin
-    ? (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length
+    ? (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0], platform.serperKey, domain).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length
     : 0;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domain).catch(() => 0) : 0;
   // Index status needs Search Console's URL Inspection.

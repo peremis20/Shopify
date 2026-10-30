@@ -32,6 +32,8 @@ export const siteKeywords: RankingApp = {
       if (!row) continue;
       const position = row.position ?? OFF_PAGE_ONE;
       if (position === 1) continue;
+      // Page one is all big publishers and we're not on it: not worth the effort yet.
+      if (k.winnable === false && position >= OFF_PAGE_ONE) continue;
       const page = (row.url ?? k.page).split("#")[0].split("?")[0];
       out.push({
         op: {

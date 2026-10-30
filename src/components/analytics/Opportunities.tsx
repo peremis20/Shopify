@@ -60,8 +60,9 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
       {planner ? (
         <Explainer>
           Search Console has no data for your site yet (Google takes a few days after it&rsquo;s set up). Until then these
-          come from Keyword Planner: what people search for each of your pages, with your Google position from the daily
-          rank check. The autopilot works on them already. Extra clicks are a monthly estimate for reaching the top 3.
+          come from studying your competitors: what the sites on Google page 1 for your topics rank for, checked for
+          room to win (green means smaller sites already rank there). Your position comes from the daily rank check, and
+          the autopilot works on them already. Extra clicks are a monthly estimate for reaching the top 3.
         </Explainer>
       ) : (
         <Explainer>
@@ -130,7 +131,14 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
             <tbody>
               {sorted.map((o) => (
                 <tr key={`${o.query}|${o.page}`} className="border-b border-dash-line/70 last:border-0">
-                  <td className="max-w-[220px] truncate px-1 py-2 text-dash-ink" title={o.query}>{o.query}</td>
+                  <td className="max-w-[260px] px-1 py-2 text-dash-ink" title={o.query}>
+                    <div className="truncate">{o.query}</div>
+                    {o.why && (
+                      <div className={`truncate text-xs ${o.winnable ? "text-dash-up" : "text-dash-muted"}`} title={o.why}>
+                        {o.why}
+                      </div>
+                    )}
+                  </td>
                   <td className="hidden max-w-[220px] truncate px-1 py-2 text-dash-muted md:table-cell" title={o.page}>
                     <a href={o.page} target="_blank" rel="noreferrer" className="hover:underline">{pathOf(o.page)}</a>
                   </td>

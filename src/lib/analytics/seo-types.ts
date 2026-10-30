@@ -13,6 +13,10 @@ export interface Opportunity {
   monthlySearches?: number;
   /** False until the daily rank check has looked this search up on Google. */
   checked?: boolean;
+  /** Keyword Planner picks: what page one looks like for it, in a few words. */
+  why?: string;
+  /** Page one has room for a site like this. */
+  winnable?: boolean;
 }
 
 export interface KeywordList {
