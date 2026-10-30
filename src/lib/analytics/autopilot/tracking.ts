@@ -4,6 +4,7 @@ import { toIso } from "../dates";
 import { googleRequest } from "../google-auth";
 import { getLists, THIN_GSC } from "../seo-tools";
 import { fetchSerp } from "./serp";
+import { isJunkKeyword } from "./keyword-guard";
 import { readSiteKeywords } from "./site-keywords";
 
 /**
@@ -36,6 +37,8 @@ const isOurs = (domain: string, ourDomain: string) => domain === ourDomain || do
  * worth a daily check.
  */
 const isKeyword = (q: string) => q.split(/\s+/).length <= 6 && !/[?.!,]$/.test(q.trim()) && !/^(help me|can you|tell me|show me|i need|i want)\b/i.test(q);
+/** Picked by the app (not the owner): also has to pass the keyword guardrail. */
+const isGoodPick = (q: string) => isKeyword(q) && !isJunkKeyword(q);
 
 /**
  * In order: saved keywords, the searches the autopilot is working on, then the
@@ -62,7 +65,7 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
   ).catch(() => ({ rows: [] }));
   const brand = ourDomain.split(".")[0];
   const searches = (body.rows ?? [])
-    .filter((r) => r.position <= 20 && r.impressions >= 5 && isKeyword(r.keys[0]) && !(brand && r.keys[0].includes(brand)))
+    .filter((r) => r.position <= 20 && r.impressions >= 5 && isGoodPick(r.keys[0]) && !(brand && r.keys[0].includes(brand)))
     .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions)
     .map((r) => r.keys[0]);
   // Search Console new or thin: the Keyword Planner picks fill the rest, taking turns like above.
@@ -125,9 +128,11 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
     byQuery.set(r.query!, list);
   }
   const weekAgo = toIso(new Date(Date.now() - 7 * DAY));
+  // Junk the app picked before the guardrail drops out; searches the owner saved always stay.
+  const saved = new Set((await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords));
   const out: RankWatchRow[] = [];
   for (const [query, hist] of byQuery) {
-    if (!isKeyword(query)) continue;
+    if (!isKeyword(query) || (isJunkKeyword(query) && !saved.has(query))) continue;
     const last = hist.at(-1)!;
     const prev = hist.at(-2);
     const week = hist.filter((h) => h.day >= weekAgo && h.position !== null).map((h) => h.position!);

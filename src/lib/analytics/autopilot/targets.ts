@@ -2,6 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { keywordIdeas, keywordVolumes } from "../keywords";
 import { isPostUrl, sitePages } from "../site-crawl";
 import { addKeywords, createList, getLists } from "../seo-tools";
+import { isJunkKeyword } from "./keyword-guard";
 import { fetchSerp } from "./serp";
 import { isBig, isLongTail, room, topicWords } from "./site-keywords";
 
@@ -119,7 +120,7 @@ export async function addTarget(
           if (seen.has(kw)) return false;
           seen.add(kw);
           const have = topicWords(kw);
-          return (i.avgMonthlySearches ?? 0) >= 50 && isLongTail(kw, i.avgMonthlySearches ?? 0) && want.every((w) => have.has(w));
+          return (i.avgMonthlySearches ?? 0) >= 50 && isLongTail(kw, i.avgMonthlySearches ?? 0) && want.every((w) => have.has(w)) && !isJunkKeyword(kw);
         })
         .sort((a, b) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0))
         .slice(0, 6);

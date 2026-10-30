@@ -1,3 +1,4 @@
+import { isJunkKeyword } from "./keyword-guard";
 import type { KeywordIdea } from "../keyword-options";
 import { keywordIdeas, keywordsReady, keywordVolumes, type KeywordQuery } from "../keywords";
 import type { Opportunity } from "../seo-types";
@@ -53,7 +54,7 @@ export async function relatedPhrases(query: string, pageUrl: string): Promise<Re
   const ideas: KeywordIdea[] = await keywordIdeas({ ...TARGETING, keywords: [query], url: pageUrl }).catch(() => []);
   const topic = words(query);
   return ideas
-    .filter((i) => i.keyword.toLowerCase() !== query.toLowerCase() && (i.avgMonthlySearches ?? 0) >= 10 && i.competition !== "HIGH")
+    .filter((i) => i.keyword.toLowerCase() !== query.toLowerCase() && (i.avgMonthlySearches ?? 0) >= 10 && i.competition !== "HIGH" && !isJunkKeyword(i.keyword))
     .filter((i) => [...words(i.keyword)].some((w) => topic.has(w)))
     .slice(0, 10)
     .map((i) => ({ keyword: i.keyword, monthlySearches: i.avgMonthlySearches ?? 0 }));
