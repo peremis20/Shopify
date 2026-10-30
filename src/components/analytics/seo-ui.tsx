@@ -54,7 +54,7 @@ const pagePath = (url: string) => {
  * checks Google page one, works on the page first in line, and suggests easier
  * searches on the same topic when page one is all big sites.
  */
-export function RankForThis({ keyword, monthlySearches }: { keyword: string; monthlySearches?: number | null }) {
+export function RankForThis({ keyword, monthlySearches, label = "Rank for this" }: { keyword: string; monthlySearches?: number | null; label?: string }) {
   const [state, setState] = useState<"idle" | "busy" | "done">("idle");
   const [result, setResult] = useState<TargetResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +80,7 @@ export function RankForThis({ keyword, monthlySearches }: { keyword: string; mon
         disabled={state !== "idle"}
         className="whitespace-nowrap rounded-full bg-dash-green px-2.5 py-0.5 text-xs font-semibold text-white hover:bg-dash-deep disabled:bg-dash-green/40"
       >
-        {state === "busy" ? "Checking Google…" : state === "done" ? "Working on it" : "Rank for this"}
+        {state === "busy" ? "Checking Google…" : state === "done" ? "Working on it" : label}
       </button>
       {error && <span className="ml-2 text-xs text-dash-down">{error}</span>}
       {result && (

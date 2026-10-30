@@ -5,7 +5,7 @@ import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
 import type { KeywordList, Ranking } from "@/lib/analytics/seo-types";
 import { formatNumber } from "./format";
 import { ArrowDownIcon, ArrowUpIcon, CloseIcon } from "./Icons";
-import { api, Explainer, pathOf } from "./seo-ui";
+import { api, Explainer, pathOf, RankForThis } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Skeleton } from "./ui";
@@ -251,6 +251,7 @@ function GoogleToday() {
                 <th className="px-1 pb-2 text-right">Change</th>
                 <th className="hidden px-1 pb-2 md:table-cell">Your page</th>
                 <th className="hidden px-1 pb-2 text-right sm:table-cell">Checked</th>
+                <th className="px-1 pb-2" />
               </tr>
             </thead>
             <tbody>
@@ -281,6 +282,7 @@ function GoogleToday() {
                       {r.url ? pathOf(r.url) : "—"}
                     </td>
                     <td className="hidden whitespace-nowrap px-1 py-2 text-right text-dash-muted sm:table-cell">{r.checkedOn}</td>
+                    <td className="px-1 py-2 text-right">{r.position !== 1 && <RankForThis keyword={r.query} />}</td>
                   </tr>
                 );
               })}

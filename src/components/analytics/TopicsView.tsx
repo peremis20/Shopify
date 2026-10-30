@@ -4,7 +4,14 @@ import { useMemo } from "react";
 import type { KeywordIdea } from "@/lib/analytics/keyword-options";
 import { groupTopics } from "@/lib/analytics/topics";
 import { formatNumber } from "./format";
-import { TrackButton } from "./seo-ui";
+import { RankForThis, TrackButton } from "./seo-ui";
+
+/** The search a topic's article should aim at: the best searched specific one (three words or more), else the top one. */
+function mainSearch(keywords: { keyword: string; avgMonthlySearches: number | null }[]) {
+  const by = (a: { avgMonthlySearches: number | null }, b: { avgMonthlySearches: number | null }) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0);
+  const specific = keywords.filter((k) => k.keyword.trim().split(/\s+/).length >= 3 && (k.avgMonthlySearches ?? 0) <= 20000).sort(by);
+  return specific[0] ?? [...keywords].sort(by)[0];
+}
 
 /** Keyword ideas grouped into content topics, each a page or post to write. */
 export function TopicsView({ ideas, onTrack, unit = "searches a month" }: {
@@ -36,6 +43,15 @@ export function TopicsView({ ideas, onTrack, unit = "searches a month" }: {
             ))}
             {t.keywords.length > 8 && <span className="px-1 text-xs text-dash-muted">and {t.keywords.length - 8} more</span>}
           </div>
+          {(() => {
+            const main = mainSearch(t.keywords);
+            return main ? (
+              <div className="mt-auto flex items-center justify-between gap-2 pt-1 text-xs text-dash-muted">
+                <span className="truncate" title={main.keyword}>Aims at: {main.keyword}</span>
+                <RankForThis keyword={main.keyword} monthlySearches={main.avgMonthlySearches} label="Write or improve it" />
+              </div>
+            ) : null;
+          })()}
         </div>
       ))}
     </div>
