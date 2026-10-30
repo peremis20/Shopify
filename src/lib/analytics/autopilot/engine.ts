@@ -1,3 +1,4 @@
+import { nextNewArticle, unpublishArticle } from "./new-articles";
 import type { Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
@@ -566,6 +567,38 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     const brake = traffic?.sharp
       ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}). New changes are on hold until that settles; check Search Console for a Google update or a site problem.`
       : null;
+    // A new article for a chosen search no page covers yet (at most one a day).
+    if (!preview && !capped && !brake) {
+      const posted = await nextNewArticle({
+        accountId,
+        site: access,
+        ai,
+        platform,
+        ourDomain: ctx.ourDomain,
+        publish: acct.allowContent,
+      }).catch((e) => (notes.push(`New article not written: ${(e as Error).message}`), null));
+      if (posted) {
+        await logChange({
+          accountId,
+          runId,
+          pageUrl: posted.url ?? `https://${ctx.ourDomain}/`,
+          resourceType: posted.resourceType,
+          resourceId: posted.resourceId,
+          query: posted.keyword,
+          field: "new_article",
+          before: null,
+          after: `<h1>${posted.article.title}</h1>\n<p><strong>SEO title:</strong> ${posted.article.metaTitle}<br><strong>Meta description:</strong> ${posted.article.metaDescription}</p>\n${posted.article.html}`,
+          reason: `No page on the site covered "${posted.keyword}", so the autopilot wrote one from what ranks on Google page one.`,
+          status: posted.resourceType === "site" ? "suggested" : "applied",
+          note: posted.note || (posted.live ? "Published." : "Saved as a draft: turn on new content in Autopilot settings to publish automatically."),
+        });
+        summary.push(
+          posted.url
+            ? `${posted.live ? "Published" : "Drafted"} a new article for "${posted.keyword}": ${posted.url}`
+            : `Wrote a new article for "${posted.keyword}" (on the fix list).`
+        );
+      }
+    }
     if (capped && !preview) {
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
     } else if (brake && !preview) {
@@ -672,6 +705,11 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
     return `This one didn't help; ${back}.`;
+  }
+  if (field === "new_article") {
+    await unpublishArticle(ctx.accountId, ctx.site, c.resource_id!);
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    return "Taken off the site (kept as a draft).";
   }
   if (field === "meta_title" || field === "meta_description") {
     await w.setSeo(c.resource_id!, field === "meta_title" ? "title" : "description", c.before_value).catch((e) => {

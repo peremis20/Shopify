@@ -101,7 +101,7 @@ export function RankForThis({ keyword, monthlySearches }: { keyword: string; mon
                 every day in Rank tracker.
               </>
             ) : (
-              <>No page on your site is about this yet, so there&rsquo;s nothing to improve. It&rsquo;s saved and checked on Google daily in Rank tracker. An article on it is what would rank.</>
+              <>No page on your site is about this yet, so the autopilot will write a new article for it from what ranks on Google page 1 and post it to your blog (one new article a day). It&rsquo;s checked on Google daily in Rank tracker.</>
             )}
           </p>
           {result.easier.length > 0 && (

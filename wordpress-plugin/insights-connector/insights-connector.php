@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Insights Connector
  * Description: Lets the Insights SEO autopilot improve this site's SEO titles, meta descriptions, content and structured data, with every change logged and undoable from the app.
- * Version: 1.1.0
+ * Version: 1.2.0
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * License: GPLv2 or later
@@ -154,7 +154,7 @@ add_action('rest_api_init', function () {
 				'name' => get_bloginfo('name'),
 				'home' => home_url('/'),
 				'seo_plugin' => insights_seo_plugin(),
-				'version' => '1.1.0',
+				'version' => '1.2.0',
 			);
 		},
 	));
@@ -242,6 +242,42 @@ add_action('rest_api_init', function () {
 				return new WP_Error('insights_changed', 'The post changed since it was read.', array('status' => 409));
 			}
 			$result = wp_update_post(wp_slash(array('ID' => $post->ID, 'post_content' => (string) $body['content'])), true);
+			return is_wp_error($result) ? $result : insights_item(get_post($post->ID));
+		},
+	));
+
+	// A new post written by the app: published or saved as a draft, with its SEO title and description.
+	register_rest_route('insights/v1', '/create', $auth + array(
+		'methods' => 'POST',
+		'callback' => function (WP_REST_Request $r) {
+			$body = $r->get_json_params();
+			if (empty($body['title']) || empty($body['content'])) {
+				return new WP_Error('insights_missing', 'A title and content are needed.', array('status' => 400));
+			}
+			$id = wp_insert_post(wp_slash(array(
+				'post_type' => 'post',
+				'post_status' => !empty($body['publish']) ? 'publish' : 'draft',
+				'post_title' => sanitize_text_field((string) $body['title']),
+				'post_name' => sanitize_title((string) ($body['slug'] ?? $body['title'])),
+				'post_content' => wp_kses_post((string) $body['content']),
+				'post_excerpt' => sanitize_text_field((string) ($body['summary'] ?? '')),
+			)), true);
+			if (is_wp_error($id)) return $id;
+			foreach (array('title', 'description') as $field) {
+				if (!empty($body['seo_' . $field])) insights_set_seo($id, $field, sanitize_text_field((string) $body['seo_' . $field]));
+			}
+			return insights_item(get_post($id));
+		},
+	));
+
+	// Publish or unpublish (back to draft) a post the app created.
+	register_rest_route('insights/v1', '/status/(?P<id>\d+)', $auth + array(
+		'methods' => 'POST',
+		'callback' => function (WP_REST_Request $r) {
+			$post = insights_post($r['id']);
+			if (is_wp_error($post)) return $post;
+			$body = $r->get_json_params();
+			$result = wp_update_post(array('ID' => $post->ID, 'post_status' => !empty($body['publish']) ? 'publish' : 'draft'), true);
 			return is_wp_error($result) ? $result : insights_item(get_post($post->ID));
 		},
 	));

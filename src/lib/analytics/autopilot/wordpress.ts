@@ -153,3 +153,24 @@ export async function wpSetSchema(w: WpAccess, id: string, schema: string | null
 export async function wpSetGoogle(w: WpAccess, codes: { verification: string | null; measurement: string | null }): Promise<void> {
   await wpRequest(w, "POST", "/google", codes);
 }
+
+/** A new post written by the app (plugin 1.2+). */
+export async function wpCreatePost(
+  w: WpAccess,
+  a: { title: string; html: string; slug: string; summary: string; seoTitle: string; seoDescription: string; publish: boolean }
+): Promise<{ id: string; url: string }> {
+  const item = await wpRequest<WpItem>(w, "POST", "/create", {
+    title: a.title,
+    content: a.html,
+    slug: a.slug,
+    summary: a.summary,
+    seo_title: a.seoTitle,
+    seo_description: a.seoDescription,
+    publish: a.publish,
+  });
+  return { id: String(item.id), url: item.url };
+}
+
+export async function wpSetPublished(w: WpAccess, id: string, publish: boolean): Promise<void> {
+  await wpRequest(w, "POST", `/status/${id}`, { publish });
+}

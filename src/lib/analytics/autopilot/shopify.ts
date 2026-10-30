@@ -260,3 +260,28 @@ export async function setImageAlt(s: StoreAccess, fileId: string, alt: string) {
     f: [{ id: fileId, alt }],
   });
 }
+
+/** Publishes (or saves as a draft) a new blog post in the store's first blog. Returns its id and path. */
+export async function createArticle(
+  s: StoreAccess,
+  a: { title: string; html: string; handle: string; summary: string; author: string; publish: boolean }
+): Promise<{ id: string; path: string }> {
+  const blogs = await shopifyGql<{ blogs: { nodes: { id: string; handle: string }[] } }>(s, `{ blogs(first: 1) { nodes { id handle } } }`);
+  const blog = blogs.blogs.nodes[0];
+  if (!blog) throw new Error("This store has no blog yet. Add one in Shopify (Online Store, Blog posts) and the article goes there.");
+  const d = await shopifyGql<{ articleCreate: { article: { id: string; handle: string } | null; userErrors: { message: string }[] } }>(
+    s,
+    `mutation($a: ArticleCreateInput!) { articleCreate(article: $a) { article { id handle } userErrors { message } } }`,
+    { a: { blogId: blog.id, title: a.title, body: a.html, handle: a.handle, summary: a.summary, author: { name: a.author }, isPublished: a.publish } }
+  );
+  const made = d.articleCreate.article;
+  if (!made) throw new Error(d.articleCreate.userErrors.map((e) => e.message).join(" ") || "Shopify didn't create the article.");
+  return { id: made.id, path: `/blogs/${blog.handle}/${made.handle}` };
+}
+
+export async function setArticlePublished(s: StoreAccess, id: string, publish: boolean) {
+  await shopifyGql(s, `mutation($id: ID!, $a: ArticleUpdateInput!) { articleUpdate(id: $id, article: $a) { userErrors { message } } }`, {
+    id,
+    a: { isPublished: publish },
+  });
+}

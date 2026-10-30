@@ -28,6 +28,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   link_fix: "Link fix",
   schema: "Structured data",
   intent: "Content gap",
+  new_article: "New article",
 };
 
 const STATUS_STYLE: Record<AutopilotChange["status"], string> = {
@@ -315,7 +316,7 @@ function FixList({
   onMark: (id: string, done: boolean) => void;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
-  const html = (f: AutopilotChange) => f.field === "content" || f.field === "schema" || f.field === "internal_link";
+  const html = (f: AutopilotChange) => f.field === "content" || f.field === "schema" || f.field === "internal_link" || f.field === "new_article";
   return (
     <div>
       <p className="mb-1 font-semibold">Fix list ({fixes.length})</p>

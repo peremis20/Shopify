@@ -28,6 +28,7 @@ const CUSTOM: Where = {
   meta_title: "Send this to whoever edits your site: it goes in the page's <title> tag, inside <head>.",
   meta_description: 'Send this to whoever edits your site: it goes in <meta name="description" content="..."> inside <head>.',
   content: "Add this as a new section near the end of the page (it's ready to use HTML).",
+  new_article: "Add this as a new blog post: the first line is its headline, then paste the SEO title and description into your SEO settings and the rest as the post body (ready to use HTML).",
   schema: "Paste this in the page's <head> or just before </body>. It tells Google what the page is about.",
   internal_link: "Add this sentence to the end of the other page shown, keeping the link.",
 };

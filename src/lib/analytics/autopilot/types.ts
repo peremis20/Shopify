@@ -4,7 +4,7 @@
  * "intent" records a content gap: the page can't give searchers what they want, so nothing was changed.
  * "link_fix" points links at a renamed product's live address instead of its redirect.
  */
-export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link" | "schema" | "intent" | "link_fix";
+export type ChangeField = "meta_title" | "meta_description" | "content" | "alt" | "internal_link" | "schema" | "intent" | "link_fix" | "new_article";
 /** "suggested": on the fix list of a site the app can't edit, waiting to be pasted in. */
 export type ChangeStatus = "applied" | "kept" | "reverted" | "failed" | "skipped" | "suggested";
 

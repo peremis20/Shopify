@@ -643,3 +643,89 @@ export async function checkAiKey(ai: AiProvider): Promise<void> {
   const client = new Anthropic({ apiKey: ai.key });
   await client.models.retrieve(MODEL);
 }
+
+export interface NewArticle {
+  title: string;
+  metaTitle: string;
+  metaDescription: string;
+  /** Short summary for blog listings. */
+  summary: string;
+  html: string;
+  slug: string;
+}
+
+const ARTICLE_SCHEMA = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: "The article's headline, plain and specific, under 70 characters." },
+    metaTitle: { type: "string", description: "SEO title, 60 characters or fewer, with the search phrase near the start." },
+    metaDescription: { type: "string", description: "Meta description, 120 to 155 characters, with a reason to click." },
+    summary: { type: "string", description: "One or two sentences for the blog listing." },
+    html: {
+      type: "string",
+      description:
+        "The article body, 900 to 1400 words, no <h1> (the title is the headline): <h2> sections with <p>, and <ul>/<li> or <h3> only where they fit. No links.",
+    },
+    slug: { type: "string", description: "URL slug: lowercase words joined by hyphens, 3 to 6 words, built from the search phrase." },
+  },
+  required: ["title", "metaTitle", "metaDescription", "summary", "html", "slug"],
+  additionalProperties: false,
+};
+
+/**
+ * A whole new article for a search no page on the site covers yet. It's
+ * planned from what ranks on Google page one (their headings and the
+ * questions people ask), written to the same rules as every change, then
+ * edited by a second AI, and stripped of any paragraph with a number (no
+ * source page to check numbers against) or a health claim.
+ */
+export async function writeNewArticle(
+  ai: AiProvider,
+  brief: {
+    keyword: string;
+    competitors: { domain: string; title: string; headings: string[] }[];
+    questions: string[];
+    related: string[];
+    /** Titles of the site's own articles, so the new one doesn't repeat them. */
+    ownTitles: string[];
+  }
+): Promise<NewArticle | null> {
+  const prompt = `Write a new article for this website that can rank on Google page one for the search "${brief.keyword}".
+
+What ranks on page one now (learn what searchers expect; never copy their wording):
+${brief.competitors.map((c) => `- ${c.domain}: "${c.title}". Sections: ${c.headings.slice(0, 10).join(" / ") || "(none read)"}`).join("\n") || "(not available)"}
+
+Questions people also ask: ${brief.questions.join(" | ") || "(none)"}
+Related searches: ${brief.related.join(" | ") || "(none)"}
+
+The site already has these articles, so don't repeat them: ${brief.ownTitles.slice(0, 40).join(" | ") || "(none)"}
+
+Cover what searchers want better and more clearly than the pages above, in this site's own voice. Answer the main question early, in plain words.
+Only use well established, general knowledge. Write no numbers at all: no doses, percentages, statistics, prices, years or counts (paragraphs with numbers are removed).
+If this search isn't a fit for this website's business, return an empty string for html.`;
+
+  const out = await askJson<NewArticle>(ai, prompt, ARTICLE_SCHEMA);
+  let html = onlyKnownNumbers(cleanHtml(polish(out.html ?? "").replace(/<h1[\s\S]*?<\/h1>/gi, "")), "");
+  if (!html) return null;
+  // A second AI edits it so it reads as a person wrote it.
+  html = await humanEdit(ai, html, "").catch(() => dropBlocks(html, (text) => hasAiTell(text)));
+  html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text));
+  // Too little left to stand as an article.
+  if (blocksOf(html).length < 8 || plainText(html).split(/\s+/).length < 500) return null;
+
+  const safe = (text: string) => (isRisky(text) || hasAiTell(text) ? "" : text);
+  const slug = (out.slug || brief.keyword)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  const title = safe(trimWords(polish(out.title), 90)) || brief.keyword.replace(/^./, (c) => c.toUpperCase());
+  return {
+    title,
+    metaTitle: safe(trimWords(polish(out.metaTitle), 70)) || title,
+    metaDescription: safe(trimWords(polish(out.metaDescription), 170)),
+    summary: safe(trimWords(polish(out.summary), 300)),
+    html,
+    slug: slug || "article",
+  };
+}

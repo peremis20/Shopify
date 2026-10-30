@@ -21,6 +21,8 @@ export interface Target {
   winnable: boolean | null;
   why: string;
   addedAt: string;
+  /** A new article the autopilot wrote for it (see new-articles.ts). */
+  article?: { url: string | null; live: boolean; note: string };
 }
 
 export interface TargetResult {
@@ -100,7 +102,16 @@ export async function addTarget(
 
   const monthlySearches =
     opts.monthlySearches ?? (await keywordVolumes({ ...TARGETING, keywords: [k] }).catch(() => []))[0]?.avgMonthlySearches ?? 0;
-  const target: Target = { keyword: k, page, monthlySearches, winnable, why, addedAt: new Date().toISOString() };
+  const before = (await readTargets(accountId)).find((t) => t.keyword === k);
+  const target: Target = {
+    keyword: k,
+    page: page ?? (before?.article?.live ? before.article.url : null),
+    monthlySearches,
+    winnable,
+    why,
+    addedAt: new Date().toISOString(),
+    ...(before?.article ? { article: before.article } : {}),
+  };
   const others = (await readTargets(accountId)).filter((t) => t.keyword !== k);
   await saveTargets(accountId, [target, ...others]);
 
@@ -110,6 +121,12 @@ export async function addTarget(
   if (!list.keywords.includes(k)) await addKeywords(accountId, list.id, [k]);
 
   return { target, easier };
+}
+
+/** Replaces one target (by keyword), keeping the others. */
+export async function saveTarget(accountId: string, target: Target): Promise<void> {
+  const all = await readTargets(accountId);
+  await saveTargets(accountId, all.map((t) => (t.keyword === target.keyword ? target : t)));
 }
 
 export async function removeTarget(accountId: string, keyword: string): Promise<void> {
