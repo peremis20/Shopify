@@ -1,5 +1,6 @@
 export function Sparkline({ values, color = "#1F4D36" }: { values: number[]; color?: string }) {
-  if (values.length < 2) return null;
+  // A flat line (no change, or no data yet) says nothing, so draw nothing.
+  if (values.length < 2 || values.every((v) => v === values[0])) return null;
   const max = Math.max(...values);
   const min = Math.min(...values);
   const span = max - min || 1;
