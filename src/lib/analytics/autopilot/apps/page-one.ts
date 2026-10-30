@@ -25,7 +25,7 @@ export const pageOne: RankingApp = {
     const text = `Google page one for this search right now (this store is ${c.serp.ourPosition ? `#${c.serp.ourPosition}` : "not on page one"}):
 ${lines}
 ${c.newlyAbove.length ? `Moved above this store since the last check: ${c.newlyAbove.join(", ")}.\n` : ""}${pages ? `What the pages to beat do:\n${pages}\n` : ""}${c.serp.questions.length ? `People also ask: ${c.serp.questions.join(" | ")}\n` : ""}${c.serp.related.length ? `Related searches: ${c.serp.related.join(", ")}\n` : ""}
-Use this to win the click and the ranking: make the SEO title and description more specific and more useful than the titles above, without copying them. If those pages cover subtopics or questions this page doesn't, the new section should cover the most important ones (answer the "People also ask" questions briefly, as an FAQ with <h3> questions, when they fit). Only use facts consistent with this page; never claim what the competitors claim unless this page supports it.`;
+Use this to win the click and the ranking: make the SEO title and description more specific and more useful than the titles above, without copying them. If those pages cover subtopics or questions this page doesn't, the new section should cover the most important ones in whatever shape reads best (plain paragraphs that answer the "People also ask" questions are usually better than a FAQ list). Only use facts consistent with this page; never claim what the competitors claim unless this page supports it.`;
 
     const ahead = c.serp.organic.filter((r) => r.position < (c.serp.ourPosition ?? 11)).slice(0, 3).map((r) => r.domain);
     const summary = [

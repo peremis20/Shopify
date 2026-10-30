@@ -132,6 +132,7 @@ const LINK_SCHEMA = {
 export function polish(text: string): string {
   return (text ?? "")
     .replace(/\bHCI\b/g, "HCl") // hydrochloride salts (berberine HCl), often mistyped with a capital i
+    .replace(/[\u2010\u2011]/g, "-") // unusual hyphen characters some models write, shown oddly by some fonts
     .replace(/(\s*\|\s*[^|]+)\1+$/, "$1")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
