@@ -2,6 +2,7 @@ import { ensureSchema, sql } from "../db";
 import type { KeywordIdea } from "../keyword-options";
 import { keywordIdeas, keywordsReady, keywordVolumes } from "../keywords";
 import { isPostUrl, sitePages } from "../site-crawl";
+import { allowsFaith, readProfile } from "../profile";
 import { isJunkKeyword } from "./keyword-guard";
 import { fetchSerp, type SerpResult } from "./serp";
 
@@ -99,11 +100,16 @@ export async function supportFor(accountId: string, page: string): Promise<strin
   return (await readSiteKeywords(accountId)).filter((k) => k.role === "support" && k.page === page).map((k) => k.keyword);
 }
 
+/** Faith topics count as on topic for a faith and health publication. */
+export const faithAllowed = async (accountId: string) => allowsFaith((await readProfile(accountId).catch(() => null))?.businessType);
+
 export async function readSiteKeywords(accountId: string): Promise<SiteKeyword[]> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
   // Older lists were picked before the guardrail: junk is left out when read too.
-  return row?.value ? ((JSON.parse(row.value) as { items: SiteKeyword[] }).items ?? []).filter((k) => !isJunkKeyword(k.keyword)) : [];
+  if (!row?.value) return [];
+  const faith = await faithAllowed(accountId);
+  return ((JSON.parse(row.value) as { items: SiteKeyword[] }).items ?? []).filter((k) => !isJunkKeyword(k.keyword, { faith }));
 }
 
 /** Finds (or refreshes, weekly) the keywords to aim each page at. Returns them, best first. */
@@ -120,6 +126,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
     .slice(0, PAGES_PER_REFRESH);
 
   const brandWord = brand.toLowerCase().split(/[^a-z0-9]+/)[0] ?? "";
+  const faith = await faithAllowed(accountId);
   const found = new Map<string, SiteKeyword>();
   for (const p of pages) {
     const subject = (p.h1 || p.title).replace(/\s*[|·\-–—:]\s*[^|·\-–—:]{2,40}$/, "");
@@ -142,7 +149,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
       .filter((i) => (i.avgMonthlySearches ?? 0) >= 20 && i.keyword.split(/\s+/).length <= 7)
       .filter((i) => !(brandWord && i.keyword.toLowerCase().includes(brandWord)))
       // Guardrail: no stuttered, local, navigational or off topic searches.
-      .filter((i) => !isJunkKeyword(i.keyword))
+      .filter((i) => !isJunkKeyword(i.keyword, { faith }))
       // On topic: shares at least half of its meaningful words with the page's subject.
       .filter((i) => {
         const w = [...topicWords(i.keyword)];
@@ -178,7 +185,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
     }
   }
   // Main targets first (winnable, then by searches), then the broad ones that support them.
-  items = items.filter((k) => !isJunkKeyword(k.keyword));
+  items = items.filter((k) => !isJunkKeyword(k.keyword, { faith }));
   const rank = (k: SiteKeyword) => (k.role === "support" ? 2 : k.winnable === false ? 1 : 0);
   items.sort((a, b) => rank(a) - rank(b) || Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
   items = items.slice(0, 50);

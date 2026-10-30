@@ -14,7 +14,11 @@ const MODEL = "claude-opus-5-5";
 /** Instructions for every request, fitted to the customer's business (see AiProvider.site). */
 function rulesFor(site: AiProvider["site"]): string {
   const who = site?.brand ? `"${site.brand}", a website` : "a website";
-  return `You are the SEO editor for ${who} that sells ${site?.sells ?? "health and wellness products"}.
+  return site?.readers
+    ? `You are the SEO editor for ${who} that publishes ${site.sells}.
+Write for real readers first, search engines second. Never sell or push products; inform and help.
+${site.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`
+    : `You are the SEO editor for ${who} that sells ${site?.sells ?? "health and wellness products"}.
 Write for real shoppers first, search engines second.
 ${site?.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`;
 }

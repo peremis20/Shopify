@@ -14,6 +14,8 @@ export const BUSINESS_TYPES = [
   { id: "fitness", label: "Fitness and sports nutrition", sells: "fitness and sports nutrition products" },
   { id: "health_store", label: "Health food or wellness store", sells: "natural health and wellness products" },
   { id: "practice", label: "Clinic or health practice", sells: "health care services" },
+  { id: "publisher", label: "Health magazine or blog", sells: "health and wellness articles", readers: true },
+  { id: "faith_health", label: "Faith and health magazine or blog", sells: "health, wellness and faith articles", readers: true },
   { id: "other", label: "Other health and wellness", sells: "health and wellness products" },
 ] as const;
 
@@ -82,6 +84,10 @@ export async function saveProfile(accountId: string, patch: Partial<Profile>): P
 }
 
 /** What the writer is told about the business. */
-export function siteBrief(p: Profile): { brand: string | null; sells: string } {
-  return { brand: p.brandName, sells: BUSINESS_TYPES.find((b) => b.id === p.businessType)?.sells ?? "health and wellness products" };
+export function siteBrief(p: Profile): { brand: string | null; sells: string; readers: boolean } {
+  const type = BUSINESS_TYPES.find((b) => b.id === p.businessType);
+  return { brand: p.brandName, sells: type?.sells ?? "health and wellness products", readers: Boolean(type && "readers" in type && type.readers) };
 }
+
+/** Faith topics (sabbath, prayer, church) are on topic for a faith and health publication. */
+export const allowsFaith = (businessType: string | null | undefined) => businessType === "faith_health";

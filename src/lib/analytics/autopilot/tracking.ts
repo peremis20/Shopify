@@ -5,7 +5,7 @@ import { googleRequest } from "../google-auth";
 import { getLists, THIN_GSC } from "../seo-tools";
 import { fetchSerp } from "./serp";
 import { isJunkKeyword } from "./keyword-guard";
-import { readSiteKeywords } from "./site-keywords";
+import { faithAllowed, readSiteKeywords } from "./site-keywords";
 
 /**
  * Daily rank tracking. Search Console lags about 3 days; this checks Google
@@ -130,9 +130,10 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
   const weekAgo = toIso(new Date(Date.now() - 7 * DAY));
   // Junk the app picked before the guardrail drops out; searches the owner saved always stay.
   const saved = new Set((await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords));
+  const faith = await faithAllowed(accountId);
   const out: RankWatchRow[] = [];
   for (const [query, hist] of byQuery) {
-    if (!isKeyword(query) || (isJunkKeyword(query) && !saved.has(query))) continue;
+    if (!isKeyword(query) || (isJunkKeyword(query, { faith }) && !saved.has(query))) continue;
     const last = hist.at(-1)!;
     const prev = hist.at(-2);
     const week = hist.filter((h) => h.day >= weekAgo && h.position !== null).map((h) => h.position!);

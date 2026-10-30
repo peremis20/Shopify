@@ -17,7 +17,10 @@ const NAVIGATIONAL = /\b(login|log in|sign in|sign up|app download|customer serv
 
 /** Topics a health and wellness site has nothing to offer on. */
 const OFF_TOPIC =
-  /\b(church|churches|bible|pastor|sermon|mosque|temple|casino|lottery|betting|porn|xxx|onlyfans|lyrics|movie|movies|netflix|episode|cast|game|games|minecraft|roblox|fortnite|weather|jobs?|careers?|hiring|salary|salaries|resume|for sale|craigslist|zillow|apartments?|rent|car insurance|auto insurance|home insurance|life insurance|mortgage|loan|loans|stock|stocks|crypto|bitcoin|tattoo|horoscope|zodiac)\b/;
+  /\b(casino|lottery|betting|porn|xxx|onlyfans|lyrics|movie|movies|netflix|episode|cast|game|games|minecraft|roblox|fortnite|weather|jobs?|careers?|hiring|salary|salaries|resume|for sale|craigslist|zillow|apartments?|rent|car insurance|auto insurance|home insurance|life insurance|mortgage|loan|loans|stock|stocks|crypto|bitcoin|tattoo|horoscope|zodiac)\b/;
+
+/** Religious searches: off topic, except on a faith and health publication. */
+const FAITH = /\b(church|churches|bible|pastor|sermon|mosque|temple|sabbath|prayer|faith|christian|god)\b/;
 
 /** The same word twice in a row, or a word repeated anywhere in a short search ("health insurance health insurance"). */
 function stutters(words: string[]): boolean {
@@ -27,7 +30,7 @@ function stutters(words: string[]): boolean {
 }
 
 /** Why a keyword idea should be dropped, or null when it's fine. */
-export function junkReason(keyword: string): string | null {
+export function junkReason(keyword: string, opts: { faith?: boolean } = {}): string | null {
   const k = keyword.trim().toLowerCase().replace(/\s+/g, " ");
   const words = k.split(" ");
   if (!k || k.length < 4) return "too short";
@@ -37,7 +40,10 @@ export function junkReason(keyword: string): string | null {
   if (LOCAL.test(k)) return "local search";
   if (NAVIGATIONAL.test(k)) return "looking for a site or login";
   if (OFF_TOPIC.test(k)) return "off topic";
+  if (!opts.faith && FAITH.test(k)) return "off topic (faith)";
+  // A place of worship or a congregation is a local search even for a faith publication.
+  if (opts.faith && /\b(church|churches|mosque|temple)\b/.test(k) && !/\b(health|healing|wellness|fast|fasting|diet|food)\b/.test(k)) return "looking for a place";
   return null;
 }
 
-export const isJunkKeyword = (keyword: string) => junkReason(keyword) !== null;
+export const isJunkKeyword = (keyword: string, opts: { faith?: boolean } = {}) => junkReason(keyword, opts) !== null;

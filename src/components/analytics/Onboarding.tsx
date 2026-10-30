@@ -13,7 +13,7 @@ import { Card } from "./ui";
  * minutes. Steps already done are skipped, optional ones can be skipped, and
  * the first site check starts on its own at the end.
  */
-type Screen = "google" | "website" | "connect" | "business" | "data" | "finish";
+type Screen = "google" | "website" | "connect" | "business" | "data" | "keywords" | "finish";
 
 const SKIP_KEY = "insights.onboardingSkip";
 const readSkips = (): string[] => {
@@ -34,6 +34,7 @@ function screensFor(s: Status, skips: string[]): { id: Screen; done: boolean }[]
   if (s.platform && s.platform !== "shopify" && step("website")) out.push({ id: "connect", done: s.siteConnected || skips.includes("connect") });
   out.push({ id: "business", done: step("business") });
   out.push({ id: "data", done: (step("search_console") && step("analytics")) || skips.includes("data") });
+  out.push({ id: "keywords", done: step("targets") || skips.includes("keywords") });
   out.push({ id: "finish", done: step("autopilot") });
   return out;
 }
@@ -42,8 +43,9 @@ const TITLES: Record<Screen, string> = {
   google: "Sign in with Google",
   website: "What's your website?",
   connect: "Let the app make changes for you",
-  business: "What do you sell?",
+  business: "What kind of site is this?",
   data: "Search Console and Google Analytics",
+  keywords: "Pick your first searches to win",
   finish: "Turn on the autopilot",
 };
 
@@ -184,6 +186,7 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
           )}
           {current === "business" && <BusinessPicker status={status} busy={busy} act={act} />}
           {current === "data" && <DataScreen status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} onSkip={() => skip("data")} />}
+          {current === "keywords" && <KeywordsScreen act={act} onSkip={() => skip("keywords")} />}
           {current === "finish" && (
             <Finish status={status} busy={busy} act={act} onLater={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} />
           )}
@@ -281,10 +284,16 @@ function Finish({ status, busy, act, onLater }: { status: Status; busy: string |
   }, [checked]);
   return (
     <div className="space-y-4">
-      <p className="text-dash-muted">
-        Your first site check is running now (rankings, site health, risky claims and overlapping pages). The autopilot then improves
-        your pages every day, at most 4 a week, and every change can be undone.
-      </p>
+      <p className="text-dash-muted">Your first site check is running now. Once the autopilot is on, every week it:</p>
+      <ul className="list-disc space-y-1 pl-5 text-dash-muted">
+        <li>Improves up to 4 pages for your searches, specific long tail ones first: titles, descriptions, a new section and links from your other articles</li>
+        <li>Writes up to 3 new articles for searches no page covers yet, planned from what ranks on Google page 1</li>
+        <li>Checks where you stand on Google every day and undoes changes that don&apos;t help</li>
+        {status.platform && status.platform !== "shopify" && status.platform !== "wordpress" && (
+          <li>Sends what it can&apos;t change on your site itself (new sections and articles) to your fix list, ready to paste</li>
+        )}
+      </ul>
+      <p className="text-dash-muted">You can change both numbers in Autopilot settings, and undo any change.</p>
       <div className="flex flex-wrap items-center gap-3">
         <button
           disabled={busy === "enable"}
@@ -311,7 +320,7 @@ function Finish({ status, busy, act, onLater }: { status: Status; busy: string |
 function BusinessPicker({ status, busy, act }: { status: Status; busy: string | null; act: Act }) {
   return (
     <div className="space-y-3">
-      <p className="text-dash-muted">So every change fits your business and stays within health claim rules.</p>
+      <p className="text-dash-muted">So every change fits your site, speaks to shoppers or readers, and stays within health claim rules.</p>
       <div className="grid gap-2 sm:grid-cols-2">
         {status.businessTypes.map((b) => (
           <button
@@ -717,6 +726,113 @@ function PropertyHelp({
       <p className="text-dash-muted">
         Signed in with the wrong Google account? <button onClick={onOpenSettings} className={link}>Switch it in Settings</button>.
       </p>
+    </div>
+  );
+}
+
+interface Suggestion {
+  query: string;
+  page: string;
+  monthlySearches?: number;
+  why?: string;
+  winnable?: boolean;
+  role?: "main" | "support";
+}
+
+/**
+ * The searches the app found (from Search Console, or from studying competitors
+ * when there's no data yet), the specific ones with room on page 1 first. The
+ * best five come checked; one click hands them to the autopilot.
+ */
+function KeywordsScreen({ act, onSkip }: { act: Act; onSkip: () => void }) {
+  const [items, setItems] = useState<Suggestion[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [progress, setProgress] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<{ opportunities: Suggestion[] }>("/api/seo/opportunities?range=28d")
+      .then((d) => {
+        const seen = new Set<string>();
+        const best = d.opportunities
+          .filter((o) => o.role !== "support" && !seen.has(o.query) && seen.add(o.query))
+          .sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || (b.monthlySearches ?? 0) - (a.monthlySearches ?? 0))
+          .slice(0, 8);
+        setItems(best);
+        setPicked(new Set(best.slice(0, 5).map((o) => o.query)));
+      })
+      .catch(() => setItems([]));
+  }, []);
+
+  if (!items)
+    return (
+      <p className="text-dash-muted">
+        Studying the sites on Google page 1 for your topics to find searches you can win. This can take about a minute.
+      </p>
+    );
+  if (!items.length)
+    return (
+      <div className="space-y-3">
+        <p className="text-dash-muted">
+          Still finding searches for your pages. They&apos;ll show in SEO Tools, Opportunities, within the hour, each with a Rank for this button.
+        </p>
+        <button onClick={onSkip} className={button}>
+          Continue
+        </button>
+      </div>
+    );
+
+  const go = () =>
+    act("targets", async () => {
+      const list = items.filter((o) => picked.has(o.query));
+      for (const [i, o] of list.entries()) {
+        setProgress(`Checking Google for "${o.query}" (${i + 1} of ${list.length})`);
+        await api("/api/seo/target", { keyword: o.query, monthlySearches: o.monthlySearches });
+      }
+      setProgress(null);
+    });
+
+  return (
+    <div className="space-y-3">
+      <p className="text-dash-muted">
+        Specific searches rank first, so these are what the autopilot works on first. Green ones have smaller sites on page 1, so
+        there&apos;s room for you.
+      </p>
+      <ul className="space-y-1.5">
+        {items.map((o) => (
+          <li key={o.query}>
+            <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-dash-line bg-white px-3 py-2 hover:border-dash-green/40">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={picked.has(o.query)}
+                onChange={(e) => {
+                  const next = new Set(picked);
+                  if (e.target.checked) next.add(o.query);
+                  else next.delete(o.query);
+                  setPicked(next);
+                }}
+              />
+              <span className="min-w-0">
+                <span className="block font-semibold text-dash-ink">{o.query}</span>
+                <span className={`block text-xs ${o.winnable ? "text-dash-up" : "text-dash-muted"}`}>
+                  {o.monthlySearches ? `${o.monthlySearches.toLocaleString()} searches a month` : ""}
+                  {o.monthlySearches && o.why ? " · " : ""}
+                  {o.why ?? ""}
+                </span>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      {progress && <p className="text-dash-muted">{progress}</p>}
+      <div className="flex flex-wrap items-center gap-3">
+        <button disabled={!picked.size || progress !== null} onClick={go} className={button}>
+          Rank for {picked.size === 1 ? "this search" : `these ${picked.size} searches`}
+        </button>
+        <button onClick={onSkip} className="font-semibold text-dash-muted hover:text-dash-ink">
+          Skip for now
+        </button>
+      </div>
     </div>
   );
 }

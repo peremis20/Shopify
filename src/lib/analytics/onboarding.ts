@@ -1,3 +1,4 @@
+import { readTargets } from "./autopilot/targets";
 import { claimReport } from "./autopilot/claim-scan";
 import { readAccountAutopilot } from "./autopilot/settings";
 import { shopifyGql, shopName } from "./autopilot/shopify";
@@ -148,7 +149,7 @@ Thank you!`;
 
 // ---------- the checklist ----------
 
-export type StepId = "google" | "website" | "business" | "search_console" | "analytics" | "first_check" | "preview" | "autopilot";
+export type StepId = "google" | "website" | "business" | "search_console" | "analytics" | "targets" | "first_check" | "preview" | "autopilot";
 
 export interface Step {
   id: StepId;
@@ -199,7 +200,11 @@ export async function onboardingStatus(accountId: string, email: string): Promis
   const domain = await storeDomain(accountId, profile).catch(() => profile.siteDomain);
   const store = acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null;
   const brand = profile.brandName ?? (shopConnected && store ? await shopName(store).catch(() => null) : null);
-  const [claims, previewed] = await Promise.all([claimReport(accountId).catch(() => null), hasPreview(accountId).catch(() => false)]);
+  const [claims, previewed, targets] = await Promise.all([
+    claimReport(accountId).catch(() => null),
+    hasPreview(accountId).catch(() => false),
+    readTargets(accountId).catch(() => []),
+  ]);
 
   const gscOk = Boolean(conn?.gscSiteUrl);
   const gaOk = Boolean(conn?.gaPropertyId);
@@ -230,7 +235,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       title: "Tell us about your business",
       done: Boolean(profile.businessType),
       detail: profile.businessType
-        ? `${brand ?? "Your store"} sells ${BUSINESS_TYPES.find((b) => b.id === profile.businessType)?.label.toLowerCase()}.`
+        ? `${brand ?? "Your site"}: ${BUSINESS_TYPES.find((b) => b.id === profile.businessType)?.label.toLowerCase()}.`
         : "So every change fits what you sell and stays within health claim rules.",
     },
     {
@@ -258,6 +263,14 @@ export async function onboardingStatus(accountId: string, email: string): Promis
           : domain
             ? `${googleEmail} can't see an Analytics property for ${domain} yet.`
             : "Pick your Analytics property.",
+    },
+    {
+      id: "targets",
+      title: "Pick your first searches",
+      done: targets.length > 0,
+      detail: targets.length
+        ? `${targets.length} search${targets.length === 1 ? "" : "es"} picked for the autopilot to rank for first.`
+        : "The specific searches you can win, from studying your competitors.",
     },
     {
       id: "first_check",
