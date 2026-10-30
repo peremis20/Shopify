@@ -4,6 +4,7 @@ import { toIso } from "../dates";
 import { googleRequest } from "../google-auth";
 import { getLists } from "../seo-tools";
 import { fetchSerp } from "./serp";
+import { readSiteKeywords } from "./site-keywords";
 
 /**
  * Daily rank tracking. Search Console lags about 3 days; this checks Google
@@ -47,6 +48,12 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
       WHERE account_id = ${accountId} AND field <> 'intent' AND created_at > now() - interval '120 days'
       GROUP BY query ORDER BY at DESC LIMIT 10`
   ).map((r) => r.query!);
+  // Without Search Console: the keywords picked for each page (see site-keywords.ts).
+  if (!conn.gscSiteUrl) {
+    const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
+    // More than a day's checks: they take turns (see trackRanks).
+    return [...new Set([...saved.slice(0, 5), ...targets, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
+  }
   const end = new Date(Date.now() - 3 * DAY);
   const body = await googleRequest<{ rows?: { keys: string[]; clicks: number; impressions: number; position: number }[] }>(
     { kind: "oauth", refreshToken: conn.refreshToken },
@@ -70,7 +77,16 @@ export async function trackRanks(accountId: string, conn: Connection, serpKey: s
   );
   if (doneToday.size >= TRACK_PER_DAY) return 0;
   // Only searches not checked yet today, so a second run the same day costs nothing extra.
-  const queries = (await queriesToTrack(accountId, conn, ourDomain)).filter((q) => !doneToday.has(q));
+  const lastChecked = new Map(
+    (await sql`SELECT query, max(checked_on) AS last FROM insights_rank_daily WHERE account_id = ${accountId} GROUP BY query`).map((r) => [r.query!, r.last!])
+  );
+  // Never checked first, then the longest unchecked, within what's left of today's checks.
+  const queries = (await queriesToTrack(accountId, conn, ourDomain))
+    .filter((q) => !doneToday.has(q))
+    .map((q, i) => ({ q, i, last: lastChecked.get(q) ?? "" }))
+    .sort((a, b) => a.last.localeCompare(b.last) || a.i - b.i)
+    .slice(0, TRACK_PER_DAY - doneToday.size)
+    .map((x) => x.q);
   let checked = 0;
   // A few at a time, to stay friendly with the search results API.
   for (let i = 0; i < queries.length; i += 5) {

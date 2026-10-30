@@ -265,7 +265,9 @@ function DataScreen({
       </button>
       <button onClick={onSkip} className={`${choice} border-dash-line bg-white`}>
         <span className="block font-semibold text-dash-ink">Skip for now, I&apos;ll add them later</span>
-        <span className="block text-dash-muted">The autopilot still works; a reminder stays on your dashboard.</span>
+        <span className="block text-dash-muted">
+          The autopilot still works, using Google rankings and keyword data. Search Console just adds more detail; a reminder stays on your dashboard.
+        </span>
       </button>
     </div>
   );

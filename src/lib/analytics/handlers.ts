@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
+import { refreshSiteKeywords } from "./autopilot/site-keywords";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
@@ -718,8 +719,9 @@ async function runOverlapScan(accountId: string, conn: Connection | null, force:
 
 /** Websites the app can't edit: read their pages from the sitemap (new and week-old pages, a batch a day). */
 async function readSite(accountId: string, force: boolean): Promise<number> {
-  const acct = await readAccountAutopilot(accountId);
-  if (acct.shopDomain && acct.shopTokenEnc) return 0;
+  const [acct, conn] = await Promise.all([readAccountAutopilot(accountId), getConnection(accountId)]);
+  // Shopify stores are read through Shopify, unless there's no Search Console: then their pages feed the keyword targets.
+  if (acct.shopDomain && acct.shopTokenEnc && conn?.gscSiteUrl) return 0;
   const profile = await readProfile(accountId);
   if (!profile.siteDomain) return 0;
   const { read, platform } = await crawlSite(accountId, profile.siteDomain, force ? 25 : 60);
@@ -734,10 +736,17 @@ async function maintain(accountId: string, force = false): Promise<string> {
   const read = await readSite(accountId, force).catch((e) => (console.error(`site read failed: ${message(e)}`), 0));
   const claims = await runClaimScan(accountId, force).catch((e) => (console.error(`claim scan failed: ${message(e)}`), 0));
   const overlaps = await runOverlapScan(accountId, conn, force).catch((e) => (console.error(`overlap scan failed: ${message(e)}`), 0));
-  if (!conn?.gscSiteUrl) return `no Search Console property, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
-  const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domainOf(conn.gscSiteUrl)).catch(() => 0) : 0;
-  const pages = await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0);
-  return `ranks ${ranks}, health ${pages}, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
+  const profile = await readProfile(accountId);
+  const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : profile.siteDomain;
+  if (!conn || !domain) return `no website yet, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
+  // Without Search Console, Keyword Planner picks the searches to track for each page.
+  const picked = conn.gscSiteUrl
+    ? 0
+    : (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0]).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length;
+  const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domain).catch(() => 0) : 0;
+  // Index status needs Search Console's URL Inspection.
+  const pages = conn.gscSiteUrl ? await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0) : 0;
+  return `ranks ${ranks}, health ${pages}, keywords ${picked}, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */

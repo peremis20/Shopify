@@ -398,6 +398,18 @@ serves the autopilot's applied or kept changes (`resource_type = 'snippet'`),
 so Undo removes a change from the site at once. Page text stays on the fix
 list.
 
+### Without Search Console
+
+Verification is optional. For a site with no Search Console property, the
+"Keyword targets" app (`autopilot/apps/site-keywords.ts`) takes over from
+Search Console: weekly, Keyword Planner suggests what people search for each
+important page's topic (`autopilot/site-keywords.ts`, real monthly volume,
+on-topic and not too competitive first), the daily rank check tracks those
+searches on Google (taking turns when there are more than a day's checks),
+and the autopilot works on the ones closest to the top with the most
+searches. Changes are measured against the tracked position. Search Console
+adds real impressions and index checks once it's connected.
+
 ### Adding an app to the autopilot
 
 Each data source the autopilot uses is an app in

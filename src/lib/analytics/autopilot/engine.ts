@@ -123,6 +123,14 @@ const words = (s: string) =>
 
 // ---------- measuring ----------
 
+/** Today's position from the daily rank check, for sites without Search Console. */
+async function trackedPosition(accountId: string, query: string): Promise<{ position: number; clicks: number } | null> {
+  const [row] = await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${query.toLowerCase()}
+    ORDER BY checked_on DESC LIMIT 1`;
+  if (!row) return null;
+  return { position: row.position === null ? 25 : Number(row.position), clicks: 0 };
+}
+
 async function positionFor(conn: Connection, query: string, page: string) {
   const { current } = resolveRange("28d", 3);
   const body = await googleRequest<{ rows?: { position: number; clicks: number; impressions: number }[] }>(
@@ -150,7 +158,9 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     LIMIT 5`;
   const notes: string[] = [];
   for (const d of due) {
-    const now = await positionFor(conn, d.query!, d.page_url!).catch(() => null);
+    const now = conn.gscSiteUrl
+      ? await positionFor(conn, d.query!, d.page_url!).catch(() => null)
+      : await trackedPosition(ctx.accountId, d.query!).catch(() => null);
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
     const worse = now ? now.position > baseline + WORSE_BY_POSITIONS && now.clicks <= baseClicks : false;
@@ -504,7 +514,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   await ensureSchema();
   const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
   if (trigger === "schedule" && !acct.enabled) return { run: null, message: "Autopilot is turned off." };
-  if (!conn?.gscSiteUrl) return { run: null, message: "Choose a Search Console property in Settings first." };
+  if (!conn) return { run: null, message: "Connect Google first." };
   const baseAi = aiProvider(platform);
   if (!baseAi) return { run: null, message: "Autopilot isn't available yet." };
   const profile = await readProfile(accountId);
@@ -521,7 +531,10 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     store,
     ai,
     platform,
-    ourDomain: new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, ""),
+    // Search Console's property, or (without it) the site's own domain.
+    ourDomain: conn.gscSiteUrl
+      ? new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "")
+      : (profile.siteDomain ?? ""),
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
   };
