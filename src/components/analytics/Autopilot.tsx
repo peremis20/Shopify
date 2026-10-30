@@ -168,6 +168,19 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
                 ))}
               </select>
             </label>
+            <label className="flex items-center gap-2" title="New articles for searches you picked with Rank for this that no page covers yet. For health sites, 2 or 3 a week is safest.">
+              <span className="text-dash-muted">New articles per week</span>
+              <select
+                id="ap-articles"
+                value={state.settings.articlesPerWeek}
+                onChange={(e) => save({ articlesPerWeek: Number(e.target.value) })}
+                className="rounded-lg border border-dash-line bg-white px-2 py-1.5"
+              >
+                {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+            </label>
             <label className="flex items-center gap-2">
               <input
                 id="ap-content"

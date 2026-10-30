@@ -33,6 +33,8 @@ export interface PlatformSettings {
 export interface AccountAutopilot {
   enabled: boolean;
   maxPagesPerWeek: number;
+  /** New articles the autopilot may post a week (1 to 7). */
+  articlesPerWeek: number;
   allowContent: boolean;
   shopDomain?: string;
 }
@@ -117,6 +119,7 @@ export async function readAccountAutopilot(accountId: string): Promise<AccountAu
   return {
     enabled: yes(row?.enabled),
     maxPagesPerWeek: Number(row?.max_pages_per_week ?? 4),
+    articlesPerWeek: Number(row?.articles_per_week ?? 3),
     allowContent: row ? yes(row.allow_content) : true,
     shopDomain: row?.shop_domain ?? undefined,
     shopTokenEnc: row?.shop_token_enc ?? null,
@@ -131,14 +134,16 @@ export async function saveAccountAutopilot(
   const next = {
     enabled: patch.enabled ?? cur.enabled,
     max: Math.min(14, Math.max(1, Math.round(patch.maxPagesPerWeek ?? cur.maxPagesPerWeek))),
+    articles: Math.min(7, Math.max(1, Math.round(patch.articlesPerWeek ?? cur.articlesPerWeek))),
     allowContent: patch.allowContent ?? cur.allowContent,
     shop: patch.shopDomain !== undefined ? patch.shopDomain || null : cur.shopDomain ?? null,
     token: patch.shopTokenEnc !== undefined ? patch.shopTokenEnc : cur.shopTokenEnc,
   };
   await sql`
-    INSERT INTO insights_account_autopilot (account_id, enabled, max_pages_per_week, allow_content, shop_domain, shop_token_enc)
-    VALUES (${accountId}, ${next.enabled}, ${next.max}, ${next.allowContent}, ${next.shop}, ${next.token})
+    INSERT INTO insights_account_autopilot (account_id, enabled, max_pages_per_week, articles_per_week, allow_content, shop_domain, shop_token_enc)
+    VALUES (${accountId}, ${next.enabled}, ${next.max}, ${next.articles}, ${next.allowContent}, ${next.shop}, ${next.token})
     ON CONFLICT (account_id) DO UPDATE SET enabled = EXCLUDED.enabled, max_pages_per_week = EXCLUDED.max_pages_per_week,
+      articles_per_week = EXCLUDED.articles_per_week,
       allow_content = EXCLUDED.allow_content, shop_domain = EXCLUDED.shop_domain, shop_token_enc = EXCLUDED.shop_token_enc`;
 }
 
@@ -169,6 +174,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
         : null,
     enabled: acct.enabled,
     maxPagesPerWeek: acct.maxPagesPerWeek,
+    articlesPerWeek: acct.articlesPerWeek,
     allowContent: acct.allowContent,
     shopDomain: acct.shopDomain,
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),

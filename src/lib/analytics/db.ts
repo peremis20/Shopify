@@ -184,6 +184,7 @@ export function ensureSchema(): Promise<void> {
       shop_token_enc text,
       last_run_at timestamptz
     )`;
+    await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS articles_per_week integer NOT NULL DEFAULT 3`;
     await sql`ALTER TABLE insights_keyword_lists ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_runs ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS account_id bigint`;

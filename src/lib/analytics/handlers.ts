@@ -699,6 +699,7 @@ export const saveAutopilot = (req: Request) =>
     await saveAccountAutopilot(account.id, {
       enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
       maxPagesPerWeek: typeof b.maxPagesPerWeek === "number" ? b.maxPagesPerWeek : undefined,
+      articlesPerWeek: typeof b.articlesPerWeek === "number" ? b.articlesPerWeek : undefined,
       allowContent: typeof b.allowContent === "boolean" ? b.allowContent : undefined,
     });
     return json({ settings: await autopilotView(account.id, account.admin) });

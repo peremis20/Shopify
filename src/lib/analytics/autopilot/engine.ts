@@ -567,7 +567,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     const brake = traffic?.sharp
       ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}). New changes are on hold until that settles; check Search Console for a Google update or a site problem.`
       : null;
-    // A new article for a chosen search no page covers yet (at most one a day).
+    // A new article for a chosen search no page covers yet (within the weekly number).
     if (!preview && !capped && !brake) {
       const posted = await nextNewArticle({
         accountId,
@@ -576,6 +576,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         platform,
         ourDomain: ctx.ourDomain,
         publish: acct.allowContent,
+        perWeek: acct.articlesPerWeek,
       }).catch((e) => (notes.push(`New article not written: ${(e as Error).message}`), null));
       if (posted) {
         await logChange({

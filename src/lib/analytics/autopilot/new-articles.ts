@@ -10,7 +10,9 @@ import { writeNewArticle, type NewArticle } from "./writer";
 
 /**
  * New articles for searches no page on the site covers yet (picked with
- * "Rank for this"). At most one a day per site. The article is planned from
+ * "Rank for this"). At most the owner's weekly number (3 by default, spread
+ * at least a day apart), since a burst of new pages on a health site looks
+ * like mass produced content to Google. The article is planned from
  * Google page one, written and checked like every other change, then:
  * - Shopify: posted to the store's blog
  * - WordPress (Insights Connector 1.2+): posted as a new post
@@ -34,10 +36,15 @@ export interface PostedArticle {
   note: string;
 }
 
-async function wroteToday(accountId: string): Promise<boolean> {
+/** True when an article was tried in the last day, or the week's number is reached. */
+async function notDue(accountId: string, perWeek: number): Promise<boolean> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${LAST(accountId)}`;
-  return Boolean(row?.value && Date.now() - Number(row.value) < DAY);
+  if (row?.value && Date.now() - Number(row.value) < DAY) return true;
+  const [{ n }] = await sql`
+    SELECT count(*) AS n FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND field = 'new_article' AND status IN ('applied', 'kept', 'suggested') AND created_at > now() - interval '7 days'`;
+  return Number(n) >= perWeek;
 }
 
 async function markWritten(accountId: string): Promise<void> {
@@ -54,9 +61,10 @@ export async function nextNewArticle(opts: {
   platform: PlatformSettings;
   ourDomain: string;
   publish: boolean;
+  perWeek: number;
 }): Promise<PostedArticle | null> {
   const { accountId, site } = opts;
-  if (!opts.platform.serperKey || (await wroteToday(accountId))) return null;
+  if (!opts.platform.serperKey || (await notDue(accountId, opts.perWeek))) return null;
   // Searches the owner chose that no page covers, the ones with room on page one first.
   const due = (await readTargets(accountId))
     .filter((t) => !t.page && !t.article && t.winnable !== false)
