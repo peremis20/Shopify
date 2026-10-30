@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Opportunity } from "@/lib/analytics/seo-types";
 import type { RangeKey } from "@/lib/analytics/types";
 import { formatNumber, formatPct } from "./format";
-import { api, Explainer, pathOf, TrackButton } from "./seo-ui";
+import { api, Explainer, pathOf, RankForThis, TrackButton } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
 import { TopicsView } from "./TopicsView";
 import { Skeleton } from "./ui";
@@ -152,8 +152,11 @@ export function Opportunities({ range, brand, isTracked, onTrack }: {
                     </td>
                   )}
                   <td className="px-1 py-2 text-right font-semibold tabular-nums text-dash-up">+{formatNumber(o.potentialClicks)}</td>
-                  <td className="px-1 py-2 text-right">
-                    <TrackButton tracked={isTracked(o.query)} onClick={() => onTrack([o.query])} />
+                  <td className="whitespace-nowrap px-1 py-2 text-right">
+                    <span className="inline-flex items-center gap-1.5">
+                      <RankForThis keyword={o.query} monthlySearches={o.monthlySearches} />
+                      <TrackButton tracked={isTracked(o.query)} onClick={() => onTrack([o.query])} />
+                    </span>
                   </td>
                 </tr>
               ))}

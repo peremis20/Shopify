@@ -15,7 +15,7 @@ import { formatNumber } from "./format";
 import { DownloadIcon, KeyIcon } from "./Icons";
 import { Opportunities } from "./Opportunities";
 import { RankTracker } from "./RankTracker";
-import { api, TrackButton } from "./seo-ui";
+import { api, RankForThis, TrackButton } from "./seo-ui";
 import { TopicsView } from "./TopicsView";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
@@ -540,8 +540,11 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                           ? "—"
                           : `${i.lowBid?.toFixed(2) ?? "?"} to ${i.highBid?.toFixed(2) ?? "?"}`}
                       </td>
-                      <td className="px-1 py-2 text-right">
-                        <TrackButton tracked={isTracked(i.keyword)} onClick={() => onTrack([i.keyword])} />
+                      <td className="whitespace-nowrap px-1 py-2 text-right">
+                        <span className="inline-flex items-center gap-1.5">
+                          <RankForThis keyword={i.keyword} monthlySearches={i.avgMonthlySearches} />
+                          <TrackButton tracked={isTracked(i.keyword)} onClick={() => onTrack([i.keyword])} />
+                        </span>
                       </td>
                     </tr>
                   ))}

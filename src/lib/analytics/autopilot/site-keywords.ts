@@ -41,10 +41,10 @@ const SERP_CHECKS = 20;
 /** Big publishers and marketplaces: hard to outrank for a small site. */
 const BIG =
   /(^|\.)(healthline|webmd|mayoclinic|clevelandclinic|medicalnewstoday|verywellhealth|verywellmind|verywellfit|hopkinsmedicine|health\.harvard|everydayhealth|health|prevention|menshealth|womenshealth|eatingwell|forbes|nytimes|amazon|walmart|target|wikipedia|youtube|reddit|quora|pinterest|facebook|instagram|tiktok|cdc|nih|ncbi\.nlm\.nih|medlineplus|fda)\.(com|org|gov|edu|net)$|\.gov$|\.edu$/;
-const isBig = (domain: string) => BIG.test(domain);
+export const isBig = (domain: string) => BIG.test(domain);
 
 /** How many page one results are smaller sites, and whether this site is already there. */
-function room(results: SerpResult[], ourDomain: string): { small: number; ours: number | null } {
+export function room(results: SerpResult[], ourDomain: string): { small: number; ours: number | null } {
   const top = results.slice(0, 10);
   const ours = top.find((r) => r.domain === ourDomain || r.domain.endsWith(`.${ourDomain}`))?.position ?? null;
   return { small: top.filter((r) => !isBig(r.domain)).length, ours };
@@ -53,7 +53,7 @@ function room(results: SerpResult[], ourDomain: string): { small: number; ours: 
 const STOP = new Set(
   "the and for with your you our are from that this what how why when best top guide review reviews home page about contact shop store blog news more".split(" ")
 );
-const topicWords = (s: string) =>
+export const topicWords = (s: string) =>
   new Set(
     s
       .toLowerCase()

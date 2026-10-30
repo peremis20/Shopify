@@ -3,6 +3,7 @@ import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account 
 import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
+import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
@@ -612,6 +613,27 @@ async function plannerOpportunities(accountId: string, conn: Connection): Promis
     })
     .filter((o) => o.position !== 1);
 }
+
+/** "Rank for this": matches the search to a page, checks Google page one, and hands it to the autopilot. */
+export const rankForThis = (req: Request) =>
+  withAccount(req, async (account) => {
+    const body = (await req.json().catch(() => ({}))) as { keyword?: string; monthlySearches?: number; remove?: boolean };
+    const keyword = (body.keyword ?? "").trim();
+    if (!keyword || keyword.length > 120) return json({ error: "Pick a search first." }, 400);
+    if (body.remove) {
+      await removeTarget(account.id, keyword);
+      return json({ ok: true });
+    }
+    const [conn, profile, platform] = await Promise.all([getConnection(account.id), readProfile(account.id), readPlatformSettings()]);
+    const ourDomain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+    try {
+      return json(await addTarget(account.id, keyword, { serperKey: platform.serperKey ?? null, ourDomain, monthlySearches: body.monthlySearches }));
+    } catch (err) {
+      return json({ error: message(err) }, 502);
+    }
+  });
+
+export const rankTargets = (req: Request) => withAccount(req, async (account) => json({ targets: await readTargets(account.id) }));
 
 export const keywordLists = (req: Request) =>
   withAccount(req, async (account) => json({ lists: await getLists(account.id) }));
