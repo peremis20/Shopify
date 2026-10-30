@@ -19,6 +19,39 @@ Write for real shoppers first, search engines second.
 ${site?.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`;
 }
 
+/**
+ * How a real person writes, so pages don't read as AI made. Taken from a
+ * review of AI written articles where the same skeleton, openings, pet
+ * phrases and jokes repeated across every piece.
+ */
+const VOICE = `
+Sound like a real person who knows this subject, not like AI:
+- Don't follow a template. Pick the shape this piece needs: sometimes a list, sometimes plain paragraphs, sometimes a few questions. Don't add a FAQ, a "key takeaways" box, a summary or a "read this next" line out of habit.
+- Open with something specific to this topic: a fact, a detail, a plain statement. Never open with a "you" scene ("It is 3 p.m.", "The alarm goes off"), and never with "Maybe", "Picture", "Imagine", "Most people", "Have you ever" or "In today's world".
+- Never use these phrases: "here is", "here's the thing", "you are not alone", "let's dive in", "dive into", "navigate", "journey", "game changer", "unlock", "elevate", "in conclusion", "the bottom line", "it's important to note", "whether you're".
+- No cute asides or tidy jokes. If something is funny, it comes from the facts, not a quip.
+- Vary sentence length. Short ones are fine. Not every paragraph needs three sentences.
+- Don't use em dashes or hyphens to join clauses; use a comma or a new sentence.
+- Use concrete details from the page (names, places, products, numbers it states) instead of general statements. Never make up a quote or a person.`;
+
+/** Phrases and openings that give away AI writing; a block with one is rewritten by the editor or dropped. */
+const AI_TELLS = [
+  /\bhere(?: is|'s)\b/i,
+  /\byou are not alone\b|\byou're not alone\b/i,
+  /\b(?:let's )?dive (?:in|into)\b/i,
+  /\bgame[ -]changer\b/i,
+  /\bunlock(?:s|ing)? the\b/i,
+  /\bin conclusion\b|\bthe bottom line\b|\bit'?s (?:important|worth) (?:to note|noting)\b/i,
+  /\bwhether you're\b|\bin today's\b/i,
+  /^(?:maybe|picture|imagine|have you ever|most people)\b/i,
+  /^it is \d{1,2}(?::\d{2})?\s*(?:a\.?m|p\.?m)/i,
+  /^the alarm goes off\b/i,
+  /\bkey takeaways?\b|\bread this next\b/i,
+  /\u2014/,
+];
+
+export const hasAiTell = (text: string) => AI_TELLS.some((r) => r.test(text.trim()));
+
 const RULES = `
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
@@ -28,7 +61,9 @@ Hard rules:
 - Match the existing brand voice. Plain, friendly, confident. No hype, no exclamation marks, no emojis.
 - Use the target search phrase naturally once in the title and once in the description. Never repeat keywords unnaturally.
 - The title and description may only promise what the page actually delivers. Don't use words like "brands", "top 10", "best of", "reviews", "ranked", "vs", "prices" or a year unless the page text really contains that (named brands, a ranked list, a comparison, prices, that year).
-- Fix obvious spelling and terminology mistakes instead of copying them (for example "berberine HCl", hydrochloride, never "HCI").`;
+- Fix obvious spelling and terminology mistakes instead of copying them (for example "berberine HCl", hydrochloride, never "HCI").
+${VOICE}`;
+
 
 export interface PageImprovement {
   metaTitle: string;
@@ -50,7 +85,8 @@ const IMPROVEMENT_SCHEMA = {
     metaDescription: { type: "string", description: "Meta description, 120 to 155 characters, with a reason to click." },
     contentSectionHtml: {
       type: "string",
-      description: "A new section to append (120 to 250 words): one <h2>, then <p>, <ul>/<li> or a short FAQ with <h3> questions. Empty string if not needed or not allowed.",
+      description:
+        "A new section to append (120 to 250 words): one <h2>, then whatever shape fits this topic (<p>, <ul>/<li>, or <h3> questions only when people really ask them). Empty string if not needed or not allowed.",
     },
     altTexts: {
       type: "array",
@@ -162,6 +198,43 @@ Keep blocks that only restate or reorganize what the page says. When unsure, rem
   const out = await askJson<{ unsupported: number[] }>(ai, prompt, CHECK_SCHEMA);
   const remove = new Set((out.unsupported ?? []).map(Number));
   return dropBlocks(html, (_t, i) => remove.has(i));
+}
+
+const EDIT_SCHEMA = {
+  type: "object",
+  properties: {
+    sectionHtml: { type: "string", description: "The section, edited. Same tags as given: <h2>, <h3>, <p>, <ul>, <ol>, <li>, <strong>, <em>." },
+    notes: { type: "string", description: "One sentence on what read as AI and what you changed." },
+  },
+  required: ["sectionHtml", "notes"],
+  additionalProperties: false,
+};
+
+/**
+ * A different AI (another service when one is set up) reads the section as a
+ * human editor would and rewrites what sounds machine made. It may only
+ * reword: the facts are checked again afterwards, and any block still showing
+ * an AI tell is dropped.
+ */
+async function humanEdit(ai: AiProvider, html: string, pageBody: string): Promise<string> {
+  const others = [ai, ...(ai.backups ?? [])];
+  const editor = others.find((o) => o.kind !== ai.kind) ?? ai;
+  const reviewer: AiProvider = { ...editor, site: ai.site, backups: others.filter((o) => o !== editor) };
+  const prompt = `You are a human copy editor. Another writer drafted this section for a website, and it must read as if a person who knows the subject wrote it. Readers and Google both notice AI writing.
+
+Section:
+"""
+${html}
+"""
+
+Rewrite only what sounds machine made:
+- formula openings, stock phrases and pet words (see the rules above)
+- the same tidy shape every time (a FAQ, takeaways or summary that the piece doesn't need)
+- cute asides, filler sentences, sentences that all have the same length and rhythm
+Keep every fact exactly as given and add no new facts, numbers, names or quotes. If it already reads naturally, return it unchanged.`;
+  const out = await askJson<{ sectionHtml: string }>(reviewer, prompt, EDIT_SCHEMA);
+  const edited = onlyKnownNumbers(cleanHtml(polish(out.sectionHtml ?? "")), pageBody);
+  return dropBlocks(edited, (text) => hasAiTell(text));
 }
 
 const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -480,6 +553,8 @@ Keep the SEO title and description if they are already strong for this search; y
   let section = allowContent && editableBody ? onlyKnownNumbers(cleanHtml(polish(out.contentSectionHtml)), page.body) : "";
   // Nothing goes on the page unchecked: if the check itself fails, the section is left out.
   if (section) section = await factCheck(ai, section, page.body).catch(() => "");
+  // A second AI edits it so it reads as a person wrote it; if that fails, blocks with AI tells are dropped.
+  if (section) section = await humanEdit(ai, section, page.body).catch(() => dropBlocks(section, (text) => hasAiTell(text)));
   // Claim guard: no paragraph that reads as a disease claim or an unprovable promise.
   if (section) section = dropBlocks(section, (text) => isRisky(text));
   // A section reduced to headings alone isn't worth adding.
@@ -519,7 +594,7 @@ If the link would feel forced in this article, return an empty string.`;
 
   const out = await askJson<{ sentenceHtml: string }>(ai, prompt, LINK_SCHEMA);
   const html = cleanHtml(out.sentenceHtml, target.path);
-  return isRisky(html) ? "" : html;
+  return isRisky(html) || hasAiTell(plainText(html)) ? "" : html;
 }
 
 const ALLOWED = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a"]);
