@@ -29,6 +29,28 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "ideas", label: "Keyword ideas" },
 ];
 
+/**
+ * How hard a search is to rank for without ads, estimated from its shape:
+ * specific searches (more words, fewer searches) are easier. Google's
+ * "competition" column is about ad bidding, not this. Rank for this checks
+ * page 1 for the real answer.
+ */
+type Difficulty = "easy" | "medium" | "hard";
+function difficultyOf(keyword: string, searches: number | null): Difficulty {
+  const words = keyword.trim().split(/\s+/).length;
+  const n = searches ?? 0;
+  if (words >= 4 && n <= 5000) return "easy";
+  if (words >= 3 && n <= 1000) return "easy";
+  if (words >= 3 && n <= 20000) return "medium";
+  if (words === 2 && n <= 2000) return "medium";
+  return "hard";
+}
+const DIFFICULTY_STYLE: Record<Difficulty, string> = {
+  easy: "bg-dash-up/10 text-dash-up",
+  medium: "bg-dash-copper/15 text-dash-copper",
+  hard: "bg-dash-down/10 text-dash-down",
+};
+
 const COMPETITION_STYLE: Record<Competition, string> = {
   LOW: "bg-dash-up/10 text-dash-up",
   MEDIUM: "bg-dash-copper/15 text-dash-copper",
@@ -327,6 +349,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
   onTrack: (keywords: string[]) => void;
 }) {
   const [view, setView] = useState<"keywords" | "topics">("keywords");
+  const [level, setLevel] = useState<"all" | Difficulty>("all");
   const [keywords, setKeywords] = useState("");
   const [url, setUrl] = useState(site);
   const [geo, setGeo] = useState("2840");
@@ -361,10 +384,12 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
+  const shownIdeas = (ideas ?? []).filter((i) => level === "all" || difficultyOf(i.keyword, i.avgMonthlySearches) === level);
   const { sorted, sort } = useSort(
-    ideas ?? [],
+    shownIdeas,
     {
       keyword: (i) => i.keyword,
+      difficulty: (i) => ({ easy: 1, medium: 2, hard: 3 })[difficultyOf(i.keyword, i.avgMonthlySearches)],
       searches: (i) => i.avgMonthlySearches,
       competition: (i) => ({ HIGH: 3, MEDIUM: 2, LOW: 1, UNSPECIFIED: null, UNKNOWN: null })[i.competition],
       bid: (i) => i.highBid,
@@ -495,6 +520,17 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     </button>
                   ))}
                 </div>
+                <div className="flex rounded-lg bg-[#F1ECE3] p-0.5 text-xs font-medium" title="How hard to rank for without ads (estimate; Rank for this checks Google page 1)">
+                  {(["all", "easy", "medium", "hard"] as const).map((v) => (
+                    <button
+                      key={v}
+                      onClick={() => setLevel(v)}
+                      className={`rounded-md px-2.5 py-1 capitalize ${level === v ? "bg-white text-dash-ink shadow-sm" : "text-dash-muted"}`}
+                    >
+                      {v === "all" ? "All" : v}
+                    </button>
+                  ))}
+                </div>
                 <TrackButton label="Track all" onClick={() => onTrack(sorted.map((i) => i.keyword))} />
                 <button onClick={downloadCsv} className="flex items-center gap-1.5 font-semibold text-dash-green hover:underline">
                   <DownloadIcon className="h-4 w-4" />
@@ -515,7 +551,8 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     <th className="px-1 pb-2"><SortHeader label="Keyword" column="keyword" sort={sort} /></th>
                     <th className="px-1 pb-2 text-right"><SortHeader label="Monthly searches" column="searches" sort={sort} align="right" /></th>
                     <th className="hidden px-1 pb-2 font-semibold sm:table-cell">12 month trend</th>
-                    <th className="px-1 pb-2 text-left"><SortHeader label="Competition" column="competition" sort={sort} /></th>
+                    <th className="px-1 pb-2 text-left" title="How hard to rank for without ads (estimate)"><SortHeader label="To rank" column="difficulty" sort={sort} /></th>
+                    <th className="hidden px-1 pb-2 text-left lg:table-cell" title="How many advertisers bid on it in Google Ads"><SortHeader label="Ad competition" column="competition" sort={sort} /></th>
                     <th className="hidden px-1 pb-2 text-right md:table-cell"><SortHeader label="Top of page bid" column="bid" sort={sort} align="right" /></th>
                     <th className="px-1 pb-2" />
                   </tr>
@@ -531,6 +568,12 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                         {i.trend.length > 1 && <Sparkline values={i.trend.map((t) => t.searches)} />}
                       </td>
                       <td className="px-1 py-2">
+                        {(() => {
+                          const d = difficultyOf(i.keyword, i.avgMonthlySearches);
+                          return <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${DIFFICULTY_STYLE[d]}`}>{d}</span>;
+                        })()}
+                      </td>
+                      <td className="hidden px-1 py-2 lg:table-cell">
                         <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${COMPETITION_STYLE[i.competition]}`}>
                           {i.competition === "UNSPECIFIED" || i.competition === "UNKNOWN" ? "n/a" : i.competition.toLowerCase()}
                         </span>

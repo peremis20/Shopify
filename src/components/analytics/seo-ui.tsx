@@ -84,7 +84,7 @@ export function RankForThis({ keyword, monthlySearches, label = "Rank for this" 
       </button>
       {error && <span className="ml-2 text-xs text-dash-down">{error}</span>}
       {result && (
-        <div className="absolute right-0 z-20 mt-2 w-80 rounded-xl border border-dash-line bg-white p-3 text-left text-xs shadow-lg">
+        <div className="absolute right-0 z-30 mt-2 w-80 max-w-[85vw] whitespace-normal break-words rounded-xl border border-dash-line bg-white p-3 text-left text-xs leading-relaxed shadow-lg">
           <button onClick={() => setResult(null)} className="float-right text-dash-muted hover:text-dash-ink" aria-label="Close">
             ✕
           </button>
@@ -116,7 +116,7 @@ export function RankForThis({ keyword, monthlySearches, label = "Rank for this" 
               <p className="mb-1 font-semibold text-dash-ink">More long tail searches to rank for first</p>
               <ul className="space-y-1.5">
                 {result.easier.map((e) => (
-                  <li key={e.keyword} className="flex items-center justify-between gap-2">
+                  <li key={e.keyword} className="flex flex-wrap items-center justify-between gap-2">
                     <span>
                       {e.keyword} <span className="text-dash-muted">· {e.monthlySearches.toLocaleString()}/mo</span>
                     </span>
