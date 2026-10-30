@@ -427,6 +427,7 @@ type SetupState =
       measurementId: string | null;
       gtag: string | null;
       snippet: boolean;
+      snippetTag: string | null;
     }
   | { status: "needs_ga_account"; url: string | null }
   | { status: "done"; notes: string[] };
@@ -557,7 +558,27 @@ function PasteCodes({ state, busy, onDone }: { state: Extract<SetupState, { stat
   const [copied, setCopied] = useState<string | null>(null);
   const copy = (key: string, text: string) => navigator.clipboard?.writeText(text).then(() => setCopied(key), () => setCopied(null));
   const where = PASTE_WHERE[state.platform ?? ""];
-  const header = [state.verificationTag, state.gtag].filter(Boolean).join("\n");
+  const header = [state.verificationTag, state.snippetTag ?? state.gtag].filter(Boolean).join("\n");
+  const placeText =
+    where?.verification ??
+    HEADER_WHERE[state.platform ?? ""] ??
+    (state.snippet
+      ? "Paste this line in your site's header, right next to the snippet line you added."
+      : "Paste this inside the <head> of every page (one shared layout or template file on most sites). Built with an AI builder? Ask it to add these lines to the <head> of every page.");
+  // Most owners have someone who manages their site: one click sends them everything.
+  const handOff = [
+    "Hi,",
+    "",
+    "Could you add this code to our website, please? It takes a minute.",
+    "",
+    where?.separate
+      ? [state.verificationTag && `${where.verification}\n${state.platform === "wix" ? state.verificationTag : state.verificationCode}`, state.measurementId && `${where.analytics}\nMeasurement ID: ${state.measurementId}`]
+          .filter(Boolean)
+          .join("\n\n")
+      : `${placeText}\n\n${header}`,
+    "",
+    "Then publish the site. Thank you!",
+  ].join("\n");
   const box = (key: string, label: string, text: string) => (
     <div className="space-y-1">
       <p className="text-xs font-semibold text-dash-muted">{label}</p>
@@ -591,19 +612,25 @@ function PasteCodes({ state, busy, onDone }: { state: Extract<SetupState, { stat
         </>
       ) : (
         <>
-          <p>
-            {where?.verification ??
-              HEADER_WHERE[state.platform ?? ""] ??
-              (state.snippet
-                ? "Paste this line in your site's header, right next to the snippet line you added."
-                : "Paste this inside the <head> of every page (one shared layout or template file on most sites). Built with an AI builder? Ask it to add these lines to the <head> of every page.")}
-          </p>
+          <p>{placeText}</p>
+          {state.snippetTag && (
+            <p className="text-dash-muted">This one paste also lets the autopilot improve your pages and adds Google Analytics, so there&apos;s nothing else to add later.</p>
+          )}
           {header && box("h", "Code", header)}
         </>
       )}
-      <button disabled={busy} onClick={onDone} className={button}>
-        {busy ? "Checking your site…" : "I pasted it, finish setup"}
-      </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <button disabled={busy} onClick={onDone} className={button}>
+          {busy ? "Checking your site…" : "I pasted it, finish setup"}
+        </button>
+        <a
+          href={`mailto:?subject=${encodeURIComponent("Please add this code to our website")}&body=${encodeURIComponent(handOff)}`}
+          className="font-semibold text-dash-green hover:underline"
+        >
+          Not technical? Email it to your web person
+        </a>
+      </div>
+      <p className="text-dash-muted">Sent it to someone? Come back once they&apos;ve added it and click &quot;I pasted it, finish setup&quot;.</p>
     </div>
   );
 }

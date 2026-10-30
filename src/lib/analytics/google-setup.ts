@@ -3,7 +3,7 @@ import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { getConnection, saveConnection, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { GoogleApiError, googleRequest, hasScope, SETUP_SCOPES, type GoogleAuth } from "./google-auth";
-import { snippetInstalled } from "./autopilot/snippet";
+import { checkSnippet, snippetInstalled, snippetKey, snippetTag as snippetTagFor } from "./autopilot/snippet";
 import { readWp, wpSetGoogle } from "./autopilot/wordpress";
 import { bareDomain, readProfile, saveProfile } from "./profile";
 
@@ -31,7 +31,17 @@ export type SetupState =
   | { status: "needs_permission" }
   | { status: "needs_embed"; embedUrl: string }
   /** Codes for the owner to paste into their platform (verification is the full meta tag). */
-  | { status: "needs_paste"; platform: string | null; verificationTag: string | null; verificationCode: string | null; measurementId: string | null; gtag: string | null; snippet: boolean }
+  | {
+      status: "needs_paste";
+      platform: string | null;
+      verificationTag: string | null;
+      verificationCode: string | null;
+      measurementId: string | null;
+      gtag: string | null;
+      snippet: boolean;
+      /** When the snippet isn't on the site yet: pasted together with the verification line, it also loads Analytics. One paste for everything. */
+      snippetTag: string | null;
+    }
   /** No Analytics account yet: Google's terms page, one click, then back. */
   | { status: "needs_ga_account"; url: string | null }
   | { status: "done"; notes: string[] };
@@ -149,7 +159,7 @@ export async function setupMeasurementId(accountId: string): Promise<string | nu
 }
 
 export async function setupGoogle(accountId: string, returnTo: string): Promise<SetupState> {
-  const [conn, acct, profile, wp, snippet] = await Promise.all([
+  const [conn, acct, profile, wp, snippetBefore] = await Promise.all([
     getConnection(accountId),
     readAccountAutopilot(accountId),
     readProfile(accountId),
@@ -183,6 +193,8 @@ export async function setupGoogle(accountId: string, returnTo: string): Promise<
     };
   }
   const siteUrl = info.siteUrl;
+  // The snippet may have just been pasted together with the verification line.
+  const snippet = snippetBefore || (!shop && !wp && profile.siteDomain ? await checkSnippet(accountId, profile.siteDomain).catch(() => false) : false);
   const notes: string[] = [];
   const next: Connection = { ...conn };
 
@@ -226,14 +238,18 @@ export async function setupGoogle(accountId: string, returnTo: string): Promise<
       if (next.gaPropertyId !== conn.gaPropertyId) await saveConnection(accountId, next);
       if (shop) return { status: "needs_embed", embedUrl: await embedUrl(shop) };
       if (!wp) {
+        // Sites that take header code get the snippet in the same paste, which also loads Analytics.
+        const headerCode = !["webflow", "wix"].includes(profile.platform ?? "");
+        const snippetTag = !snippet && headerCode ? snippetTagFor(new URL(returnTo).origin, await snippetKey(accountId)) : null;
         return {
           status: "needs_paste",
           platform: profile.platform,
           verificationTag: verification ? `<meta name="google-site-verification" content="${verification}">` : null,
           verificationCode: verification,
-          measurementId: snippet ? null : measurement,
-          gtag: snippet || !measurement ? null : gtagCode(measurement),
+          measurementId: snippet || snippetTag ? null : measurement,
+          gtag: snippet || snippetTag || !measurement ? null : gtagCode(measurement),
           snippet,
+          snippetTag,
         };
       }
       // WordPress shows them as soon as the plugin is updated; caches can take a moment.
