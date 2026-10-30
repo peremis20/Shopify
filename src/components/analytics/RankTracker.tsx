@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
 import type { KeywordList, Ranking } from "@/lib/analytics/seo-types";
 import { formatNumber } from "./format";
 import { ArrowDownIcon, ArrowUpIcon, CloseIcon } from "./Icons";
@@ -54,6 +55,7 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
 
   return (
     <div>
+      <GoogleToday />
       <Explainer>
         Your Google position for each keyword, week by week, from Search Console. History goes back 12 weeks right away,
         so there&apos;s nothing to wait for. Add keywords here or with the Track buttons in the other tabs.
@@ -194,6 +196,79 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the daily rank check found on Google, for every search it watches.
+ * Works from day one, before Search Console has any data.
+ */
+function GoogleToday() {
+  const [rows, setRows] = useState<RankWatchRow[] | null>(null);
+
+  useEffect(() => {
+    api<{ ranks: RankWatchRow[] }>("/api/autopilot/watch")
+      .then((d) => setRows(d.ranks))
+      .catch(() => setRows([]));
+  }, []);
+
+  if (!rows) return <Skeleton className="mb-6 h-24" />;
+  const sorted = [...rows].sort((a, b) => (a.position ?? 999) - (b.position ?? 999) || a.query.localeCompare(b.query));
+
+  return (
+    <div className="mb-6">
+      <h3 className="mb-1 text-sm font-semibold text-dash-ink">On Google today</h3>
+      <Explainer>
+        The searches the app checks on Google every day (up to 15 a day, taking turns), with where your site shows up.
+        These start right away, without waiting for Search Console.
+      </Explainer>
+      {sorted.length === 0 ? (
+        <p className="py-4 text-center text-sm text-dash-muted">
+          The first daily check is picking your searches now. Positions show here within a few hours.
+        </p>
+      ) : (
+        <div className="max-h-[360px] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-dash-card">
+              <tr className="border-b border-dash-line text-left text-xs font-semibold text-dash-ink">
+                <th className="px-1 pb-2">Search</th>
+                <th className="px-1 pb-2 text-right">Position</th>
+                <th className="px-1 pb-2 text-right">Change</th>
+                <th className="hidden px-1 pb-2 md:table-cell">Your page</th>
+                <th className="hidden px-1 pb-2 text-right sm:table-cell">Checked</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => {
+                const change = r.position !== null && r.previous !== null ? r.previous - r.position : null;
+                return (
+                  <tr key={r.query} className="border-b border-dash-line/70 last:border-0">
+                    <td className="max-w-[220px] truncate px-1 py-2 text-dash-ink" title={r.query}>{r.query}</td>
+                    <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
+                      {r.position === null ? <span className="text-dash-muted">Not on page 1</span> : r.position}
+                    </td>
+                    <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
+                      {!change ? (
+                        <span className="text-dash-muted">—</span>
+                      ) : (
+                        <span className={`inline-flex items-center gap-0.5 font-semibold ${change > 0 ? "text-dash-up" : "text-dash-down"}`}>
+                          {change > 0 ? <ArrowUpIcon className="h-3.5 w-3.5" /> : <ArrowDownIcon className="h-3.5 w-3.5" />}
+                          {Math.abs(change)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="hidden max-w-[200px] truncate px-1 py-2 text-dash-muted md:table-cell" title={r.url ?? ""}>
+                      {r.url ? pathOf(r.url) : "—"}
+                    </td>
+                    <td className="hidden whitespace-nowrap px-1 py-2 text-right text-dash-muted sm:table-cell">{r.checkedOn}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
