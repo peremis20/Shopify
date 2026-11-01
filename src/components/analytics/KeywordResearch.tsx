@@ -15,18 +15,20 @@ import { formatNumber } from "./format";
 import { DownloadIcon, KeyIcon } from "./Icons";
 import { Opportunities } from "./Opportunities";
 import { RankTracker } from "./RankTracker";
+import { Backlinks } from "./Backlinks";
 import { api, RankForThis, TrackButton } from "./seo-ui";
 import { TopicsView } from "./TopicsView";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, Skeleton } from "./ui";
 
-type Tab = "ideas" | "opportunities" | "tracker";
+type Tab = "ideas" | "opportunities" | "tracker" | "backlinks";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "opportunities", label: "Opportunities" },
   { id: "tracker", label: "Rank tracker" },
   { id: "ideas", label: "Keyword ideas" },
+  { id: "backlinks", label: "Backlinks" },
 ];
 
 /**
@@ -185,6 +187,7 @@ export function KeywordResearch({ connection, searchQueries, range, onChanged }:
           {tab === "opportunities" && (
             <Opportunities range={range} brand={brand} isTracked={isTracked} onTrack={track} />
           )}
+          {tab === "backlinks" && <Backlinks />}
           {tab === "tracker" && (
             <RankTracker lists={lists} activeId={activeId} setActiveId={setActiveId} update={updateLists} />
           )}

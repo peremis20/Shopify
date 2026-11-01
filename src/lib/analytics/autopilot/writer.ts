@@ -741,3 +741,29 @@ If this search isn't a fit for this website's business, return an empty string f
     slug: slug || "article",
   };
 }
+
+/** A short, personal outreach email asking a site to link to this one. The owner sends it. */
+export async function writeOutreach(
+  ai: AiProvider,
+  p: { kind: "mention" | "resource" | "guest"; siteName: string; pageTitle: string; pageUrl: string; ourSite: string; ourBrand: string | null; topic: string; ourPage: string | null }
+): Promise<{ subject: string; body: string }> {
+  const ask =
+    p.kind === "mention"
+      ? `Their page mentions ${p.ourBrand ?? p.ourSite}. Thank them, and ask kindly whether they would add a link to ${p.ourSite} where it is mentioned, so their readers can find it.`
+      : p.kind === "resource"
+        ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`
+        : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title), and say a link back to ${p.ourSite} would be appreciated.`;
+  const out = await askJson<{ subject: string; body: string }>(
+    ai,
+    `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
+Their page: "${p.pageTitle}" (${p.pageUrl}).
+${ask}
+Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only. Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`,
+    {
+      type: "object",
+      properties: { subject: { type: "string" }, body: { type: "string" } },
+      required: ["subject", "body"],
+    }
+  );
+  return { subject: polish(out.subject), body: out.body.replace(/[\u2010-\u2015]/g, ",").trim() };
+}

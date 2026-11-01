@@ -1,3 +1,4 @@
+import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
@@ -37,7 +38,7 @@ import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
-import { checkAiKey } from "./autopilot/writer";
+import { checkAiKey, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -662,6 +663,52 @@ export const siteAuthority = (req: Request) =>
       rivalList = await rivals(account.id, keywords, domain, (q) => fetchSerp(key, q)).catch(() => []);
     }
     return json({ ready: true, domain, authority, history, rivals: rivalList });
+  });
+
+/** Backlink prospects (found on Google weekly) and outreach emails the owner sends. */
+export const backlinkProspects = (req: Request) =>
+  withAccount(req, async (account) => {
+    const [platform, conn, profile] = await Promise.all([readPlatformSettings(), getConnection(account.id), readProfile(account.id)]);
+    const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? null);
+    const body = req.method === "POST" ? ((await req.json().catch(() => ({}))) as { url?: string; status?: string; refresh?: boolean }) : {};
+    if (body.url && body.status && ["new", "contacted", "won", "skip"].includes(body.status)) {
+      return json({ list: await setProspectStatus(account.id, body.url, body.status as ProspectStatus) });
+    }
+    let list = await readProspects(account.id);
+    if (!platform.serperKey || !domain) return json({ list, error: !domain ? "Add your website first." : "Add a search results key (serper.dev) in platform keys first." });
+    if (body.refresh || prospectsDue(list)) {
+      list = await findProspects(account.id, platform.serperKey, domain, profile.brandName ?? null).catch((e) => (console.error(`backlinks failed: ${message(e)}`), list));
+    }
+    return json({ list });
+  });
+
+export const backlinkEmail = (req: Request) =>
+  withAccount(req, async (account) => {
+    const { url } = (await req.json().catch(() => ({}))) as { url?: string };
+    const [platform, conn, profile, list] = await Promise.all([readPlatformSettings(), getConnection(account.id), readProfile(account.id), readProspects(account.id)]);
+    const p = list?.prospects.find((x) => x.url === url);
+    const ai = aiProvider(platform);
+    if (!p) return json({ error: "That site isn't on the list anymore." }, 404);
+    if (!ai) return json({ error: "Add an AI key in platform keys first." }, 400);
+    const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+    // The page on our site that fits the topic best, from Rank for this.
+    const target = (await readTargets(account.id).catch(() => [])).find((t) => t.page && p.topic.split(" ").every((w) => t.keyword.includes(w)));
+    try {
+      return json(
+        await writeOutreach(ai, {
+          kind: p.kind,
+          siteName: p.domain,
+          pageTitle: p.title,
+          pageUrl: p.url,
+          ourSite: domain,
+          ourBrand: profile.brandName ?? null,
+          topic: p.topic,
+          ourPage: target?.page ?? null,
+        })
+      );
+    } catch (err) {
+      return json({ error: message(err) }, 502);
+    }
   });
 
 /** Real keyword difficulty (0 to 100) for up to 25 searches, from what ranks on Google page one. */
