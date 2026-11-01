@@ -1,3 +1,5 @@
+import { readProspects } from "./backlinks";
+import { otherClient } from "./clients";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
@@ -121,6 +123,30 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     const failed = runs.find((r) => /fail|error/i.test(String(r.status)));
     if (failed && runs[0] === failed) {
       problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching" });
+    }
+  }
+
+  // 4. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
+  if (opts.ourDomain) {
+    const isOther = await otherClient(opts.ourDomain);
+    const list = await readProspects(accountId).catch(() => null);
+    const crossed = (list?.prospects ?? []).filter((p) => isOther(p.domain));
+    const [leak] = await sql`SELECT count(*) AS n FROM insights_report_cache WHERE cache_key LIKE 'kd:%' AND data->>'ours' IS NOT NULL`;
+    const leaks = Number(leak?.n ?? 0);
+    if (crossed.length || leaks) {
+      if (opts.repair) {
+        if (crossed.length && list) {
+          await sql`UPDATE insights_settings SET value = ${JSON.stringify({ ...list, prospects: list.prospects.filter((p) => !isOther(p.domain)) })}
+            WHERE key = ${`backlinks:${accountId}`}`.catch(() => undefined);
+        }
+        if (leaks) await sql`UPDATE insights_report_cache SET data = jsonb_set(data, '{ours}', 'null'::jsonb) WHERE cache_key LIKE 'kd:%' AND data->>'ours' IS NOT NULL`.catch(() => undefined);
+      }
+      problems.push({
+        id: "data:isolation",
+        text: `Found data that belongs to another site (${[crossed.length && `${crossed.length} customer sites in the backlink list`, leaks && `${leaks} saved rankings in a shared cache`].filter(Boolean).join(", ")}).`,
+        fix: opts.repair ? "Removed it, so this site only uses its own data." : "It will be removed on the next hourly check.",
+        who: opts.repair ? "repaired" : "watching",
+      });
     }
   }
 
