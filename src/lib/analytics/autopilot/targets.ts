@@ -33,6 +33,10 @@ export interface Target {
   difficulty?: number;
   /** "main": aimed at directly. "support": broad, used to back up the main ones. Main when missing (older targets). */
   role?: "main" | "support";
+  /** The topic cluster it belongs to (set by the Strategist): its articles are written together, then a pillar page links them. */
+  cluster?: string;
+  /** The cluster's pillar: written last, as an overview that links to every article in the cluster. */
+  pillar?: boolean;
   /** A new article the autopilot wrote for it (see new-articles.ts). */
   article?: { url: string | null; live: boolean; note: string };
 }

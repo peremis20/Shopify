@@ -26,6 +26,8 @@ export interface RankWatchRow {
   best7: number | null;
   url: string | null;
   checkedOn: string;
+  /** Quoted in Google's answer box on the latest check (null: not recorded). */
+  quoted: boolean | null;
   history: { day: string; position: number | null }[];
 }
 
@@ -134,10 +136,21 @@ export async function trackRanks(accountId: string, conn: Connection, serpKey: s
         const serp = await fetchSerp(serpKey, q).catch(() => null);
         if (!serp) return;
         const ours = serp.organic.find((r) => isOurs(r.domain, ourDomain));
+        // Quoted in Google's answer box? Unknown (null) for page one results cached before this was recorded.
+        let quoted: boolean | null = null;
+        if (serp.answerLink !== undefined) {
+          let host = "";
+          try {
+            host = serp.answerLink ? new URL(serp.answerLink).hostname.replace(/^www\./, "") : "";
+          } catch {
+            host = "";
+          }
+          quoted = Boolean(host) && isOurs(host, ourDomain);
+        }
         await sql`
-          INSERT INTO insights_rank_daily (account_id, query, checked_on, position, url)
-          VALUES (${accountId}, ${q}, ${today}, ${ours?.position ?? null}, ${ours?.link ?? null})
-          ON CONFLICT (account_id, query, checked_on) DO UPDATE SET position = EXCLUDED.position, url = EXCLUDED.url`;
+          INSERT INTO insights_rank_daily (account_id, query, checked_on, position, url, quoted)
+          VALUES (${accountId}, ${q}, ${today}, ${ours?.position ?? null}, ${ours?.link ?? null}, ${quoted})
+          ON CONFLICT (account_id, query, checked_on) DO UPDATE SET position = EXCLUDED.position, url = EXCLUDED.url, quoted = EXCLUDED.quoted`;
         checked++;
       })
     );
@@ -150,12 +163,13 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
   await ensureSchema();
   const since = toIso(new Date(Date.now() - 14 * DAY));
   const rows = await sql`
-    SELECT query, checked_on, position, url FROM insights_rank_daily
+    SELECT query, checked_on, position, url, quoted FROM insights_rank_daily
     WHERE account_id = ${accountId} AND checked_on >= ${since} ORDER BY query, checked_on`;
-  const byQuery = new Map<string, { day: string; position: number | null; url: string | null }[]>();
+  const byQuery = new Map<string, { day: string; position: number | null; url: string | null; quoted: boolean | null }[]>();
   for (const r of rows) {
     const list = byQuery.get(r.query!) ?? [];
-    list.push({ day: r.checked_on!.slice(0, 10), position: r.position === null ? null : Number(r.position), url: r.url });
+    // Booleans come back as text: "t" or "f" (null when not recorded).
+    list.push({ day: r.checked_on!.slice(0, 10), position: r.position === null ? null : Number(r.position), url: r.url, quoted: r.quoted === null ? null : r.quoted === "t" || r.quoted === "true" });
     byQuery.set(r.query!, list);
   }
   const weekAgo = toIso(new Date(Date.now() - 7 * DAY));
@@ -175,6 +189,7 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
       best7: week.length ? Math.min(...week) : null,
       url: last.url ?? [...hist].reverse().find((h) => h.url)?.url ?? null,
       checkedOn: last.day,
+      quoted: last.quoted,
       history: hist.map(({ day, position }) => ({ day, position })),
     });
   }

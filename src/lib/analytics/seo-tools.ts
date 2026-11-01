@@ -76,6 +76,27 @@ export async function gscSearchCount(conn: Connection): Promise<number> {
   return rows.length;
 }
 
+/**
+ * The site's page that already does best on Google for a topic: most clicks over
+ * 90 days on searches containing all its words. This is the page worth offering
+ * when asking another site for a link. Null when nothing matches.
+ */
+export async function bestPageForTopic(conn: Connection, topicWords: string[]): Promise<{ page: string; clicks: number } | null> {
+  if (!conn.gscSiteUrl || !topicWords.length) return null;
+  const { auth, site } = requireSite(conn);
+  const { current } = resolveRange("90d", 3);
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query", "page"], rowLimit: 5000 });
+  const byPage = new Map<string, number>();
+  for (const r of rows) {
+    const q = r.keys[0].toLowerCase();
+    if (!topicWords.every((w) => q.includes(w))) continue;
+    const page = r.keys[1].split("#")[0];
+    byPage.set(page, (byPage.get(page) ?? 0) + r.clicks);
+  }
+  const best = [...byPage.entries()].sort((a, b) => b[1] - a[1])[0];
+  return best && best[1] > 0 ? { page: best[0], clicks: best[1] } : null;
+}
+
 /** All clicks from Google search to the site in the last 28 days. */
 export async function gscClicks28d(conn: Connection): Promise<number> {
   if (!conn.gscSiteUrl) return 0;

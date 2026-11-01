@@ -557,7 +557,7 @@ ${page.imagesMissingAlt.length ? `Images with no alt text (write one for each): 
 
 ${
   allowContent && editableBody
-    ? `If the page text does not already answer what people searching "${target.query}" want to know, write contentSectionHtml: a new section that fills that gap using only facts consistent with the page. Do not repeat what is already there. Otherwise return an empty string.`
+    ? `If the page text does not already answer what people searching "${target.query}" want to know, write contentSectionHtml: a new section that fills that gap using only facts consistent with the page. Do not repeat what is already there. Make the first sentence under its heading a direct, plain answer that Google could quote on its own. Otherwise return an empty string.`
     : "Return an empty string for contentSectionHtml."
 }
 
@@ -716,7 +716,8 @@ Related searches: ${brief.related.join(" | ") || "(none)"}
 ${brief.supporting?.length ? `Broader searches to mention naturally where they fit, to support the main one (never the focus): ${brief.supporting.join(" | ")}\n` : ""}
 The site already has these articles, so don't repeat them: ${brief.ownTitles.slice(0, 40).join(" | ") || "(none)"}
 
-Cover what searchers want better and more clearly than the pages above, in this site's own voice. Answer the main question early, in plain words.
+Cover what searchers want better and more clearly than the pages above, in this site's own voice.
+So Google can quote it as the answer: open with a short paragraph of two or three sentences that answers the search directly in plain words, before anything else. Where people ask questions (see above), use those questions as <h2> headings and answer each one in the first sentence under it.
 Only use well established, general knowledge. Never attribute claims to unnamed sources: no "studies show", "research suggests", "many users notice", "experts say" or "anecdotal experience". Describe what is generally known plainly, and use cautious wording ("may support") for any benefit. Write no numbers at all: no doses, percentages, statistics, prices, years or counts (paragraphs with numbers are removed).
 If this search isn't a fit for this website's business, return an empty string for html.`;
 
@@ -775,8 +776,8 @@ Sound like a real person writing one email, not a template: plain and friendly, 
 /* ---------- Strategist (strategist.ts): a weekly plan, and a second AI that challenges it ---------- */
 
 export interface StrategyMove {
-  /** "target": aim at this search (Rank for this). "cluster": build articles around a topic. "fix": something to repair. "hold": stop doing something. */
-  kind: "target" | "cluster" | "fix" | "hold";
+  /** "target": aim at this search (Rank for this). "cluster": build articles around a topic. "fix": something to repair. "hold": stop doing something. "asset": a resource other sites would want to link to. */
+  kind: "target" | "cluster" | "fix" | "hold" | "asset";
   /** The exact search, copied from the facts, for "target" and "cluster". */
   keyword: string | null;
   action: string;
@@ -791,7 +792,7 @@ export interface StrategyPlan {
 const MOVE_SCHEMA = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["target", "cluster", "fix", "hold"] },
+    kind: { type: "string", enum: ["target", "cluster", "fix", "hold", "asset"] },
     keyword: { type: ["string", "null"] },
     action: { type: "string" },
     why: { type: "string" },
@@ -807,7 +808,7 @@ export async function planStrategy(ai: AiProvider, facts: string): Promise<Strat
 Facts from this week (real data, nothing else is known):
 ${facts}
 
-Think like a seasoned SEO: searches already at positions 4 to 20 are the fastest wins; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated.
+Think like a seasoned SEO: refreshing pages already at positions 4 to 20 is the fastest win, faster than new pages; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated; backlinks come easier to a page worth linking to, so you may suggest one "asset" move: a resource other sites would cite (a clear guide, checklist or comparison), built only from what the site can honestly say, never invented data or surveys.
 
 Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers). Never invent searches, numbers or results. No hyphens or dashes in the text.`,
     { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }

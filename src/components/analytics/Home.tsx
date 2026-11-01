@@ -68,6 +68,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
   const gsc = data?.gsc?.data;
   const pageOne = ranks?.filter((r) => r.position !== null && r.position <= 10) ?? [];
+  const quoted = ranks?.filter((r) => r.quoted).length ?? 0;
   const pageOneBefore = ranks?.filter((r) => r.previous !== null && r.previous <= 10).length ?? 0;
   const hist = authority?.history ?? [];
   const strengthChange = hist.length > 1 && authority?.authority != null ? Math.round((authority.authority - hist[0].score) * 10) / 10 : null;
@@ -165,7 +166,15 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
           label="Searches on page 1"
           hint="Searches the app checks daily where you show on Google's first page"
           value={ranks === null ? null : String(pageOne.length)}
-          badge={ranks && ranks.length > 0 && <Change n={pageOne.length - pageOneBefore} />}
+          badge={
+            ranks &&
+            ranks.length > 0 && (
+              <span className="flex flex-wrap items-center gap-x-2">
+                <Change n={pageOne.length - pageOneBefore} />
+                {quoted > 0 && <span className="text-xs text-dash-up" title="Google shows your page as the quoted answer at the top">{quoted} quoted by Google</span>}
+              </span>
+            )
+          }
         />
         <Stat
           label="Site strength"

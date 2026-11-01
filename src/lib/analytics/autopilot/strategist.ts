@@ -7,7 +7,7 @@ import { inspect } from "./inspector";
 import { isJunkKeyword } from "./keyword-guard";
 import { aiProvider, readPlatformSettings, type AiProvider } from "./settings";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
-import { addTarget, readTargets } from "./targets";
+import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
 import { challengeStrategy, planStrategy, type StrategyMove } from "./writer";
 
@@ -131,6 +131,14 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
         });
         if (result) {
           added++;
+          // A cluster: the topic itself becomes the pillar, and the long tail searches added with it are its articles.
+          if (m.kind === "cluster") {
+            const all = await readTargets(accountId).catch(() => []);
+            for (const t of all) {
+              if (t.keyword === k) await saveTarget(accountId, { ...t, cluster: k, pillar: true });
+              else if (result.added.includes(t.keyword)) await saveTarget(accountId, { ...t, cluster: k });
+            }
+          }
           done = m.kind === "cluster" ? `Added as a target, with its best long tail searches, so the autopilot builds articles around it.` : "Added as a target: the autopilot works on it first.";
         } else {
           done = "Couldn't be added as a target this time; it will be tried again next week.";

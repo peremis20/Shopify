@@ -188,6 +188,8 @@ export function ensureSchema(): Promise<void> {
     await sql`ALTER TABLE insights_keyword_lists ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_runs ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS account_id bigint`;
+    // Whether Google's answer box (featured snippet) quoted this site for the search that day.
+    await sql`ALTER TABLE insights_rank_daily ADD COLUMN IF NOT EXISTS quoted boolean`;
     // Carry over the single-owner setup from before accounts existed.
     await sql`INSERT INTO insights_accounts (email)
       SELECT email FROM insights_google_connection WHERE id = 'default' AND email IS NOT NULL

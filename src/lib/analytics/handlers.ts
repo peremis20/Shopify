@@ -62,7 +62,7 @@ import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
 import { bareDomain, readProfile, saveProfile } from "./profile";
 import { listProperties } from "./properties";
-import { addKeywords, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
+import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
 
 /**
@@ -693,8 +693,12 @@ export const backlinkEmail = (req: Request) =>
     if (!p) return json({ error: "That site isn't on the list anymore." }, 404);
     if (!ai) return json({ error: "Add an AI key in platform keys first." }, 400);
     const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
-    // The page on our site that fits the topic best, from Rank for this.
+    // The page worth offering: the one already doing best on Google for this topic (real clicks),
+    // else the page aimed at it with Rank for this.
+    const words = p.topic.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    const best = conn ? await bestPageForTopic(conn, words).catch(() => null) : null;
     const target = (await readTargets(account.id).catch(() => [])).find((t) => t.page && p.topic.split(" ").every((w) => t.keyword.includes(w)));
+    const ourPage = best?.page ?? target?.page ?? null;
     try {
       return json(
         await writeOutreach(ai, {
@@ -705,7 +709,7 @@ export const backlinkEmail = (req: Request) =>
           ourSite: domain,
           ourBrand: profile.brandName ?? null,
           topic: p.topic,
-          ourPage: target?.page ?? null,
+          ourPage,
         })
       );
     } catch (err) {

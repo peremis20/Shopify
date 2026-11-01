@@ -23,6 +23,8 @@ export interface Serp {
   organic: SerpResult[];
   questions: string[];
   related: string[];
+  /** The page Google quotes in its answer box (featured snippet), when there is one. Older cached results don't have it. */
+  answerLink?: string | null;
   /** Our best position on page one, or null when we're not on it. */
   ourPosition: number | null;
 }
@@ -92,6 +94,7 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
       .map((r, i) => ({ position: r.position ?? i + 1, title: r.title ?? "", link: r.link!, domain: domainOf(r.link!), snippet: r.snippet ?? "" })),
     questions: ((body.peopleAlsoAsk ?? []) as { question?: string }[]).map((q) => q.question ?? "").filter(Boolean).slice(0, 8),
     related: ((body.relatedSearches ?? []) as { query?: string }[]).map((q) => q.query ?? "").filter(Boolean).slice(0, 8),
+    answerLink: typeof body.answerBox?.link === "string" ? (body.answerBox.link as string) : null,
   };
   await sql`
     INSERT INTO insights_report_cache (cache_key, data, fetched_at)

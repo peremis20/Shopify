@@ -10,6 +10,7 @@ import type { Candidate, RankingApp } from "./types";
  * - a search that just fell off Google page one is rescued first
  * - as the site gets stronger, harder searches stop being held back
  * - a backlink the owner won lifts the searches on that topic, while the link is fresh
+ * - pages already close to page one (positions 4 to 20) are refreshed before anything else
  * (Sales from Google are weighed by the Analytics app.)
  */
 
@@ -17,6 +18,8 @@ import type { Candidate, RankingApp } from "./types";
 const NEW_SITE = 3;
 const STRONG = 5;
 const WON_LINK_DAYS = 60;
+/** Pages already at positions 4 to 20 get this lift. */
+const NEAR_MISS_WEIGHT = 1.5;
 
 const dropped = (r: RankWatchRow) => r.previous !== null && r.previous <= 10 && (r.position === null || r.position > 10);
 
@@ -72,6 +75,8 @@ export const feedback: RankingApp = {
         c.previousPosition ??= droppedMap.get(c.op.query);
         c.weights[this.id] = 2;
       }
+      // Close to page one already: refreshing it is the quickest win (refreshes beat brand new pages), so it goes first.
+      if (!c.inferred && c.op.position >= 4 && c.op.position <= 20) c.weights[`${this.id}.near`] = NEAR_MISS_WEIGHT;
       const have = topicWords(c.op.query);
       if (wonTopics.some((t) => t.length > 0 && t.every((w) => have.has(w)))) c.weights[`${this.id}.links`] = 1.3;
     }

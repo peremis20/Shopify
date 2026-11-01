@@ -54,6 +54,23 @@ async function markWritten(accountId: string): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
+/** Shopify's standard newsletter signup (the same form themes use), placed at the end of a new article. */
+function signupBlock(brand: string): string {
+  const name = brand.replace(/[<>&"]/g, "");
+  return `
+<div class="dashpatrol-signup" style="margin-top:2em;padding:1.25em;border:1px solid #e5e0d8;border-radius:12px">
+<h2>Get new guides from ${name} by email</h2>
+<p>New articles like this one, now and then. No spam, and you can unsubscribe anytime.</p>
+<form method="post" action="/contact#contact_form" accept-charset="UTF-8">
+<input type="hidden" name="form_type" value="customer">
+<input type="hidden" name="utf8" value="✓">
+<input type="hidden" name="contact[tags]" value="newsletter,blog">
+<input type="email" name="contact[email]" placeholder="Your email" required aria-label="Your email" style="padding:.6em;min-width:220px">
+<button type="submit" style="padding:.6em 1.2em">Subscribe</button>
+</form>
+</div>`;
+}
+
 /** Writes and posts the next new article, if one is due. Returns null when there's nothing to do today. */
 export async function nextNewArticle(opts: {
   accountId: string;
@@ -68,9 +85,20 @@ export async function nextNewArticle(opts: {
   if (!opts.platform.serperKey || (await notDue(accountId, opts.perWeek))) return null;
   // Searches the owner chose that no page covers, the ones with room on page one first.
   const all = await readTargets(accountId);
+  // Topic clusters: a cluster's articles come first once one is started, and its pillar only when all of them are live.
+  const members = (c: string) => all.filter((t) => t.cluster === c && !t.pillar);
+  const started = (c: string | undefined) => Boolean(c) && members(c!).some((t) => t.article?.live || t.page);
+  const ready = (t: (typeof all)[number]) => !t.pillar || (members(t.cluster ?? "").length > 0 && members(t.cluster ?? "").every((m) => m.article?.live || m.page));
   const due = all
-    .filter((t) => !t.page && !t.article && t.winnable !== false && t.role !== "support")
-    .sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || easeRank(a.difficulty) - easeRank(b.difficulty) || b.monthlySearches - a.monthlySearches);
+    // A pillar is written even when its broad search is crowded: its job is to tie the cluster together.
+    .filter((t) => !t.page && !t.article && (t.winnable !== false || t.pillar) && (t.role !== "support" || t.pillar) && ready(t))
+    .sort(
+      (a, b) =>
+        Number(started(b.cluster)) - Number(started(a.cluster)) ||
+        Number(b.winnable ?? false) - Number(a.winnable ?? false) ||
+        easeRank(a.difficulty) - easeRank(b.difficulty) ||
+        b.monthlySearches - a.monthlySearches
+    );
   const target = due[0];
   if (!target) return null;
   // One try a day even if the writer gives up, so a hard search doesn't use up every run.
@@ -90,6 +118,16 @@ export async function nextNewArticle(opts: {
     await saveTarget(accountId, { ...target, article: { url: null, live: false, note: "The writer couldn't make a good enough article for this search." } });
     return null;
   }
+  // A pillar page links to every article in its cluster, so readers and Google see the whole topic.
+  if (target.pillar && target.cluster) {
+    const links = members(target.cluster)
+      .map((m) => ({ url: m.article?.url ?? m.page, label: m.keyword.replace(/^./, (c) => c.toUpperCase()) }))
+      .filter((l): l is { url: string; label: string } => Boolean(l.url));
+    if (links.length) {
+      const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      article.html += `\n<h2>More guides on ${esc(target.cluster)}</h2>\n<ul>${links.map((l) => `<li><a href="${esc(l.url)}">${esc(l.label)}</a></li>`).join("")}</ul>`;
+    }
+  }
 
   const profile = await readProfile(accountId);
   const origin = `https://${profile.siteDomain ?? opts.ourDomain}`;
@@ -97,6 +135,9 @@ export async function nextNewArticle(opts: {
   let posted: PostedArticle;
 
   if (site.mode === "shopify" && site.store) {
+    // Google visitors may not come back on their own: invite them to the store's newsletter
+    // (Shopify's own customer signup, so subscribers land in the store's customer list).
+    article.html += signupBlock(author || "us");
     const made = await createArticle(site.store, {
       title: article.title,
       html: article.html,
