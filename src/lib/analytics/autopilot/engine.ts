@@ -288,6 +288,7 @@ async function planNextChange(
   const all = await gatherCandidates(hub, apps, notes);
   // Urgent: winning back a slipping search, or getting a page Google left out into its index.
   const cands = ctx.urgentOnly ? all.filter((c) => c.mode === "defend" || (c.weights["site-health"] ?? 0) >= 4) : all;
+  if (ctx.urgentOnly) notes.push(`Urgent check: ${cands.length} urgent of ${all.length} candidates${cands.length ? ` (${cands.slice(0, 3).map((c) => `“${c.op.query}” on ${new URL(c.op.page).pathname}`).join(", ")})` : ""}.`);
 
   const changedSince = async (days: number) =>
     new Set(
@@ -644,7 +645,9 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       const plan = await planNextChange(ctx, conn, notes, recordGap);
       const gaps = notes.filter((n) => n.startsWith("Skipped “"));
       if (!plan && ctx.urgentOnly) {
-        summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages), and nothing urgent needs fixing.`);
+        // Say why, so the Inspector (and the owner) can see an urgent fix that keeps getting stuck.
+        const why = notes.filter((x) => /^(Urgent check|Skipped “|Left )/.test(x)).join(" ");
+        summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages), and no urgent fix could be made.${why ? ` ${why}` : ""}`);
       } else if (!plan) {
         summary.push(gaps.length ? `No change made. ${gaps.join(" ")}` : "No new opportunities to work on right now.");
       } else if (preview) {
