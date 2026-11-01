@@ -29,6 +29,8 @@ export interface AuthorityPlan {
   studied: { domain: string; found: number }[];
   /** False when the reviewing AI was unavailable and the moves were not challenged. */
   checked?: boolean;
+  /** The exact data the plan was made from, so every kept or dropped move can be checked afterwards. */
+  facts?: string;
 }
 
 const KEY = (accountId: string) => `authority_plan:${accountId}`;
@@ -142,7 +144,11 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     `By kind: mentions ${by("mention").length}, resource pages ${by("resource").length}, guest articles ${by("guest").length}, podcasts ${by("podcast").length}, expert roundups ${by("roundup").length}, broken links ${by("broken").length}, competitor sources ${by("competitor").length}.`
   );
   const strongest = ps.filter((p) => p.status === "new").sort((a, b) => (b.authority ?? 0) - (a.authority ?? 0)).slice(0, 5);
-  if (strongest.length) lines.push("Strongest sites not contacted yet: " + strongest.map((p) => `${p.domain} (${p.kind}, strength ${p.authority ?? "unknown"})`).join("; "));
+  if (strongest.length) {
+    lines.push("Strongest sites not contacted yet: " + strongest.map((p) => `${p.domain} (${p.kind}, strength ${p.authority ?? "unknown"})`).join("; "));
+    // What each of those pages is about, from Google's own result: the data to judge relevance by.
+    for (const p of strongest) lines.push(`${p.domain} page found on Google: "${p.title}". ${p.snippet.replace(/\s+/g, " ").slice(0, 160)}`);
+  }
   if (conn?.gscSiteUrl) {
     const rows = await queryPageRows90d(conn).catch(() => []);
     const byPage = new Map<string, number>();
@@ -171,6 +177,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     ),
     studied,
     checked,
+    facts,
   };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})

@@ -33,6 +33,8 @@ export interface StrategyReport {
   /** Sales from Google visitors in the last 28 days (Google Analytics ecommerce), when tracked. */
   revenue?: number | null;
   goal: number;
+  /** The exact data the plan was made from, so every kept or dropped move can be checked afterwards. */
+  facts?: string;
 }
 
 const GOAL = 20_000;
@@ -184,7 +186,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     if (kept && m.kind === "asset" && !done) done = "An idea for you: the agents can't make this one on their own yet.";
     out.push({ ...m, keyword: k, kept, challenge, done });
   }
-  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL };
+  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL, facts };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
