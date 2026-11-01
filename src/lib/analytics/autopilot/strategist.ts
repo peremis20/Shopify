@@ -131,7 +131,12 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const { facts, context, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
   const plan = await planStrategy(ai, context ? `${facts}\n\n${context}` : facts);
   const moves = plan.moves.slice(0, 5);
-  const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch(() => ({ keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") }));
+  // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
+  let checked = true;
+  const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch(() => {
+    checked = false;
+    return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable, so nothing was acted on.") };
+  });
 
   const faith = await faithAllowed(accountId);
   let added = 0;
@@ -146,7 +151,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
       challenge = `Dropped: "${k}" isn't in the site's data or isn't on topic.`;
     }
     let done: string | null = null;
-    if (kept && k && (m.kind === "target" || m.kind === "cluster") && added < MAX_NEW_TARGETS && platform.serperKey) {
+    if (checked && kept && k && (m.kind === "target" || m.kind === "cluster") && added < MAX_NEW_TARGETS && platform.serperKey) {
       const already = (await readTargets(accountId).catch(() => [])).some((t) => t.keyword === k);
       if (!already) {
         const result = await addTarget(accountId, k, { serperKey: platform.serperKey, ourDomain }, m.kind === "cluster").catch((e) => {

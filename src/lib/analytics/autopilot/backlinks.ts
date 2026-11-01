@@ -146,13 +146,13 @@ export async function setProspectStatus(accountId: string, url: string, status: 
   return list;
 }
 
+/** Which finds are worth most when the list is full: a fixable broken link first, a site that only mentions a competitor last. */
+const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2, roundup: 3, podcast: 4, guest: 5, competitor: 6 };
+
 /**
  * Upgrades prospects with what another agent found (the Broken Link Agent), keeping the owner's marks.
  * Each update replaces a new prospect on the same page, or is added when the page isn't listed.
  */
-/** Which finds are worth most when the list is full: a fixable broken link first, a site that only mentions a competitor last. */
-const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2, roundup: 3, podcast: 4, guest: 5, competitor: 6 };
-
 export async function upsertProspects(accountId: string, updates: Prospect[]): Promise<void> {
   const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
   for (const u of updates) {

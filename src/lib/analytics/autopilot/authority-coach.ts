@@ -88,6 +88,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     const isOther = await otherClient(ours);
     const found: Prospect[] = [];
     for (const r of rivals) {
+      if (found.length >= MAX_COMPETITOR_FINDS) break;
       if (isOther(r.domain)) continue;
       const serp = await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(() => null);
       let n = 0;
