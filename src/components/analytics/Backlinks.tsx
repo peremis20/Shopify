@@ -12,7 +12,7 @@ const KIND: Record<Prospect["kind"], { label: string; hint: string }> = {
   guest: { label: "Guest article", hint: "Takes articles from other sites. Offer one with a link back." },
   podcast: { label: "Podcast", hint: "A show on your topic that invites guests. Offer to be on it." },
   roundup: { label: "Expert roundup", hint: "Collects expert answers on your topic. Offer one." },
-  competitor: { label: "Links to competitors", hint: "Already mentions a site that beats you on Google. Offer your page as another good resource." },
+  competitor: { label: "Mentions a competitor", hint: "Mentions a site that beats you on Google. Offer your page as another good resource." },
   broken: { label: "Broken link", hint: "Has a dead link you can replace with your page. A helpful favor, and a strong way to earn a link." },
 };
 
@@ -169,7 +169,7 @@ function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
     <div className="mb-4 rounded-xl border border-dash-line bg-[#FBF8F2] px-4 py-3">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-dash-muted">This week&apos;s authority plan</p>
-        <span className="text-[11px] text-dash-muted">{new Date(plan.at).toLocaleDateString()} · checked by a second AI</span>
+        <span className="text-[11px] text-dash-muted">{new Date(plan.at).toLocaleDateString()} · {plan.checked === false ? "not yet checked by a second AI" : "checked by a second AI"}</span>
       </div>
       <p className="text-sm text-dash-ink">{plan.assessment}</p>
       {kept.length > 0 && (

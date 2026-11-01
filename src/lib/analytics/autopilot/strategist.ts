@@ -49,7 +49,7 @@ export async function readStrategy(accountId: string): Promise<StrategyReport | 
 export const strategyDue = (r: StrategyReport | null) => !r || Date.now() - Date.parse(r.at) > WEEK;
 
 /** Everything the agents know, as plain facts the strategist (and its critic) can check against. */
-async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
+async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; context: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
   const lines: string[] = [];
   const known = new Set<string>();
   let visitors: number | null = null;
@@ -100,7 +100,10 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   // The Authority Coach's view, so content and links pull the same way.
   const authority = await readAuthorityPlan(accountId).catch(() => null);
-  if (authority) lines.push(`Authority Coach this week: ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`);
+  // It is the other agent's opinion, not data, so it travels apart from the facts.
+  const context = authority
+    ? `The Authority Coach's plan this week (its opinion, not data; do not treat it as fact): ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
+    : "";
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
   // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
   let revenue: number | null = null;
@@ -117,7 +120,7 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
     }
   }
 
-  return { facts: lines.join("\n"), known, visitors, revenue };
+  return { facts: lines.join("\n"), context, known, visitors, revenue };
 }
 
 /** Plans the week, has it challenged, acts on what survives. */
@@ -125,8 +128,8 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const platform = await readPlatformSettings();
   const ai: AiProvider | null = aiProvider(platform);
   if (!ai) return null;
-  const { facts, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
-  const plan = await planStrategy(ai, facts);
+  const { facts, context, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
+  const plan = await planStrategy(ai, context ? `${facts}\n\n${context}` : facts);
   const moves = plan.moves.slice(0, 5);
   const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch(() => ({ keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") }));
 

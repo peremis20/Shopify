@@ -28,10 +28,16 @@ export interface AuthorityPlan {
   moves: (AuthorityMove & { kept: boolean; challenge: string })[];
   /** Competitors studied this week and how many link sources they gave. */
   studied: { domain: string; found: number }[];
+  /** False when the reviewing AI was unavailable and the moves were not challenged. */
+  checked?: boolean;
 }
 
 const KEY = (accountId: string) => `authority_plan:${accountId}`;
 const COMPETITORS = 3;
+/** New competitor sources per week, so they never crowd out better finds. */
+const MAX_COMPETITOR_FINDS = 10;
+/** Older checks of who beats the site are too stale to study. */
+const RIVALS_MAX_DAYS = 30;
 
 export async function readAuthorityPlan(accountId: string): Promise<AuthorityPlan | null> {
   await ensureSchema();
@@ -58,9 +64,11 @@ export async function markAuthorityTried(accountId: string, note: string): Promi
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch(() => undefined);
 }
 
-/** The sites beating this one on its searches, from the last "sites that keep beating you" check. */
+/** The sites beating this one on its searches, from the last "sites that keep beating you" check (within 30 days). */
 async function latestRivals(accountId: string): Promise<Rival[]> {
-  const [row] = await sql`SELECT data FROM insights_report_cache WHERE cache_key = ${`rivals:${accountId}`}`.catch(() => [] as { data: string | null }[]);
+  const [row] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${`rivals:${accountId}`} AND fetched_at > now() - make_interval(days => ${RIVALS_MAX_DAYS})`.catch(() => [] as { data: string | null }[]);
   return row?.data ? (JSON.parse(row.data) as Rival[]) : [];
 }
 
@@ -85,7 +93,8 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
       let n = 0;
       for (const x of serp?.organic ?? []) {
         const d = x.domain.toLowerCase().replace(/^www\./, "");
-        if (d === ours || d.endsWith(`.${ours}`) || d === r.domain || NOT_PROSPECTS.test(d) || isBig(d) || isOther(d)) continue;
+        if (found.length >= MAX_COMPETITOR_FINDS) break;
+        if (d === ours || d.endsWith(`.${ours}`) || d === r.domain || NOT_PROSPECTS.test(d) || isBig(d) || isOther(d) || found.some((f) => f.domain === d)) continue;
         found.push({
           url: x.link,
           domain: d,
@@ -134,18 +143,26 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     if (top.length) lines.push("Pages that already earn the most Google clicks (90 days), the best ones to offer: " + top.map(([p, c]) => `${p} (${c})`).join("; "));
   }
   const strategy = await readStrategy(accountId).catch(() => null);
-  if (strategy) lines.push(`The Strategist's plan this week: ${strategy.assessment} Moves: ${strategy.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`);
   const facts = lines.join("\n");
+  // The other agent's plan is an opinion, not data: it goes in as context, apart from the facts.
+  const context = strategy
+    ? `The Strategist's plan this week (its opinion, not data; do not treat it as fact): ${strategy.assessment} Moves: ${strategy.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
+    : "";
 
   // 3. Plan, then a second AI challenges each move.
-  const plan = await planAuthority(ai, facts);
+  const plan = await planAuthority(ai, context ? `${facts}\n\n${context}` : facts);
   const moves = plan.moves.slice(0, 5);
-  const verdict = await challengeStrategy(ai, facts, { moves }).catch(() => ({ keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") }));
+  let checked = true;
+  const verdict = await challengeStrategy(ai, facts, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch(() => {
+    checked = false;
+    return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") };
+  });
   const report: AuthorityPlan = {
     at: new Date().toISOString(),
     assessment: plan.assessment,
     moves: moves.map((m, i) => ({ ...m, kept: verdict.keep[i], challenge: verdict.notes[i] })),
     studied,
+    checked,
   };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})

@@ -765,7 +765,7 @@ export async function writeOutreach(
 ): Promise<{ subject: string; body: string }> {
   const ask =
     p.kind === "competitor"
-      ? `Their page "${p.pageTitle}" covers ${p.topic} and already points readers to similar sites. Suggest ${p.ourPage ?? p.ourSite} as another helpful resource for their readers, in one sentence on what it covers. Never mention or criticize any other site.`
+      ? `Their page "${p.pageTitle}" covers ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as another helpful resource for their readers, in one sentence on what it covers. Never mention or criticize any other site.`
       : p.kind === "broken" && p.brokenLink
       ? `One link on their page no longer works: "${p.anchor ?? "a link"}" (${p.brokenLink}). Point it out helpfully as a small favor, first. Then suggest ${p.ourPage ?? p.ourSite} as a working replacement on the same subject, in one sentence on what it covers. No pressure.`
       : p.kind === "podcast"
@@ -897,13 +897,14 @@ Return JSON: "assessment" (3 short plain sentences: where the site stands agains
 export async function challengeStrategy(
   ai: AiProvider,
   facts: string,
-  plan: { moves: { kind: string; keyword: string | null; action: string; why: string }[] }
+  plan: { moves: { kind: string; keyword: string | null; action: string; why: string }[] },
+  role = "strategist's weekly plan"
 ): Promise<{ keep: boolean[]; notes: string[] }> {
   const others = [ai, ...(ai.backups ?? [])];
   const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
   const out = await askJson<{ verdicts: { keep: boolean; note: string }[] }>(
     { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
-    `You are a skeptical senior SEO reviewing another strategist's weekly plan for a website aiming at 20,000 Google visitors a month. Challenge every move: is it backed by the facts, is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
+    `You are a skeptical senior SEO reviewing another ${role} for a website aiming at 20,000 Google visitors a month. Challenge every move: is it backed by the facts, is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
 
 Facts:
 ${facts}

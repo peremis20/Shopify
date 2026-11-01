@@ -150,17 +150,36 @@ export async function setProspectStatus(accountId: string, url: string, status: 
  * Upgrades prospects with what another agent found (the Broken Link Agent), keeping the owner's marks.
  * Each update replaces a new prospect on the same page, or is added when the page isn't listed.
  */
+/** Which finds are worth most when the list is full: a fixable broken link first, a site that only mentions a competitor last. */
+const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2, roundup: 3, podcast: 4, guest: 5, competitor: 6 };
+
 export async function upsertProspects(accountId: string, updates: Prospect[]): Promise<void> {
   const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
   for (const u of updates) {
-    // The same page first; the same site only when the page isn't listed.
+    // The same page first. The same site only replaces a find of the same kind, so a
+    // weaker kind of find never overwrites a better one (a broken link, a resource page).
     let i = list.prospects.findIndex((p) => p.url === u.url);
-    if (i === -1) i = list.prospects.findIndex((p) => p.domain === u.domain);
+    if (i === -1) {
+      const j = list.prospects.findIndex((p) => p.domain === u.domain);
+      if (j !== -1 && list.prospects[j].kind !== u.kind) continue; // the site is already on the list
+      i = j;
+    }
     if (i === -1) list.prospects.unshift(u);
     else if (list.prospects[i].status === "new") list.prospects[i] = { ...list.prospects[i], ...u, status: "new" };
   }
-  // Same cap as the weekly search: the owner's marks always stay, new finds are trimmed.
+  // Same cap as the weekly search: the owner's marks always stay; when new finds must be
+  // trimmed, the most valuable kinds and strongest sites stay, in their listed order.
   const marked = list.prospects.filter((p) => p.status !== "new");
   const fresh = list.prospects.filter((p) => p.status === "new");
-  await save(accountId, { ...list, prospects: [...fresh.slice(0, Math.max(0, MAX - marked.length)), ...marked] });
+  const room = Math.max(0, MAX - marked.length);
+  let kept = fresh;
+  if (fresh.length > room) {
+    const best = new Set(
+      [...fresh]
+        .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0))
+        .slice(0, room)
+    );
+    kept = fresh.filter((p) => best.has(p));
+  }
+  await save(accountId, { ...list, prospects: [...kept, ...marked] });
 }
