@@ -88,8 +88,9 @@ export async function bestPageForTopic(conn: Connection, topicWords: string[]): 
   const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query", "page"], rowLimit: 5000 });
   const byPage = new Map<string, number>();
   for (const r of rows) {
-    const q = r.keys[0].toLowerCase();
-    if (!topicWords.every((w) => q.includes(w))) continue;
+    // Whole words only ("and" must not match "sandals").
+    const q = new Set(r.keys[0].toLowerCase().split(/[^a-z0-9]+/));
+    if (!topicWords.every((w) => q.has(w))) continue;
     const page = r.keys[1].split("#")[0];
     byPage.set(page, (byPage.get(page) ?? 0) + r.clicks);
   }

@@ -88,7 +88,8 @@ export async function nextNewArticle(opts: {
   // Topic clusters: a cluster's articles come first once one is started, and its pillar only when all of them are live.
   const members = (c: string) => all.filter((t) => t.cluster === c && !t.pillar);
   const started = (c: string | undefined) => Boolean(c) && members(c!).some((t) => t.article?.live || t.page);
-  const ready = (t: (typeof all)[number]) => !t.pillar || (members(t.cluster ?? "").length > 0 && members(t.cluster ?? "").every((m) => m.article?.live || m.page));
+  // The pillar waits until every member has been written (live, draft or on the fix list), so it can't stall forever.
+  const ready = (t: (typeof all)[number]) => !t.pillar || (members(t.cluster ?? "").length > 0 && members(t.cluster ?? "").every((m) => m.article || m.page));
   const due = all
     // A pillar is written even when its broad search is crowded: its job is to tie the cluster together.
     .filter((t) => !t.page && !t.article && (t.winnable !== false || t.pillar) && (t.role !== "support" || t.pillar) && ready(t))
@@ -120,8 +121,9 @@ export async function nextNewArticle(opts: {
   }
   // A pillar page links to every article in its cluster, so readers and Google see the whole topic.
   if (target.pillar && target.cluster) {
+    // Only members that are live on the site: a link to a draft would be broken for readers and Google.
     const links = members(target.cluster)
-      .map((m) => ({ url: m.article?.url ?? m.page, label: m.keyword.replace(/^./, (c) => c.toUpperCase()) }))
+      .map((m) => ({ url: m.page ?? (m.article?.live ? m.article.url : null), label: m.keyword.replace(/^./, (c) => c.toUpperCase()) }))
       .filter((l): l is { url: string; label: string } => Boolean(l.url));
     if (links.length) {
       const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");

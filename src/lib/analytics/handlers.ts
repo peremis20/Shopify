@@ -667,6 +667,8 @@ export const siteAuthority = (req: Request) =>
     return json({ ready: true, domain, authority, history, rivals: rivalList });
   });
 
+const FILLER = new Set("the and for with your you our are from that this what how why when best top".split(" "));
+
 /** Backlink prospects (found on Google weekly) and outreach emails the owner sends. */
 export const backlinkProspects = (req: Request) =>
   withAccount(req, async (account) => {
@@ -695,7 +697,8 @@ export const backlinkEmail = (req: Request) =>
     const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
     // The page worth offering: the one already doing best on Google for this topic (real clicks),
     // else the page aimed at it with Rank for this.
-    const words = p.topic.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+    // The topic's meaningful words (filler like "the" and "for" dropped), matched as whole words.
+    const words = p.topic.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !FILLER.has(w));
     const best = conn ? await bestPageForTopic(conn, words).catch(() => null) : null;
     const target = (await readTargets(account.id).catch(() => [])).find((t) => t.page && p.topic.split(" ").every((w) => t.keyword.includes(w)));
     const ourPage = best?.page ?? target?.page ?? null;

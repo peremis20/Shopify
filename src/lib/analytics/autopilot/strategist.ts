@@ -132,7 +132,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
         if (result) {
           added++;
           // A cluster: the topic itself becomes the pillar, and the long tail searches added with it are its articles.
-          if (m.kind === "cluster") {
+          if (m.kind === "cluster" && result.added.length > 0) {
             const all = await readTargets(accountId).catch(() => []);
             for (const t of all) {
               if (t.keyword === k) await saveTarget(accountId, { ...t, cluster: k, pillar: true });
@@ -145,6 +145,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
         }
       }
     }
+    if (kept && m.kind === "asset" && !done) done = "An idea for you: the agents can't make this one on their own yet.";
     out.push({ ...m, keyword: k, kept, challenge, done });
   }
   const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, goal: GOAL };
