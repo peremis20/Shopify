@@ -188,6 +188,8 @@ export function ensureSchema(): Promise<void> {
     await sql`ALTER TABLE insights_keyword_lists ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_runs ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS account_id bigint`;
+    // When measuring a change was last tried and had to wait, so a change that keeps failing doesn't block the rest.
+    await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS measure_tried_at timestamptz`;
     // Whether Google's answer box (featured snippet) quoted this site for the search that day.
     await sql`ALTER TABLE insights_rank_daily ADD COLUMN IF NOT EXISTS quoted boolean`;
     // Carry over the single-owner setup from before accounts existed.

@@ -170,9 +170,21 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     WHERE account_id = ${ctx.accountId} AND status = 'applied' AND field <> 'prune' AND run_id IS NOT NULL
       AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
     GROUP BY run_id, page_url, query
+    ORDER BY max(measure_tried_at) NULLS FIRST, min(created_at)
     LIMIT 5`;
   const notes: string[] = [];
   for (const d of due) {
+    // Nothing to compare with (a new article had no position before it existed): kept, never judged on a made up
+    // starting point. The Pruning agent judges new articles on their own data after three months.
+    if (d.baseline_position === null) {
+      const now = conn.gscSiteUrl ? await positionFor(conn, d.query!, d.page_url!).catch(() => null) : null;
+      await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(),
+        result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
+        note = ${"No position before this change to compare with; kept. New articles are judged by the Pruning agent."}
+        WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND query = ${d.query} AND status = 'applied'`;
+      notes.push(`Kept the new page for “${d.query}”: nothing before it to compare with.`);
+      continue;
+    }
     // Search Console first; when it has nothing for this search yet (a new property), the daily Google rank check.
     // If Search Console errors, this change waits for the next run rather than being judged on weaker data.
     let gscFailed = false;
@@ -183,6 +195,8 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
         })
       : null;
     if (gscFailed) {
+      await sql`UPDATE insights_autopilot_changes SET measure_tried_at = now()
+        WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied'`;
       notes.push(`Measuring “${d.query}” waits: Search Console didn't answer.`);
       continue;
     }
