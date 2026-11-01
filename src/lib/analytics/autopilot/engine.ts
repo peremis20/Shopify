@@ -1,5 +1,6 @@
 import { readTargets, saveTarget } from "./targets";
 import { setArticlePublished } from "./shopify";
+import { restoreTarget } from "./pruner";
 import { nextNewArticle, unpublishArticle } from "./new-articles";
 import type { Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
@@ -161,7 +162,8 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
   const due = await sql`
     SELECT run_id, page_url, query, min(baseline_position) AS baseline_position, min(baseline_clicks) AS baseline_clicks
     FROM insights_autopilot_changes
-    WHERE account_id = ${ctx.accountId} AND status = 'applied' AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
+    WHERE account_id = ${ctx.accountId} AND status = 'applied' AND field <> 'prune' AND run_id IS NOT NULL
+      AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
     GROUP BY run_id, page_url, query
     LIMIT 5`;
   const notes: string[] = [];
@@ -745,6 +747,7 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     if (ctx.site?.mode !== "shopify" || !ctx.site.store) throw new Error("Only Shopify articles are taken down automatically.");
     await setArticlePublished(ctx.site.store, c.resource_id!, true);
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    await restoreTarget(ctx.accountId, c.page_url!).catch(() => undefined);
     return "Published again.";
   }
   if (field === "new_article") {
@@ -788,7 +791,8 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
 export async function markSuggestion(accountId: string, id: string, done: boolean): Promise<void> {
   await ensureSchema();
   const rows = done
-    ? await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = 'Done by hand.'
+    ? // A take down done by hand has nothing left to measure, so it's kept rather than waiting for measurement.
+      await sql`UPDATE insights_autopilot_changes SET status = CASE WHEN field = 'prune' THEN 'kept' ELSE 'applied' END, created_at = now(), note = 'Done by hand.'
         WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested' RETURNING id`
     : await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Skipped.'
         WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested' RETURNING id`;

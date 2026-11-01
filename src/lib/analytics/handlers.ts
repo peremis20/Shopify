@@ -1044,7 +1044,12 @@ export async function autopilotTick(): Promise<Response> {
     for (const accountId of await accountsDueForPrune(1)) {
       const conn = await getConnection(accountId).catch(() => null);
       const site = conn ? await siteFor(accountId).catch(() => null) : null;
-      const done = conn && site ? await runPruner(accountId, conn, site).catch((e) => (console.error(`pruner failed: ${message(e)}`), null)) : null;
+      const profile = await readProfile(accountId).catch(() => null);
+      const host = profile?.siteDomain ?? (conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : null);
+      const done =
+        conn && site && host
+          ? await runPruner(accountId, conn, site, `https://${host}`).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))
+          : null;
       // Failed or couldn't run: wait a month instead of holding up the other sites.
       if (!done) await markPruneTried(accountId);
       if (done) results.push(`account ${accountId} pruning: ${done}`);

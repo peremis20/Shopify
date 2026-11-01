@@ -1,9 +1,8 @@
-import { sql } from "../../db";
-import { readPrune } from "../pruner";
+import { readPrune, rewrittenSince } from "../pruner";
 import type { Candidate, RankingApp } from "./types";
 
 /** An article Google hasn't shown in 90 days: worth a real rewrite before anything else happens to it. */
-const REWRITE_WEIGHT = 2;
+const REWRITE_WEIGHT = 3;
 
 const topicOf = (url: string) => {
   try {
@@ -19,22 +18,19 @@ export const prune: RankingApp = {
   id: "prune",
   name: "Pruning check",
   role: "Rewrites articles Google hasn't shown in 90 days, and takes them down only if that doesn't help",
-  ready: async (hub) => Boolean((await readPrune(hub.accountId).catch(() => null))?.pages),
+  ready: async (hub) => Object.values((await readPrune(hub.accountId).catch(() => null))?.pages ?? {}).some((e) => e.stage === "rewrite"),
 
   async candidates(hub) {
     const state = await readPrune(hub.accountId).catch(() => null);
     const out: Candidate[] = [];
-    for (const [url, e] of Object.entries(state?.pages ?? {})) {
-      if (e.stage !== "rewrite") continue;
+    for (const e of Object.values(state?.pages ?? {})) {
+      if (e.stage !== "rewrite" || !e.url) continue;
       // Already rewritten since it was flagged: give it its 60 days.
-      const [done] = await sql`
-        SELECT 1 AS x FROM insights_autopilot_changes
-        WHERE account_id = ${hub.accountId} AND page_url LIKE ${`${url}%`} AND status IN ('applied','kept') AND created_at > ${e.since} LIMIT 1`;
-      if (done) continue;
-      const query = topicOf(url);
+      if (await rewrittenSince(hub.accountId, e.url, e.since).catch(() => true)) continue;
+      const query = topicOf(e.url);
       if (!query) continue;
       out.push({
-        op: { query, page: url, position: 25, impressions: 0, clicks: 0, ctr: 0, potentialClicks: 10 },
+        op: { query, page: e.url, position: 25, impressions: 0, clicks: 0, ctr: 0, potentialClicks: 15 },
         mode: "climb",
         inferred: true,
         weights: { [this.id]: REWRITE_WEIGHT },
