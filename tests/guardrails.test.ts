@@ -184,3 +184,23 @@ test("text: a dash after a bold label becomes a comma, never joins words", () =>
 test("text: a dash before an inline tag keeps the words apart", () => {
   assert.equal(polish("<p>Calm — <em>rested</em></p>"), "<p>Calm, <em>rested</em></p>");
 });
+
+import { activeUpdate, parseUpdates } from "../src/lib/analytics/autopilot/google-updates";
+
+test("google updates: only ranking updates count, Discover doesn't", () => {
+  const u = parseUpdates([
+    { external_desc: "May 2026 core update", begin: "2026-05-21T15:40:00+00:00", end: "2026-06-02T12:40:00+00:00", service_name: "Ranking" },
+    { external_desc: "February 2026 Discover update", begin: "2026-02-05T17:00:00+00:00", end: "2026-02-27T10:00:00+00:00", service_name: "Ranking" },
+    { external_desc: "Serving was experiencing an issue", begin: "2026-02-25T03:55:00+00:00", end: "2026-02-25T04:10:00+00:00", service_name: "Serving" },
+  ]);
+  assert.deepEqual(u.map((x) => x.name), ["May 2026 core update"]);
+});
+
+test("google updates: verdicts wait while rolling out and for two weeks after", () => {
+  const u = [{ name: "May 2026 core update", begin: "2026-05-21T15:40:00Z", end: "2026-06-02T12:40:00Z" }];
+  assert.equal(activeUpdate(u, new Date("2026-05-20T00:00:00Z")), null);
+  assert.equal(activeUpdate(u, new Date("2026-05-25T00:00:00Z"))?.settling, false);
+  assert.equal(activeUpdate(u, new Date("2026-06-10T00:00:00Z"))?.settling, true);
+  assert.equal(activeUpdate(u, new Date("2026-06-20T00:00:00Z")), null);
+  assert.equal(activeUpdate([{ name: "x", begin: "2026-05-21T00:00:00Z", end: null }], new Date("2026-07-01T00:00:00Z"))?.settling, false);
+});

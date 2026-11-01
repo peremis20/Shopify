@@ -1,6 +1,7 @@
 import { readAuthorityPlan } from "./authority-coach";
 import { measuredResults } from "./results";
 import { readScorecard } from "./scorecard";
+import { rankingTurbulence } from "./google-updates";
 import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -104,6 +105,8 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
   lines.push(...(await measuredResults(accountId).catch(() => [])));
+  const swing = await rankingTurbulence().catch(() => null);
+  if (swing) lines.push(`Google update: ${swing}`);
   // Each agent's record on this site, counted: which agents' work is paying off.
   for (const s of await readScorecard(accountId).catch(() => [])) {
     if (s.agent !== "Strategist") lines.push(`Agent record, ${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`);

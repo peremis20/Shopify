@@ -7,6 +7,8 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { trafficCheck } from "./autopilot/guards";
+import { rankingTurbulence } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
@@ -1077,6 +1079,15 @@ export async function autopilotTick(): Promise<Response> {
       const settings = await readPlatformSettings().catch(() => null);
       const ai = settings ? aiProvider(settings) : null;
       const sells = profile ? siteBrief(profile).sells : "health and wellness products";
+      // Nothing is taken down while rankings swing for every site (a Google update) or this site's clicks just fell.
+      const update = await rankingTurbulence().catch(() => null);
+      const fell = !update && conn ? (await trafficCheck(conn).catch(() => null))?.sharp : false;
+      const swing = update ?? (fell ? "this site's Google clicks fell sharply last week." : null);
+      if (swing) {
+        results.push(`account ${accountId} pruning waits: ${swing}`);
+        await markPruneTried(accountId);
+        continue;
+      }
       const done =
         conn && site && host
           ? await runPruner(accountId, conn, site, `https://${host}`, ai, sells).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))

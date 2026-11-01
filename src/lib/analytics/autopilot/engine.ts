@@ -28,6 +28,7 @@ import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
 import { measuredResults } from "./results";
+import { rankingTurbulence } from "./google-updates";
 import { askGoogleToRecrawl } from "./recrawl";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
@@ -715,8 +716,14 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   let changed = false;
   let previewOut: AutopilotPreview | undefined;
   try {
-    if (!preview) summary.push(...(await measureOlderChanges(ctx, conn)));
-    if (!preview) await measureControls(ctx, conn).catch((e) => console.error(`controls not measured: ${(e as Error).message}`));
+    // No verdicts while rankings swing for reasons that aren't the change: a Google update, or a sudden site wide drop.
+    const traffic = await trafficCheck(conn).catch(() => null);
+    const hold =
+      (await rankingTurbulence().catch(() => null)) ??
+      (traffic?.sharp ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week, so changes aren't judged until that settles.` : null);
+    if (hold && !preview) summary.push(`Measuring waits: ${hold}`);
+    if (!preview && !hold) summary.push(...(await measureOlderChanges(ctx, conn)));
+    if (!preview && !hold) await measureControls(ctx, conn).catch((e) => console.error(`controls not measured: ${(e as Error).message}`));
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
@@ -726,7 +733,6 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     // The weekly limit keeps the site steady, but it shouldn't block a rescue: a couple of urgent fixes may go over it.
     const urgentRoom = capped && Number(pages) < ctx.maxPagesPerWeek + URGENT_EXTRA;
     // Emergency brake: when Google clicks suddenly fall, change nothing new until it's clear why.
-    const traffic = await trafficCheck(conn).catch(() => null);
     const brake = traffic?.sharp
       ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}). New changes are on hold until that settles; check Search Console for a Google update or a site problem.`
       : null;

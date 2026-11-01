@@ -7,6 +7,8 @@ import { readStatus, type Part } from "./status";
 import { trackRanks } from "./tracking";
 import { isSabbath } from "./sabbath";
 import { hasScope } from "../google-auth";
+import { rankingTurbulence } from "./google-updates";
+import { trafficCheck } from "./guards";
 
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
@@ -127,7 +129,20 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
   }
 
-  // 4. Google may be asked to recrawl changed pages only with permission to manage Search Console.
+  // 4. Rankings swinging for reasons that aren't the agents' work: changes wait to be judged, the owner is told why.
+  const turbulence = await rankingTurbulence().catch(() => null);
+  if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and judge changes once it settles.", who: "watching" });
+  const traffic = conn?.gscSiteUrl ? await trafficCheck(conn).catch(() => null) : null;
+  if (traffic?.sharp) {
+    problems.push({
+      id: "traffic:drop",
+      text: `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}).`,
+      fix: "New changes, take downs and verdicts are on hold. Check Search Console for a site problem; the agents resume once clicks recover.",
+      who: "owner",
+    });
+  }
+
+  // 5. Google may be asked to recrawl changed pages only with permission to manage Search Console.
   if (conn?.gscSiteUrl) {
     const allowed = await hasScope({ kind: "oauth", refreshToken: conn.refreshToken }, "https://www.googleapis.com/auth/webmasters").catch(() => null);
     if (allowed === false) {
@@ -140,7 +155,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
   }
 
-  // 5. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
+  // 6. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
   if (opts.ourDomain && (await clientListKnown())) {
     const isOther = await otherClient(opts.ourDomain);
     const list = await readProspects(accountId).catch(() => null);
