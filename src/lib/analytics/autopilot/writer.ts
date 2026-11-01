@@ -86,6 +86,8 @@ export interface PageImprovement {
   intentMatch: boolean;
   /** When intentMatch is false: what the page would need, as a content idea. */
   missingForIntent: string;
+  /** The reviewing AI's idea for ranking faster next time. */
+  suggestion?: string;
 }
 
 const IMPROVEMENT_SCHEMA = {
@@ -575,9 +577,29 @@ Keep the SEO title and description if they are already strong for this search; y
   if (!blocksOf(section).length) section = "";
   // A risky title or description is never written; the current one stays.
   const safe = (text: string, current: string | null) => (isRisky(text) ? (current ?? "") : text);
+  let metaTitle = safe(trimWords(polish(out.metaTitle), 70), page.metaTitle);
+  let metaDescription = safe(trimWords(polish(out.metaDescription), 170), page.metaDescription);
+  // A second AI checks every part that would change; it can reject a part or offer a stronger title or description.
+  // If the check can't run, nothing changes (the run fails visibly and tries again).
+  let suggestion = "";
+  const titleChanged = Boolean(metaTitle) && metaTitle !== (page.metaTitle ?? "");
+  const descChanged = Boolean(metaDescription) && metaDescription !== (page.metaDescription ?? "");
+  if (titleChanged || descChanged || section) {
+    const r = await reviewImprovement(ai, page, target.query, {
+      metaTitle: titleChanged ? metaTitle : "",
+      metaDescription: descChanged ? metaDescription : "",
+      contentSectionHtml: section,
+    });
+    const better = (text: string, max: number) => (text && !isRisky(text) && !hasAiTell(text) ? trimWords(polish(text), max) : "");
+    const keepOr = (kept: boolean, mine: string, current: string | null) => (kept ? mine : (current ?? ""));
+    metaTitle = better(r.betterTitle, 70) || (titleChanged ? keepOr(r.keepTitle, metaTitle, page.metaTitle) : metaTitle);
+    metaDescription = better(r.betterDescription, 170) || (descChanged ? keepOr(r.keepDescription, metaDescription, page.metaDescription) : metaDescription);
+    if (!r.keepSection) section = "";
+    suggestion = r.suggestion;
+  }
   return {
-    metaTitle: safe(trimWords(polish(out.metaTitle), 70), page.metaTitle),
-    metaDescription: safe(trimWords(polish(out.metaDescription), 170), page.metaDescription),
+    metaTitle,
+    metaDescription,
     contentSectionHtml: section,
     altTexts: (out.altTexts ?? [])
       .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim() && !isRisky(a.alt))
@@ -585,6 +607,7 @@ Keep the SEO title and description if they are already strong for this search; y
     reason: out.reason.trim(),
     intentMatch: out.intentMatch !== false,
     missingForIntent: (out.missingForIntent ?? "").trim(),
+    suggestion,
   };
 }
 
@@ -608,7 +631,9 @@ If the link would feel forced in this article, return an empty string.`;
 
   const out = await askJson<{ sentenceHtml: string }>(ai, prompt, LINK_SCHEMA);
   const html = cleanHtml(out.sentenceHtml, target.path);
-  return isRisky(html) || hasAiTell(plainText(html)) ? "" : html;
+  if (!html || isRisky(html) || hasAiTell(plainText(html))) return "";
+  // A second AI checks the link fits; if it can't check, no link is added.
+  return (await reviewLink(ai, source, target, html).catch(() => false)) ? html : "";
 }
 
 const ALLOWED = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a"]);
@@ -666,6 +691,8 @@ export interface NewArticle {
   summary: string;
   html: string;
   slug: string;
+  /** The reviewing AI's idea for ranking faster next time. */
+  suggestion?: string;
 }
 
 const ARTICLE_SCHEMA = {
@@ -705,7 +732,7 @@ export async function writeNewArticle(
     /** Broad searches to work in naturally as support (the main search stays the focus). */
     supporting?: string[];
   }
-): Promise<NewArticle | null> {
+): Promise<NewArticle | { rejected: string; suggestion: string } | null> {
   const prompt = `Write a new article for this website that can rank on Google page one for the search "${brief.keyword}".
 
 What ranks on page one now (learn what searchers expect; never copy their wording):
@@ -727,10 +754,25 @@ If this search isn't a fit for this website's business, return an empty string f
   // A second AI edits it so it reads as a person wrote it.
   html = await humanEdit(ai, html, "").catch(() => dropBlocks(html, (text) => hasAiTell(text)));
   html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text) || isUnsourced(text));
+  const safe = (text: string) => (isRisky(text) || hasAiTell(text) ? "" : text);
+  if (blocksOf(html).length < 8) return null;
+
+  // A second AI checks it before it is published: it can stop it, drop weak blocks, or offer a stronger title.
+  // If the check can't run, the article waits (the error is visible and the next run tries again).
+  const r = await reviewArticle(
+    ai,
+    brief.keyword,
+    brief.competitors.map((c) => `${c.domain}: ${c.title}`),
+    { title: out.title, metaTitle: out.metaTitle, metaDescription: out.metaDescription, html }
+  );
+  if (!r.publish) return { rejected: r.reason || "The reviewing AI didn't think it was good enough to publish.", suggestion: r.suggestion };
+  const drop = new Set(r.drop);
+  html = dropBlocks(html, (_t, i) => drop.has(i));
   // Too little left to stand as an article.
   if (blocksOf(html).length < 8 || plainText(html).split(/\s+/).length < 500) return null;
+  if (r.betterTitle && safe(r.betterTitle)) out.metaTitle = r.betterTitle;
+  if (r.betterMetaDescription && safe(r.betterMetaDescription)) out.metaDescription = r.betterMetaDescription;
 
-  const safe = (text: string) => (isRisky(text) || hasAiTell(text) ? "" : text);
   const slug = (out.slug || brief.keyword)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -744,6 +786,7 @@ If this search isn't a fit for this website's business, return an empty string f
     summary: safe(trimWords(polish(out.summary), 300)),
     html,
     slug: slug || "article",
+    suggestion: r.suggestion,
   };
 }
 
@@ -762,7 +805,7 @@ export async function writeOutreach(
     brokenLink?: string | null;
     anchor?: string | null;
   }
-): Promise<{ subject: string; body: string }> {
+): Promise<{ subject: string; body: string; suggestion?: string }> {
   const ask =
     p.kind === "competitor"
       ? `Their page "${p.pageTitle}" covers ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as another helpful resource for their readers, in one sentence on what it covers. Never mention or criticize any other site.`
@@ -795,9 +838,15 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
     const body = safeEmailText(out.body ?? "", keep, urls);
     const subject = safeEmailText(out.subject ?? "", keep, urls);
-    if (body.text && body.dropped <= body.total / 3) {
-      return { subject: polish(subject.text) || "A quick note about your page", body: body.text };
-    }
+    if (!body.text || body.dropped > body.total / 3) continue;
+    // A second AI checks it and may improve it; its version passes the same checks, else the first one stands.
+    const r = await reviewOutreach(ai, p, { subject: subject.text, body: body.text });
+    if (!r.ok) continue;
+    const rb = r.body ? safeEmailText(r.body, keep, urls) : null;
+    const rs = r.subject ? safeEmailText(r.subject, keep, urls) : null;
+    const useBody = rb && rb.text && rb.dropped === 0 ? rb.text : body.text;
+    const useSubject = rs && rs.text && rs.dropped === 0 ? rs.text : subject.text;
+    return { subject: polish(useSubject) || "A quick note about your page", body: useBody, suggestion: r.suggestion };
   }
   throw new Error("Couldn't write a safe email for this one. Try again, or write a short note of your own.");
 }
@@ -986,4 +1035,187 @@ Return JSON: "assessment" (3 short plain sentences: where the site's authority s
       required: ["assessment", "moves"],
     }
   );
+}
+
+/* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
+
+/** The reviewer: another provider when there is one, with the rest as backups. */
+function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
+  const others = [ai, ...(ai.backups ?? [])];
+  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
+  return { ...critic, site: keepSite ? ai.site : undefined, backups: others.filter((o) => o !== critic) };
+}
+
+const SUGGESTION = {
+  type: "string",
+  description: "One plain sentence: the single best way to make work like this rank faster for this site next time, from what you saw. Empty if nothing useful.",
+};
+
+/**
+ * A second AI checks a page change before it is made: is each part right for the search, better than what is there,
+ * and free of invented facts? It can offer a stronger title or description, which then pass the same guards.
+ */
+async function reviewImprovement(
+  ai: AiProvider,
+  page: StoreResource,
+  query: string,
+  change: { metaTitle: string; metaDescription: string; contentSectionHtml: string }
+): Promise<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string; suggestion: string }> {
+  const prompt = `You are a senior SEO checking another writer's change to a page before it goes live. Your job is to stop mistakes and make it rank faster.
+
+Search the page is aimed at: ${query}
+Address: ${page.url}
+Current SEO title: ${page.metaTitle ?? "(not set)"}
+Current meta description: ${page.metaDescription ?? "(not set)"}
+Page text (the only source of facts):
+"""
+${plainText(page.body).slice(0, 8000)}
+"""
+
+Proposed SEO title: ${change.metaTitle || "(unchanged)"}
+Proposed meta description: ${change.metaDescription || "(unchanged)"}
+Proposed new section: ${change.contentSectionHtml ? `\n"""\n${change.contentSectionHtml}\n"""` : "(none)"}
+
+For each proposed part, keep it only if it matches what people searching that want, is at least as good as the current one, reads naturally (no keyword stuffing), and states nothing the page text doesn't support. When unsure, do not keep it.
+If you can write a clearly stronger SEO title (under 60 characters) or meta description (under 155 characters) for this search, using only what the page supports, give it in betterTitle or betterDescription; otherwise return an empty string. No hyphens or dashes.`;
+  const out = await askJson<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string; suggestion: string }>(
+    reviewerOf(ai),
+    prompt,
+    {
+      type: "object",
+      properties: {
+        keepTitle: { type: "boolean" },
+        keepDescription: { type: "boolean" },
+        keepSection: { type: "boolean" },
+        betterTitle: { type: "string" },
+        betterDescription: { type: "string" },
+        suggestion: SUGGESTION,
+      },
+      required: ["keepTitle", "keepDescription", "keepSection", "betterTitle", "betterDescription", "suggestion"],
+    }
+  );
+  return {
+    keepTitle: out.keepTitle === true,
+    keepDescription: out.keepDescription === true,
+    keepSection: out.keepSection === true,
+    betterTitle: (out.betterTitle ?? "").trim(),
+    betterDescription: (out.betterDescription ?? "").trim(),
+    suggestion: (out.suggestion ?? "").trim(),
+  };
+}
+
+/** A second AI checks a new article before it is published: right for the search and the site, nothing invented, nothing missing. */
+async function reviewArticle(
+  ai: AiProvider,
+  keyword: string,
+  pageOne: string[],
+  article: { title: string; metaTitle: string; metaDescription: string; html: string }
+): Promise<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string; suggestion: string }> {
+  const blocks = blocksOf(article.html);
+  const prompt = `You are a senior SEO editor checking another writer's new article before it is published on this website. Your job is to stop mistakes and help it reach Google page one for "${keyword}".
+
+What ranks on page one now: ${pageOne.join(" | ") || "(not available)"}
+
+Title: ${article.title}
+SEO title: ${article.metaTitle}
+Meta description: ${article.metaDescription}
+Article, numbered by block:
+${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
+
+1. publish: true only if the article fits this website, answers what people searching "${keyword}" want at least as well as page one, and opens with a direct answer. Give the reason in one plain sentence.
+2. drop: the numbers of blocks to remove because they state something that is not well established general knowledge, give health, dose or safety advice, are off topic, or are filler.
+3. betterTitle and betterMetaDescription: a clearly stronger title (under 60 characters) or description (under 155 characters) for this search, or an empty string. No hyphens or dashes.`;
+  const out = await askJson<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string; suggestion: string }>(
+    reviewerOf(ai),
+    prompt,
+    {
+      type: "object",
+      properties: {
+        publish: { type: "boolean" },
+        reason: { type: "string" },
+        drop: { type: "array", items: { type: "integer" } },
+        betterTitle: { type: "string" },
+        betterMetaDescription: { type: "string" },
+        suggestion: SUGGESTION,
+      },
+      required: ["publish", "reason", "drop", "betterTitle", "betterMetaDescription", "suggestion"],
+    }
+  );
+  return {
+    publish: out.publish === true,
+    reason: (out.reason ?? "").trim(),
+    drop: (out.drop ?? []).map(Number).filter(Number.isInteger),
+    betterTitle: (out.betterTitle ?? "").trim(),
+    betterMetaDescription: (out.betterMetaDescription ?? "").trim(),
+    suggestion: (out.suggestion ?? "").trim(),
+  };
+}
+
+/** A second AI checks an internal link: does it fit the article and help its readers? */
+async function reviewLink(ai: AiProvider, source: { title: string; body: string }, target: { query: string; title: string }, html: string): Promise<boolean> {
+  const out = await askJson<{ keep: boolean }>(
+    reviewerOf(ai),
+    `Another writer wants to add this closing paragraph to the article "${source.title}", linking to the page "${target.title}" (about "${target.query}"):
+"""
+${html}
+"""
+Article text (start):
+"""
+${plainText(source.body).slice(0, 3000)}
+"""
+Keep it only if the link is on the same subject, helps this article's readers, and reads naturally. When unsure, do not keep it.`,
+    { type: "object", properties: { keep: { type: "boolean" } }, required: ["keep"] }
+  );
+  return out.keep === true;
+}
+
+/** A second AI checks an outreach email before the owner sees it: honest, personal, nothing invented, likely to get a reply. */
+async function reviewOutreach(
+  ai: AiProvider,
+  p: { siteName: string; pageTitle: string; ourSite: string },
+  email: { subject: string; body: string }
+): Promise<{ ok: boolean; subject: string; body: string; suggestion: string }> {
+  const out = await askJson<{ ok: boolean; subject: string; body: string; suggestion: string }>(
+    reviewerOf(ai),
+    `You check outreach emails before a website owner sends them. This one is from the owner of ${p.ourSite} to the person who runs ${p.siteName}, about their page "${p.pageTitle}".
+Subject: ${email.subject}
+Body:
+"""
+${email.body}
+"""
+ok: false if it claims anything not given above (credentials, results, numbers, that they link to someone), sounds like a template or spam, pushes too hard, or would embarrass the owner.
+If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks.`,
+    {
+      type: "object",
+      properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" }, suggestion: SUGGESTION },
+      required: ["ok", "subject", "body", "suggestion"],
+    }
+  );
+  return { ok: out.ok === true, subject: (out.subject ?? "").trim(), body: (out.body ?? "").trim(), suggestion: (out.suggestion ?? "").trim() };
+}
+
+/**
+ * A second AI checks backlink sites before they reach the owner's list: real, relevant sites in this niche that could
+ * link honestly. Link farms, paid link or "sponsored post" sellers, spam directories and off topic sites are dropped.
+ */
+export async function reviewProspects(
+  ai: AiProvider,
+  ourSite: string,
+  prospects: { domain: string; title: string; snippet: string; kind: string; topic: string }[]
+): Promise<{ keep: boolean[]; suggestion: string }> {
+  if (!prospects.length) return { keep: [], suggestion: "" };
+  const out = await askJson<{ keep: number[]; suggestion: string }>(
+    reviewerOf(ai),
+    `Another agent found these sites as backlink prospects for ${ourSite}. Check each one before the owner spends time on it.
+${prospects.map((p, i) => `[${i}] ${p.domain} (${p.kind}, topic "${p.topic}"): "${p.title}". ${p.snippet.slice(0, 200)}`).join("\n")}
+
+Return in "keep" the numbers of the sites worth contacting: a real site or publication related to ${ourSite}'s topics that could link to it honestly. Leave out link farms, sites selling paid or sponsored links, spam directories, scraped or auto generated pages, and sites on unrelated subjects. When unsure, leave it out.`,
+    {
+      type: "object",
+      properties: { keep: { type: "array", items: { type: "integer" } }, suggestion: SUGGESTION },
+      required: ["keep", "suggestion"],
+    }
+  );
+  const keep = new Set((out.keep ?? []).map(Number));
+  return { keep: prospects.map((_, i) => keep.has(i)), suggestion: (out.suggestion ?? "").trim() };
 }

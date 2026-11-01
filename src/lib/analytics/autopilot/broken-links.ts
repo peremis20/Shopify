@@ -254,7 +254,7 @@ export async function runBrokenLinks(accountId: string, conn: Connection | null,
       break;
     }
   }
-  if (found.length) await upsertProspects(accountId, found);
+  if (found.length) await upsertProspects(accountId, found, ourDomain);
   const note = `${found.length} broken ${found.length === 1 ? "link" : "links"} found (${checks} links checked)${overBudget() ? ", stopped at the time limit" : ""}`;
   await markBrokenLinksChecked(accountId, note, checkedPages);
   return note;

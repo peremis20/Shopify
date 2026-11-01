@@ -112,7 +112,11 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
       }
       studied.push({ domain: r.domain, found: n });
     }
-    if (found.length) await upsertProspects(accountId, found);
+    if (found.length) {
+      // Only the sites the reviewing AI let through count as found.
+      const accepted = await upsertProspects(accountId, found, ours);
+      for (const s of studied) s.found = found.filter((f) => f.rival === s.domain && accepted.has(f.url)).length;
+    }
   }
 
   // 2. Everything the agents know, as facts the planner (and its critic) can check against.

@@ -27,6 +27,7 @@ import { EditedMeanwhile, siteFor, type SiteAccess } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
+import { recordReviewNotes } from "./reviews";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
@@ -341,6 +342,7 @@ async function planNextChange(
       briefs,
       ctx.allowContent
     );
+    await recordReviewNotes(ctx.accountId, "page change", [improvement.suggestion]).catch(() => undefined);
     if (improvement.intentMatch) return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used };
 
     const idea = improvement.missingForIntent || "People searching this want something the page doesn't have yet.";

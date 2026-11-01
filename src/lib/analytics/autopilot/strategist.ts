@@ -1,4 +1,5 @@
 import { readAuthorityPlan } from "./authority-coach";
+import { readReviewNotes } from "./reviews";
 import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -101,9 +102,16 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   // The Authority Coach's view, so content and links pull the same way.
   const authority = await readAuthorityPlan(accountId).catch(() => null);
   // It is the other agent's opinion, not data, so it travels apart from the facts.
-  const context = authority
-    ? `The Authority Coach's plan this week (its opinion, not data; do not treat it as fact): ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
-    : "";
+  const notes = await readReviewNotes(accountId).catch(() => []);
+  const context = [
+    authority
+      ? `The Authority Coach's plan this week (its opinion, not data; do not treat it as fact): ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
+      : "",
+    // What the reviewing agents suggested while checking this site's work: ideas to weigh, not facts.
+    notes.length ? `Ideas from the agents that checked this site's work lately (opinions, not data):\n${notes.slice(0, 10).map((n) => `- ${n.agent}: ${n.note}`).join("\n")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
   // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
   let revenue: number | null = null;

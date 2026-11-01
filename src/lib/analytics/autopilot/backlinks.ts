@@ -5,6 +5,30 @@ import { isJunkKeyword } from "./keyword-guard";
 import { fetchSerp } from "./serp";
 import { isBig, readSiteKeywords } from "./site-keywords";
 import { readTargets } from "./targets";
+import { recordReviewNotes } from "./reviews";
+import { aiProvider, readPlatformSettings } from "./settings";
+import { reviewProspects } from "./writer";
+
+/**
+ * Every new find is checked by a second AI before it reaches the owner's list (no link farms, paid link sellers or
+ * off topic sites). If the check can't run, the finds wait for the next search rather than going on unchecked.
+ */
+async function reviewed(accountId: string, ourSite: string, finds: Prospect[]): Promise<Prospect[]> {
+  if (!finds.length) return finds;
+  const ai = aiProvider(await readPlatformSettings());
+  if (!ai) return [];
+  const out: Prospect[] = [];
+  const notes: string[] = [];
+  for (let i = 0; i < finds.length; i += 40) {
+    const chunk = finds.slice(i, i + 40);
+    const r = await reviewProspects(ai, ourSite, chunk).catch(() => null);
+    if (!r) continue;
+    chunk.forEach((p, j) => r.keep[j] && out.push(p));
+    notes.push(r.suggestion);
+  }
+  await recordReviewNotes(accountId, "backlink sites", notes).catch(() => undefined);
+  return out;
+}
 
 /**
  * Backlink prospects: real websites that could link to this site, found on
@@ -120,7 +144,8 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
   // One page per site, and keep what the owner already did with a site.
   const byDomain = new Map<string, Prospect>();
   for (const p of old?.prospects ?? []) if (!isOtherClient(p.domain)) byDomain.set(p.domain, p);
-  for (const p of found.values()) if (!byDomain.has(p.domain)) byDomain.set(p.domain, p);
+  const unseen = [...found.values()].filter((p, i, all) => !byDomain.has(p.domain) && all.findIndex((q) => q.domain === p.domain) === i);
+  for (const p of await reviewed(accountId, ours, unseen)) byDomain.set(p.domain, p);
   let prospects = [...byDomain.values()];
 
   if (await authorityReady()) {
@@ -153,8 +178,14 @@ const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2,
  * Upgrades prospects with what another agent found (the Broken Link Agent), keeping the owner's marks.
  * Each update replaces a new prospect on the same page, or is added when the page isn't listed.
  */
-export async function upsertProspects(accountId: string, updates: Prospect[]): Promise<void> {
+/** Returns the addresses that made it onto the list (after the second AI's check). */
+export async function upsertProspects(accountId: string, updates: Prospect[], ourSite = "this website"): Promise<Set<string>> {
   const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
+  // Sites not on the list yet are checked by the second AI first; upgrades to a listed page were checked when found.
+  const listed = new Set(list.prospects.map((p) => p.url));
+  const newOnes = updates.filter((u) => !listed.has(u.url));
+  const passed = new Set(await reviewed(accountId, ourSite, newOnes));
+  updates = updates.filter((u) => listed.has(u.url) || passed.has(u));
   for (const u of updates) {
     // The same page first. The same site only replaces a find of the same kind, so a
     // weaker kind of find never overwrites a better one (a broken link, a resource page).
@@ -182,4 +213,6 @@ export async function upsertProspects(accountId: string, updates: Prospect[]): P
     kept = fresh.filter((p) => best.has(p));
   }
   await save(accountId, { ...list, prospects: [...kept, ...marked] });
+  const on = new Set([...kept, ...marked].map((p) => p.url));
+  return new Set(updates.map((u) => u.url).filter((u) => on.has(u)));
 }

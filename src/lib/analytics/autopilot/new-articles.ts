@@ -7,6 +7,7 @@ import { createArticle, setArticlePublished, setSeoField } from "./shopify";
 import type { SiteAccess } from "./site-source";
 import { readTargets, saveTarget, supportingTargets } from "./targets";
 import { readWp, wpCreatePost, wpSetPublished } from "./wordpress";
+import { recordReviewNotes } from "./reviews";
 import { writeNewArticle, type NewArticle } from "./writer";
 
 /**
@@ -112,7 +113,7 @@ export async function nextNewArticle(opts: {
 
   const comp = await analyzeCompetition(opts.platform.serperKey, accountId, target.keyword, opts.ourDomain);
   const own = await site.articles().catch(() => []);
-  const article = await writeNewArticle(opts.ai, {
+  const written = await writeNewArticle(opts.ai, {
     keyword: target.keyword,
     competitors: comp.competitors.map((c) => ({ domain: c.domain, title: c.title, headings: c.headings })),
     questions: comp.serp.questions,
@@ -120,6 +121,13 @@ export async function nextNewArticle(opts: {
     ownTitles: own.map((a) => a.title),
     supporting: supportingTargets(all, target.keyword),
   });
+  if (written && "rejected" in written) {
+    await recordReviewNotes(accountId, "new article", [written.suggestion]).catch(() => undefined);
+    await saveTarget(accountId, { ...target, article: { url: null, live: false, note: `Held back by the reviewing AI: ${written.rejected}` } });
+    return null;
+  }
+  const article = written;
+  if (article) await recordReviewNotes(accountId, "new article", [article.suggestion]).catch(() => undefined);
   if (!article) {
     await saveTarget(accountId, { ...target, article: { url: null, live: false, note: "The writer couldn't make a good enough article for this search." } });
     return null;

@@ -45,6 +45,7 @@ import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/hea
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { checkAiKey, writeOutreach } from "./autopilot/writer";
+import { recordReviewNotes } from "./autopilot/reviews";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -711,8 +712,7 @@ export const backlinkEmail = (req: Request) =>
     // The Broken Link Agent already picked the replacement page for a dead link.
     const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
     try {
-      return json(
-        await writeOutreach(ai, {
+      const email = await writeOutreach(ai, {
           kind: p.kind,
           siteName: p.domain,
           pageTitle: p.title,
@@ -723,8 +723,9 @@ export const backlinkEmail = (req: Request) =>
           ourPage,
           brokenLink: p.brokenLink ?? null,
           anchor: p.anchor ?? null,
-        })
-      );
+        });
+      await recordReviewNotes(account.id, "outreach email", [email.suggestion]).catch(() => undefined);
+      return json({ subject: email.subject, body: email.body });
     } catch (err) {
       return json({ error: message(err) }, 502);
     }
