@@ -2,12 +2,21 @@ import { ensureSchema, sql } from "../../db";
 import { pageHealth, type HealthIssue } from "../health";
 import { readSiteKeywords } from "../site-keywords";
 import { readTargets } from "../targets";
+import { sitePages } from "../../site-crawl";
 import { pathOf, type Candidate, type RankingApp } from "./types";
 
 /** Not on Google page one yet: treated as somewhere on page two or three. */
 const OFF_PAGE_ONE = 25;
 /** A page with a problem the autopilot can fix goes ahead of an equal page without one. */
 const FIX_WEIGHT = 2;
+/** A page Google left out of its index earns nothing until it's fixed, so it goes well ahead. */
+const NOT_INDEXED_WEIGHT = 4;
+/** Clicks a page could earn once indexed, when it has no keyword with a known volume. */
+const UNKNOWN_POTENTIAL = 15;
+
+/** What a page is about, from its heading or title (brand after a separator dropped), for pages with no keyword yet. */
+const topicOf = (h1: string | null, title: string) =>
+  (h1 || title.split(/\s[|\u2013\u2014-]\s/)[0] || "").toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
 
 /**
  * Problems a content change fixes: Google skipping or forgetting a page that
@@ -43,6 +52,7 @@ export const siteHealth: RankingApp = {
     await ensureSchema();
     const rows = await sql`SELECT url, issues FROM insights_page_health WHERE account_id = ${hub.accountId}`;
     const [kws, targets] = await Promise.all([readSiteKeywords(hub.accountId).catch(() => []), readTargets(hub.accountId).catch(() => [])]);
+    const pages = new Map((await sitePages(hub.accountId).catch(() => [])).map((p) => [p.url, p]));
     const out: Candidate[] = [];
     for (const r of rows) {
       const issues = JSON.parse(r.issues ?? "[]") as HealthIssue[];
@@ -50,9 +60,12 @@ export const siteHealth: RankingApp = {
       // The search this page aims at: one the owner chose, else its main keyword.
       const t = targets.find((x) => x.page === r.url && x.role !== "support");
       const k = kws.find((x) => x.page === r.url && x.role !== "support");
-      const query = t?.keyword ?? k?.keyword;
+      // No keyword yet (an older article, say): aim it at what the page is about, so it still gets fixed.
+      const p = pages.get(r.url!);
+      const query = t?.keyword ?? k?.keyword ?? (p ? topicOf(p.h1, p.title) : "");
       if (!query) continue;
-      const monthlySearches = t?.monthlySearches ?? k?.monthlySearches ?? 0;
+      const monthlySearches = t?.monthlySearches ?? k?.monthlySearches;
+      const notIndexed = fixable(issues).some((i) => /^Not in Google/.test(i.text));
       out.push({
         op: {
           query,
@@ -61,11 +74,11 @@ export const siteHealth: RankingApp = {
           impressions: 0,
           clicks: 0,
           ctr: 0,
-          potentialClicks: Math.max(1, Math.round(monthlySearches * 0.1)),
-          monthlySearches,
+          potentialClicks: monthlySearches ? Math.max(1, Math.round(monthlySearches * 0.1)) : UNKNOWN_POTENTIAL,
+          ...(monthlySearches ? { monthlySearches } : {}),
         },
         mode: "climb",
-        weights: { [this.id]: FIX_WEIGHT },
+        weights: { [this.id]: notIndexed ? NOT_INDEXED_WEIGHT : FIX_WEIGHT },
       });
     }
     return out;
