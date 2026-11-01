@@ -838,3 +838,31 @@ Return JSON "verdicts": one per move, in order, each with "keep" (true or false)
   );
   return { keep: plan.moves.map((_, i) => out.verdicts[i]?.keep ?? false), notes: plan.moves.map((_, i) => out.verdicts[i]?.note ?? "") };
 }
+
+/**
+ * A second AI (another provider when there is one) decides whether an article that Google hasn't shown
+ * should really be taken down. It keeps it whenever there's a good reason; only a clear "remove" counts.
+ */
+export async function reviewTakedown(
+  ai: AiProvider,
+  a: { title: string; url: string; text: string; into: string | null; siteSells: string }
+): Promise<{ remove: boolean; why: string }> {
+  const others = [ai, ...(ai.backups ?? [])];
+  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
+  const out = await askJson<{ remove: boolean; why: string }>(
+    { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
+    `You are a careful editor for a website that publishes ${a.siteSells}. Another agent wants to take this article down because Google has shown it to nobody in 90 days, even after it was rewritten.
+
+Article: "${a.title}" (${a.url})
+${a.into ? `Its visitors would be sent to: ${a.into}` : "There is no closely related article to send visitors to."}
+Text (start):
+"""
+${a.text.slice(0, 3000)}
+"""
+
+Keep it (remove false) if there is any good reason: it's the only page on its topic, it's seasonal or timely, it serves readers or customers in ways search views don't show (support, how to use a product, policies, brand story), it's linked from important places, or it is genuinely useful and just needs time. Remove it (remove true) only if it is thin, outdated, a near duplicate of another page, or adds nothing for readers.
+Return JSON: "remove" (true or false) and "why" (one plain sentence, no hyphens or dashes).`,
+    { type: "object", properties: { remove: { type: "boolean" }, why: { type: "string" } }, required: ["remove", "why"] }
+  );
+  return { remove: out.remove === true, why: out.why ?? "" };
+}

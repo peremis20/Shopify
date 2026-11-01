@@ -98,18 +98,29 @@ export async function bestPageForTopic(conn: Connection, topicWords: string[]): 
   return best && best[1] > 0 ? { page: best[0], clicks: best[1] } : null;
 }
 
-/** Google impressions per page (address without #fragment) over the last 90 days. */
-export async function pageImpressions90d(conn: Connection): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  if (!conn.gscSiteUrl) return out;
+/** Google impressions per page (address without #fragment) over the last 90 days, and how many rows the report had. */
+export async function pageImpressions90d(conn: Connection): Promise<{ pages: Map<string, number>; rows: number }> {
+  const pages = new Map<string, number>();
+  if (!conn.gscSiteUrl) return { pages, rows: 0 };
   const { auth, site } = requireSite(conn);
   const { current } = resolveRange("90d", 3);
   const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["page"], rowLimit: 5000 });
   for (const r of rows) {
     const page = r.keys[0].split("#")[0];
-    out.set(page, (out.get(page) ?? 0) + r.impressions);
+    pages.set(page, (pages.get(page) ?? 0) + r.impressions);
   }
-  return out;
+  return { pages, rows: rows.length };
+}
+
+/** Whether Search Console has any data from at least `days` ago (a property connected recently can't speak for 90 days). */
+export async function gscHasDataFrom(conn: Connection, days: number): Promise<boolean> {
+  if (!conn.gscSiteUrl) return false;
+  const { auth, site } = requireSite(conn);
+  const end = new Date(Date.now() - days * 86_400_000);
+  const start = new Date(end.getTime() - 14 * 86_400_000);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const rows = await gscQuery(auth, site, { startDate: iso(start), endDate: iso(end), dimensions: ["date"], rowLimit: 1 });
+  return rows.length > 0;
 }
 
 /** All clicks from Google search to the site in the last 28 days. */

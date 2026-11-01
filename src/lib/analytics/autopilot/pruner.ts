@@ -1,11 +1,14 @@
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
-import { pageImpressions90d } from "../seo-tools";
+import { gscHasDataFrom, pageImpressions90d } from "../seo-tools";
 import { logChange } from "./engine";
 import { setArticlePublished } from "./shopify";
 import type { SiteAccess } from "./site-source";
 import { topicWords } from "./site-keywords";
 import { readTargets, saveTarget } from "./targets";
+import type { AiProvider } from "./settings";
+import { reviewTakedown } from "./writer";
+import { plainText } from "./guards";
 
 /**
  * Content pruning, the careful way (improve first, never a hard delete).
@@ -25,7 +28,8 @@ import { readTargets, saveTarget } from "./targets";
  */
 
 export interface PruneEntry {
-  stage: "rewrite" | "removed" | "suggested";
+  /** "kept": the reviewing AI decided it stays; it's looked at again after a while. */
+  stage: "rewrite" | "removed" | "suggested" | "kept";
   since: string;
   /** The article's full address. */
   url: string;
@@ -53,7 +57,14 @@ const GSC_ROWS = 5000;
 /** A page's path for comparing: lowercase, no query, no fragment, no trailing slash. Works on full addresses and bare paths. */
 export function pathKey(u: string): string {
   try {
-    const p = new URL(u, "https://x.invalid").pathname.toLowerCase().replace(/\/+$/, "");
+    let p = new URL(u, "https://x.invalid").pathname;
+    // Search Console may encode characters the site lists plainly (' ( ! and so on): compare them decoded.
+    try {
+      p = decodeURIComponent(p);
+    } catch {
+      /* keep it encoded */
+    }
+    p = p.toLowerCase().replace(/\/+$/, "");
     return p || "/";
   } catch {
     return "";
@@ -77,7 +88,7 @@ export async function rewrittenSince(accountId: string, url: string, since: stri
   const key = pathKey(url);
   const rows = await sql`
     SELECT page_url FROM insights_autopilot_changes
-    WHERE account_id = ${accountId} AND status IN ('applied','kept') AND field <> 'prune' AND created_at > ${since}`;
+    WHERE account_id = ${accountId} AND status IN ('applied','kept') AND field IN ('content','meta_title','meta_description') AND created_at > ${since}`;
   return rows.some((r) => pathKey(r.page_url!) === key);
 }
 
@@ -113,24 +124,41 @@ async function setTargetLive(accountId: string, url: string, live: boolean): Pro
 }
 export const restoreTarget = (accountId: string, url: string) => setTargetLive(accountId, url, true);
 
-/** `origin` is the site's address, like https://example.com (used to turn the site's paths into full addresses). */
-export async function runPruner(accountId: string, conn: Connection, site: SiteAccess, origin: string): Promise<string> {
+/** After the reviewer keeps an article, it isn't looked at again for this long. */
+const KEPT_DAYS = 180;
+
+/**
+ * `origin` is the site's address, like https://example.com (used to turn the site's paths into full addresses).
+ * `ai` is required: nothing is taken down or suggested without a second AI reviewing it first.
+ */
+export async function runPruner(accountId: string, conn: Connection, site: SiteAccess, origin: string, ai: AiProvider | null, sells: string): Promise<string> {
   // Without Search Console there's no way to know an article gets nothing: do nothing rather than guess.
   if (!conn.gscSiteUrl) {
     await markPruneTried(accountId);
     return "no Search Console";
   }
-  const raw = await pageImpressions90d(conn);
+  const { pages: raw, rows } = await pageImpressions90d(conn);
   // No data at all, or more pages than one report holds: unseen can't be told apart from missing.
-  if (!raw.size || raw.size >= GSC_ROWS) {
+  if (!rows || rows >= GSC_ROWS) {
     await markPruneTried(accountId);
-    return raw.size ? "too many pages to check safely" : "no Search Console data yet";
+    return rows ? "too many pages to check safely" : "no Search Console data yet";
+  }
+  // Search Console connected recently: it can't speak for 90 days yet.
+  if (!(await gscHasDataFrom(conn, 90))) {
+    await markPruneTried(accountId);
+    return "Search Console has less than 90 days of data";
   }
   const impressions = new Map<string, number>();
   for (const [u, n] of raw) impressions.set(pathKey(u), (impressions.get(pathKey(u)) ?? 0) + n);
 
   const full = (u: string) => new URL(u, origin).href;
   const articles = (await site.articles()).map((a) => ({ ...a, url: full(a.url), key: pathKey(a.url) }));
+  // If none of the site's articles shows up in this Search Console property, the property doesn't cover them
+  // (old domain, another host): every article would look unseen, so nothing is judged.
+  if (articles.length && !articles.some((a) => (impressions.get(a.key) ?? 0) > 0)) {
+    await markPruneTried(accountId);
+    return "this Search Console property doesn't seem to cover the site's articles";
+  }
   const prevState = await readPrune(accountId);
   const prev = prevState?.pages ?? {};
   const listed = new Set(articles.map((a) => a.key));
@@ -155,6 +183,11 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
       if (views > 0) continue; // it's being seen: leave it (and forget any earlier flag)
       if (old?.stage === "removed" || old?.stage === "suggested") {
         pages[a.key] = old;
+        continue;
+      }
+      // The reviewer kept it: leave it alone for six months, then it may be looked at again from the start.
+      if (old?.stage === "kept") {
+        if (now - Date.parse(old.since) < KEPT_DAYS * DAY) pages[a.key] = old;
         continue;
       }
       // Age: when the app wrote it, else the publish date the platform reports. Unknown age: leave it alone.
@@ -190,10 +223,18 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
       }
       const redirect = into ? ` Add a redirect from ${path} to ${new URL(into.url).pathname} so anyone with the old link lands somewhere useful.` : "";
 
+      // Another agent looks at it first. No reviewer, or any doubt: it stays.
+      if (!ai) continue;
+      const verdict = await reviewTakedown(ai, { title: a.title, url: a.url, text: plainText(a.body ?? ""), into: into?.url ?? null, siteSells: sells }).catch(() => null);
+      if (!verdict?.remove) {
+        pages[a.key] = { stage: "kept", since: new Date().toISOString(), url: a.url, appMade: Boolean(appMade) };
+        notes.push(`kept ${path}: ${verdict?.why || "the review couldn't be done, so it stays"}`);
+        continue;
+      }
+
       if (appMade && site.mode === "shopify" && site.store) {
-        await setArticlePublished(site.store, appMade.id, false);
-        await setTargetLive(accountId, a.url, false);
-        await logChange({
+        // Logged first, so a take down always has a history row to undo from.
+        const changeId = await logChange({
           accountId,
           runId: null,
           pageUrl: a.url,
@@ -203,10 +244,17 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
           field: "prune",
           before: "published",
           after: "draft",
-          reason: `No Google impressions in 90 days, even after a rewrite, so it was taken back to a draft (undo from the history if you want it back).${redirect}`,
+          reason: `No Google impressions in 90 days, even after a rewrite, and a second AI agreed: ${verdict.why} It was taken back to a draft (undo from the history if you want it back).${redirect}`,
           // Not measured like other changes: there is nothing left on the page to measure.
           status: "kept",
         });
+        try {
+          await setArticlePublished(site.store, appMade.id, false);
+        } catch (e) {
+          await sql`UPDATE insights_autopilot_changes SET status = 'failed', note = ${(e as Error).message} WHERE id = ${changeId}`.catch(() => undefined);
+          throw e;
+        }
+        await setTargetLive(accountId, a.url, false);
         pages[a.key] = { stage: "removed", since: new Date().toISOString(), url: a.url, into: into?.url ?? null, appMade: true };
         notes.push(`took ${path} back to a draft`);
       } else {
@@ -220,7 +268,7 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
           field: "prune",
           before: null,
           after: into ? `Take down and redirect to ${into.url}` : "Take down (back to a draft)",
-          reason: `No Google impressions in 90 days, even after a rewrite. Your call: take it down, or keep it if it serves readers another way.${redirect}`,
+          reason: `No Google impressions in 90 days, even after a rewrite, and a second AI suggests removing it: ${verdict.why} Your call: take it down, or keep it if it serves readers another way.${redirect}`,
           status: "suggested",
         });
         pages[a.key] = { stage: "suggested", since: new Date().toISOString(), url: a.url, into: into?.url ?? null, appMade: Boolean(appMade) };

@@ -62,7 +62,7 @@ import { adminAppUrl, embeddedAccount, googleLinkTicket, readLinkTicket } from "
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { bareDomain, readProfile, saveProfile } from "./profile";
+import { bareDomain, readProfile, saveProfile, siteBrief } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
@@ -1048,7 +1048,9 @@ export async function autopilotTick(): Promise<Response> {
       const host = profile?.siteDomain ?? (conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : null);
       const done =
         conn && site && host
-          ? await runPruner(accountId, conn, site, `https://${host}`).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))
+          ? await runPruner(accountId, conn, site, `https://${host}`, aiProvider(await readPlatformSettings()), siteBrief(profile!).sells).catch(
+              (e) => (console.error(`pruner failed: ${message(e)}`), null)
+            )
           : null;
       // Failed or couldn't run: wait a month instead of holding up the other sites.
       if (!done) await markPruneTried(accountId);
