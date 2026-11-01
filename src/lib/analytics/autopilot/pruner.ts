@@ -80,14 +80,6 @@ async function save(accountId: string, state: PruneState): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-/** Whether the page got a live autopilot change (not a pruning one) since a date, matched by path. */
-export async function rewrittenSince(accountId: string, url: string, since: string): Promise<boolean> {
-  const key = pathKey(url);
-  const rows = await sql`
-    SELECT page_url FROM insights_autopilot_changes
-    WHERE account_id = ${accountId} AND status IN ('applied','kept') AND field IN ('content','meta_title','meta_description') AND created_at > ${since}`;
-  return rows.some((r) => pathKey(r.page_url!) === key);
-}
 
 /** Accounts with the autopilot on whose monthly pruning check is due. */
 export async function accountsDueForPrune(limit: number): Promise<string[]> {
@@ -239,7 +231,7 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
           field: "prune",
           before: "published",
           after: "draft",
-          reason: `Not shown on Google at all in its first three months, and a second AI agreed: ${verdict.why} It was taken back to a draft (undo from the history if you want it back).${redirect}`,
+          reason: `Not shown on Google at all in the last three months, and a second AI agreed: ${verdict.why} It was taken back to a draft (undo from the history if you want it back).${redirect}`,
           // Not measured like other changes: there is nothing left on the page to measure.
           status: "kept",
         });
