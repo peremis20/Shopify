@@ -35,6 +35,7 @@ const routes: Record<string, Handler> = {
   "POST /api/seo/target": api.rankForThis,
   "GET /api/seo/targets": api.rankTargets,
   "GET /api/seo/authority": api.siteAuthority,
+  "POST /api/seo/difficulty": api.keywordDifficultyApi,
   "POST /api/seo/lists/update": api.updateKeywordLists,
   "GET /api/seo/rankings": api.rankings,
   "GET /api/autopilot": api.autopilotStatus,

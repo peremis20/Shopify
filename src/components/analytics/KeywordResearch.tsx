@@ -45,6 +45,9 @@ function difficultyOf(keyword: string, searches: number | null): Difficulty {
   if (words === 2 && n <= 2000) return "medium";
   return "hard";
 }
+/** Real score (0 to 100) from Google page one, when it has been checked. */
+interface Scored { score: number; label: Difficulty; avgAuthority: number | null; targeted: number; big: number; ours: number | null }
+const ESTIMATE_SCORE: Record<Difficulty, number> = { easy: 20, medium: 50, hard: 80 };
 const DIFFICULTY_STYLE: Record<Difficulty, string> = {
   easy: "bg-dash-up/10 text-dash-up",
   medium: "bg-dash-copper/15 text-dash-copper",
@@ -359,6 +362,30 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
   const [label, setLabel] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scores, setScores] = useState<Record<string, Scored>>({});
+  const [scoring, setScoring] = useState(false);
+
+  async function score(list: string[]) {
+    const todo = list.map((k) => k.toLowerCase()).filter((k) => !scores[k]).slice(0, 25);
+    if (!todo.length) return;
+    setScoring(true);
+    try {
+      const data = await post<{ difficulties: (Scored & { keyword: string })[] }>("/api/seo/difficulty", { keywords: todo });
+      setScores((cur) => ({ ...cur, ...Object.fromEntries(data.difficulties.map((d) => [d.keyword, d])) }));
+    } catch {
+      // No search results key or a lookup failed: the estimate stays.
+    } finally {
+      setScoring(false);
+    }
+  }
+  const levelOf = (i: KeywordIdea): Difficulty => scores[i.keyword.toLowerCase()]?.label ?? difficultyOf(i.keyword, i.avgMonthlySearches);
+
+  // Real scores for the most searched ideas, as soon as they load.
+  useEffect(() => {
+    if (!ideas?.length) return;
+    score([...ideas].sort((a, b) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0)).map((i) => i.keyword));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ideas]);
 
   async function run(kind: "ideas" | "volumes", body: Record<string, unknown>, what: string) {
     setLoading(true);
@@ -385,12 +412,12 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedKey]);
 
-  const shownIdeas = (ideas ?? []).filter((i) => level === "all" || difficultyOf(i.keyword, i.avgMonthlySearches) === level);
+  const shownIdeas = (ideas ?? []).filter((i) => level === "all" || levelOf(i) === level);
   const { sorted, sort } = useSort(
     shownIdeas,
     {
       keyword: (i) => i.keyword,
-      difficulty: (i) => ({ easy: 1, medium: 2, hard: 3 })[difficultyOf(i.keyword, i.avgMonthlySearches)],
+      difficulty: (i) => scores[i.keyword.toLowerCase()]?.score ?? ESTIMATE_SCORE[difficultyOf(i.keyword, i.avgMonthlySearches)],
       searches: (i) => i.avgMonthlySearches,
       competition: (i) => ({ HIGH: 3, MEDIUM: 2, LOW: 1, UNSPECIFIED: null, UNKNOWN: null })[i.competition],
       bid: (i) => i.highBid,
@@ -521,7 +548,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     </button>
                   ))}
                 </div>
-                <div className="flex rounded-lg bg-[#F1ECE3] p-0.5 text-xs font-medium" title="How hard to rank for without ads (estimate; Rank for this checks Google page 1)">
+                <div className="flex rounded-lg bg-[#F1ECE3] p-0.5 text-xs font-medium" title="How hard to rank for, from who is on Google page 1">
                   {(["all", "easy", "medium", "hard"] as const).map((v) => (
                     <button
                       key={v}
@@ -532,6 +559,11 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     </button>
                   ))}
                 </div>
+                {sorted.some((i) => !scores[i.keyword.toLowerCase()]) && (
+                  <button onClick={() => score(sorted.map((i) => i.keyword))} disabled={scoring} className="text-xs font-semibold text-dash-green hover:underline disabled:opacity-50">
+                    {scoring ? "Checking Google..." : "Score 25 more"}
+                  </button>
+                )}
                 <TrackButton label="Track all" onClick={() => onTrack(sorted.map((i) => i.keyword))} />
                 <button onClick={downloadCsv} className="flex items-center gap-1.5 font-semibold text-dash-green hover:underline">
                   <DownloadIcon className="h-4 w-4" />
@@ -552,7 +584,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     <th className="px-1 pb-2"><SortHeader label="Keyword" column="keyword" sort={sort} /></th>
                     <th className="px-1 pb-2 text-right"><SortHeader label="Monthly searches" column="searches" sort={sort} align="right" /></th>
                     <th className="hidden px-1 pb-2 font-semibold sm:table-cell">12 month trend</th>
-                    <th className="px-1 pb-2 text-left" title="How hard to rank for without ads (estimate)"><SortHeader label="To rank" column="difficulty" sort={sort} /></th>
+                    <th className="px-1 pb-2 text-left" title="How hard to rank for, 0 to 100, from who is on Google page 1. Grey means an estimate not checked yet."><SortHeader label="To rank" column="difficulty" sort={sort} /></th>
                     <th className="hidden px-1 pb-2 text-left lg:table-cell" title="How many advertisers bid on it in Google Ads"><SortHeader label="Ad competition" column="competition" sort={sort} /></th>
                     <th className="hidden px-1 pb-2 text-right md:table-cell"><SortHeader label="Top of page bid" column="bid" sort={sort} align="right" /></th>
                     <th className="px-1 pb-2" />
@@ -570,8 +602,22 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                       </td>
                       <td className="px-1 py-2">
                         {(() => {
-                          const d = difficultyOf(i.keyword, i.avgMonthlySearches);
-                          return <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${DIFFICULTY_STYLE[d]}`}>{d}</span>;
+                          const real = scores[i.keyword.toLowerCase()];
+                          if (!real) {
+                            const d = difficultyOf(i.keyword, i.avgMonthlySearches);
+                            return <span className="whitespace-nowrap text-xs capitalize text-dash-muted" title="Estimate, not checked on Google yet">{d} (est.)</span>;
+                          }
+                          const why = [
+                            real.avgAuthority !== null ? `Page 1 site strength ${real.avgAuthority}/10` : null,
+                            `${real.targeted} of 10 aim right at this search`,
+                            `${real.big} big publishers`,
+                            real.ours !== null ? `You're #${real.ours}` : null,
+                          ].filter(Boolean).join(" · ");
+                          return (
+                            <span title={why} className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium capitalize ${DIFFICULTY_STYLE[real.label]}`}>
+                              {real.label} {real.score}
+                            </span>
+                          );
                         })()}
                       </td>
                       <td className="hidden px-1 py-2 lg:table-cell">

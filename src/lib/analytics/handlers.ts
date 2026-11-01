@@ -1,3 +1,4 @@
+import { difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
@@ -647,6 +648,17 @@ export const siteAuthority = (req: Request) =>
     if (!domain) return json({ ready: true, domain: null, authority: null });
     const scores = await authorityOf([domain]).catch(() => new Map<string, number>());
     return json({ ready: true, domain, authority: scores.get(domain.replace(/^www\./, "")) ?? null });
+  });
+
+/** Real keyword difficulty (0 to 100) for up to 25 searches, from what ranks on Google page one. */
+export const keywordDifficultyApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    const body = (await req.json().catch(() => ({}))) as { keywords?: string[] };
+    const keywords = Array.isArray(body.keywords) ? body.keywords.filter((k) => typeof k === "string").slice(0, 25) : [];
+    const [platform, conn, profile] = await Promise.all([readPlatformSettings(), getConnection(account.id), readProfile(account.id)]);
+    if (!platform.serperKey) return json({ error: "Add a search results key (serper.dev) in platform keys first." }, 400);
+    const ourDomain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+    return json({ difficulties: await difficulties(keywords, platform.serperKey, ourDomain) });
   });
 
 export const rankTargets = (req: Request) => withAccount(req, async (account) => json({ targets: await readTargets(account.id) }));
