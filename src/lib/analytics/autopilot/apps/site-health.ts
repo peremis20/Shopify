@@ -14,6 +14,16 @@ const NOT_INDEXED_WEIGHT = 4;
 /** Clicks a page could earn once indexed, when it has no keyword with a known volume. */
 const UNKNOWN_POTENTIAL = 15;
 
+/** What a page is about, from its address (Shopify stores aren't crawled, so there may be no heading on file). */
+const slugTopic = (url: string) => {
+  try {
+    const last = new URL(url).pathname.split("/").filter(Boolean).pop() ?? "";
+    return decodeURIComponent(last).replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
 /** What a page is about, from its heading or title (brand after a separator dropped), for pages with no keyword yet. */
 const topicOf = (h1: string | null, title: string) =>
   (h1 || title.split(/\s[|\u2013\u2014-]\s/)[0] || "").toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
@@ -62,7 +72,7 @@ export const siteHealth: RankingApp = {
       const k = kws.find((x) => x.page === r.url && x.role !== "support");
       // No keyword yet (an older article, say): aim it at what the page is about, so it still gets fixed.
       const p = pages.get(r.url!);
-      const query = t?.keyword ?? k?.keyword ?? (p ? topicOf(p.h1, p.title) : "");
+      const query = t?.keyword ?? k?.keyword ?? (p ? topicOf(p.h1, p.title) : slugTopic(r.url!));
       if (!query) continue;
       const monthlySearches = t?.monthlySearches ?? k?.monthlySearches;
       const notIndexed = fixable(issues).some((i) => /^Not in Google/.test(i.text));
