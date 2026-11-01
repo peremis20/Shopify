@@ -8,7 +8,12 @@ import { googleRequest, hasScope } from "../google-auth";
  */
 const lastSent = new Map<string, number>();
 
-export async function askGoogleToRecrawl(conn: Connection, ourDomain: string): Promise<string | null> {
+/** Never holds up the run: after 15 seconds it gives up quietly and the next run tries again. */
+export function askGoogleToRecrawl(conn: Connection): Promise<string | null> {
+  return Promise.race([resubmit(conn), new Promise<null>((done) => setTimeout(() => done(null), 15_000))]);
+}
+
+async function resubmit(conn: Connection): Promise<string | null> {
   if (!conn.gscSiteUrl) return null;
   const site = conn.gscSiteUrl;
   if (Date.now() - (lastSent.get(site) ?? 0) < 20 * 3600_000) return null;
@@ -19,8 +24,9 @@ export async function askGoogleToRecrawl(conn: Connection, ourDomain: string): P
   if (!(await hasScope(auth, "https://www.googleapis.com/auth/webmasters").catch(() => false))) return null;
   try {
     const listed = await googleRequest<{ sitemap?: { path: string }[] }>(auth, base, undefined, {}, "GET");
+    // Only sitemaps the owner's Search Console already lists: never a guessed address that could add an error there.
     const paths = (listed.sitemap ?? []).map((s) => s.path).filter(Boolean);
-    if (!paths.length && ourDomain) paths.push(`https://${ourDomain.replace(/^www\./, "")}/sitemap.xml`);
+    if (!paths.length) return null;
     for (const p of paths.slice(0, 5)) await googleRequest(auth, `${base}/${encodeURIComponent(p)}`, undefined, {}, "PUT");
     return `Asked Google to recrawl the changed pages (sitemap resubmitted in Search Console).`;
   } catch (e) {

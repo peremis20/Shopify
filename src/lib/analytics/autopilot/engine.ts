@@ -756,8 +756,12 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     summary.push((err as Error).message);
   }
   // Pages changed on the site: tell Google now instead of waiting for its next visit.
-  if (changed && !preview) {
-    const said = await askGoogleToRecrawl(conn, ctx.ourDomain).catch(() => null);
+  // Counted from what this run really changed on the site, not from suggestions.
+  const [{ n: appliedNow }] = changed && !preview
+    ? await sql`SELECT count(*) AS n FROM insights_autopilot_changes WHERE run_id = ${runId} AND status = 'applied'`.catch(() => [{ n: 0 }])
+    : [{ n: 0 }];
+  if (Number(appliedNow) > 0) {
+    const said = await askGoogleToRecrawl(conn).catch(() => null);
     if (said) summary.push(said);
   }
   const [run] = await sql`
