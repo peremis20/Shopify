@@ -249,7 +249,7 @@ async function gatherBriefs(hub: Hub, apps: RankingApp[], cand: Candidate, notes
       return null;
     });
     if (!b) continue;
-    briefs.push(b.text);
+    if (b.text) briefs.push(b.text);
     if (b.summary) summaries.push(b.summary);
     used.push(app.name);
   }
@@ -499,7 +499,7 @@ function describe(cand: Candidate): string {
   const path = new URL(cand.op.page).pathname;
   const volume = cand.op.monthlySearches ? `, ${cand.op.monthlySearches.toLocaleString("en-US")} searches a month` : "";
   return cand.mode === "defend"
-    ? `Defended ${path} for “${cand.op.query}” (slipped from ${cand.previousPosition?.toFixed(1)} to ${cand.op.position.toFixed(1)}${volume})`
+    ? `Defended ${path} for “${cand.op.query}” (slipped from ${cand.previousPosition?.toFixed(1) ?? "page 1"} to ${cand.op.position.toFixed(1)}${volume})`
     : cand.mode === "top"
       ? `Pushed ${path} for #1 on “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`
       : `Improved ${path} for “${cand.op.query}” (now ${cand.op.position.toFixed(1)}${volume})`;

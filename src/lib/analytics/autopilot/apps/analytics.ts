@@ -11,7 +11,12 @@ export const analytics: RankingApp = {
   async enrich(hub, cands) {
     const values = await pageValues(hub.conn).catch(() => new Map<string, PageValue>());
     hub.shared.set("analytics.values", values);
-    for (const c of cands) c.weights[this.id] = valueWeight(values.get(pathOf(c.op.page)));
+    // Pages that bring in money from Google count up to twice as much again, by their share of the top seller.
+    const top = Math.max(0, ...[...values.values()].map((v) => v.revenue));
+    for (const c of cands) {
+      const v = values.get(pathOf(c.op.page));
+      c.weights[this.id] = valueWeight(v) * (top > 0 && v ? 1 + v.revenue / top : 1);
+    }
   },
 
   async brief(hub, c) {
@@ -19,7 +24,8 @@ export const analytics: RankingApp = {
     if (!v || v.sessions < 10) return null;
     const rate = Math.round(v.engagementRate * 100);
     return {
-      text: `Google Analytics, visitors from Google search over 28 days: ${v.sessions} sessions, ${rate}% engaged, ${v.keyEvents} key events (sales or sign ups).${
+      summary: v.revenue > 0 ? `Picked partly because Google visitors to this page bought ${Math.round(v.revenue)} worth in 28 days` : undefined,
+      text: `Google Analytics, visitors from Google search over 28 days: ${v.sessions} sessions, ${rate}% engaged, ${v.keyEvents} key events (sales or sign ups)${v.revenue > 0 ? `, ${Math.round(v.revenue)} in sales` : ""}.${
         rate < 50 ? " Many leave quickly, so make the opening lines answer the search directly." : ""
       }`,
     };

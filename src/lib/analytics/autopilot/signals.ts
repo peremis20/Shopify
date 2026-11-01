@@ -83,6 +83,8 @@ export interface PageValue {
   sessions: number;
   engagementRate: number;
   keyEvents: number;
+  /** Revenue from these visitors (ecommerce tracking), 0 when not tracked. */
+  revenue: number;
 }
 
 /** GA4 landing page behaviour for visitors from organic search, last 28 days, by path. */
@@ -95,7 +97,7 @@ export async function pageValues(conn: Connection): Promise<Map<string, PageValu
     {
       dateRanges: [{ startDate: "28daysAgo", endDate: "yesterday" }],
       dimensions: [{ name: "landingPage" }],
-      metrics: [{ name: "sessions" }, { name: "engagementRate" }, { name: "keyEvents" }],
+      metrics: [{ name: "sessions" }, { name: "engagementRate" }, { name: "keyEvents" }, { name: "purchaseRevenue" }],
       dimensionFilter: { filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { value: "Organic Search" } } },
       limit: 1000,
     }
@@ -107,6 +109,7 @@ export async function pageValues(conn: Connection): Promise<Map<string, PageValu
       sessions: Number(r.metricValues[0].value),
       engagementRate: Number(r.metricValues[1].value),
       keyEvents: Number(r.metricValues[2].value),
+      revenue: Number(r.metricValues[3]?.value ?? 0) || 0,
     });
   }
   return out;
