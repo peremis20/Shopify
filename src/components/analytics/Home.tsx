@@ -3,7 +3,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { ProspectList } from "@/lib/analytics/autopilot/backlinks";
 import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
-import type { AutopilotChange } from "@/lib/analytics/autopilot/types";
+import type { PageHealth } from "@/lib/analytics/autopilot/health";
+import type { AutopilotChange, AutopilotRun } from "@/lib/analytics/autopilot/types";
+import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import type { OverviewResponse } from "@/lib/analytics/types";
 import { formatNumber } from "./format";
 import { api } from "./seo-ui";
@@ -19,13 +21,27 @@ interface Authority { ready: boolean; authority: number | null; history?: { day:
  */
 export function Home({ data, loading, onGo }: { data: OverviewResponse | null; loading: boolean; onGo: (p: SimplePage) => void }) {
   const [changes, setChanges] = useState<AutopilotChange[] | null>(null);
+  const [runs, setRuns] = useState<AutopilotRun[]>([]);
+  const [settings, setSettings] = useState<AutopilotSettingsView | null>(null);
   const [ranks, setRanks] = useState<RankWatchRow[] | null>(null);
+  const [health, setHealth] = useState<PageHealth[]>([]);
   const [authority, setAuthority] = useState<Authority | null>(null);
   const [prospects, setProspects] = useState<ProspectList | null>(null);
 
   useEffect(() => {
-    api<{ changes: AutopilotChange[] }>("/api/autopilot").then((d) => setChanges(d.changes ?? [])).catch(() => setChanges([]));
-    api<{ ranks: RankWatchRow[] }>("/api/autopilot/watch").then((d) => setRanks(d.ranks ?? [])).catch(() => setRanks([]));
+    api<{ changes: AutopilotChange[]; runs: AutopilotRun[]; settings: AutopilotSettingsView }>("/api/autopilot")
+      .then((d) => {
+        setChanges(d.changes ?? []);
+        setRuns(d.runs ?? []);
+        setSettings(d.settings ?? null);
+      })
+      .catch(() => setChanges([]));
+    api<{ ranks: RankWatchRow[]; health: PageHealth[] }>("/api/autopilot/watch")
+      .then((d) => {
+        setRanks(d.ranks ?? []);
+        setHealth(d.health ?? []);
+      })
+      .catch(() => setRanks([]));
     api<Authority>("/api/seo/authority").then(setAuthority).catch(() => setAuthority(null));
     api<{ list: ProspectList | null }>("/api/seo/backlinks").then((d) => setProspects(d.list)).catch(() => setProspects(null));
   }, []);
@@ -65,9 +81,47 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
   const ready = changes !== null && ranks !== null;
 
+  // Warnings: only when something needs attention.
+  const warnings: { text: string; page: SimplePage }[] = [];
+  const dropped = (ranks ?? []).filter((r) => r.previous !== null && r.previous <= 10 && (r.position === null || r.position > 10));
+  if (dropped.length) warnings.push({ text: `${dropped.length === 1 ? `"${dropped[0].query}" dropped` : `${dropped.length} searches dropped`} off Google page 1 since the last check.`, page: "keywords" });
+  const broken = health.filter((h) => h.issues.some((i) => i.level === "high"));
+  if (broken.length) warnings.push({ text: `${broken.length} ${broken.length === 1 ? "page has" : "pages have"} a serious problem Google can see, like not being indexed.`, page: "content" });
+  if (settings && !settings.platformReady) warnings.push({ text: "The autopilot can't run: an AI key or the store connection is missing.", page: "settings" });
+  else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
+  const lastRun = runs[0];
+  if (lastRun && /fail|error/i.test(lastRun.status)) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
+
+  // Biggest win: the largest climb among tracked searches (off page 1 counts as #25).
+  const win = (ranks ?? [])
+    // Needs an earlier check, so a search seen for the first time doesn't count as a climb.
+    .filter((r) => r.position !== null && (r.previous !== null || (r.history?.length ?? 0) > 1))
+    .map((r) => ({ r, gain: (r.previous ?? 25) - r.position! }))
+    .filter((x) => x.gain >= 1)
+    .sort((a, b) => b.gain - a.gain)[0];
+
+  const sales = data?.ga?.data?.organicSales;
+  const salesTracked = sales && (sales.orders.value > 0 || sales.orders.previous > 0 || sales.revenue.value > 0);
+  const money = (n: number) =>
+    new Intl.NumberFormat(undefined, { style: "currency", currency: sales?.currency || "USD", maximumFractionDigits: 0 }).format(n);
+
   return (
     <div className="mt-6 space-y-5">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {warnings.length > 0 && (
+        <div className="rounded-2xl border border-dash-down/30 bg-dash-down/5 p-4">
+          <p className="mb-2 font-semibold text-dash-down">Needs your attention</p>
+          <ul className="space-y-2">
+            {warnings.map((w) => (
+              <li key={w.text} className="flex flex-wrap items-center justify-between gap-2 text-sm text-dash-ink">
+                <span className="min-w-0 flex-1">{w.text}</span>
+                <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat
           label="Visitors from Google"
           hint="Clicks to your site from Google search in this period"
@@ -86,7 +140,30 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
           value={authority === null ? null : authority.authority == null ? "Not scored yet" : `${authority.authority.toFixed(1)} / 10`}
           badge={strengthChange !== null && <Change n={strengthChange} />}
         />
+        <Stat
+          label="Sales from Google"
+          hint="Orders and revenue from people who found you on Google search (from Google Analytics)"
+          value={loading ? null : salesTracked ? money(sales!.revenue.value) : "Not tracked yet"}
+          badge={
+            salesTracked ? (
+              <span className="flex items-center gap-2 text-xs text-dash-muted">
+                {formatNumber(sales!.orders.value)} {sales!.orders.value === 1 ? "order" : "orders"} <DeltaBadge delta={sales!.revenue} />
+              </span>
+            ) : (
+              <span className="text-xs text-dash-muted">Turn on purchase tracking in Google Analytics to see this.</span>
+            )
+          }
+        />
       </div>
+
+      {win && (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dash-up/30 bg-dash-up/5 p-4">
+          <span className="rounded-full bg-dash-up px-2.5 py-0.5 text-xs font-semibold text-white">Biggest win</span>
+          <p className="min-w-0 flex-1 text-dash-ink">
+            &ldquo;{win.r.query}&rdquo; climbed {win.r.previous === null ? "onto Google page 1" : `from #${win.r.previous}`} to #{win.r.position}.
+          </p>
+        </div>
+      )}
 
       <Card>
         <p className="mb-3 font-serif text-xl text-dash-ink">Your next step</p>

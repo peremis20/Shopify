@@ -130,6 +130,20 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
     }),
   ]);
 
+  // Sales from Google search: orders and revenue from organic sessions, both periods.
+  // A site without ecommerce tracking just reports zeros, so a failure here never breaks the rest.
+  const sales = await googleRequest<Ga4Report & { metadata?: { currencyCode?: string } }>(auth, url, {
+    dateRanges: [
+      { ...current, name: "current" },
+      { startDate: ranges.previous.start, endDate: ranges.previous.end, name: "previous" },
+    ],
+    metrics: [{ name: "ecommercePurchases" }, { name: "purchaseRevenue" }],
+    dimensionFilter: allOf(hosts, {
+      filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { matchType: "EXACT", value: "Organic Search" } },
+    }),
+  }).catch(() => null);
+  const salesRow = (name: string) => sales?.rows?.find((r) => r.dimensionValues?.[0]?.value === name);
+
   // With two date ranges GA4 adds a "dateRange" dimension to each row.
   const byRange = (name: string) =>
     summary.rows?.find((r) => r.dimensionValues?.[0]?.value === name);
@@ -155,6 +169,13 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
   const totalSessions = top.reduce((sum, c) => sum + c.sessions, 0);
 
   return {
+    organicSales: sales
+      ? {
+          orders: delta(num(salesRow("current"), 0), num(salesRow("previous"), 0)),
+          revenue: delta(num(salesRow("current"), 1), num(salesRow("previous"), 1)),
+          currency: sales.metadata?.currencyCode ?? null,
+        }
+      : null,
     totals: {
       users: delta(num(cur, 0), num(prev, 0)),
       pageViews: delta(num(cur, 1), num(prev, 1)),

@@ -29,6 +29,8 @@ export interface GaData {
   daily: { date: string; users: number; pageViews: number }[];
   channels: { name: string; sessions: number; share: number }[];
   topPages: { path: string; views: number; avgTimeSec: number }[];
+  /** Orders and revenue from people who came from Google search (organic). Null when GA can't report it. */
+  organicSales?: { orders: Delta; revenue: Delta; currency: string | null } | null;
 }
 
 export interface GscData {
