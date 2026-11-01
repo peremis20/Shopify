@@ -64,6 +64,9 @@ export function SignInScreen({ error }: { error?: string | null }) {
             </div>
           ))}
         </div>
+        <p className="mt-8 text-center text-xs text-dash-muted">
+          <a href="/privacy" className="hover:underline">Privacy</a> · <a href="/terms" className="hover:underline">Terms</a>
+        </p>
       </div>
     </div>
   );

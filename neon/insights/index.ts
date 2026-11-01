@@ -1,4 +1,5 @@
 import * as api from "@/lib/analytics/handlers";
+import { privacyHtml, termsHtml } from "./legal";
 
 /**
  * The Insights dashboard as a Neon Function. Serves the page and the same
@@ -133,6 +134,9 @@ export default {
       }
     }
     if (req.method === "GET" && (path === "/" || path === "/analytics")) return page(req);
+    if (req.method === "GET" && (path === "/privacy" || path === "/terms")) {
+      return new Response(path === "/privacy" ? privacyHtml() : termsHtml(), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
     return new Response("Not found", { status: 404 });
   },
 };
