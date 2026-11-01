@@ -150,6 +150,15 @@ async function trackedPosition(accountId: string, query: string): Promise<{ posi
   return { position: row.position === null ? null : Number(row.position), clicks: null };
 }
 
+/**
+ * A Search Console reading, or null when there's no data. With no dimensions Search Console answers even an
+ * unknown search with one empty summary row (0 impressions, position 0); that is "no data", never "ranked #0".
+ */
+export function gscReading(row: { position: number; clicks: number; impressions: number } | undefined | null) {
+  if (!row || !(row.impressions > 0) || !(row.position >= 1)) return null;
+  return row;
+}
+
 async function positionFor(conn: Connection, query: string, page: string) {
   const { current } = resolveRange("28d", 3);
   const body = await googleRequest<{ rows?: { position: number; clicks: number; impressions: number }[] }>(
@@ -164,7 +173,7 @@ async function positionFor(conn: Connection, query: string, page: string) {
       ] }],
     }
   );
-  return body.rows?.[0] ?? null;
+  return gscReading(body.rows?.[0]);
 }
 
 /**

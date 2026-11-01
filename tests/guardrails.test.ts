@@ -262,3 +262,11 @@ test("expert review: the byline comes off cleanly when the article changes", () 
   assert.equal(withoutByline(withByline("<p>Body</p>", b)), "<p>Body</p>");
   assert.equal(withoutByline("<p>Body</p>"), "<p>Body</p>");
 });
+
+import { gscReading } from "../src/lib/analytics/autopilot/engine";
+
+test("search console: an empty summary row is no data, never position 0", () => {
+  assert.equal(gscReading({ position: 0, clicks: 0, impressions: 0 }), null);
+  assert.equal(gscReading(undefined), null);
+  assert.deepEqual(gscReading({ position: 7.2, clicks: 3, impressions: 40 }), { position: 7.2, clicks: 3, impressions: 40 });
+});
