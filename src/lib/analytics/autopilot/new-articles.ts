@@ -1,3 +1,4 @@
+import { easeRank } from "./difficulty";
 import { ensureSchema, sql } from "../db";
 import { readProfile } from "../profile";
 import { analyzeCompetition } from "./serp";
@@ -69,7 +70,7 @@ export async function nextNewArticle(opts: {
   const all = await readTargets(accountId);
   const due = all
     .filter((t) => !t.page && !t.article && t.winnable !== false && t.role !== "support")
-    .sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
+    .sort((a, b) => Number(b.winnable ?? false) - Number(a.winnable ?? false) || easeRank(a.difficulty) - easeRank(b.difficulty) || b.monthlySearches - a.monthlySearches);
   const target = due[0];
   if (!target) return null;
   // One try a day even if the writer gives up, so a hard search doesn't use up every run.

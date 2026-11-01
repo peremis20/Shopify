@@ -32,6 +32,10 @@ export interface Difficulty {
 }
 
 const CACHE_DAYS = 7;
+/** Easy first, then Medium, then Hard; unscored in the middle. */
+export const easeRank = (score: number | null | undefined) => (score == null ? 1.5 : score < 35 ? 0 : score < 60 ? 1 : 2);
+/** How much an easier search is worth chasing compared with a harder one of the same size (about 1.6 for Easy, 0.6 for Hard). */
+export const easeFactor = (score: number | null | undefined) => (score == null ? 1 : Math.max(0.4, (100 - score) / 50));
 export const labelOf = (score: number): DifficultyLabel => (score < 35 ? "easy" : score < 60 ? "medium" : "hard");
 
 async function cached(keyword: string): Promise<Difficulty | null> {
@@ -91,4 +95,36 @@ export async function difficulties(keywords: string[], serperKey: string, ourDom
     for (const d of batch) if (d) out.push(d);
   }
   return out;
+}
+
+/**
+ * Fills in missing scores on the searches the autopilot works on (Rank for this
+ * targets and the site's keyword list), a few per run, so ones picked before
+ * scores existed still get ordered Easy first. Page one lookups are cached.
+ */
+export async function backfillDifficulty(accountId: string, serperKey: string, ourDomain: string, max = 8): Promise<number> {
+  const { readTargets, saveTarget } = await import("./targets");
+  const { readSiteKeywordsRaw, saveSiteKeywordsRaw } = await import("./site-keywords");
+  let done = 0;
+  for (const t of await readTargets(accountId)) {
+    if (done >= max) break;
+    if (t.difficulty !== undefined || t.role === "support") continue;
+    const d = await keywordDifficulty(t.keyword, serperKey, ourDomain).catch(() => null);
+    if (!d) continue;
+    await saveTarget(accountId, { ...t, difficulty: d.score });
+    done++;
+  }
+  const items = await readSiteKeywordsRaw(accountId);
+  let changed = false;
+  for (const k of items) {
+    if (done >= max) break;
+    if (k.difficulty !== undefined || k.role === "support") continue;
+    const d = await keywordDifficulty(k.keyword, serperKey, ourDomain).catch(() => null);
+    if (!d) continue;
+    k.difficulty = d.score;
+    changed = true;
+    done++;
+  }
+  if (changed) await saveSiteKeywordsRaw(accountId, items);
+  return done;
 }

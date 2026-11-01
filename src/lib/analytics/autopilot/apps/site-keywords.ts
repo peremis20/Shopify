@@ -1,3 +1,4 @@
+import { easeFactor } from "../difficulty";
 import { keywordsReady } from "../../keywords";
 import { isLongTail, readSiteKeywords, siteKeywordsActive, supportFor } from "../site-keywords";
 import { rankWatch } from "../tracking";
@@ -50,7 +51,8 @@ export const siteKeywords: RankingApp = {
           monthlySearches: k.monthlySearches,
         },
         mode: position <= 3 ? "top" : "climb",
-        weights: {},
+        // Easier searches count for more, so Easy ones get worked first.
+        weights: { ease: easeFactor(k.difficulty) },
       });
     }
     return out;

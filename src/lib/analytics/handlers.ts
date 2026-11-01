@@ -1,4 +1,4 @@
-import { difficulties } from "./autopilot/difficulty";
+import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
@@ -847,9 +847,11 @@ async function maintain(accountId: string, force = false): Promise<string> {
     ? (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0], platform.serperKey, domain).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length
     : 0;
   const ranks = platform.serperKey ? await trackRanks(accountId, conn, platform.serperKey, domain).catch(() => 0) : 0;
+  // Scores for searches picked before the difficulty score existed, so Easy ones are worked first.
+  const scored = platform.serperKey ? await backfillDifficulty(accountId, platform.serperKey, domain).catch(() => 0) : 0;
   // Index status needs Search Console's URL Inspection.
   const pages = conn.gscSiteUrl ? await checkHealth(accountId, conn, platform.pagespeedKey, force ? 8 : undefined).catch(() => 0) : 0;
-  return `ranks ${ranks}, health ${pages}, keywords ${picked}, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
+  return `ranks ${ranks}, health ${pages}, keywords ${picked}, scored ${scored}, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
 }
 
 /** Rankings watch and site health for the Autopilot page. */

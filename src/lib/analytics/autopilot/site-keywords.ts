@@ -1,3 +1,4 @@
+import { easeRank, keywordDifficulty } from "./difficulty";
 import { authorityOf, authorityReady, STRONG_AUTHORITY } from "./authority";
 import { ensureSchema, sql } from "../db";
 import type { KeywordIdea } from "../keyword-options";
@@ -24,6 +25,8 @@ import { fetchSerp, type SerpResult } from "./serp";
  */
 
 export interface SiteKeyword {
+  /** Difficulty from 0 to 100 (difficulty.ts), when page one was checked. */
+  difficulty?: number;
   keyword: string;
   monthlySearches: number;
   /** The page that should rank for it. */
@@ -139,6 +142,18 @@ export async function readSiteKeywords(accountId: string): Promise<SiteKeyword[]
   return ((JSON.parse(row.value) as { items: SiteKeyword[] }).items ?? []).filter((k) => !isJunkKeyword(k.keyword, { faith }));
 }
 
+/** The stored list as is (no junk filter), for filling in scores. */
+export async function readSiteKeywordsRaw(accountId: string): Promise<SiteKeyword[]> {
+  await ensureSchema();
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
+  return row?.value ? ((JSON.parse(row.value) as { items: SiteKeyword[] }).items ?? []) : [];
+}
+
+/** Saves the list without touching its date, so the weekly rebuild and the active window stay as they were. */
+export async function saveSiteKeywordsRaw(accountId: string, items: SiteKeyword[]): Promise<void> {
+  await sql`UPDATE insights_settings SET value = ${JSON.stringify({ items })} WHERE key = ${KEY(accountId)}`;
+}
+
 /** Finds (or refreshes, weekly) the keywords to aim each page at. Returns them, best first. */
 export async function refreshSiteKeywords(accountId: string, brand: string, serperKey?: string | null, ourDomain = ""): Promise<SiteKeyword[]> {
   await ensureSchema();
@@ -203,6 +218,8 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
       if (!serp) continue;
       const { small, ours } = await room(serp.organic, ourDomain);
       k.winnable = ours !== null || small >= 3;
+      // Same page one lookup (cached for the day), so the 0 to 100 score costs nothing extra.
+      k.difficulty = (await keywordDifficulty(k.keyword, serperKey, ourDomain).catch(() => null))?.score;
       k.why =
         ours !== null
           ? `You're #${ours}; ${small} smaller sites on page 1`
@@ -211,10 +228,10 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
             : "Page 1 is mostly big health sites";
     }
   }
-  // Main targets first (winnable, then by searches), then the broad ones that support them.
+  // Main targets first (winnable, then Easy before Medium before Hard, then by searches), then the broad ones that support them.
   items = items.filter((k) => !isJunkKeyword(k.keyword, { faith }));
   const rank = (k: SiteKeyword) => (k.role === "support" ? 2 : k.winnable === false ? 1 : 0);
-  items.sort((a, b) => rank(a) - rank(b) || Number(b.winnable ?? false) - Number(a.winnable ?? false) || b.monthlySearches - a.monthlySearches);
+  items.sort((a, b) => rank(a) - rank(b) || Number(b.winnable ?? false) - Number(a.winnable ?? false) || easeRank(a.difficulty) - easeRank(b.difficulty) || b.monthlySearches - a.monthlySearches);
   items = items.slice(0, 50);
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify({ items })})

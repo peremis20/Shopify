@@ -1,3 +1,4 @@
+import { easeFactor } from "../difficulty";
 import { readTargets, supportingTargets } from "../targets";
 import { rankWatch } from "../tracking";
 import type { Candidate, RankingApp } from "./types";
@@ -36,7 +37,8 @@ export const targets: RankingApp = {
           monthlySearches: t.monthlySearches,
         },
         mode: position <= 3 ? "top" : "climb",
-        weights: { targets: PRIORITY },
+        // Easier searches count for more, so Easy ones get worked first.
+        weights: { targets: PRIORITY, ease: easeFactor(t.difficulty) },
       });
     }
     return out;

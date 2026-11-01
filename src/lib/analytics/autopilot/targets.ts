@@ -1,4 +1,5 @@
 import { authorityOf, authorityReady } from "./authority";
+import { keywordDifficulty } from "./difficulty";
 import { ensureSchema, sql } from "../db";
 import { keywordIdeas, keywordVolumes } from "../keywords";
 import { isPostUrl, sitePages } from "../site-crawl";
@@ -28,6 +29,8 @@ export interface Target {
   winnable: boolean | null;
   why: string;
   addedAt: string;
+  /** Difficulty from 0 to 100 (difficulty.ts), when page one was checked. */
+  difficulty?: number;
   /** "main": aimed at directly. "support": broad, used to back up the main ones. Main when missing (older targets). */
   role?: "main" | "support";
   /** A new article the autopilot wrote for it (see new-articles.ts). */
@@ -100,6 +103,7 @@ export async function addTarget(
   let why = "Page 1 not checked (no search results key)";
   const easier: TargetResult["easier"] = [];
   let pageOne: TargetResult["pageOne"] = [];
+  let difficulty: number | undefined;
 
   if (opts.serperKey) {
     const serp = await fetchSerp(opts.serperKey, k);
@@ -109,6 +113,7 @@ export async function addTarget(
     const r = await room(serp.organic, opts.ourDomain);
     winnable = r.ours !== null || r.small >= 3;
     why = describe(r.small, r.ours);
+    difficulty = (await keywordDifficulty(k, opts.serperKey, opts.ourDomain).catch(() => null))?.score;
     // A big publisher at #1 to #3 with no small sites at all: say so plainly.
     if (!winnable && serp.organic.slice(0, 3).every((o) => isBig(o.domain))) why = `${why} (${serp.organic[0]?.domain ?? ""} is #1)`;
 
@@ -151,6 +156,7 @@ export async function addTarget(
     why: role === "support" ? `Broad search, used to support its long tail ones. ${why}` : why,
     addedAt: new Date().toISOString(),
     role,
+    ...(difficulty !== undefined ? { difficulty } : {}),
     ...(before?.article ? { article: before.article } : {}),
   };
   const others = (await readTargets(accountId)).filter((t) => t.keyword !== k);
