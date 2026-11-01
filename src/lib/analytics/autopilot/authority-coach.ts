@@ -157,7 +157,8 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     const rows = await queryPageRows90d(conn).catch(() => []);
     const byPage = new Map<string, number>();
     for (const r of rows) byPage.set(r.page, (byPage.get(r.page) ?? 0) + r.clicks);
-    const top = [...byPage.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+    // Only pages with real clicks: a page with none isn't a "top performer", whatever its rank in the list.
+    const top = [...byPage.entries()].filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).slice(0, 5);
     if (top.length) lines.push("Pages that already earn the most Google clicks (90 days), the best ones to offer: " + top.map(([p, c]) => `${p} (${c})`).join("; "));
   }
   const facts = lines.join("\n");
