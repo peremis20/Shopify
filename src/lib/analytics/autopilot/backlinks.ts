@@ -15,11 +15,12 @@ import { readTargets } from "./targets";
  * - podcast: shows on the topic that invite guests (PR and Mentions Agent)
  * - roundup: expert roundups on the topic that collect answers (PR and Mentions Agent)
  * - broken: a page on the topic with a dead link the site can replace (Broken Link Agent, broken-links.ts)
+ * - competitor: a page that mentions a competitor but not this site (Authority Coach, authority-coach.ts)
  * Each one gets an outreach email the owner can copy and send themselves.
  * Nothing is ever sent automatically.
  */
 
-export type ProspectKind = "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken";
+export type ProspectKind = "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken" | "competitor";
 export type ProspectStatus = "new" | "contacted" | "won" | "skip";
 
 export interface Prospect {
@@ -39,6 +40,8 @@ export interface Prospect {
   brokenLink?: string;
   anchor?: string;
   ourPage?: string | null;
+  /** Authority Coach: the competitor this page mentions. */
+  rival?: string;
 }
 
 export interface ProspectList {
@@ -51,7 +54,7 @@ const WEEK = 7 * 24 * 3600 * 1000;
 const MAX = 80;
 
 /** Sites where a link is not worth chasing: social networks, marketplaces, Q&A, video. */
-const NOT_PROSPECTS =
+export const NOT_PROSPECTS =
   /(^|\.)(facebook|instagram|twitter|x|tiktok|linkedin|pinterest|youtube|reddit|quora|amazon|ebay|walmart|etsy|target|wikipedia|google|yelp|tripadvisor|indeed|glassdoor|medium)\.[a-z.]+$/i;
 
 export async function readProspects(accountId: string): Promise<ProspectList | null> {

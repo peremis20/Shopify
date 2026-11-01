@@ -1,3 +1,4 @@
+import { readAuthorityPlan } from "./authority-coach";
 import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -97,6 +98,9 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   }
   const problems = await inspect(accountId, conn, { repair: false, ourDomain }).catch(() => []);
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
+  // The Authority Coach's view, so content and links pull the same way.
+  const authority = await readAuthorityPlan(accountId).catch(() => null);
+  if (authority) lines.push(`Authority Coach this week: ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`);
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
   // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
   let revenue: number | null = null;

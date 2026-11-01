@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Prospect, ProspectList, ProspectStatus } from "@/lib/analytics/autopilot/backlinks";
+import type { AuthorityPlan } from "@/lib/analytics/autopilot/authority-coach";
 import { api } from "./seo-ui";
 import { Skeleton } from "./ui";
 
@@ -11,6 +12,7 @@ const KIND: Record<Prospect["kind"], { label: string; hint: string }> = {
   guest: { label: "Guest article", hint: "Takes articles from other sites. Offer one with a link back." },
   podcast: { label: "Podcast", hint: "A show on your topic that invites guests. Offer to be on it." },
   roundup: { label: "Expert roundup", hint: "Collects expert answers on your topic. Offer one." },
+  competitor: { label: "Links to competitors", hint: "Already mentions a site that beats you on Google. Offer your page as another good resource." },
   broken: { label: "Broken link", hint: "Has a dead link you can replace with your page. A helpful favor, and a strong way to earn a link." },
 };
 
@@ -40,8 +42,10 @@ export function Backlinks() {
       setLoading(false);
     }
   }
+  const [plan, setPlan] = useState<AuthorityPlan | null>(null);
   useEffect(() => {
     load();
+    api<{ plan: AuthorityPlan | null }>("/api/seo/authority-plan").then((d) => setPlan(d.plan)).catch(() => setPlan(null));
   }, []);
 
   async function mark(url: string, status: ProspectStatus) {
@@ -56,6 +60,7 @@ export function Backlinks() {
 
   return (
     <div>
+      {plan && <AuthorityPlanCard plan={plan} />}
       <p className="mb-3 text-sm text-dash-muted">
         Links from other websites tell Google your site is trusted. Each week the app looks on Google for real sites on your topics that could link to you, and writes an email for each one. You send it from your own email, so it comes from a real person. Nothing is sent for you.
       </p>
@@ -154,5 +159,37 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
         </div>
       )}
     </li>
+  );
+}
+
+/** The Authority Coach's weekly plan: where authority stands and the moves that survived the second AI's review. */
+function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
+  const kept = plan.moves.filter((m) => m.kept);
+  return (
+    <div className="mb-4 rounded-xl border border-dash-line bg-[#FBF8F2] px-4 py-3">
+      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-dash-muted">This week&apos;s authority plan</p>
+        <span className="text-[11px] text-dash-muted">{new Date(plan.at).toLocaleDateString()} · checked by a second AI</span>
+      </div>
+      <p className="text-sm text-dash-ink">{plan.assessment}</p>
+      {kept.length > 0 && (
+        <ol className="mt-2 space-y-1.5">
+          {kept.map((m, i) => (
+            <li key={i} className="flex gap-2 text-sm">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-dash-green text-xs font-semibold text-white">{i + 1}</span>
+              <span className="min-w-0">
+                <span className="text-dash-ink">{m.action}</span>
+                <span className="block text-xs text-dash-muted">{m.why}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {plan.studied.length > 0 && (
+        <p className="mt-2 text-xs text-dash-muted">
+          Learned from competitors: {plan.studied.map((s) => `${s.domain} (${s.found} ${s.found === 1 ? "site" : "sites"} to reach out to)`).join(", ")}.
+        </p>
+      )}
+    </div>
   );
 }

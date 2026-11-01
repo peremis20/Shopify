@@ -1,3 +1,4 @@
+import { accountsDueForAuthorityCoach, markAuthorityTried, readAuthorityPlan, runAuthorityCoach } from "./autopilot/authority-coach";
 import { accountsDueForBrokenLinks, markBrokenLinksChecked, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
@@ -748,6 +749,9 @@ export const strategyReport = (req: Request) =>
     return json({ report });
   });
 
+/** The Authority Coach's weekly plan. */
+export const authorityPlanReport = (req: Request) => withAccount(req, async (account) => json({ plan: await readAuthorityPlan(account.id) }));
+
 /** What the Inspector found: problems, what agents repaired, and what needs the owner. */
 export const inspectorReport = (req: Request) =>
   withAccount(req, async (account) => {
@@ -1071,6 +1075,15 @@ export async function autopilotTick(): Promise<Response> {
       if (done) results.push(`account ${accountId} broken links: ${done}`);
       // Failed: wait a week instead of holding up the other sites.
       else await markBrokenLinksChecked(accountId, "the last check failed");
+    }
+    // The Authority Coach: once a week per site, one site per hour.
+    for (const accountId of await accountsDueForAuthorityCoach(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
+      const plan = domain ? await runAuthorityCoach(accountId, conn, domain).catch((e) => (console.error(`authority coach failed: ${message(e)}`), null)) : null;
+      if (plan) results.push(`account ${accountId} authority plan: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves kept`);
+      else await markAuthorityTried(accountId, "no plan this week");
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of await accountsDueForStrategy(1)) {

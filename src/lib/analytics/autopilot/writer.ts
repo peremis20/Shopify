@@ -751,7 +751,7 @@ If this search isn't a fit for this website's business, return an empty string f
 export async function writeOutreach(
   ai: AiProvider,
   p: {
-    kind: "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken";
+    kind: "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken" | "competitor";
     siteName: string;
     pageTitle: string;
     pageUrl: string;
@@ -764,7 +764,9 @@ export async function writeOutreach(
   }
 ): Promise<{ subject: string; body: string }> {
   const ask =
-    p.kind === "broken" && p.brokenLink
+    p.kind === "competitor"
+      ? `Their page "${p.pageTitle}" covers ${p.topic} and already points readers to similar sites. Suggest ${p.ourPage ?? p.ourSite} as another helpful resource for their readers, in one sentence on what it covers. Never mention or criticize any other site.`
+      : p.kind === "broken" && p.brokenLink
       ? `One link on their page no longer works: "${p.anchor ?? "a link"}" (${p.brokenLink}). Point it out helpfully as a small favor, first. Then suggest ${p.ourPage ?? p.ourSite} as a working replacement on the same subject, in one sentence on what it covers. No pressure.`
       : p.kind === "podcast"
         ? `They run a podcast on ${p.topic} that welcomes guests. Offer to be a guest: one specific episode idea on ${p.topic} and what their listeners would take away, from the angle of ${p.ourBrand ?? p.ourSite}. Keep claims modest.`
@@ -892,7 +894,11 @@ Return JSON: "assessment" (3 short plain sentences: where the site stands agains
 }
 
 /** A second AI (another provider when there is one) challenges each move: kept only when the facts back it. */
-export async function challengeStrategy(ai: AiProvider, facts: string, plan: StrategyPlan): Promise<{ keep: boolean[]; notes: string[] }> {
+export async function challengeStrategy(
+  ai: AiProvider,
+  facts: string,
+  plan: { moves: { kind: string; keyword: string | null; action: string; why: string }[] }
+): Promise<{ keep: boolean[]; notes: string[] }> {
   const others = [ai, ...(ai.backups ?? [])];
   const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
   const out = await askJson<{ verdicts: { keep: boolean; note: string }[] }>(
@@ -941,4 +947,42 @@ Return JSON: "remove" (true or false) and "why" (one plain sentence, no hyphens 
     { type: "object", properties: { remove: { type: "boolean" }, why: { type: "string" } }, required: ["remove", "why"] }
   );
   return { remove: out.remove === true, why: out.why ?? "" };
+}
+
+/* ---------- Authority Coach (authority-coach.ts): a weekly plan to raise the site's authority ---------- */
+
+export interface AuthorityMove {
+  /** "outreach": contact these sites. "asset": make a page others will want to link to. "fix": repair something. "stop": quit something that isn't working. */
+  kind: "outreach" | "asset" | "fix" | "stop";
+  /** A site, page or topic copied from the facts, when the move is about one. */
+  keyword: string | null;
+  action: string;
+  why: string;
+}
+
+export async function planAuthority(ai: AiProvider, facts: string): Promise<{ assessment: string; moves: AuthorityMove[] }> {
+  return askJson<{ assessment: string; moves: AuthorityMove[] }>(
+    { ...ai, site: undefined },
+    `You are the link building lead for this website. Domain authority only rises when other real websites link to it, so your job is to get the site earned links, the honest way that works for successful sites: pages people want to cite, helpful outreach (broken link replacements, resource pages, podcasts, expert roundups, mentions without a link), and the sites that already link to competitors. Never paid links, link exchanges, private blog networks or anything that breaks Google's rules: a penalty would undo everything.
+
+Facts from this week (real data from the other agents, nothing else is known):
+${facts}
+
+Return JSON: "assessment" (3 short plain sentences: where the site's authority stands, the best opportunity, the biggest gap) and "moves" (at most 5, best first). Each move: kind (outreach, asset, fix or stop), keyword (a site, page or topic copied from the facts, else null), action (one sentence the owner or an agent can act on this week), why (one sentence citing the numbers). Never invent sites, numbers or results. No hyphens or dashes in the text.`,
+    {
+      type: "object",
+      properties: {
+        assessment: { type: "string" },
+        moves: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { kind: { type: "string", enum: ["outreach", "asset", "fix", "stop"] }, keyword: { type: ["string", "null"] }, action: { type: "string" }, why: { type: "string" } },
+            required: ["kind", "keyword", "action", "why"],
+          },
+        },
+      },
+      required: ["assessment", "moves"],
+    }
+  );
 }
