@@ -690,7 +690,9 @@ export const backlinkProspects = (req: Request) =>
         list = await findProspects(account.id, platform.serperKey, domain, profile.brandName ?? null);
       } catch (e) {
         console.error(`backlinks failed: ${message(e)}`);
-        return json({ list, error: message(e) });
+        // Plain words for the owner; the provider's own error text stays in the log.
+        const plain = /^Add an AI key/.test(message(e)) ? message(e) : "New backlink sites couldn't be checked this time, so your list wasn't changed. It will try again on your next visit.";
+        return json({ list, error: plain });
       }
     }
     return json({ list });
