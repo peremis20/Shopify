@@ -676,7 +676,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
             changes.push({ field: "schema", before: null, after: `Adds ${types} structured data built from the page.` });
           }
         }
-        const source = await linkSource(ctx, cand, page).catch(() => undefined);
+        const source = cand.inferred ? undefined : await linkSource(ctx, cand, page).catch(() => undefined);
         if (source) changes.push({ field: "internal_link", before: null, after: `A closing paragraph in “${source.title}” linking here.` });
         previewOut = {
           page: cand.op.page,
