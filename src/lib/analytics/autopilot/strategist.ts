@@ -125,9 +125,16 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     if (kept && k && (m.kind === "target" || m.kind === "cluster") && added < MAX_NEW_TARGETS && platform.serperKey) {
       const already = (await readTargets(accountId).catch(() => [])).some((t) => t.keyword === k);
       if (!already) {
-        await addTarget(accountId, k, { serperKey: platform.serperKey, ourDomain }, m.kind === "cluster").catch(() => null);
-        added++;
-        done = m.kind === "cluster" ? `Added as a target, with its best long tail searches, so the autopilot builds articles around it.` : "Added as a target: the autopilot works on it first.";
+        const result = await addTarget(accountId, k, { serperKey: platform.serperKey, ourDomain }, m.kind === "cluster").catch((e) => {
+          console.error(`strategist could not add target "${k}": ${(e as Error).message}`);
+          return null;
+        });
+        if (result) {
+          added++;
+          done = m.kind === "cluster" ? `Added as a target, with its best long tail searches, so the autopilot builds articles around it.` : "Added as a target: the autopilot works on it first.";
+        } else {
+          done = "Couldn't be added as a target this time; it will be tried again next week.";
+        }
       }
     }
     out.push({ ...m, keyword: k, kept, challenge, done });
@@ -145,7 +152,17 @@ export async function accountsDueForStrategy(limit: number): Promise<string[]> {
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'strategy:' || a.account_id
+    LEFT JOIN insights_settings f ON f.key = 'strategy_tried:' || a.account_id
     WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+      -- A site whose plan failed waits 6 hours before trying again, so it can't hold up the others.
+      AND (f.updated_at IS NULL OR f.updated_at < now() - interval '6 hours')
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
+}
+
+/** Records a planning attempt (and its error), so a failing site is retried later instead of blocking the queue. */
+export async function markStrategyTried(accountId: string, error: string | null): Promise<void> {
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${`strategy_tried:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), error })})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch(() => undefined);
 }

@@ -104,11 +104,10 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
   // What the Inspector found that needs a person (repairs it made itself show under "What I did").
   for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
-    if (warnings.some((w) => w.text.startsWith("The last autopilot run") && p.id === "autopilot:failed")) continue;
     warnings.push({ text: `${p.text} ${p.fix}`, page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") ? "keywords" : "content" });
   }
   const lastRun = runs[0];
-  if (lastRun && /fail|error/i.test(lastRun.status)) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
+  if (lastRun && /fail|error/i.test(lastRun.status) && !problems.some((p) => p.id === "autopilot:failed")) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
 
   // Biggest win: the largest climb among tracked searches (off page 1 counts as #25).
   const win = (ranks ?? [])

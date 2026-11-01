@@ -53,6 +53,16 @@ const domainOf = (url: string) => {
   }
 };
 
+/** Page one from the day's cache only: never a paid lookup. Null when it isn't cached. */
+export async function cachedSerp(query: string): Promise<Omit<Serp, "ourPosition"> | null> {
+  const cacheKey = `serp:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`;
+  await ensureSchema();
+  const [row] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${cacheKey} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
+  return row?.data ? JSON.parse(row.data) : null;
+}
+
 export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Serp, "ourPosition">> {
   const cacheKey = `serp:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`;
   await ensureSchema();
@@ -69,7 +79,8 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    await report("serper", false, `${res.status}: ${body?.message ?? "lookup failed"}`);
+    // A bad key, no credits, rate limits or an outage break it for everyone; one odd query doesn't.
+    if ([401, 402, 403, 429].includes(res.status) || res.status >= 500) await report("serper", false, `${res.status}: ${body?.message ?? "lookup failed"}`);
     throw new Error(`Search results lookup failed: ${body?.message ?? res.status}`);
   }
   await report("serper", true);

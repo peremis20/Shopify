@@ -1,6 +1,6 @@
 import { ensureSchema, sql } from "../db";
 import { authorityOf, authorityReady } from "./authority";
-import { fetchSerp } from "./serp";
+import { cachedSerp, fetchSerp } from "./serp";
 import { isBig, topicWords } from "./site-keywords";
 import { junkReason } from "./keyword-guard";
 
@@ -50,7 +50,7 @@ export async function keywordDifficulty(keyword: string, serperKey: string, ourD
   const k = keyword.trim().toLowerCase();
   const hit = await cached(k);
   // The shared cache holds only public facts about page one; where this site ranks is looked up for this site alone.
-  if (hit) return { ...hit, ours: await ourPosition(serperKey, k, ourDomain) };
+  if (hit) return { ...hit, ours: await ourPosition(k, ourDomain) };
 
   const serp = await fetchSerp(serperKey, k);
   const top = serp.organic.slice(0, 10);
@@ -87,10 +87,10 @@ export async function keywordDifficulty(keyword: string, serperKey: string, ourD
   return { ...shared, ours };
 }
 
-/** This site's spot on page one for a search (from the day's cached page one, so no extra cost). */
-async function ourPosition(serperKey: string, k: string, ourDomain: string): Promise<number | null> {
+/** This site's spot on page one for a search, only from the day's cached page one (never a paid lookup). */
+async function ourPosition(k: string, ourDomain: string): Promise<number | null> {
   if (!ourDomain) return null;
-  const serp = await fetchSerp(serperKey, k).catch(() => null);
+  const serp = await cachedSerp(k).catch(() => null);
   return serp?.organic.slice(0, 10).find((r) => r.domain === ourDomain || r.domain.endsWith(`.${ourDomain}`))?.position ?? null;
 }
 

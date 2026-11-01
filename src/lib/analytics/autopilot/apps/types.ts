@@ -23,6 +23,8 @@ export interface Candidate {
   mode: Mode;
   /** For "defend": the average position before it slipped. */
   previousPosition?: number;
+  /** True when no keyword targets this page and `op.query` is only the page's own topic (not a real search). */
+  inferred?: boolean;
   /** Score multipliers by app id; the final score multiplies them all. */
   weights: Record<string, number>;
 }

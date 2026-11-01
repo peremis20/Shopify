@@ -30,6 +30,8 @@ export interface Prospect {
   authority: number | null;
   status: ProspectStatus;
   foundAt: string;
+  /** When the owner last changed the status (e.g. the day a link was won). */
+  statusAt?: string;
 }
 
 export interface ProspectList {
@@ -113,7 +115,10 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
   // Open ones first, the strongest sites first within them.
   const order: Record<ProspectStatus, number> = { new: 0, contacted: 1, won: 2, skip: 3 };
   prospects.sort((a, b) => order[a.status] - order[b.status] || (b.authority ?? 0) - (a.authority ?? 0));
-  const list = { updatedAt: new Date().toISOString(), prospects: prospects.slice(0, MAX) };
+  // The owner's marks (emailed, won, skipped) are always kept; only new finds are capped.
+  const marked = prospects.filter((p) => p.status !== "new");
+  const fresh = prospects.filter((p) => p.status === "new");
+  const list = { updatedAt: new Date().toISOString(), prospects: [...fresh.slice(0, Math.max(0, MAX - marked.length)), ...marked] };
   await save(accountId, list);
   return list;
 }
@@ -121,7 +126,7 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
 export async function setProspectStatus(accountId: string, url: string, status: ProspectStatus): Promise<ProspectList | null> {
   const list = await readProspects(accountId);
   if (!list) return null;
-  list.prospects = list.prospects.map((p) => (p.url === url ? { ...p, status } : p));
+  list.prospects = list.prospects.map((p) => (p.url === url ? { ...p, status, statusAt: new Date().toISOString() } : p));
   await save(accountId, { ...list });
   return list;
 }

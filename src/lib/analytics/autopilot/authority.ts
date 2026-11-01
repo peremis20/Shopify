@@ -1,3 +1,4 @@
+import { otherClient } from "./clients";
 import { ensureSchema, sql } from "../db";
 import { readPlatformSettings } from "./settings";
 import { report } from "./status";
@@ -148,6 +149,7 @@ export async function rivals(
     const x = d.toLowerCase().replace(/^www\./, "");
     return x === ours || x.endsWith(`.${ours}`);
   };
+  const isOther = await otherClient(ourDomain);
   const tally = new Map<string, { beats: number; searches: string[] }>();
   for (const k of [...new Set(keywords)].slice(0, 10)) {
     const serp = await fetchSerp(k).catch(() => null);
@@ -155,7 +157,7 @@ export async function rivals(
     const top = serp.organic.slice(0, 10);
     const our = top.find((r) => isOurs(r.domain))?.position ?? Infinity;
     for (const r of top) {
-      if (isOurs(r.domain) || r.position >= our) continue;
+      if (isOurs(r.domain) || r.position >= our || isOther(r.domain)) continue;
       const d = r.domain.toLowerCase().replace(/^www\./, "");
       const t = tally.get(d) ?? { beats: 0, searches: [] };
       t.beats++;

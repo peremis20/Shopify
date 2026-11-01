@@ -60,7 +60,7 @@ export const feedback: RankingApp = {
     const list = await readProspects(hub.accountId).catch(() => null);
     const since = Date.now() - WON_LINK_DAYS * 86_400_000;
     const wonTopics = (list?.prospects ?? [])
-      .filter((p) => p.status === "won" && new Date(p.foundAt).getTime() >= since && p.kind !== "mention")
+      .filter((p) => p.status === "won" && new Date(p.statusAt ?? p.foundAt).getTime() >= since && p.kind !== "mention")
       .map((p) => [...topicWords(p.topic)]);
     hub.shared.set("feedback.wonTopics", wonTopics);
 

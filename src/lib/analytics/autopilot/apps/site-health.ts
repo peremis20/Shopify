@@ -88,6 +88,7 @@ export const siteHealth: RankingApp = {
           ...(monthlySearches ? { monthlySearches } : {}),
         },
         mode: "climb",
+        ...(t?.keyword || k?.keyword ? {} : { inferred: true }),
         weights: { [this.id]: notIndexed ? NOT_INDEXED_WEIGHT : FIX_WEIGHT },
       });
     }
@@ -112,6 +113,10 @@ export const siteHealth: RankingApp = {
   },
 
   async brief(hub, c) {
+    // No real search for this page: say so, so the writer fixes the page instead of chasing a made up keyword.
+    const topicNote = c.inferred
+      ? `No search is targeted for this page yet. "${c.op.query}" is only the page's own topic, not a real search: don't repeat it as a keyword. Make the page clearly more useful and distinct than similar pages so Google indexes it.`
+      : "";
     const h = (hub.shared.get("site-health.pages") as Map<string, Awaited<ReturnType<typeof pageHealth>>> | undefined)?.get(c.op.page);
     if (!h) return null;
     const fix = fixable(h.issues);
@@ -124,6 +129,7 @@ export const siteHealth: RankingApp = {
       );
     if (fix.some((i) => /: (Error|Warning):/.test(i.text))) parts.push(`Its structured data has problems (${fix.map((i) => i.text).join(" ")}); it's rebuilt from the page with this change.`);
     if (other.length) parts.push(`Technical notes (not fixable in the text, for context): ${other.map((i) => i.text).join(" ")}`);
+    if (topicNote) parts.unshift(topicNote);
     return { text: `${pathOf(c.op.page)}: ${parts.join(" ")}`, summary: `Health: ${(fix[0] ?? other[0]).text}` };
   },
 };

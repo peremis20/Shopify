@@ -1,4 +1,4 @@
-import { accountsDueForStrategy, readStrategy, runStrategist } from "./autopilot/strategist";
+import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
@@ -1033,7 +1033,9 @@ export async function autopilotTick(): Promise<Response> {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
-      const plan = await runStrategist(accountId, conn, domain).catch((e) => (console.error(`strategist failed: ${message(e)}`), null));
+      let failure: string | null = null;
+      const plan = await runStrategist(accountId, conn, domain).catch((e) => ((failure = message(e)), console.error(`strategist failed: ${failure}`), null));
+      if (!plan) await markStrategyTried(accountId, failure ?? "No AI key, so no plan was made.");
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);

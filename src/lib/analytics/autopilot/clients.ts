@@ -24,7 +24,7 @@ async function allClientDomains(): Promise<Set<string>> {
   const rows = await sql`
     SELECT site_domain AS d FROM insights_account_profile WHERE site_domain IS NOT NULL
     UNION SELECT gsc_site_url FROM insights_account_google WHERE gsc_site_url IS NOT NULL
-    UNION SELECT shop_domain FROM insights_account_autopilot WHERE shop_domain IS NOT NULL`.catch(() => [] as { d: string | null }[]);
+    UNION SELECT shop_domain FROM insights_account_autopilot WHERE shop_domain IS NOT NULL`;
   const domains = new Set(rows.map((r) => clean(r.d)).filter(Boolean));
   cache = { at: Date.now(), domains };
   return domains;
@@ -33,8 +33,13 @@ async function allClientDomains(): Promise<Set<string>> {
 /** A test for "this domain belongs to another customer" (never the site's own). */
 export async function otherClient(ourDomain: string): Promise<(domain: string) => boolean> {
   const ours = clean(ourDomain);
-  const all = await allClientDomains().catch(() => new Set<string>());
+  // If the customer list can't be read, treat every outside site as possibly a customer (safe side), and don't cache that.
+  const all = await allClientDomains().catch(() => null);
   return (domain: string) => {
+    if (!all) {
+      const d = clean(domain);
+      return Boolean(d) && d !== ours && !d.endsWith(`.${ours}`);
+    }
     const d = clean(domain);
     if (!d || d === ours || d.endsWith(`.${ours}`)) return false;
     for (const c of all) if (c !== ours && (d === c || d.endsWith(`.${c}`))) return true;

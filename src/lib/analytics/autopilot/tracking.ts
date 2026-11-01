@@ -95,7 +95,12 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
  */
 async function dropJunkHistory(accountId: string): Promise<void> {
   const faith = await faithAllowed(accountId).catch(() => false);
-  const owner = new Set((await readTargets(accountId).catch(() => [])).map((t) => t.keyword.trim().toLowerCase()));
+  const owner = new Set(
+    [
+      ...(await readTargets(accountId).catch(() => [])).map((t) => t.keyword),
+      ...(await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords),
+    ].map((k) => k.trim().toLowerCase())
+  );
   const rows = await sql`SELECT DISTINCT query FROM insights_rank_daily WHERE account_id = ${accountId}`;
   const junk = rows.map((r) => r.query!).filter((q) => !owner.has(q) && isJunkKeyword(q, { faith }));
   if (junk.length) await sql`DELETE FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ANY(string_to_array(${junk.join("\u001f")}, chr(31)))`;

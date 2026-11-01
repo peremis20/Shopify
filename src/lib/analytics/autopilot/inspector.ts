@@ -105,7 +105,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
     const runs = await sql`
       SELECT r.summary, r.status, (SELECT count(*) FROM insights_autopilot_changes c WHERE c.run_id = r.id AND c.status IN ('applied','suggested','kept')) AS made
-      FROM insights_autopilot_runs r WHERE r.account_id = ${accountId} AND r.finished_at IS NOT NULL
+      FROM insights_autopilot_runs r WHERE r.account_id = ${accountId} AND r.finished_at IS NOT NULL AND r.trigger <> 'preview'
       ORDER BY r.started_at DESC LIMIT 4`;
     if (runs.length >= 4 && runs.every((r) => Number(r.made) === 0)) {
       const why = runs[0]?.summary ?? "";
