@@ -103,7 +103,11 @@ export const siteHealth: RankingApp = {
       if (!h) continue;
       // Left out of Google on purpose: a rewrite can't change that.
       if (h.indexed === false && blocked(h.issues)) c.weights[this.id] = 0.05;
-      else if (fixable(h.issues).length) c.weights[this.id] = FIX_WEIGHT;
+      else if (fixable(h.issues).length) {
+        // Keep the higher weight a candidate already has (an unindexed page is urgent, not just fixable).
+        const notIndexed = fixable(h.issues).some((i) => /^Not in Google/.test(i.text));
+        c.weights[this.id] = Math.max(c.weights[this.id] ?? 0, notIndexed ? NOT_INDEXED_WEIGHT : FIX_WEIGHT);
+      }
     }
   },
 
