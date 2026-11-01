@@ -104,12 +104,16 @@ export async function pageValues(conn: Connection): Promise<Map<string, PageValu
   );
   const out = new Map<string, PageValue>();
   for (const r of body.rows ?? []) {
+    // The same page with different query strings comes back as separate rows: add them up.
     const path = r.dimensionValues[0].value.split("?")[0];
+    const sessions = Number(r.metricValues[0].value);
+    const prev = out.get(path);
+    const total = (prev?.sessions ?? 0) + sessions;
     out.set(path, {
-      sessions: Number(r.metricValues[0].value),
-      engagementRate: Number(r.metricValues[1].value),
-      keyEvents: Number(r.metricValues[2].value),
-      revenue: Number(r.metricValues[3]?.value ?? 0) || 0,
+      sessions: total,
+      engagementRate: total ? ((prev?.engagementRate ?? 0) * (prev?.sessions ?? 0) + Number(r.metricValues[1].value) * sessions) / total : 0,
+      keyEvents: (prev?.keyEvents ?? 0) + Number(r.metricValues[2].value),
+      revenue: (prev?.revenue ?? 0) + (Number(r.metricValues[3]?.value ?? 0) || 0),
     });
   }
   return out;

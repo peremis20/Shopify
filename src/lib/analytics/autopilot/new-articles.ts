@@ -123,11 +123,15 @@ export async function nextNewArticle(opts: {
     await saveTarget(accountId, { ...target, article: { url: null, live: false, note: "The writer couldn't make a good enough article for this search." } });
     return null;
   }
-  // Sources: trusted health sites that really rank on Google page one for this search (real, checkable links only).
-  const sources = comp.serp.organic.filter((r) => TRUSTED.test(r.domain) && r.title).slice(0, 4);
+  // Further reading: trusted health sites that really rank on Google page one for this search (real, checkable links).
+  // Not called "Sources": the writer didn't read them, so they aren't where the article's facts came from.
+  const seenDomains = new Set<string>();
+  const sources = comp.serp.organic
+    .filter((r) => TRUSTED.test(r.domain) && r.title && !seenDomains.has(r.domain) && Boolean(seenDomains.add(r.domain)))
+    .slice(0, 4);
   if (sources.length) {
     const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    article.html += `\n<h2>Sources</h2>\n<ul>${sources.map((r) => `<li><a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title)}</a> (${esc(r.domain)})</li>`).join("")}</ul>`;
+    article.html += `\n<h2>Learn more from trusted health sites</h2>\n<ul>${sources.map((r) => `<li><a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title)}</a> (${esc(r.domain)})</li>`).join("")}</ul>`;
   }
   // A pillar page links to every article in its cluster, so readers and Google see the whole topic.
   if (target.pillar && target.cluster) {

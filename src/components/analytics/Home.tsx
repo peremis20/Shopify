@@ -325,7 +325,9 @@ function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
         {strategy?.revenue != null && strategy.revenue > 0 && (
           <p className="mb-1 text-xs text-dash-muted">Sales from Google, last 28 days:{" "}
             <span className="font-semibold text-dash-ink">
-              {new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 }).format(strategy.revenue)}
+              {currency
+                ? new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: 0 }).format(strategy.revenue)
+                : formatNumber(Math.round(strategy.revenue))}
             </span></p>
         )}
         <div className="h-2 overflow-hidden rounded-full bg-[#F1ECE3]">
