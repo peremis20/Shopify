@@ -824,8 +824,12 @@ function safeEmailText(raw: string, keep: string[]): { text: string; dropped: nu
         .filter((sentence) => {
           if (!sentence.trim()) return true;
           total++;
+          // Names are hidden only for the number test; the claim checks read the real sentence.
           const plain = sentence.replace(/\u0000\d+\u0000/g, "");
-          const ok = !/\d/.test(plain) && !isRisky(plain) && !isUnsourced(plain) && !hasAiTell(plain);
+          const real = sentence.replace(/\u0000(\d+)\u0000/g, (_, i) => saved[Number(i)] ?? "");
+          // A line that is only a name (the sign off) is always kept, even for a brand like "Cure".
+          const onlyNames = !/[\p{L}\p{N}]/u.test(plain);
+          const ok = onlyNames || (!/\d/.test(plain) && !isRisky(real) && !isUnsourced(real) && !hasAiTell(real));
           if (!ok) dropped++;
           return ok;
         })
