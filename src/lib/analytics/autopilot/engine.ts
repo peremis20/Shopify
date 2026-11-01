@@ -702,7 +702,9 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         summary.push(`Preview: ${describe(cand).replace(/^(Defended|Pushed|Improved)/, (w) => `would have ${w.toLowerCase()}`)}. ${changes.length} change${changes.length === 1 ? "" : "s"} planned, nothing written.`);
       } else {
         const done = await applyPlan(ctx, runId, plan);
-        const extra = [...plan.summaries, ...gaps].length ? ` ${[...plan.summaries, ...gaps].join(" ")}` : "";
+        const reviewed = notes.filter((n) => n.includes("The reviewing AI turned down"));
+        const told = [...plan.summaries, ...gaps, ...reviewed];
+        const extra = told.length ? ` ${told.join(" ")}` : "";
         summary.push(
           done.length
             ? `${describe(plan.cand)}: ${done.join(", ").replace(/_/g, " ")}.${extra}`

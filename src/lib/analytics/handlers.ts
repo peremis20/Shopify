@@ -686,7 +686,12 @@ export const backlinkProspects = (req: Request) =>
     let list = await readProspects(account.id);
     if (!platform.serperKey || !domain) return json({ list, error: !domain ? "Add your website first." : "Add a search results key (serper.dev) in platform keys first." });
     if (body.refresh || prospectsDue(list)) {
-      list = await findProspects(account.id, platform.serperKey, domain, profile.brandName ?? null).catch((e) => (console.error(`backlinks failed: ${message(e)}`), list));
+      try {
+        list = await findProspects(account.id, platform.serperKey, domain, profile.brandName ?? null);
+      } catch (e) {
+        console.error(`backlinks failed: ${message(e)}`);
+        return json({ list, error: message(e) });
+      }
     }
     return json({ list });
   });

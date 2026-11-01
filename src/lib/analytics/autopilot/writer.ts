@@ -597,9 +597,10 @@ Keep the SEO title and description if they are already strong for this search; y
     const keepOr = (kept: boolean, mine: string, current: string | null) => (kept ? mine : (current ?? ""));
     metaTitle = better(r.betterTitle, 70) || (titleChanged ? keepOr(r.keepTitle, metaTitle, page.metaTitle) : metaTitle);
     metaDescription = better(r.betterDescription, 170) || (descChanged ? keepOr(r.keepDescription, metaDescription, page.metaDescription) : metaDescription);
+    // Turned down: the part would have changed and the current one stays.
     const turnedDown = [
-      titleChanged && !r.keepTitle && !r.betterTitle ? "SEO title" : "",
-      descChanged && !r.keepDescription && !r.betterDescription ? "meta description" : "",
+      titleChanged && metaTitle === (page.metaTitle ?? "") ? "SEO title" : "",
+      descChanged && metaDescription === (page.metaDescription ?? "") ? "meta description" : "",
       section && !r.keepSection ? "new section" : "",
     ].filter(Boolean);
     if (turnedDown.length) reviewNote = `The reviewing AI turned down the ${turnedDown.join(", ")}, so ${turnedDown.length === 1 ? "it was" : "they were"} left out.`;
