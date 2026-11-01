@@ -742,7 +742,8 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
   if (field === "new_article") {
     await unpublishArticle(ctx.accountId, ctx.site, c.resource_id!);
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
-    // Its search no longer has a live page (and a cluster pillar won't link to it any more).
+    // Its search no longer has a live page, and pillars written from now on won't link to it
+    // (a pillar already published keeps its link until the owner edits it).
     const t = (await readTargets(ctx.accountId).catch(() => [])).find((x) => x.keyword === c.query);
     if (t) await saveTarget(ctx.accountId, { ...t, page: null, article: t.article ? { ...t.article, live: false, note: "Taken down (undo)" } : t.article });
     return "Taken off the site (kept as a draft).";

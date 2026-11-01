@@ -700,7 +700,10 @@ export const backlinkEmail = (req: Request) =>
     // The topic's meaningful words (filler like "the" and "for" dropped), matched as whole words.
     const words = p.topic.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !FILLER.has(w));
     const best = conn ? await bestPageForTopic(conn, words).catch(() => null) : null;
-    const target = (await readTargets(account.id).catch(() => [])).find((t) => t.page && p.topic.split(" ").every((w) => t.keyword.includes(w)));
+    const target = (await readTargets(account.id).catch(() => [])).find((t) => {
+      const kw = new Set(t.keyword.split(/[^a-z0-9]+/));
+      return t.page && words.length > 0 && words.every((w) => kw.has(w));
+    });
     const ourPage = best?.page ?? target?.page ?? null;
     try {
       return json(
