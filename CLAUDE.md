@@ -17,6 +17,9 @@ About 20,000 visitors a month from Google, and revenue from them. Every feature 
 
 ## Rules for building it
 
+- No narrow agents. Anything that is good for the site or the app, an agent should fix, improve or make work, and anything broken it should repair, as creatively as it likes, as long as the app keeps working.
+- Never assume and never invent. Every piece of work is double checked by another agent before it counts: content by a second AI, plans by the Strategist's critic, the system by the Inspector, and code changes by an independent review before release.
+
 - Each site is worked on with its own data only. Per site data is keyed by account; shared caches hold only public facts (Google page one, Keyword Planner volumes, Open PageRank) and never a site's own results. Other customers' sites are never studied as competitors, used as writing material, or suggested as backlinks (`autopilot/clients.ts`).
 - Generic for any site and any niche. Nothing hard coded to one store; site specifics come from its data and profile.
 - Act, don't just show. If the app can do it, it does it; the owner only does what truly needs a person (keys, sending outreach email).
