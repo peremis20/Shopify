@@ -26,7 +26,7 @@ export function SignInScreen({ error }: { error?: string | null }) {
       <div className="w-full max-w-4xl">
         <div className="mb-10 text-center">
           <p className="mb-3 inline-flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.18em] text-dash-green">
-            <SearchIcon className="h-4 w-4" /> Insights
+            <SearchIcon className="h-4 w-4" /> DashPatrol
           </p>
           <h1 className="font-serif text-4xl text-dash-ink sm:text-5xl">Grow your search traffic, automatically</h1>
           <p className="mx-auto mt-4 max-w-xl text-dash-muted">

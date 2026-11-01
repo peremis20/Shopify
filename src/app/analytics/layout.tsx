@@ -5,8 +5,8 @@ const serif = Fraunces({ subsets: ["latin"], variable: "--font-serif", display: 
 const sans = Inter({ subsets: ["latin"], variable: "--font-dash", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "Insights Dashboard",
-  description: "Google Analytics and Search Console performance in one place.",
+  title: "DashPatrol",
+  description: "Your SEO on autopilot: rankings, content and backlinks, handled.",
   robots: { index: false, follow: false },
 };
 

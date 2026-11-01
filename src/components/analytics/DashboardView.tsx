@@ -159,7 +159,7 @@ export function DashboardView() {
               >
                 <MenuIcon className="h-5 w-5" />
               </button>
-              <span className="font-serif text-lg">Insights</span>
+              <span className="font-serif text-lg">DashPatrol</span>
             </div>
 
             <div className="flex flex-wrap items-end justify-between gap-4">

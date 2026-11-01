@@ -19,7 +19,7 @@ import { readWp } from "./autopilot/wordpress";
  * the site owner when the signed-in Google account can't see the site yet.
  */
 
-export const APP_NAME = process.env.APP_NAME || "Insights";
+export const APP_NAME = process.env.APP_NAME || "DashPatrol";
 
 // ---------- matching properties to the store ----------
 

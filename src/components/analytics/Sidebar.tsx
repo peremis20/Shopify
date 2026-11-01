@@ -47,8 +47,8 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
       >
         <div className="flex items-center justify-between px-6 pb-6 pt-7">
           <div>
-            <p className="font-serif text-2xl text-white">Insights</p>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-white/50">Website dashboard</p>
+            <p className="font-serif text-2xl text-white">DashPatrol</p>
+            <p className="text-[11px] uppercase tracking-[0.2em] text-white/50">SEO on autopilot</p>
           </div>
           <button onClick={onClose} className="rounded-md p-1 text-white/70 hover:bg-white/10 lg:hidden" aria-label="Close menu">
             <CloseIcon className="h-5 w-5" />
