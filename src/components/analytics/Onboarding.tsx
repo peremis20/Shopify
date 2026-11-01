@@ -473,7 +473,7 @@ const HEADER_WHERE: Record<string, string> = {
 const PENDING_SETUP = "insights.pendingSetup";
 
 /** Leaves the page for Google (at the top level when inside Shopify admin). */
-async function goToGoogle(purpose: "setup") {
+export async function goToGoogle(purpose: "setup") {
   const { url } = await api<{ url: string }>(`/api/auth/google/link?purpose=${purpose}`);
   if (isEmbedded()) window.open(url, "_top");
   else window.location.href = url;

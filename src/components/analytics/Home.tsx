@@ -7,6 +7,7 @@ import type { PageHealth } from "@/lib/analytics/autopilot/health";
 import type { AutopilotChange, AutopilotRun } from "@/lib/analytics/autopilot/types";
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import type { OverviewResponse } from "@/lib/analytics/types";
+import { goToGoogle } from "./Onboarding";
 import type { Problem } from "@/lib/analytics/autopilot/inspector";
 import type { StrategyReport } from "@/lib/analytics/autopilot/strategist";
 import { formatNumber } from "./format";
@@ -96,7 +97,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const ready = changes !== null && ranks !== null;
 
   // Warnings: only when something needs attention.
-  const warnings: { text: string; page: SimplePage }[] = [];
+  const warnings: { text: string; page: SimplePage; allowGoogle?: boolean }[] = [];
   const dropped = (ranks ?? []).filter((r) => r.previous !== null && r.previous <= 10 && (r.position === null || r.position > 10));
   if (dropped.length) warnings.push({ text: `${dropped.length === 1 ? `"${dropped[0].query}" dropped` : `${dropped.length} searches dropped`} off Google page 1 since the last check.`, page: "keywords" });
   const broken = health.filter((h) => h.issues.some((i) => i.level === "high"));
@@ -105,16 +106,19 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
   // What the Inspector found that needs a person (repairs it made itself show under "What I did").
   for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
-    warnings.push({ text: `${p.text} ${p.fix}`, page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") ? "keywords" : "content" });
+    warnings.push({
+      text: `${p.text} ${p.fix}`,
+      page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") ? "keywords" : "content",
+      allowGoogle: p.id === "google:recrawl",
+    });
   }
   const lastRun = runs[0];
   if (lastRun && /fail|error/i.test(lastRun.status) && !problems.some((p) => p.id === "autopilot:failed")) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
 
-  // Biggest win: the largest climb among tracked searches (off page 1 counts as #25).
+  // Biggest win: the largest climb among tracked searches, between two real positions (never a made up one).
   const win = (ranks ?? [])
-    // Needs an earlier check, so a search seen for the first time doesn't count as a climb.
-    .filter((r) => r.position !== null && (r.previous !== null || (r.history?.length ?? 0) > 1))
-    .map((r) => ({ r, gain: (r.previous ?? 25) - r.position! }))
+    .filter((r) => r.position !== null && r.previous !== null)
+    .map((r) => ({ r, gain: r.previous! - r.position! }))
     .filter((x) => x.gain >= 1)
     .sort((a, b) => b.gain - a.gain)[0];
 
@@ -143,7 +147,11 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
                 {i === 0 && <span className="font-semibold text-dash-down">Needs your attention: </span>}
                 {w.text}
               </span>
-              <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
+              {w.allowGoogle ? (
+                <button onClick={() => void goToGoogle("setup").catch(() => undefined)} className="text-xs font-semibold text-dash-green hover:underline">Allow</button>
+              ) : (
+                <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
+              )}
             </div>
           ))}
         </div>

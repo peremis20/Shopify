@@ -6,6 +6,7 @@ import { readAccountAutopilot, readPlatformSettings } from "./settings";
 import { readStatus, type Part } from "./status";
 import { trackRanks } from "./tracking";
 import { isSabbath } from "./sabbath";
+import { hasScope } from "../google-auth";
 
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
@@ -126,7 +127,20 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
   }
 
-  // 4. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
+  // 4. Google may be asked to recrawl changed pages only with permission to manage Search Console.
+  if (conn?.gscSiteUrl) {
+    const allowed = await hasScope({ kind: "oauth", refreshToken: conn.refreshToken }, "https://www.googleapis.com/auth/webmasters").catch(() => null);
+    if (allowed === false) {
+      problems.push({
+        id: "google:recrawl",
+        text: "The app can't ask Google to look at your changed pages sooner.",
+        fix: "Click Allow and accept on Google's screen, so each change reaches Google faster.",
+        who: "owner",
+      });
+    }
+  }
+
+  // 5. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
   if (opts.ourDomain && (await clientListKnown())) {
     const isOther = await otherClient(opts.ourDomain);
     const list = await readProspects(accountId).catch(() => null);
