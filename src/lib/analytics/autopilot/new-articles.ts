@@ -54,7 +54,8 @@ async function markWritten(accountId: string): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-/** Trusted health sources: government, universities, and major medical centers and journals. */
+/** Trusted health sources: government, universities, and major medical centers and journals.
+ * Every business type today is health or wellness; if a non health type is added, gate this list on the profile's type. */
 const TRUSTED =
   /(^|\.)(nih\.gov|cdc\.gov|fda\.gov|medlineplus\.gov|[a-z0-9-]+\.gov|[a-z0-9-]+\.edu|who\.int|mayoclinic\.org|clevelandclinic\.org|hopkinsmedicine\.org|health\.harvard\.edu|nhs\.uk|bmj\.com|thelancet\.com|jamanetwork\.com|nejm\.org|examine\.com)$/i;
 
