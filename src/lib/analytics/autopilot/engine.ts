@@ -136,11 +136,12 @@ const words = (s: string) =>
 // ---------- measuring ----------
 
 /** Today's position from the daily rank check, for sites without Search Console. */
-async function trackedPosition(accountId: string, query: string): Promise<{ position: number; clicks: number } | null> {
+async function trackedPosition(accountId: string, query: string): Promise<{ position: number | null; clicks: number } | null> {
   const [row] = await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${query.toLowerCase()}
     ORDER BY checked_on DESC LIMIT 1`;
   if (!row) return null;
-  return { position: row.position === null ? 25 : Number(row.position), clicks: 0 };
+  // Not found in the results checked: recorded as exactly that (null), never as a made up position.
+  return { position: row.position === null ? null : Number(row.position), clicks: 0 };
 }
 
 async function positionFor(conn: Connection, query: string, page: string) {
@@ -177,7 +178,9 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
-    const worse = now ? now.position > baseline + WORSE_BY_POSITIONS && now.clicks <= baseClicks : false;
+    // Dropped out of the results checked: worse when the page was really ranking before.
+    const droppedOut = Boolean(now) && now!.position === null;
+    const worse = now ? (now.position === null ? baseline <= 20 : now.position > baseline + WORSE_BY_POSITIONS && now.clicks <= baseClicks) : false;
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
       WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
@@ -185,11 +188,11 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       if (worse) {
         const note = await revertRow(ctx, c).catch((e) => `Undo failed: ${e.message}`);
         await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
-          note = ${`Ranking dropped from ${baseline.toFixed(1)} to ${now!.position.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
+          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the results checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
       } else {
         await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(),
           result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
-          note = ${now ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
+          note = ${now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the results checked before or after; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
       }
     }
     notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”`);

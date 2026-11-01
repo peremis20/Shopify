@@ -21,11 +21,13 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   const rows = await sql`
     SELECT field,
       count(*) FILTER (WHERE evaluated_at IS NULL AND status = 'applied') AS waiting,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND (result_position IS NULL OR baseline_position IS NULL)) AS nodata,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL) AS compared,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND result_position < baseline_position - 0.5) AS up,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND result_position > baseline_position + 0.5) AS down,
-      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL) AS gain,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND (result_position IS NULL OR baseline_position IS NULL) AND coalesce(note, '') NOT LIKE 'Dropped out%') AS nodata,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position IS NOT NULL) AS entered,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND note LIKE 'Dropped out%') AS dropped,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS compared,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position < baseline_position - 0.5) AS up,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position > baseline_position + 0.5) AS down,
+      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS gain,
       avg(result_clicks - baseline_clicks) FILTER (WHERE evaluated_at IS NOT NULL AND result_clicks IS NOT NULL AND baseline_clicks IS NOT NULL) AS clicks
     FROM insights_autopilot_changes
     WHERE account_id = ${accountId} AND field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))
@@ -36,12 +38,17 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   for (const r of rows) {
     const compared = Number(r.compared);
     const nodata = Number(r.nodata);
+    const dropped = Number(r.dropped);
+    // Not ranked before (stored as 25, the "off page one" marker), so no before position to compare with.
+    const entered = Number(r.entered);
     waiting += Number(r.waiting);
-    if (compared + nodata === 0) continue;
-    measured += compared + nodata;
+    if (compared + nodata + dropped + entered === 0) continue;
+    measured += compared + nodata + dropped + entered;
     const name = LABEL[String(r.field)] ?? r.field;
     if (!compared) {
-      lines.push(`Measured result, ${name}: ${nodata} measured, none had enough Google data to compare yet.`);
+      lines.push(
+        `Measured result, ${name}: ${nodata + dropped + entered} measured, ${entered ? `${entered} not ranked before and now found in the results, ` : ""}${dropped ? `${dropped} dropped out of the results checked, ` : ""}${nodata} without enough Google data to compare.`
+      );
       continue;
     }
     const pos = Number(r.gain);
@@ -51,6 +58,8 @@ export async function measuredResults(accountId: string): Promise<string[]> {
       `Measured result, ${name}: ${compared} compared with Google data, ${r.up} moved up, ${r.down} moved down, ${same} about the same, ` +
         `average position change ${pos >= 0 ? "up" : "down"} ${Math.abs(pos).toFixed(1)}` +
         (clk !== null ? `, average clicks change ${clk >= 0 ? "up" : "down"} ${Math.abs(clk).toFixed(1)}` : "") +
+        (entered ? `, ${entered} more not ranked before and now found in the results` : "") +
+        (dropped ? `, ${dropped} more dropped out of the results checked` : "") +
         (nodata ? `, ${nodata} more without enough data` : "") +
         "."
     );
