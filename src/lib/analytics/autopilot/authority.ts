@@ -11,6 +11,7 @@ import { report } from "./status";
  */
 
 const CACHE_DAYS = 30;
+const OPR_HOSTS = ["https://openpagerank.keywordseverywhere.com", "https://openpagerank.com"];
 /** At or above this score a site is a strong publisher, hard to outrank for a small site. */
 export const STRONG_AUTHORITY = 5;
 
@@ -49,10 +50,16 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
   for (let i = 0; i < missing.length; i += 100) {
     const batch = missing.slice(i, i + 100);
     const qs = batch.map((d) => `domains[]=${encodeURIComponent(d)}`).join("&");
-    const res = await fetch(`https://openpagerank.com/api/v1.0/getPageRank?${qs}`, {
-      headers: { "API-OPR": key },
-      signal: AbortSignal.timeout(15000),
-    }).catch((e) => (console.warn(`openpagerank request failed: ${(e as Error).message}`), null));
+    // Open PageRank moved to Keywords Everywhere: same path, header and response on the new host, and the
+    // old host rejects keys made there. Try the new host first, the old one only if the new can't be reached.
+    let res: Response | null = null;
+    for (const host of OPR_HOSTS) {
+      res = await fetch(`${host}/api/v1.0/getPageRank?${qs}`, {
+        headers: { "API-OPR": key },
+        signal: AbortSignal.timeout(15000),
+      }).catch((e) => (console.warn(`openpagerank request to ${host} failed: ${(e as Error).message}`), null));
+      if (res && res.status !== 404) break;
+    }
     if (!res?.ok) {
       if (res) {
         const text = await res.text().catch(() => "");
