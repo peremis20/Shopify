@@ -54,6 +54,10 @@ async function markWritten(accountId: string): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
+/** Trusted health sources: government, universities, and major medical centers and journals. */
+const TRUSTED =
+  /(^|\.)(nih\.gov|cdc\.gov|fda\.gov|medlineplus\.gov|[a-z0-9-]+\.gov|[a-z0-9-]+\.edu|who\.int|mayoclinic\.org|clevelandclinic\.org|hopkinsmedicine\.org|health\.harvard\.edu|nhs\.uk|bmj\.com|thelancet\.com|jamanetwork\.com|nejm\.org|examine\.com)$/i;
+
 /** Shopify's standard newsletter signup (the same form themes use), placed at the end of a new article. */
 function signupBlock(brand: string): string {
   const name = brand.replace(/[<>&"]/g, "");
@@ -118,6 +122,12 @@ export async function nextNewArticle(opts: {
   if (!article) {
     await saveTarget(accountId, { ...target, article: { url: null, live: false, note: "The writer couldn't make a good enough article for this search." } });
     return null;
+  }
+  // Sources: trusted health sites that really rank on Google page one for this search (real, checkable links only).
+  const sources = comp.serp.organic.filter((r) => TRUSTED.test(r.domain) && r.title).slice(0, 4);
+  if (sources.length) {
+    const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    article.html += `\n<h2>Sources</h2>\n<ul>${sources.map((r) => `<li><a href="${esc(r.link)}" target="_blank" rel="noopener">${esc(r.title)}</a> (${esc(r.domain)})</li>`).join("")}</ul>`;
   }
   // A pillar page links to every article in its cluster, so readers and Google see the whole topic.
   if (target.pillar && target.cluster) {

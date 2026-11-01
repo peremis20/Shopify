@@ -803,7 +803,7 @@ const MOVE_SCHEMA = {
 export async function planStrategy(ai: AiProvider, facts: string): Promise<StrategyPlan> {
   return askJson<StrategyPlan>(
     { ...ai, site: undefined },
-    `You are the SEO strategist for this website. The goal: reach 20,000 visitors a month from Google search and turn them into revenue. Other agents do the work every day (improving pages, writing articles, tracking ranks, finding backlinks); your job is to point them at what will move the numbers most, and to say plainly what isn't working.
+    `You are the SEO strategist for this website. The goal: reach 20,000 visitors a month from Google search and turn them into revenue. Judge success by sales from Google as much as by visitors: prefer moves on pages and searches that sell. Other agents do the work every day (improving pages, writing articles, tracking ranks, finding backlinks); your job is to point them at what will move the numbers most, and to say plainly what isn't working.
 
 Facts from this week (real data, nothing else is known):
 ${facts}

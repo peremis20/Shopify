@@ -1,3 +1,4 @@
+import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { findOpportunities, gscClicks28d } from "../seo-tools";
@@ -27,6 +28,8 @@ export interface StrategyReport {
   moves: (StrategyMove & { kept: boolean; challenge: string; done: string | null })[];
   /** Google visitors in the last 28 days, when Search Console is connected. */
   visitors: number | null;
+  /** Sales from Google visitors in the last 28 days (Google Analytics ecommerce), when tracked. */
+  revenue?: number | null;
   goal: number;
 }
 
@@ -45,7 +48,7 @@ export async function readStrategy(accountId: string): Promise<StrategyReport | 
 export const strategyDue = (r: StrategyReport | null) => !r || Date.now() - Date.parse(r.at) > WEEK;
 
 /** Everything the agents know, as plain facts the strategist (and its critic) can check against. */
-async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; known: Set<string>; visitors: number | null }> {
+async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
   const lines: string[] = [];
   const known = new Set<string>();
   let visitors: number | null = null;
@@ -95,8 +98,22 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   const problems = await inspect(accountId, conn, { repair: false, ourDomain }).catch(() => []);
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
+  // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
+  let revenue: number | null = null;
+  if (conn?.gaPropertyId) {
+    const values = await pageValues(conn).catch(() => null);
+    if (values) {
+      const pages = [...values.entries()].filter(([, v]) => v.revenue > 0).sort((a, b) => b[1].revenue - a[1].revenue);
+      revenue = pages.reduce((a, [, v]) => a + v.revenue, 0);
+      lines.push(
+        revenue > 0
+          ? `Sales from Google visitors, last 28 days: ${Math.round(revenue)}. Pages that sell most: ${pages.slice(0, 5).map(([p, v]) => `${p} (${Math.round(v.revenue)})`).join("; ")}.`
+          : "Sales from Google visitors: none tracked in the last 28 days (Google Analytics may not record purchases yet)."
+      );
+    }
+  }
 
-  return { facts: lines.join("\n"), known, visitors };
+  return { facts: lines.join("\n"), known, visitors, revenue };
 }
 
 /** Plans the week, has it challenged, acts on what survives. */
@@ -104,7 +121,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const platform = await readPlatformSettings();
   const ai: AiProvider | null = aiProvider(platform);
   if (!ai) return null;
-  const { facts, known, visitors } = await gatherFacts(accountId, conn, ourDomain);
+  const { facts, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
   const plan = await planStrategy(ai, facts);
   const moves = plan.moves.slice(0, 5);
   const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch(() => ({ keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") }));
@@ -148,7 +165,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     if (kept && m.kind === "asset" && !done) done = "An idea for you: the agents can't make this one on their own yet.";
     out.push({ ...m, keyword: k, kept, challenge, done });
   }
-  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, goal: GOAL };
+  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

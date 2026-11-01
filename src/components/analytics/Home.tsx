@@ -200,7 +200,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} planning={planning} error={planError} onPlan={planNow} />
+          <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} currency={sales?.currency ?? null} planning={planning} error={planError} onPlan={planNow} />
         </div>
 
         <div className="space-y-4">
@@ -298,9 +298,10 @@ function Change({ n }: { n: number }) {
 
 
 /** The Strategist's week: progress to the goal, the moves that survived review, and the ones that didn't. */
-function Plan({ strategy, visitors, planning, error, onPlan }: {
+function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
   strategy: StrategyReport | null;
   visitors: number | null;
+  currency: string | null;
   planning: boolean;
   error: string | null;
   onPlan: () => void;
@@ -321,6 +322,12 @@ function Plan({ strategy, visitors, planning, error, onPlan }: {
           <span>Goal: {formatNumber(goal)} visitors a month from Google</span>
           <span className="tabular-nums">{now !== null ? `${formatNumber(now)} now (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` : "not measured yet"}</span>
         </div>
+        {strategy?.revenue != null && strategy.revenue > 0 && (
+          <p className="mb-1 text-xs text-dash-muted">Sales from Google, last 28 days:{" "}
+            <span className="font-semibold text-dash-ink">
+              {new Intl.NumberFormat(undefined, { style: "currency", currency: currency || "USD", maximumFractionDigits: 0 }).format(strategy.revenue)}
+            </span></p>
+        )}
         <div className="h-2 overflow-hidden rounded-full bg-[#F1ECE3]">
           <div className="h-full rounded-full bg-dash-green" style={{ width: `${Math.max(pct, now ? 1 : 0)}%` }} />
         </div>
