@@ -56,6 +56,11 @@ const AI_TELLS = [
 
 export const hasAiTell = (text: string) => AI_TELLS.some((r) => r.test(text.trim()));
 
+/** Claims leaning on sources nobody can check: "studies show", "many users notice", "experts say". */
+const UNSOURCED =
+  /\b(?:(?:some|many|several|recent|new|clinical)\s+)?(?:studies|research|trials?)\s+(?:show|shows|suggest|suggests|have\s+shown|have\s+observed|observed|found|indicate|point)\b|\b(?:many|most|some)\s+(?:users|people|customers)\s+(?:notice|report|find|say)\b|\bexperts?\s+(?:say|agree|recommend)\b|\banecdotal\b/i;
+export const isUnsourced = (text: string) => UNSOURCED.test(text);
+
 const RULES = `
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
@@ -561,7 +566,7 @@ Keep the SEO title and description if they are already strong for this search; y
   // A second AI edits it so it reads as a person wrote it; if that fails, blocks with AI tells are dropped.
   if (section) section = await humanEdit(ai, section, page.body).catch(() => dropBlocks(section, (text) => hasAiTell(text)));
   // Claim guard: no paragraph that reads as a disease claim or an unprovable promise.
-  if (section) section = dropBlocks(section, (text) => isRisky(text));
+  if (section) section = dropBlocks(section, (text) => isRisky(text) || isUnsourced(text));
   // A section reduced to headings alone isn't worth adding.
   if (!blocksOf(section).length) section = "";
   // A risky title or description is never written; the current one stays.
@@ -708,7 +713,7 @@ ${brief.supporting?.length ? `Broader searches to mention naturally where they f
 The site already has these articles, so don't repeat them: ${brief.ownTitles.slice(0, 40).join(" | ") || "(none)"}
 
 Cover what searchers want better and more clearly than the pages above, in this site's own voice. Answer the main question early, in plain words.
-Only use well established, general knowledge. Write no numbers at all: no doses, percentages, statistics, prices, years or counts (paragraphs with numbers are removed).
+Only use well established, general knowledge. Never attribute claims to unnamed sources: no "studies show", "research suggests", "many users notice", "experts say" or "anecdotal experience". Describe what is generally known plainly, and use cautious wording ("may support") for any benefit. Write no numbers at all: no doses, percentages, statistics, prices, years or counts (paragraphs with numbers are removed).
 If this search isn't a fit for this website's business, return an empty string for html.`;
 
   const out = await askJson<NewArticle>(ai, prompt, ARTICLE_SCHEMA);
@@ -716,7 +721,7 @@ If this search isn't a fit for this website's business, return an empty string f
   if (!html) return null;
   // A second AI edits it so it reads as a person wrote it.
   html = await humanEdit(ai, html, "").catch(() => dropBlocks(html, (text) => hasAiTell(text)));
-  html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text));
+  html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text) || isUnsourced(text));
   // Too little left to stand as an article.
   if (blocksOf(html).length < 8 || plainText(html).split(/\s+/).length < 500) return null;
 

@@ -26,6 +26,8 @@ export interface PlatformSettings {
   serperKey?: string;
   /** Optional Google API key for PageSpeed Insights (higher limits than without one). */
   pagespeedKey?: string;
+  /** Open PageRank (free), for the authority of the sites on Google page one. */
+  oprKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
 }
@@ -51,7 +53,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasShopifyApp: boolean };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasShopifyApp: boolean };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -71,6 +73,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     githubModelsKey: process.env.GITHUB_MODELS_TOKEN || stored.githubModelsKey,
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
+    oprKey: process.env.OPR_API_KEY || stored.oprKey,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
   };
@@ -180,7 +183,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }

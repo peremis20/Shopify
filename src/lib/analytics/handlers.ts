@@ -721,6 +721,7 @@ export const savePlatform = (req: Request) =>
       githubModelsKey: str("githubModelsKey"),
       serperKey: str("serperKey"),
       pagespeedKey: str("pagespeedKey"),
+      oprKey: str("oprKey"),
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });

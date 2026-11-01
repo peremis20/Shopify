@@ -1,11 +1,12 @@
 import { ensureSchema, sql } from "../db";
+import { readPlatformSettings } from "./settings";
 
 /**
  * Website authority from Open PageRank (free, openpagerank.com): a score
  * from 0 to 10 for each domain, cached for 30 days. Used to judge whether
- * the sites on Google page one are beatable. The key comes from OPR_API_KEY
- * or the "opr_api_key" setting; without one the app falls back to its list
- * of big publishers.
+ * the sites on Google page one are beatable. The key is one of the platform
+ * keys in Autopilot settings (or OPR_API_KEY); without one the app falls
+ * back to its list of big publishers.
  */
 
 const CACHE_DAYS = 30;
@@ -13,13 +14,19 @@ const CACHE_DAYS = 30;
 export const STRONG_AUTHORITY = 5;
 
 let storedKey: { value: string | null; at: number } | null = null;
+/** The key from the platform keys in Autopilot settings (or OPR_API_KEY), cached for ten minutes. */
 async function oprKey(): Promise<string | null> {
   if (process.env.OPR_API_KEY) return process.env.OPR_API_KEY;
   if (storedKey && Date.now() - storedKey.at < 600_000) return storedKey.value;
-  await ensureSchema();
-  const [row] = await sql`SELECT value FROM insights_settings WHERE key = 'opr_api_key'`.catch(() => [] as { value: string | null }[]);
-  storedKey = { value: row?.value || null, at: Date.now() };
-  return storedKey.value;
+  const platform = await readPlatformSettings().catch(() => null);
+  let value = platform?.oprKey ?? null;
+  if (!value) {
+    await ensureSchema();
+    const [row] = await sql`SELECT value FROM insights_settings WHERE key = 'opr_api_key'`.catch(() => [] as { value: string | null }[]);
+    value = row?.value || null;
+  }
+  storedKey = { value, at: Date.now() };
+  return value;
 }
 
 export const authorityReady = async () => Boolean(await oprKey().catch(() => null));
