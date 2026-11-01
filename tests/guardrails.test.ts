@@ -159,3 +159,18 @@ test("controls: a similar page close in position is chosen; none when nothing is
   assert.equal(pickControl(c("/z", "z", 25), all, () => false), null);
   assert.equal(pickControl(c("/z", "z", 12, true), all, () => false), null);
 });
+
+test("text: number ranges read as ranges, not lists", () => {
+  assert.equal(polish("Most people notice it in 2–3 weeks"), "Most people notice it in 2 to 3 weeks");
+  assert.equal(polish("ages 4 - 8"), "ages 4 to 8");
+  assert.equal(polish("<li>— a tip</li>"), "<li>a tip</li>");
+  assert.equal(polish("Calm — and rested"), "Calm, and rested");
+});
+
+test("controls: pairs left out are said, never hidden", () => {
+  assert.match(compareWithControls([{ changed: 1, control: 1 }], 2)!, /2 more pairs were left out/);
+});
+
+test("text: hyphens inside numbers (phone, date, B-12) are left alone", () => {
+  assert.equal(polish("Call 555-1234 on 2026-11-01 about B-12"), "Call 555-1234 on 2026-11-01 about B-12");
+});

@@ -16,10 +16,10 @@ export interface AgentScore {
   result: string | null;
 }
 
-const CHANGE_AGENTS: { agent: string; fields: string[]; unit: [string, string]; ranked?: false }[] = [
+const CHANGE_AGENTS: { agent: string; fields: string[]; unit: [string, string]; ranked?: false; judged?: string }[] = [
   { agent: "Page improver", fields: ["meta_title", "meta_description", "content", "alt", "schema"], unit: ["change", "changes"] },
   { agent: "Link builder", fields: ["internal_link"], unit: ["link", "links"] },
-  { agent: "Article writer", fields: ["new_article"], unit: ["article", "articles"] },
+  { agent: "Article writer", fields: ["new_article"], unit: ["article", "articles"], judged: "Judged by the Pruning agent after three months." },
   // Repairs and take downs aren't judged by a page's ranking.
   { agent: "Link fixer", fields: ["link_fix"], unit: ["fix", "fixes"], ranked: false },
   { agent: "Pruning agent", fields: ["prune"], unit: ["take down", "take downs"], ranked: false },
@@ -46,7 +46,7 @@ const n = (k: number, unit: [string, string]) => `${k} ${k === 1 ? unit[0] : uni
 
 /** Turns the counted records into the scorecard (kept apart from the database so it can be tested). */
 export function scoreChanges(stats: FieldStats[]): AgentScore[] {
-  return CHANGE_AGENTS.map(({ agent, fields, unit, ranked }) => {
+  return CHANGE_AGENTS.map(({ agent, fields, unit, ranked, judged }) => {
     const s = stats.filter((x) => fields.includes(x.field));
     const sum = (k: keyof Omit<FieldStats, "field">) => s.reduce((a, x) => a + x[k], 0);
     const made = sum("made");
@@ -54,7 +54,7 @@ export function scoreChanges(stats: FieldStats[]): AgentScore[] {
     const compared = sum("compared");
     const did = `${n(made, unit)} made on the site${suggested ? `, ${suggested} suggested` : ""}`;
     if (ranked === false) return { agent, did, result: made ? "Not measured by ranking." : null };
-    if (!compared) return { agent, did, result: made ? "Nothing measured yet (four weeks after each change)." : null };
+    if (!compared) return { agent, did, result: made ? (judged ?? "Nothing measured yet (four weeks after each change).") : null };
     const avg = sum("gainSum") / compared;
     return {
       agent,
@@ -89,7 +89,7 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS compared,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position < baseline_position - 0.5) AS up,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position > baseline_position + 0.5) AS down,
-      count(*) FILTER (WHERE note LIKE 'Ranking dropped%' OR note LIKE 'Dropped out:%') AS undone,
+      count(*) FILTER (WHERE status = 'reverted' AND (note LIKE 'Ranking dropped%' OR note LIKE 'Dropped out:%')) AS undone,
       coalesce(sum(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25), 0) AS gain
     FROM insights_autopilot_changes WHERE account_id = ${accountId} GROUP BY field`;
   const stats: FieldStats[] = rows.map((r) => ({
@@ -124,8 +124,13 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     out.push({ agent: "Authority Coach (plan)", did: `${plan.moves.length} moves planned (${plan.at.slice(0, 10)})`, result: `${kept} kept after the checks, ${plan.moves.length - kept} dropped.` });
   }
   const [insp] = await sql`SELECT value FROM insights_settings WHERE key = ${`inspect:${accountId}`}`.catch(() => [] as { value: string | null }[]);
-  if (insp?.value) {
-    const problems = (JSON.parse(insp.value) as { problems: { who: string }[] }).problems ?? [];
+  let problems: { who: string }[] | null = null;
+  try {
+    problems = insp?.value ? ((JSON.parse(insp.value) as { problems?: { who: string }[] }).problems ?? []) : null;
+  } catch {
+    problems = null; // a damaged record leaves out this one line, not the whole scorecard
+  }
+  if (problems) {
     const repaired = problems.filter((p) => p.who === "repaired").length;
     out.push({ agent: "Inspector", did: `${problems.length} ${problems.length === 1 ? "problem" : "problems"} found in the last check`, result: `${repaired} repaired by agents, ${problems.length - repaired} need a person or are being watched.` });
   }

@@ -204,6 +204,10 @@ export function ensureSchema(): Promise<void> {
       result_position real,
       result_clicks integer
     )`;
+    // Why a control was dropped from the comparison (its page was changed, or it couldn't be measured).
+    await sql`ALTER TABLE insights_autopilot_controls ADD COLUMN IF NOT EXISTS voided text`;
+    await sql`ALTER TABLE insights_autopilot_controls ADD COLUMN IF NOT EXISTS measure_tried_at timestamptz`;
+    await sql`ALTER TABLE insights_autopilot_controls ADD COLUMN IF NOT EXISTS failures integer NOT NULL DEFAULT 0`;
     // Whether Google's answer box (featured snippet) quoted this site for the search that day.
     await sql`ALTER TABLE insights_rank_daily ADD COLUMN IF NOT EXISTS quoted boolean`;
     // Carry over the single-owner setup from before accounts existed.

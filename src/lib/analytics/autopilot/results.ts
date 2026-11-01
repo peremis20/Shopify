@@ -79,7 +79,7 @@ export async function measuredResults(accountId: string): Promise<string[]> {
  * The changes' own effect: each changed page against the similar page left untouched beside it (same four weeks,
  * same measurement). Positive gains are places moved up. Null with no measured pair yet.
  */
-export function compareWithControls(pairs: { changed: number; control: number }[]): string | null {
+export function compareWithControls(pairs: { changed: number; control: number }[], leftOut = 0): string | null {
   if (!pairs.length) return null;
   const avg = (xs: number[]) => xs.reduce((a, x) => a + x, 0) / xs.length;
   const c = avg(pairs.map((p) => p.changed));
@@ -88,24 +88,31 @@ export function compareWithControls(pairs: { changed: number; control: number }[
   const dir = (x: number) => `${x >= 0 ? "up" : "down"} ${Math.abs(x).toFixed(1)}`;
   return (
     `Compared with similar untouched pages (${pairs.length} ${pairs.length === 1 ? "pair" : "pairs"}): changed pages moved ${dir(c)} places on average, ` +
-    `untouched pages ${dir(u)}, so the changes' own effect was ${dir(d)} places.`
+    `untouched pages ${dir(u)}, so the changes' own effect was ${dir(d)} places.` +
+    (leftOut ? ` ${leftOut} more ${leftOut === 1 ? "pair was" : "pairs were"} left out because a page left the top 10 or had no data.` : "")
   );
 }
 
 export async function controlComparison(accountId: string): Promise<string | null> {
+  // Every measured pair whose control wasn't voided; a pair with a page out of the top 10 (no position) is counted
+  // as left out, so the comparison never quietly flatters itself.
   const rows = await sql`
     SELECT ch.b - ch.r AS changed, k.baseline_position - k.result_position AS control
     FROM (
       SELECT run_id, page_url, min(baseline_position) AS b, min(result_position) AS r
       FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND evaluated_at IS NOT NULL AND result_position IS NOT NULL
+      WHERE account_id = ${accountId} AND evaluated_at IS NOT NULL
         AND baseline_position IS NOT NULL AND baseline_position <> 25
         AND field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))
       GROUP BY run_id, page_url
     ) ch
     JOIN insights_autopilot_controls k ON k.run_id = ch.run_id AND k.account_id = ${accountId}
-    WHERE k.evaluated_at IS NOT NULL AND k.result_position IS NOT NULL AND k.baseline_position <> 25`;
-  return compareWithControls(rows.map((r) => ({ changed: Number(r.changed), control: Number(r.control) })));
+    WHERE k.evaluated_at IS NOT NULL AND k.voided IS NULL AND k.baseline_position <> 25`;
+  const full = rows.filter((r) => r.changed !== null && r.control !== null);
+  return compareWithControls(
+    full.map((r) => ({ changed: Number(r.changed), control: Number(r.control) })),
+    rows.length - full.length
+  );
 }
 
 /** Which way one change went between two rank checks (null: not in the top 10 that day). */

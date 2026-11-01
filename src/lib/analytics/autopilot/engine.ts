@@ -71,6 +71,8 @@ interface Ctx {
   index?: Promise<SiteItem[]>;
   /** A preview run: nothing is changed or recorded. */
   preview?: boolean;
+  /** Paths of pages held as controls: no agent adds links to them. */
+  controlPaths?: Set<string>;
 }
 
 const siteOf = (ctx: Ctx) => (ctx.index ??= ctx.site.index().catch(() => []));
@@ -178,12 +180,23 @@ export function measuredWorse(
   return { worse: now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks), droppedOut: false };
 }
 
-/** Measures control pages the same way and at the same age as the changes they stand beside. Never changes a page. */
+/**
+ * Measures control pages the same way and at the same age as the changes they stand beside. Never changes a page.
+ * A control whose page any agent changed meanwhile (a rescue, a link fix, a take down) is voided, and so is one
+ * that couldn't be measured three times: neither counts in the comparison, and the page is free again.
+ */
 async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
+  await sql`
+    UPDATE insights_autopilot_controls k SET voided = 'Its page was changed during the four weeks.', evaluated_at = now()
+    WHERE k.account_id = ${ctx.accountId} AND k.evaluated_at IS NULL AND EXISTS (
+      SELECT 1 FROM insights_autopilot_changes c
+      WHERE c.account_id = k.account_id AND c.created_at > k.created_at AND c.status IN ('applied', 'kept', 'reverted')
+        AND rtrim(regexp_replace(c.page_url, '^https?://[^/]+', ''), '/') = rtrim(regexp_replace(k.page_url, '^https?://[^/]+', ''), '/')
+    )`;
   const due = await sql`
-    SELECT id, page_url, query FROM insights_autopilot_controls
+    SELECT id, page_url, query, failures FROM insights_autopilot_controls
     WHERE account_id = ${ctx.accountId} AND evaluated_at IS NULL AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
-    ORDER BY created_at LIMIT 5`;
+    ORDER BY measure_tried_at NULLS FIRST, created_at LIMIT 5`;
   for (const d of due) {
     let failed = false;
     const fromGsc = conn.gscSiteUrl
@@ -192,7 +205,14 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
           return null;
         })
       : null;
-    if (failed) continue; // tried again next run, like the changes
+    if (failed) {
+      // Tried again later, behind the others; after three failures the page is let go.
+      await sql`UPDATE insights_autopilot_controls SET measure_tried_at = now(), failures = failures + 1,
+        voided = CASE WHEN failures + 1 >= 3 THEN 'Search Console could not measure it.' ELSE NULL END,
+        evaluated_at = CASE WHEN failures + 1 >= 3 THEN now() ELSE NULL END
+        WHERE id = ${d.id}`;
+      continue;
+    }
     const now = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     await sql`UPDATE insights_autopilot_controls SET evaluated_at = now(), result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null}
       WHERE id = ${d.id}`;
@@ -348,6 +368,15 @@ interface Plan {
  * The control for a change: another page with a real search ranking near the same position (within 30%, at least
  * 3 places), not changed lately, not the same search. Null when none is close enough: no control beats a bad one.
  */
+/** The path of a page address, full or already a path. */
+const pathOfUrl = (u: string) => {
+  try {
+    return new URL(u, "https://x").pathname.replace(/\/$/, "") || "/";
+  } catch {
+    return u;
+  }
+};
+
 export function pickControl(cand: Candidate, cands: Candidate[], blocked: (c: Candidate) => boolean): Candidate | null {
   const pos = cand.op.position;
   if (cand.inferred || !Number.isFinite(pos) || pos === 25) return null;
@@ -395,8 +424,10 @@ async function planNextChange(
   const controls = new Set(
     (await sql`SELECT page_url FROM insights_autopilot_controls WHERE account_id = ${ctx.accountId} AND evaluated_at IS NULL`.catch(() => [])).map((r) => r.page_url!)
   );
-  const rested = (c: Candidate) =>
-    skipped.has(c.op.page) || controls.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
+  ctx.controlPaths = new Set([...controls].map(pathOfUrl));
+  // A control page waits, except to be rescued: a slipping page or urgent fix goes first (and its control is voided).
+  const held = (c: Candidate) => controls.has(c.op.page) && c.mode !== "defend" && !ctx.urgentOnly;
+  const rested = (c: Candidate) => skipped.has(c.op.page) || held(c) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
   const brand = ctx.ourDomain.split(".")[0];
 
   for (let writes = 0; writes < MAX_WRITES_PER_RUN; writes++) {
@@ -437,6 +468,7 @@ async function planNextChange(
     if (improvement.reviewNote) notes.push(`${new URL(cand.op.page).pathname}: ${improvement.reviewNote}`);
     if (improvement.intentMatch) {
       const control = pickControl(cand, all, (c) => rested(c) || controls.has(c.op.page));
+      if (control) ctx.controlPaths.add(pathOfUrl(control.op.page));
       return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used, control };
     }
 
@@ -485,7 +517,8 @@ async function linkSource(ctx: Ctx, cand: Candidate, page: StoreResource) {
   const path = new URL(cand.op.page).pathname;
   const topic = words(`${cand.op.query} ${page.title}`);
   return (await ctx.site.articles())
-    .filter((a) => a.url !== path && !a.body.includes(path))
+    // Never a page held as a control: it must stay untouched.
+    .filter((a) => a.url !== path && !a.body.includes(path) && !ctx.controlPaths?.has(pathOfUrl(a.url)))
     .map((a) => ({ a, score: [...words(a.title)].filter((w) => topic.has(w)).length }))
     .filter((x) => x.score > 0)
     .sort((x, y) => y.score - x.score)[0]?.a;
@@ -801,8 +834,10 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         // Hold a similar page untouched as this change's control.
         if (done.length && ctx.site.writer && plan.control) {
           const c = plan.control.op;
+          // Only beside a change really made on the site (not one only suggested).
           await sql`INSERT INTO insights_autopilot_controls (account_id, run_id, page_url, query, baseline_position, baseline_clicks)
-            VALUES (${accountId}, ${runId}, ${c.page}, ${c.query}, ${c.position}, ${c.clicks ?? null})`.catch((e) =>
+            SELECT ${accountId}, ${runId}, ${c.page}, ${c.query}, ${c.position}, ${c.clicks ?? null}
+            WHERE EXISTS (SELECT 1 FROM insights_autopilot_changes WHERE run_id = ${runId} AND status = 'applied')`.catch((e) =>
             console.error(`control not recorded: ${(e as Error).message}`)
           );
         }
