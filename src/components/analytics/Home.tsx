@@ -11,7 +11,7 @@ import type { Problem } from "@/lib/analytics/autopilot/inspector";
 import type { StrategyReport } from "@/lib/analytics/autopilot/strategist";
 import { formatNumber } from "./format";
 import { api } from "./seo-ui";
-import { Card, DeltaBadge, Skeleton } from "./ui";
+import { DeltaBadge, Skeleton } from "./ui";
 
 export type SimplePage = "home" | "keywords" | "content" | "backlinks" | "settings";
 
@@ -84,14 +84,6 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const up = measured.filter((c) => c.resultPosition! < c.baselinePosition! - 0.5).length;
   const openProspects = prospects?.prospects.filter((p) => p.status === "new") ?? [];
 
-  const done: string[] = [];
-  if (pages) done.push(`Improved ${pages} ${pages === 1 ? "page" : "pages"} so they match what people search for`);
-  if (articles.length) done.push(`Wrote and posted ${articles.length} new ${articles.length === 1 ? "article" : "articles"}`);
-  if (links) done.push(`Added ${links} ${links === 1 ? "link" : "links"} between your pages`);
-  if (up) done.push(`${up} ${up === 1 ? "change has" : "changes have"} already moved you up on Google`);
-  for (const p of problems.filter((x) => x.who === "repaired")) done.push(`Caught and fixed a problem: ${p.text} ${p.fix}`);
-  if (openProspects.length) done.push(`Found ${openProspects.length} ${openProspects.length === 1 ? "website" : "websites"} that could link to you`);
-
   // One next step, the most useful first.
   const next: { text: string; button: string; page: SimplePage } =
     fixes.length > 0
@@ -131,23 +123,32 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const money = (n: number) =>
     new Intl.NumberFormat(undefined, { style: "currency", currency: sales?.currency || "USD", maximumFractionDigits: 0 }).format(n);
 
+  const activity = [
+    { n: pages, label: pages === 1 ? "page improved" : "pages improved" },
+    { n: articles.length, label: articles.length === 1 ? "article posted" : "articles posted" },
+    { n: links, label: links === 1 ? "link added" : "links added" },
+    { n: openProspects.length, label: openProspects.length === 1 ? "backlink site found" : "backlink sites found" },
+  ];
+  const repaired = problems.filter((x) => x.who === "repaired");
+
   return (
-    <div className="mt-6 space-y-5">
+    <div className="mt-5 space-y-4">
       {warnings.length > 0 && (
-        <div className="rounded-2xl border border-dash-down/30 bg-dash-down/5 p-4">
-          <p className="mb-2 font-semibold text-dash-down">Needs your attention</p>
-          <ul className="space-y-2">
-            {warnings.map((w) => (
-              <li key={w.text} className="flex flex-wrap items-center justify-between gap-2 text-sm text-dash-ink">
-                <span className="min-w-0 flex-1">{w.text}</span>
-                <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
-              </li>
-            ))}
-          </ul>
+        <div className="rounded-xl border border-dash-down/25 bg-dash-down/5">
+          {warnings.map((w, i) => (
+            <div key={w.text} className={`flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-sm ${i ? "border-t border-dash-down/15" : ""}`}>
+              <span className="h-2 w-2 shrink-0 rounded-full bg-dash-down" />
+              <span className="min-w-0 flex-1 text-dash-ink">
+                {i === 0 && <span className="font-semibold text-dash-down">Needs your attention: </span>}
+                {w.text}
+              </span>
+              <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
+            </div>
+          ))}
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat
           label="Visitors from Google"
           hint="Clicks to your site from Google search in this period"
@@ -163,76 +164,76 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         <Stat
           label="Site strength"
           hint="Open PageRank, 0 to 10. Grows as other sites link to you."
-          value={authority === null ? null : authority.authority == null ? "Not scored yet" : `${authority.authority.toFixed(1)} / 10`}
+          value={authority === null ? null : authority.authority == null ? "Not scored" : `${authority.authority.toFixed(1)}/10`}
           badge={strengthChange !== null && <Change n={strengthChange} />}
         />
         <Stat
           label="Sales from Google"
-          hint="Orders and revenue from people who found you on Google search (from Google Analytics)"
-          value={loading ? null : salesTracked ? money(sales!.revenue.value) : "Not tracked yet"}
+          hint="Orders and revenue from people who found you on Google search (from Google Analytics). Needs purchase tracking in Google Analytics."
+          value={loading ? null : salesTracked ? money(sales!.revenue.value) : "Not tracked"}
           badge={
             salesTracked ? (
               <span className="flex items-center gap-2 text-xs text-dash-muted">
                 {formatNumber(sales!.orders.value)} {sales!.orders.value === 1 ? "order" : "orders"} <DeltaBadge delta={sales!.revenue} />
               </span>
             ) : (
-              <span className="text-xs text-dash-muted">Turn on purchase tracking in Google Analytics to see this.</span>
+              <span className="text-xs text-dash-muted">Needs GA purchase tracking</span>
             )
           }
         />
       </div>
 
-      {win && (
-        <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-dash-up/30 bg-dash-up/5 p-4">
-          <span className="rounded-full bg-dash-up px-2.5 py-0.5 text-xs font-semibold text-white">Biggest win</span>
-          <p className="min-w-0 flex-1 text-dash-ink">
-            &ldquo;{win.r.query}&rdquo; climbed {win.r.previous === null ? "onto Google page 1" : `from #${win.r.previous}`} to #{win.r.position}.
-          </p>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} planning={planning} error={planError} onPlan={planNow} />
         </div>
-      )}
 
-      <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} planning={planning} error={planError} onPlan={planNow} />
+        <div className="space-y-4">
+          <Panel title="Your next step">
+            {!ready ? (
+              <Skeleton className="h-16" />
+            ) : (
+              <>
+                <p className="text-sm text-dash-ink">{next.text}</p>
+                <button onClick={() => onGo(next.page)} className="mt-3 w-full rounded-lg bg-dash-green px-3 py-2 text-sm font-semibold text-white hover:bg-dash-deep">
+                  {next.button}
+                </button>
+              </>
+            )}
+          </Panel>
 
-      <Card>
-        <p className="mb-3 font-serif text-xl text-dash-ink">Your next step</p>
-        {!ready ? (
-          <Skeleton className="h-12" />
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="min-w-0 flex-1 text-dash-ink">{next.text}</p>
-            <button onClick={() => onGo(next.page)} className="rounded-xl bg-dash-green px-4 py-2.5 text-sm font-semibold text-white hover:bg-dash-deep">
-              {next.button}
-            </button>
-          </div>
-        )}
-      </Card>
+          {win && (
+            <div className="rounded-xl border border-dash-up/30 bg-dash-up/5 px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-dash-up">Biggest win</p>
+              <p className="mt-1 text-sm text-dash-ink">
+                &ldquo;{win.r.query}&rdquo; climbed {win.r.previous === null ? "onto page 1" : `from #${win.r.previous}`} to #{win.r.position}.
+              </p>
+            </div>
+          )}
 
-      <Card>
-        <p className="mb-3 font-serif text-xl text-dash-ink">What I did this week</p>
-        {!ready ? (
-          <Skeleton className="h-20" />
-        ) : done.length ? (
-          <ul className="space-y-2">
-            {done.map((d) => (
-              <li key={d} className="flex gap-2 text-dash-ink">
-                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-dash-up" />
-                {d}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-dash-muted">Nothing yet this week. Turn on the autopilot under Content and it starts working within a day.</p>
-        )}
-        {articles.length > 0 && (
-          <p className="mt-3 text-sm text-dash-muted">Newest article is about &ldquo;{articles[0].query}&rdquo;.</p>
-        )}
-      </Card>
-
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Jump label="Keywords" sub="What to rank for" onClick={() => onGo("keywords")} />
-        <Jump label="Content" sub="Changes and articles" onClick={() => onGo("content")} />
-        <Jump label="Backlinks" sub="Sites to reach out to" onClick={() => onGo("backlinks")} />
-        <Jump label="Settings" sub="Connections and keys" onClick={() => onGo("settings")} />
+          <Panel title="This week">
+            {!ready ? (
+              <Skeleton className="h-20" />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-dash-line bg-dash-line">
+                  {activity.map((a) => (
+                    <div key={a.label} className="bg-white px-3 py-2.5">
+                      <p className="font-serif text-xl leading-none text-dash-ink tabular-nums">{a.n}</p>
+                      <p className="mt-1 text-xs text-dash-muted">{a.label}</p>
+                    </div>
+                  ))}
+                </div>
+                {up > 0 && <p className="mt-2 text-xs text-dash-up">{up} {up === 1 ? "change has" : "changes have"} already moved you up on Google.</p>}
+                {repaired.map((p) => (
+                  <p key={p.id} className="mt-2 text-xs text-dash-muted">Fixed on its own: {p.text}</p>
+                ))}
+                {articles.length > 0 && <p className="mt-2 truncate text-xs text-dash-muted" title={articles[0].query}>Newest article: &ldquo;{articles[0].query}&rdquo;</p>}
+                {!activity.some((a) => a.n > 0) && <p className="mt-2 text-xs text-dash-muted">Nothing yet this week. Turn on the autopilot under Content.</p>}
+              </>
+            )}
+          </Panel>
+        </div>
       </div>
     </div>
   );
@@ -240,11 +241,24 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
 function Stat({ label, hint, value, badge }: { label: string; hint: string; value: string | null; badge?: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-dash-line bg-white p-5" title={hint}>
-      <p className="text-sm text-dash-muted">{label}</p>
-      {value === null ? <Skeleton className="mt-3 h-8 w-24" /> : <p className="mt-2 font-serif text-3xl text-dash-ink tabular-nums">{value}</p>}
-      <div className="mt-2 min-h-[1.5rem]">{badge}</div>
+    <div className="rounded-xl border border-dash-line bg-white px-4 py-3" title={hint}>
+      <p className="text-xs font-medium text-dash-muted">{label}</p>
+      {value === null ? <Skeleton className="mt-2 h-7 w-20" /> : <p className="mt-1 font-serif text-2xl text-dash-ink tabular-nums">{value}</p>}
+      <div className="mt-1 min-h-[1.25rem] text-sm">{badge}</div>
     </div>
+  );
+}
+
+/** A compact titled box for the home screen. */
+function Panel({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="rounded-xl border border-dash-line bg-white px-4 py-3.5">
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wide text-dash-muted">{title}</h3>
+        {right}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -253,14 +267,6 @@ function Change({ n }: { n: number }) {
   return <span className={`text-xs font-semibold ${n > 0 ? "text-dash-up" : "text-dash-down"}`}>{n > 0 ? `Up ${n}` : `Down ${Math.abs(n)}`}</span>;
 }
 
-function Jump({ label, sub, onClick }: { label: string; sub: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick} className="rounded-2xl border border-dash-line bg-white p-4 text-left hover:border-dash-green/40">
-      <p className="font-semibold text-dash-ink">{label}</p>
-      <p className="text-xs text-dash-muted">{sub}</p>
-    </button>
-  );
-}
 
 /** The Strategist's week: progress to the goal, the moves that survived review, and the ones that didn't. */
 function Plan({ strategy, visitors, planning, error, onPlan }: {
@@ -277,12 +283,11 @@ function Plan({ strategy, visitors, planning, error, onPlan }: {
   const kept = strategy?.moves.filter((m) => m.kept) ?? [];
   const dropped = strategy?.moves.filter((m) => !m.kept) ?? [];
   return (
-    <Card>
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <p className="font-serif text-xl text-dash-ink">This week&apos;s plan</p>
-        {strategy && <span className="text-xs text-dash-muted">Planned {new Date(strategy.at).toLocaleDateString()} · reviewed by a second AI</span>}
-      </div>
-      <div className="mb-4">
+    <Panel
+      title="This week's plan"
+      right={strategy && <span className="text-[11px] text-dash-muted">Planned {new Date(strategy.at).toLocaleDateString()} · checked by a second AI</span>}
+    >
+      <div className="mb-3">
         <div className="mb-1 flex justify-between text-xs text-dash-muted">
           <span>Goal: {formatNumber(goal)} visitors a month from Google</span>
           <span className="tabular-nums">{now !== null ? `${formatNumber(now)} now (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` : "not measured yet"}</span>
@@ -293,14 +298,14 @@ function Plan({ strategy, visitors, planning, error, onPlan }: {
       </div>
       {!strategy ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="min-w-0 flex-1 text-dash-muted">The Strategist plans each week from your real numbers. The first plan comes within a day.</p>
+          <p className="min-w-0 flex-1 text-sm text-dash-muted">The Strategist plans each week from your real numbers. The first plan comes within a day.</p>
           <button onClick={onPlan} disabled={planning} className="rounded-xl border border-dash-line px-4 py-2 text-sm font-semibold text-dash-green disabled:opacity-50">
             {planning ? "Planning..." : "Plan now"}
           </button>
         </div>
       ) : (
         <>
-          <p className="text-dash-ink">{strategy.assessment}</p>
+          <p className="text-sm leading-relaxed text-dash-ink">{strategy.assessment}</p>
           {kept.length > 0 && (
             <ol className="mt-3 space-y-2">
               {kept.map((m, i) => (
@@ -333,6 +338,6 @@ function Plan({ strategy, visitors, planning, error, onPlan }: {
         </>
       )}
       {error && <p className="mt-2 text-xs text-dash-down">{error}</p>}
-    </Card>
+    </Panel>
   );
 }
