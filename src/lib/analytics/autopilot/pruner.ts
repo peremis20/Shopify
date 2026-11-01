@@ -11,18 +11,17 @@ import { reviewTakedown } from "./writer";
 import { plainText } from "./guards";
 
 /**
- * Content pruning, the careful way (improve first, never a hard delete).
- * Once a month, for articles old enough to have had their chance:
- * 1. Zero Google impressions in 90 days: the autopilot rewrites it first
- *    (the "prune" app turns it into a candidate).
- * 2. Only after a real rewrite, and still nothing 60 days on: it goes. An
- *    article the app wrote on a Shopify store is taken back to a draft
- *    (undoable from the history), with a redirect to a stronger related
- *    article suggested. Anything else, including every article the owner
- *    wrote, is only suggested on the fix list for the owner to approve.
+ * Content pruning (the owner's rule: three months, then it goes).
+ * Once a month, an article at least three months old that Google hasn't shown
+ * even once in the last 90 days is reviewed by a second AI, which keeps it
+ * whenever there's a good reason. If the reviewer agrees it should go: an
+ * article the app wrote on a Shopify store is taken back to a draft (undoable
+ * from the history), with a redirect to a stronger related article suggested;
+ * anything else, including every article the owner wrote, is only suggested
+ * on the fix list. Never a hard delete.
  *
- * Pages are compared by path only (lowercase, no trailing slash), with
- * impressions added up across hosts and schemes, because Search Console
+ * Pages are compared by path only (lowercase, decoded, no trailing slash),
+ * with impressions added up across hosts and schemes, because Search Console
  * reports full addresses (www or not, http or https, several hosts for a
  * domain property) while the site lists paths.
  */
@@ -45,10 +44,8 @@ export interface PruneState {
 
 const KEY = (accountId: string) => `prune:${accountId}`;
 const DAY = 86_400_000;
-/** An article younger than this hasn't had its chance on Google yet. */
-const MIN_AGE_DAYS = 120;
-/** How long a rewritten article gets before it's taken down. */
-const AFTER_REWRITE_DAYS = 60;
+/** An article younger than this hasn't had its chance on Google yet (the owner's rule: three months). */
+const MIN_AGE_DAYS = 90;
 /** At most this many taken down or suggested per month, so nothing big happens at once. */
 const MAX_PER_RUN = 3;
 /** Search Console's row cap: when a site has more pages than this, unseen can't be told from cut off, so the check is skipped. */
@@ -203,17 +200,11 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
       if (born === null || Number.isNaN(born) || now - born < MIN_AGE_DAYS * DAY) continue;
 
       const path = new URL(a.url).pathname;
-      if (!old) {
-        pages[a.key] = { stage: "rewrite", since: new Date().toISOString(), url: a.url, appMade: Boolean(appMade) };
-        notes.push(`flagged ${path} for a rewrite`);
-        continue;
-      }
-      pages[a.key] = old;
-      // Rewrite first, then its 60 days, then (within the month's cap) it goes.
-      if (now - Date.parse(old.since) < AFTER_REWRITE_DAYS * DAY || acted >= MAX_PER_RUN) continue;
-      if (!(await rewrittenSince(accountId, a.url, old.since))) continue;
+      if (old) pages[a.key] = old;
+      // Three months old and never shown on Google at all: it goes to review (within the month's cap).
+      if (acted >= MAX_PER_RUN) continue;
 
-      // Still nothing after its rewrite: find the stronger related article to send visitors to.
+      // Find the stronger related article to send its visitors to.
       const want = topicWords(a.title);
       let into: { url: string; score: number } | null = null;
       for (const b of articles) {
@@ -248,7 +239,7 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
           field: "prune",
           before: "published",
           after: "draft",
-          reason: `No Google impressions in 90 days, even after a rewrite, and a second AI agreed: ${verdict.why} It was taken back to a draft (undo from the history if you want it back).${redirect}`,
+          reason: `Not shown on Google at all in its first three months, and a second AI agreed: ${verdict.why} It was taken back to a draft (undo from the history if you want it back).${redirect}`,
           // Not measured like other changes: there is nothing left on the page to measure.
           status: "kept",
         });
@@ -272,7 +263,7 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
           field: "prune",
           before: null,
           after: into ? `Take down and redirect to ${into.url}` : "Take down (back to a draft)",
-          reason: `No Google impressions in 90 days, even after a rewrite, and a second AI suggests removing it: ${verdict.why} Your call: take it down, or keep it if it serves readers another way.${redirect}`,
+          reason: `Not shown on Google at all in three months, and a second AI suggests removing it: ${verdict.why} Your call: take it down, or keep it if it serves readers another way.${redirect}`,
           status: "suggested",
         });
         pages[a.key] = { stage: "suggested", since: new Date().toISOString(), url: a.url, into: into?.url ?? null, appMade: Boolean(appMade) };
