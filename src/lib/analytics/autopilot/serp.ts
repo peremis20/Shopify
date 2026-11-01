@@ -1,3 +1,4 @@
+import { otherClient } from "./clients";
 import { report } from "./status";
 import crypto from "node:crypto";
 import { ensureSchema, sql } from "../db";
@@ -152,8 +153,9 @@ export async function analyzeCompetition(
   const serp: Serp = { ...base, ourPosition };
 
   // Learn from the pages above us; when we're #1, from the ones right behind.
+  const isOtherClient = await otherClient(ourDomain);
   const rivals = base.organic
-    .filter((r) => !ours(r.domain) && !SKIP_DOMAINS.test(r.domain))
+    .filter((r) => !ours(r.domain) && !SKIP_DOMAINS.test(r.domain) && !isOtherClient(r.domain))
     .filter((r) => (ourPosition ? (ourPosition === 1 ? r.position <= 4 : r.position < ourPosition) : true))
     .slice(0, 3);
   const competitors = (await Promise.all(rivals.map((r) => readCompetitor(r).catch(() => null)))).filter(

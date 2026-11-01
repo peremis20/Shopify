@@ -1,3 +1,4 @@
+import { otherClient } from "./clients";
 import { ensureSchema, sql } from "../db";
 import { authorityOf, authorityReady } from "./authority";
 import { isJunkKeyword } from "./keyword-guard";
@@ -87,12 +88,13 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
     queries.push({ q: `"${t}" "write for us"`, kind: "guest", topic: t });
   }
 
+  const isOtherClient = await otherClient(ourDomain);
   const found = new Map<string, Prospect>();
   for (const { q, kind, topic } of queries) {
     const serp = await fetchSerp(serperKey, q).catch(() => null);
     for (const r of serp?.organic ?? []) {
       const domain = r.domain.toLowerCase().replace(/^www\./, "");
-      if (domain === ours || domain.endsWith(`.${ours}`) || NOT_PROSPECTS.test(domain) || isBig(domain)) continue;
+      if (domain === ours || domain.endsWith(`.${ours}`) || NOT_PROSPECTS.test(domain) || isBig(domain) || isOtherClient(domain)) continue;
       if (found.has(r.link)) continue;
       found.set(r.link, { url: r.link, domain, title: r.title, snippet: r.snippet ?? "", kind, topic, authority: null, status: "new", foundAt: new Date().toISOString() });
     }
@@ -100,7 +102,7 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
 
   // One page per site, and keep what the owner already did with a site.
   const byDomain = new Map<string, Prospect>();
-  for (const p of old?.prospects ?? []) byDomain.set(p.domain, p);
+  for (const p of old?.prospects ?? []) if (!isOtherClient(p.domain)) byDomain.set(p.domain, p);
   for (const p of found.values()) if (!byDomain.has(p.domain)) byDomain.set(p.domain, p);
   let prospects = [...byDomain.values()];
 

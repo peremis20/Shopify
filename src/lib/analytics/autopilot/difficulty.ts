@@ -49,7 +49,8 @@ async function cached(keyword: string): Promise<Difficulty | null> {
 export async function keywordDifficulty(keyword: string, serperKey: string, ourDomain = ""): Promise<Difficulty> {
   const k = keyword.trim().toLowerCase();
   const hit = await cached(k);
-  if (hit) return hit;
+  // The shared cache holds only public facts about page one; where this site ranks is looked up for this site alone.
+  if (hit) return { ...hit, ours: await ourPosition(serperKey, k, ourDomain) };
 
   const serp = await fetchSerp(serperKey, k);
   const top = serp.organic.slice(0, 10);
@@ -70,20 +71,27 @@ export async function keywordDifficulty(keyword: string, serperKey: string, ourD
 
   const score = Math.max(0, Math.min(100, Math.round((avg / 10) * 60 + (targeted / n) * 25 + (big / n) * 15)));
   const ours = top.find((r) => ourDomain && (r.domain === ourDomain || r.domain.endsWith(`.${ourDomain}`)))?.position ?? null;
-  const result: Difficulty = {
+  const shared: Difficulty = {
     keyword: k,
     score,
     label: labelOf(score),
     avgAuthority: known.length ? Math.round((known.reduce((a, b) => a + b, 0) / known.length) * 10) / 10 : null,
     targeted,
     big,
-    ours,
+    ours: null,
     ...(junkReason(k, { faith: true }) === "local search" ? { local: true } : {}),
   };
   await sql`
-    INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${`kd:${k}`}, ${JSON.stringify(result)}::jsonb, now())
+    INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${`kd:${k}`}, ${JSON.stringify(shared)}::jsonb, now())
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
-  return result;
+  return { ...shared, ours };
+}
+
+/** This site's spot on page one for a search (from the day's cached page one, so no extra cost). */
+async function ourPosition(serperKey: string, k: string, ourDomain: string): Promise<number | null> {
+  if (!ourDomain) return null;
+  const serp = await fetchSerp(serperKey, k).catch(() => null);
+  return serp?.organic.slice(0, 10).find((r) => r.domain === ourDomain || r.domain.endsWith(`.${ourDomain}`))?.position ?? null;
 }
 
 /** Scores for a list of searches, a few at a time (each one is a page one lookup, cached a day). */
