@@ -137,3 +137,25 @@ test("scorecard: backlink agents count found, emailed and won", () => {
   assert.equal(s[1].result, "1 emailed, 0 links won.");
   assert.equal(s[2].result, "None emailed yet.");
 });
+
+import { compareWithControls } from "../src/lib/analytics/autopilot/results";
+import { pickControl } from "../src/lib/analytics/autopilot/engine";
+
+test("controls: the effect is the changed pages' move minus the untouched pages' move", () => {
+  assert.equal(compareWithControls([]), null);
+  assert.equal(
+    compareWithControls([{ changed: 4, control: 1 }, { changed: 2, control: 3 }]),
+    "Compared with similar untouched pages (2 pairs): changed pages moved up 3.0 places on average, untouched pages up 2.0, so the changes' own effect was up 1.0 places."
+  );
+});
+
+test("controls: a similar page close in position is chosen; none when nothing is close or real", () => {
+  const c = (page: string, query: string, position: number, inferred = false) =>
+    ({ op: { page, query, position, impressions: 0, clicks: 0, ctr: 0, potentialClicks: 1 }, mode: "climb", weights: {}, inferred }) as never;
+  const cand = c("/a", "a", 12);
+  const all = [cand, c("/b", "b", 30), c("/c", "c", 14), c("/d", "d", 11.5, true), c("/a", "a2", 12), c("/e", "a", 12), c("/f", "f", 25)];
+  assert.equal((pickControl(cand, all, () => false) as { op: { page: string } }).op.page, "/c");
+  assert.equal(pickControl(cand, all, (x: { op: { page: string } }) => x.op.page === "/c"), null);
+  assert.equal(pickControl(c("/z", "z", 25), all, () => false), null);
+  assert.equal(pickControl(c("/z", "z", 12, true), all, () => false), null);
+});

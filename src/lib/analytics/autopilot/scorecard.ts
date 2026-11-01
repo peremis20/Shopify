@@ -2,6 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { readAuthorityPlan } from "./authority-coach";
 import { readProspects } from "./backlinks";
 import { readStrategy } from "./strategist";
+import { controlComparison } from "./results";
 
 /**
  * The agents' scorecard for one site: what each agent did and what came of it, from this site's own records and
@@ -104,6 +105,14 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
   const out = scoreChanges(stats);
   const list = await readProspects(accountId).catch(() => null);
   out.push(...scoreProspects(list?.prospects ?? []));
+  const [{ held }] = await sql`SELECT count(*) AS held FROM insights_autopilot_controls WHERE account_id = ${accountId}`.catch(() => [{ held: 0 }]);
+  if (Number(held)) {
+    out.push({
+      agent: "Control groups",
+      did: `${held} similar ${Number(held) === 1 ? "page" : "pages"} left untouched beside a change`,
+      result: (await controlComparison(accountId).catch(() => null)) ?? "Nothing measured yet (four weeks after each change).",
+    });
+  }
   const strategy = await readStrategy(accountId).catch(() => null);
   if (strategy) {
     const kept = strategy.moves.filter((m) => m.kept).length;

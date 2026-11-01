@@ -178,6 +178,27 @@ export function measuredWorse(
   return { worse: now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks), droppedOut: false };
 }
 
+/** Measures control pages the same way and at the same age as the changes they stand beside. Never changes a page. */
+async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
+  const due = await sql`
+    SELECT id, page_url, query FROM insights_autopilot_controls
+    WHERE account_id = ${ctx.accountId} AND evaluated_at IS NULL AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
+    ORDER BY created_at LIMIT 5`;
+  for (const d of due) {
+    let failed = false;
+    const fromGsc = conn.gscSiteUrl
+      ? await positionFor(conn, d.query!, d.page_url!).catch(() => {
+          failed = true;
+          return null;
+        })
+      : null;
+    if (failed) continue; // tried again next run, like the changes
+    const now = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
+    await sql`UPDATE insights_autopilot_controls SET evaluated_at = now(), result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null}
+      WHERE id = ${d.id}`;
+  }
+}
+
 /** Looks at pages changed at least 4 weeks ago; keeps what helped and undoes what hurt. */
 async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]> {
   const due = await sql`
@@ -319,6 +340,24 @@ interface Plan {
   improvement: PageImprovement;
   summaries: string[];
   apps: string[];
+  /** A similar page left untouched for the same four weeks, to tell the change's effect from Google's own swings. */
+  control?: Candidate | null;
+}
+
+/**
+ * The control for a change: another page with a real search ranking near the same position (within 30%, at least
+ * 3 places), not changed lately, not the same search. Null when none is close enough: no control beats a bad one.
+ */
+export function pickControl(cand: Candidate, cands: Candidate[], blocked: (c: Candidate) => boolean): Candidate | null {
+  const pos = cand.op.position;
+  if (cand.inferred || !Number.isFinite(pos) || pos === 25) return null;
+  const room = Math.max(3, pos * 0.3);
+  return (
+    cands
+      .filter((c) => c.op.page !== cand.op.page && c.op.query !== cand.op.query && !c.inferred && c.op.position !== 25 && !blocked(c))
+      .filter((c) => Math.abs(c.op.position - pos) <= room)
+      .sort((a, b) => Math.abs(a.op.position - pos) - Math.abs(b.op.position - pos))[0] ?? null
+  );
 }
 
 /** Targets tried per run when the writer finds a page can't match what searchers want. */
@@ -352,7 +391,12 @@ async function planNextChange(
     );
   const [restedLong, restedShort] = await Promise.all([changedSince(REST_DAYS_PER_PAGE), changedSince(DEFEND_REST_DAYS)]);
   const skipped = new Set<string>();
-  const rested = (c: Candidate) => skipped.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
+  // Pages held as controls stay untouched until they're measured.
+  const controls = new Set(
+    (await sql`SELECT page_url FROM insights_autopilot_controls WHERE account_id = ${ctx.accountId} AND evaluated_at IS NULL`.catch(() => [])).map((r) => r.page_url!)
+  );
+  const rested = (c: Candidate) =>
+    skipped.has(c.op.page) || controls.has(c.op.page) || (c.mode === "defend" ? restedShort : restedLong).has(c.op.page);
   const brand = ctx.ourDomain.split(".")[0];
 
   for (let writes = 0; writes < MAX_WRITES_PER_RUN; writes++) {
@@ -391,7 +435,10 @@ async function planNextChange(
       ctx.allowContent
     );
     if (improvement.reviewNote) notes.push(`${new URL(cand.op.page).pathname}: ${improvement.reviewNote}`);
-    if (improvement.intentMatch) return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used };
+    if (improvement.intentMatch) {
+      const control = pickControl(cand, all, (c) => rested(c) || controls.has(c.op.page));
+      return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used, control };
+    }
 
     const idea = improvement.missingForIntent || "People searching this want something the page doesn't have yet.";
     notes.push(`Skipped “${cand.op.query}” on ${new URL(cand.op.page).pathname}: ${idea}`);
@@ -636,6 +683,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   let previewOut: AutopilotPreview | undefined;
   try {
     if (!preview) summary.push(...(await measureOlderChanges(ctx, conn)));
+    if (!preview) await measureControls(ctx, conn).catch((e) => console.error(`controls not measured: ${(e as Error).message}`));
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
@@ -750,6 +798,14 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       } else {
         const done = await applyPlan(ctx, runId, plan);
         if (done.length && ctx.site.writer) changed = true;
+        // Hold a similar page untouched as this change's control.
+        if (done.length && ctx.site.writer && plan.control) {
+          const c = plan.control.op;
+          await sql`INSERT INTO insights_autopilot_controls (account_id, run_id, page_url, query, baseline_position, baseline_clicks)
+            VALUES (${accountId}, ${runId}, ${c.page}, ${c.query}, ${c.position}, ${c.clicks ?? null})`.catch((e) =>
+            console.error(`control not recorded: ${(e as Error).message}`)
+          );
+        }
         const reviewed = notes.filter((n) => n.includes("The reviewing AI turned down"));
         const told = [...plan.summaries, ...gaps, ...reviewed];
         const extra = told.length ? ` ${told.join(" ")}` : "";

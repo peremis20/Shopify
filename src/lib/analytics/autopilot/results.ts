@@ -70,7 +70,42 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   if (!measured) lines.push(`Measured results: none yet. ${waiting} changes are waiting for their four week measurement.`);
   else if (waiting) lines.push(`${waiting} more changes are waiting for their four week measurement.`);
   lines.push(...(await earlyReadings(accountId).catch(() => [])));
+  const vs = await controlComparison(accountId).catch(() => null);
+  if (vs) lines.push(vs);
   return lines;
+}
+
+/**
+ * The changes' own effect: each changed page against the similar page left untouched beside it (same four weeks,
+ * same measurement). Positive gains are places moved up. Null with no measured pair yet.
+ */
+export function compareWithControls(pairs: { changed: number; control: number }[]): string | null {
+  if (!pairs.length) return null;
+  const avg = (xs: number[]) => xs.reduce((a, x) => a + x, 0) / xs.length;
+  const c = avg(pairs.map((p) => p.changed));
+  const u = avg(pairs.map((p) => p.control));
+  const d = c - u;
+  const dir = (x: number) => `${x >= 0 ? "up" : "down"} ${Math.abs(x).toFixed(1)}`;
+  return (
+    `Compared with similar untouched pages (${pairs.length} ${pairs.length === 1 ? "pair" : "pairs"}): changed pages moved ${dir(c)} places on average, ` +
+    `untouched pages ${dir(u)}, so the changes' own effect was ${dir(d)} places.`
+  );
+}
+
+export async function controlComparison(accountId: string): Promise<string | null> {
+  const rows = await sql`
+    SELECT ch.b - ch.r AS changed, k.baseline_position - k.result_position AS control
+    FROM (
+      SELECT run_id, page_url, min(baseline_position) AS b, min(result_position) AS r
+      FROM insights_autopilot_changes
+      WHERE account_id = ${accountId} AND evaluated_at IS NOT NULL AND result_position IS NOT NULL
+        AND baseline_position IS NOT NULL AND baseline_position <> 25
+        AND field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))
+      GROUP BY run_id, page_url
+    ) ch
+    JOIN insights_autopilot_controls k ON k.run_id = ch.run_id AND k.account_id = ${accountId}
+    WHERE k.evaluated_at IS NOT NULL AND k.result_position IS NOT NULL AND k.baseline_position <> 25`;
+  return compareWithControls(rows.map((r) => ({ changed: Number(r.changed), control: Number(r.control) })));
 }
 
 /** Which way one change went between two rank checks (null: not in the top 10 that day). */
