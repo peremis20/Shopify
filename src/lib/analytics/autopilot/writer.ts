@@ -951,7 +951,7 @@ ${facts}
 
 Think like a seasoned SEO: refreshing pages already at positions 4 to 20 is the fastest win, faster than new pages; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated; backlinks come easier to a page worth linking to, so you may suggest one "asset" move: a resource other sites would cite (a clear guide, checklist or comparison), built only from what the site can honestly say, never invented data or surveys.
 
-Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of what was kept and stop what was undone. Never invent searches, numbers or results. No hyphens or dashes in the text.`,
+Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of the kinds of change that moved up, and stop the kinds that moved down. Never invent searches, numbers or results. No hyphens or dashes in the text.`,
     { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }
   );
 }
@@ -1060,22 +1060,21 @@ Return JSON: "assessment" (3 short plain sentences: where the site's authority s
 }
 
 /**
- * True when a move's evidence really is in the data: its words (at least 15 characters, ignoring case, spacing and
- * punctuation) appear in the facts, and every number it quotes appears there too.
+ * True when a move's evidence really is in the data: copied from the facts word for word (ignoring case, spacing and
+ * punctuation, but keeping each number and its sign). No paraphrase passes, so a flipped number or "up" for "down" fails.
  */
 export function backedByFacts(evidence: string | null | undefined, facts: string): boolean {
-  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, " ").replace(/\s+/g, " ").trim();
+  const norm = (t: string) =>
+    ` ${t
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}.+-]+/gu, " ")
+      .replace(/(?<!\d)\.|\.(?!\d)/g, " ") // a dot only counts inside a number
+      .replace(/[+-](?!\d)/g, " ") // a sign only counts in front of a number
+      .replace(/\s+/g, " ")
+      .trim()} `;
   const e = norm(evidence ?? "");
-  if (e.length < 15) return false;
-  const f = norm(facts);
-  if (f.includes(e)) return true;
-  // Allow a light paraphrase only when every number in it is a number from the facts and most words are there.
-  const nums = e.match(/\d+(\.\d+)?/g) ?? [];
-  const factNums = new Set(f.match(/\d+(\.\d+)?/g) ?? []);
-  if (!nums.length || !nums.every((n) => factNums.has(n))) return false;
-  const words = e.split(" ").filter((w) => w.length > 3 && !/\d/.test(w));
-  const factWords = new Set(f.split(" "));
-  return words.length > 0 && words.filter((w) => factWords.has(w)).length / words.length >= 0.8;
+  if (e.trim().length < 8) return false;
+  return facts.split("\n").some((line) => norm(line).includes(e));
 }
 
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */

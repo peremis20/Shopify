@@ -16,14 +16,17 @@ const LABEL: Record<string, string> = {
 
 export async function measuredResults(accountId: string): Promise<string[]> {
   await ensureSchema();
+  // Counted from Google's numbers at measurement time (before and four weeks after), never from whether a change was
+  // later kept or undone: an owner's undo, a failed or skipped undo, or a change with no data must not skew the facts.
   const rows = await sql`
     SELECT field,
       count(*) FILTER (WHERE evaluated_at IS NULL AND status = 'applied') AS waiting,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND status = 'kept') AS kept,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND status <> 'kept') AS undone,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL) AS compared,
-      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL) AS gain,
-      avg(result_clicks - baseline_clicks) FILTER (WHERE evaluated_at IS NOT NULL AND result_clicks IS NOT NULL) AS clicks
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND (result_position IS NULL OR baseline_position IS NULL)) AS nodata,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL) AS compared,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND result_position < baseline_position - 0.5) AS up,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND result_position > baseline_position + 0.5) AS down,
+      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL) AS gain,
+      avg(result_clicks - baseline_clicks) FILTER (WHERE evaluated_at IS NOT NULL AND result_clicks IS NOT NULL AND baseline_clicks IS NOT NULL) AS clicks
     FROM insights_autopilot_changes
     WHERE account_id = ${accountId} AND field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))
     GROUP BY field`;
@@ -31,19 +34,25 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   let measured = 0;
   let waiting = 0;
   for (const r of rows) {
-    const kept = Number(r.kept);
-    const undone = Number(r.undone);
     const compared = Number(r.compared);
+    const nodata = Number(r.nodata);
     waiting += Number(r.waiting);
-    if (kept + undone === 0) continue;
-    measured += kept + undone;
-    const pos = compared && r.gain !== null ? Number(r.gain) : null;
+    if (compared + nodata === 0) continue;
+    measured += compared + nodata;
+    const name = LABEL[String(r.field)] ?? r.field;
+    if (!compared) {
+      lines.push(`Measured result, ${name}: ${nodata} measured, none had enough Google data to compare yet.`);
+      continue;
+    }
+    const pos = Number(r.gain);
     const clk = r.clicks !== null ? Number(r.clicks) : null;
+    const same = compared - Number(r.up) - Number(r.down);
     lines.push(
-      `Measured result, ${LABEL[String(r.field)] ?? r.field}: ${kept} kept, ${undone} undone` +
-        (pos !== null ? `, average position change ${pos >= 0 ? "up" : "down"} ${Math.abs(pos).toFixed(1)}` : "") +
-        (clk !== null ? `, average clicks change ${clk >= 0 ? "+" : ""}${clk.toFixed(1)}` : "") +
-        ` (${compared} compared with Google data).`
+      `Measured result, ${name}: ${compared} compared with Google data, ${r.up} moved up, ${r.down} moved down, ${same} about the same, ` +
+        `average position change ${pos >= 0 ? "up" : "down"} ${Math.abs(pos).toFixed(1)}` +
+        (clk !== null ? `, average clicks change ${clk >= 0 ? "up" : "down"} ${Math.abs(clk).toFixed(1)}` : "") +
+        (nodata ? `, ${nodata} more without enough data` : "") +
+        "."
     );
   }
   if (!measured) lines.push(`Measured results: none yet. ${waiting} changes are waiting for their four week measurement.`);

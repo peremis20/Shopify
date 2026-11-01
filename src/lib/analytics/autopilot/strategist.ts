@@ -150,7 +150,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
     if (kept && !backedByFacts(m.evidence, facts)) {
       kept = false;
-      challenge = "Dropped: the number it rests on isn't in this week's data.";
+      challenge = "Dropped: what it rests on isn't in this week's data.";
     }
     // The agents only act on searches that really appear in the data, never invented ones.
     if (kept && k && (m.kind === "target" || m.kind === "cluster") && (!known.has(k) || isJunkKeyword(k, { faith }))) {

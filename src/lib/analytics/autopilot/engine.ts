@@ -333,7 +333,7 @@ async function planNextChange(
 
     const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
     // What this site's own past changes did, measured: the writer and its reviewer learn from it.
-    briefs.push(...(await (results ??= measuredResults(ctx.accountId).catch(() => []))));
+    briefs.unshift(...(await (results ??= measuredResults(ctx.accountId).catch(() => []))));
     const improvement = await writeImprovement(
       ctx.ai,
       page,

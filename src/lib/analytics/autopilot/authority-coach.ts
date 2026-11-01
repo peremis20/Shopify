@@ -166,7 +166,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
     moves: moves.map((m, i) =>
       verdict.keep[i] && !backedByFacts(m.evidence, facts)
-        ? { ...m, kept: false, challenge: "Dropped: the number it rests on isn't in this week's data." }
+        ? { ...m, kept: false, challenge: "Dropped: what it rests on isn't in this week's data." }
         : { ...m, kept: verdict.keep[i], challenge: verdict.notes[i] }
     ),
     studied,
