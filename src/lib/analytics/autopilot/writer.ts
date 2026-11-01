@@ -790,8 +790,9 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await askJson<{ subject: string; body: string }>(ai, prompt, schema);
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
-    const body = safeEmailText(out.body ?? "", keep);
-    const subject = safeEmailText(out.subject ?? "", keep);
+    const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
+    const body = safeEmailText(out.body ?? "", keep, urls);
+    const subject = safeEmailText(out.subject ?? "", keep, urls);
     if (body.text && body.dropped <= body.total / 3) {
       return { subject: polish(subject.text) || "A quick note about your page", body: body.text };
     }
@@ -804,15 +805,16 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
  * dropped. Web addresses and the names in `keep` (the brand and site addresses, which may contain digits) are set aside
  * first, so they don't count as numbers or break sentences. Returns the text and how many sentences were dropped.
  */
-function safeEmailText(raw: string, keep: string[]): { text: string; dropped: number; total: number } {
-  const saved: string[] = [];
-  const hide = (m: string) => `\u0000${saved.push(m) - 1}\u0000`;
-  let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide);
+function safeEmailText(raw: string, keep: string[], allowedUrls: string[] = []): { text: string; dropped: number; total: number } {
+  const saved: { text: string; url: boolean }[] = [];
+  const hide = (url: boolean) => (m: string) => `\u0000${saved.push({ text: m, url }) - 1}\u0000`;
+  let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide(true));
   // Only these exact names, as whole words: a brand like "Cure" must not hide that word inside a claim.
   for (const name of keep.sort((x, y) => y.length - x.length)) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    masked = masked.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"), hide);
+    masked = masked.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"), hide(false));
   }
+  const allowed = new Set(allowedUrls.filter(Boolean).map((u) => u.replace(/[.,;:!?]+$/, "")));
   let dropped = 0;
   let total = 0;
   const text = masked
@@ -824,12 +826,16 @@ function safeEmailText(raw: string, keep: string[]): { text: string; dropped: nu
         .filter((sentence) => {
           if (!sentence.trim()) return true;
           total++;
-          // Names are hidden only for the number test; the claim checks read the real sentence.
+          const marks = [...sentence.matchAll(/\u0000(\d+)\u0000/g)].map((m) => saved[Number(m[1])]);
+          // For the number test everything set aside is removed; for the claim checks names come back and
+          // web addresses read as "link" (a word in one of the site's own addresses must not block the email).
           const plain = sentence.replace(/\u0000\d+\u0000/g, "");
-          const real = sentence.replace(/\u0000(\d+)\u0000/g, (_, i) => saved[Number(i)] ?? "");
-          // A line that is only a name (the sign off) is always kept, even for a brand like "Cure".
-          const onlyNames = !/[\p{L}\p{N}]/u.test(plain);
-          const ok = onlyNames || (!/\d/.test(plain) && !isRisky(real) && !isUnsourced(real) && !hasAiTell(real));
+          const real = sentence.replace(/\u0000(\d+)\u0000/g, (_, i) => (saved[Number(i)]?.url ? "link" : (saved[Number(i)]?.text ?? "")));
+          // Only the addresses given to the writer may appear: a made up one drops its sentence.
+          const strayUrl = marks.some((m) => m?.url && allowed.size > 0 && !allowed.has(m.text.replace(/[.,;:!?]+$/, "")));
+          // A line made only of names (the sign off) is always kept, even for a brand like "Cure"; not a line of addresses.
+          const onlyNames = marks.length > 0 && marks.every((m) => m && !m.url) && !/[\p{L}\p{N}]/u.test(plain);
+          const ok = onlyNames || (!strayUrl && !/\d/.test(plain) && !isRisky(real) && !isUnsourced(real) && !hasAiTell(real));
           if (!ok) dropped++;
           return ok;
         })
@@ -837,7 +843,7 @@ function safeEmailText(raw: string, keep: string[]): { text: string; dropped: nu
         .trimEnd()
     )
     .join("\n")
-    .replace(/\u0000(\d+)\u0000/g, (_, i) => saved[Number(i)] ?? "")
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => saved[Number(i)]?.text ?? "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return { text, dropped, total };
