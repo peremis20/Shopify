@@ -5,7 +5,7 @@ import { googleRequest } from "../google-auth";
 import { getLists, THIN_GSC } from "../seo-tools";
 import { fetchSerp } from "./serp";
 import { isJunkKeyword } from "./keyword-guard";
-import { faithAllowed, readSiteKeywords } from "./site-keywords";
+import { faithAllowed, isLongTail, readSiteKeywords, type SiteKeyword } from "./site-keywords";
 import { readTargets } from "./targets";
 
 /**
@@ -42,6 +42,15 @@ const isKeyword = (q: string) => q.split(/\s+/).length <= 6 && !/[?.!,]$/.test(q
 const isGoodPick = (q: string) => isKeyword(q) && !isJunkKeyword(q);
 
 /**
+ * App picks worth a daily check: specific searches with room on page one. Broad
+ * support searches and ones page one shows we can't win yet are skipped, so the
+ * daily checks go to searches a site like this can actually rank for.
+ */
+const canRank = (k: SiteKeyword) => k.role !== "support" && k.winnable !== false && isLongTail(k.keyword, k.monthlySearches);
+const trackablePicks = async (accountId: string) =>
+  (await readSiteKeywords(accountId).catch(() => [])).filter(canRank).map((k) => k.keyword);
+
+/**
  * In order: saved keywords, the searches the autopilot is working on, then the
  * page one and page two searches with the most impressions (no brand searches).
  */
@@ -56,7 +65,7 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
   ).map((r) => r.query!);
   // Without Search Console: the keywords picked for each page (see site-keywords.ts).
   if (!conn.gscSiteUrl) {
-    const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
+    const picked = await trackablePicks(accountId);
     // More than a day's checks: they take turns (see trackRanks).
     return [...new Set([...saved, ...targets, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
   }
@@ -73,16 +82,30 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
     .map((r) => r.keys[0]);
   // Search Console new or thin: the Keyword Planner picks fill the rest, taking turns like above.
   if (searches.length < THIN_GSC) {
-    const picked = (await readSiteKeywords(accountId).catch(() => [])).map((k) => k.keyword);
+    const picked = await trackablePicks(accountId);
     return [...new Set([...saved, ...targets, ...searches, ...picked].map((q) => q.trim().toLowerCase()))].slice(0, 40);
   }
   return [...new Set([...saved, ...targets, ...searches].map((q) => q.trim().toLowerCase()))].slice(0, TRACK_PER_DAY);
+}
+
+/**
+ * Guardrail cleanup: rank history for searches the keyword guard now rejects
+ * (picked before it existed) is deleted, so junk never shows on the dashboard.
+ * The owner's own picks are kept whatever they are.
+ */
+async function dropJunkHistory(accountId: string): Promise<void> {
+  const faith = await faithAllowed(accountId).catch(() => false);
+  const owner = new Set((await readTargets(accountId).catch(() => [])).map((t) => t.keyword.trim().toLowerCase()));
+  const rows = await sql`SELECT DISTINCT query FROM insights_rank_daily WHERE account_id = ${accountId}`;
+  const junk = rows.map((r) => r.query!).filter((q) => !owner.has(q) && isJunkKeyword(q, { faith }));
+  if (junk.length) await sql`DELETE FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ANY(string_to_array(${junk.join("\u001f")}, chr(31)))`;
 }
 
 /** Checks today's Google positions once a day. Returns how many searches were checked. */
 export async function trackRanks(accountId: string, conn: Connection, serpKey: string, ourDomain: string): Promise<number> {
   await ensureSchema();
   const today = toIso(new Date());
+  await dropJunkHistory(accountId);
   const doneToday = new Set(
     (await sql`SELECT query FROM insights_rank_daily WHERE account_id = ${accountId} AND checked_on = ${today}`).map((r) => r.query!)
   );
