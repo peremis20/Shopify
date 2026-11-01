@@ -1,4 +1,5 @@
 import { readTargets, saveTarget } from "./targets";
+import { setArticlePublished } from "./shopify";
 import { nextNewArticle, unpublishArticle } from "./new-articles";
 import type { Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
@@ -584,7 +585,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix')
+      WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix', 'prune')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
     // The weekly limit keeps the site steady, but it shouldn't block a rescue: a couple of urgent fixes may go over it.
@@ -738,6 +739,13 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
     return `This one didn't help; ${back}.`;
+  }
+  if (field === "prune") {
+    // Undo a take down: publish the article again.
+    if (ctx.site?.mode !== "shopify" || !ctx.site.store) throw new Error("Only Shopify articles are taken down automatically.");
+    await setArticlePublished(ctx.site.store, c.resource_id!, true);
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    return "Published again.";
   }
   if (field === "new_article") {
     await unpublishArticle(ctx.accountId, ctx.site, c.resource_id!);

@@ -25,6 +25,7 @@ export const PLATFORM_LABEL: Record<Platform, string> = {
 type Where = Partial<Record<ChangeField, string>>;
 
 const CUSTOM: Where = {
+  prune: "If you agree, take this article down in your site's editor (unpublish it or set it to draft), then add the redirect shown so old links still land somewhere useful. If you'd rather keep it, just skip this.",
   meta_title: "Send this to whoever edits your site: it goes in the page's <title> tag, inside <head>.",
   meta_description: 'Send this to whoever edits your site: it goes in <meta name="description" content="..."> inside <head>.',
   content: "Add this as a new section near the end of the page (it's ready to use HTML).",

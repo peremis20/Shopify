@@ -29,6 +29,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   schema: "Structured data",
   intent: "Content gap",
   new_article: "New article",
+  prune: "Taken down (no Google views)",
 };
 
 const STATUS_STYLE: Record<AutopilotChange["status"], string> = {
@@ -323,7 +324,7 @@ function WeekSummary({ changes }: { changes: AutopilotChange[] }) {
   const since = Date.now() - 7 * 86_400_000;
   const week = changes.filter((c) => new Date(c.createdAt).getTime() >= since);
   const live = week.filter((c) => c.status === "applied" || c.status === "kept");
-  const pages = new Set(live.filter((c) => c.field !== "internal_link" && c.field !== "link_fix" && c.field !== "new_article").map((c) => c.pageUrl)).size;
+  const pages = new Set(live.filter((c) => c.field !== "internal_link" && c.field !== "link_fix" && c.field !== "new_article" && c.field !== "prune").map((c) => c.pageUrl)).size;
   const articles = week.filter((c) => c.field === "new_article" && c.status !== "reverted" && c.status !== "skipped").length;
   const links = live.filter((c) => c.field === "internal_link").length;
   const fixList = week.filter((c) => c.status === "suggested").length;

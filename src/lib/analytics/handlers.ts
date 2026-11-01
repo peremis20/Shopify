@@ -1,3 +1,5 @@
+import { siteFor } from "./autopilot/site-source";
+import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
@@ -1037,6 +1039,15 @@ export async function autopilotTick(): Promise<Response> {
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
       const found = await inspect(accountId, conn, { repair: true, ourDomain: domain }).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
+    }
+    // The pruning check: once a month per site, one site per hour.
+    for (const accountId of await accountsDueForPrune(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const site = conn ? await siteFor(accountId).catch(() => null) : null;
+      const done = conn && site ? await runPruner(accountId, conn, site).catch((e) => (console.error(`pruner failed: ${message(e)}`), null)) : null;
+      // Failed or couldn't run: wait a month instead of holding up the other sites.
+      if (!done) await markPruneTried(accountId);
+      if (done) results.push(`account ${accountId} pruning: ${done}`);
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of await accountsDueForStrategy(1)) {

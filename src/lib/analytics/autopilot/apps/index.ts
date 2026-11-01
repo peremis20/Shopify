@@ -3,6 +3,7 @@ import { dailyRank } from "./daily-rank";
 import { feedback } from "./feedback";
 import { keywordPlanner } from "./keyword-planner";
 import { pageOne } from "./page-one";
+import { prune } from "./prune";
 import { searchConsole } from "./search-console";
 import { siteHealth } from "./site-health";
 import { siteKeywords } from "./site-keywords";
@@ -10,7 +11,7 @@ import { targets } from "./targets";
 import type { Hub, RankingApp } from "./types";
 
 /** Every app the autopilot uses, in the order they run. Add new ones here. */
-export const RANKING_APPS: RankingApp[] = [searchConsole, targets, siteKeywords, dailyRank, analytics, keywordPlanner, pageOne, siteHealth, feedback];
+export const RANKING_APPS: RankingApp[] = [searchConsole, targets, siteKeywords, dailyRank, analytics, keywordPlanner, pageOne, siteHealth, prune, feedback];
 
 export async function readyApps(hub: Hub): Promise<RankingApp[]> {
   const ready = await Promise.all(RANKING_APPS.map((a) => Promise.resolve(a.ready(hub)).catch(() => false)));

@@ -77,7 +77,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const since = Date.now() - 7 * 86_400_000;
   const week = (changes ?? []).filter((c) => new Date(c.createdAt).getTime() >= since);
   const live = week.filter((c) => c.status === "applied" || c.status === "kept");
-  const pages = new Set(live.filter((c) => !["internal_link", "link_fix", "new_article"].includes(c.field)).map((c) => c.pageUrl)).size;
+  const pages = new Set(live.filter((c) => !["internal_link", "link_fix", "new_article", "prune"].includes(c.field)).map((c) => c.pageUrl)).size;
   const articles = week.filter((c) => c.field === "new_article" && c.status !== "reverted" && c.status !== "skipped");
   const links = live.filter((c) => c.field === "internal_link").length;
   const fixes = (changes ?? []).filter((c) => c.status === "suggested");
