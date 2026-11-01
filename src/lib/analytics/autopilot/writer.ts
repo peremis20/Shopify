@@ -1,3 +1,4 @@
+import { spend } from "./usage";
 import { report } from "./status";
 import Anthropic from "@anthropic-ai/sdk";
 import { isRisky } from "./claims";
@@ -507,6 +508,8 @@ function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Recor
 
 /** Asks the main AI, and each backup in turn if it fails. */
 async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+  // Counted against the site being worked on; past its monthly limit this throws and the work waits.
+  await spend("ai");
   const errors: string[] = [];
   const system = rulesFor(ai.site);
   for (const one of [ai, ...(ai.backups ?? [])]) {

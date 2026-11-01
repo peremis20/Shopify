@@ -3,6 +3,7 @@ import { readAuthorityPlan } from "./authority-coach";
 import { readProspects } from "./backlinks";
 import { readStrategy } from "./strategist";
 import { controlComparison } from "./results";
+import { usageThisMonth } from "./usage";
 
 /**
  * The agents' scorecard for one site: what each agent did and what came of it, from this site's own records and
@@ -133,6 +134,14 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
   if (problems) {
     const repaired = problems.filter((p) => p.who === "repaired").length;
     out.push({ agent: "Inspector", did: `${problems.length} ${problems.length === 1 ? "problem" : "problems"} found in the last check`, result: `${repaired} repaired by agents, ${problems.length - repaired} need a person or are being watched.` });
+  }
+  const used = await usageThisMonth(accountId).catch(() => null);
+  if (used) {
+    out.push({
+      agent: "Spending this month",
+      did: `${used.ai} AI requests of ${used.limits.ai}, ${used.search} Google results lookups of ${used.limits.search}`,
+      result: "Counted from the first of the month; cached lookups are free.",
+    });
   }
   return out.filter((s) => s.result !== null || !/^0 /.test(s.did));
 }

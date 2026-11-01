@@ -30,6 +30,9 @@ export interface PlatformSettings {
   oprKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
+  /** Per site and month: AI requests and paid Google results lookups (defaults in usage.ts). */
+  aiMonthlyLimit?: number;
+  searchMonthlyLimit?: number;
 }
 
 export interface AccountAutopilot {
@@ -74,6 +77,8 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
     oprKey: process.env.OPR_API_KEY || stored.oprKey,
+    aiMonthlyLimit: Number(process.env.AI_MONTHLY_LIMIT) || stored.aiMonthlyLimit,
+    searchMonthlyLimit: Number(process.env.SEARCH_MONTHLY_LIMIT) || stored.searchMonthlyLimit,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
   };
@@ -81,8 +86,12 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
 
 export async function savePlatformSettings(patch: PlatformSettings): Promise<void> {
   const next = { ...(await readPlatformSettings()) };
-  for (const [k, v] of Object.entries(patch) as [keyof PlatformSettings, string | undefined][]) {
-    if (v?.trim()) next[k] = v.trim(); // blank means keep what's saved
+  const store = next as Record<string, unknown>;
+  for (const [k, v] of Object.entries(patch) as [keyof PlatformSettings, unknown][]) {
+    if (k === "aiMonthlyLimit" || k === "searchMonthlyLimit") {
+      const n = Number(v);
+      if (Number.isFinite(n) && n > 0) store[k] = Math.round(n); // blank or zero keeps what's saved
+    } else if (typeof v === "string" && v.trim()) store[k] = v.trim(); // blank means keep what's saved
   }
   const value = encrypt(JSON.stringify(next), await tokenSecret());
   await sql`

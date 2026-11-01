@@ -1,3 +1,4 @@
+import { spend } from "./usage";
 import { otherClient } from "./clients";
 import { report } from "./status";
 import crypto from "node:crypto";
@@ -73,6 +74,8 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
     WHERE cache_key = ${cacheKey} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
   if (row?.data) return JSON.parse(row.data);
 
+  // Only a real (paid) lookup counts; cached results are free.
+  await spend("search");
   const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
     headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },

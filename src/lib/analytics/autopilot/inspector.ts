@@ -9,6 +9,7 @@ import { isSabbath } from "./sabbath";
 import { hasScope } from "../google-auth";
 import { rankingTurbulence } from "./google-updates";
 import { trafficCheck } from "./guards";
+import { usageThisMonth } from "./usage";
 
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
@@ -140,6 +141,17 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       fix: "New changes, take downs and verdicts are on hold. Check Search Console for a site problem; the agents resume once clicks recover.",
       who: "owner",
     });
+  }
+
+  // Spending: warn at 80% of the month's limit, and say plainly what pauses at 100%.
+  const used = await usageThisMonth(accountId).catch(() => null);
+  if (used) {
+    for (const kind of ["ai", "search"] as const) {
+      const share = used[kind] / used.limits[kind];
+      const name = kind === "ai" ? "AI" : "Google results";
+      if (share >= 1) problems.push({ id: `limit:${kind}`, text: `This site used its ${name} limit for the month (${used.limits[kind]}).`, fix: "What needs it pauses until next month, or the platform owner raises the limit.", who: "owner" });
+      else if (share >= 0.8) problems.push({ id: `limit:${kind}`, text: `This site has used ${Math.round(share * 100)}% of its ${name} limit for the month.`, fix: "Work carries on; at the limit, what needs it pauses until next month.", who: "watching" });
+    }
   }
 
   // 5. Google may be asked to recrawl changed pages only with permission to manage Search Console.

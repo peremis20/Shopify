@@ -7,6 +7,7 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
 import { rankingTurbulence } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
@@ -124,7 +125,8 @@ async function withAccount(req: Request, run: (account: Account) => Promise<Resp
   }
   if (!account) return signedOut();
   try {
-    return await run(account);
+    // What this request spends (AI, Google results) is counted for this site.
+    return await forSite(account.id, () => run(account));
   } catch (err) {
     return json({ error: message(err) }, 500);
   }
@@ -1055,10 +1057,10 @@ export async function autopilotTick(): Promise<Response> {
       ...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3)), ...(await accountsDueForKeywords(2))]),
     ].slice(0, 4);
     for (const accountId of upkeep) {
-      results.push(`account ${accountId} checks: ${await maintain(accountId).catch((e) => message(e))}`);
+      results.push(`account ${accountId} checks: ${await forSite(accountId, () => maintain(accountId)).catch((e) => message(e))}`);
     }
     for (const accountId of await accountsDueForRun(3)) {
-      const r = await runAutopilot(accountId, await getConnection(accountId), "schedule").catch((e) => ({ message: message(e) }));
+      const r = await forSite(accountId, async () => runAutopilot(accountId, await getConnection(accountId), "schedule")).catch((e) => ({ message: message(e) }));
       results.push(`account ${accountId}: ${r.message}`);
     }
     // The Inspector checks on every agent's work for the accounts touched this hour, and repairs what it can.
@@ -1066,7 +1068,7 @@ export async function autopilotTick(): Promise<Response> {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
-      const found = await inspect(accountId, conn, { repair: true, ourDomain: domain }).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
+      const found = await forSite(accountId, () => inspect(accountId, conn, { repair: true, ourDomain: domain })).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
     }
     // The pruning check: once a month per site, one site per hour.
@@ -1090,7 +1092,7 @@ export async function autopilotTick(): Promise<Response> {
       }
       const done =
         conn && site && host
-          ? await runPruner(accountId, conn, site, `https://${host}`, ai, sells).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))
+          ? await forSite(accountId, () => runPruner(accountId, conn, site, `https://${host}`, ai, sells)).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))
           : null;
       // Failed or couldn't run: wait a month instead of holding up the other sites.
       if (!done) await markPruneTried(accountId);
@@ -1101,7 +1103,7 @@ export async function autopilotTick(): Promise<Response> {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
-      const done = await runBrokenLinks(accountId, conn, domain).catch((e) => (console.error(`broken links failed: ${message(e)}`), null));
+      const done = await forSite(accountId, () => runBrokenLinks(accountId, conn, domain)).catch((e) => (console.error(`broken links failed: ${message(e)}`), null));
       if (done) results.push(`account ${accountId} broken links: ${done}`);
       // Failed: wait a week instead of holding up the other sites.
       else await markBrokenLinksChecked(accountId, "the last check failed");
@@ -1111,7 +1113,7 @@ export async function autopilotTick(): Promise<Response> {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
-      const plan = domain ? await runAuthorityCoach(accountId, conn, domain).catch((e) => (console.error(`authority coach failed: ${message(e)}`), null)) : null;
+      const plan = domain ? await forSite(accountId, () => runAuthorityCoach(accountId, conn, domain)).catch((e) => (console.error(`authority coach failed: ${message(e)}`), null)) : null;
       if (plan) results.push(`account ${accountId} authority plan: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves kept`);
       else await markAuthorityTried(accountId, "no plan this week");
     }
@@ -1121,7 +1123,7 @@ export async function autopilotTick(): Promise<Response> {
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
       let failure: string | null = null;
-      const plan = await runStrategist(accountId, conn, domain).catch((e) => ((failure = message(e)), console.error(`strategist failed: ${failure}`), null));
+      const plan = await forSite(accountId, () => runStrategist(accountId, conn, domain)).catch((e) => ((failure = message(e)), console.error(`strategist failed: ${failure}`), null));
       if (!plan) await markStrategyTried(accountId, failure ?? "No AI key, so no plan was made.");
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
