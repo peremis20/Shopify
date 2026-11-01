@@ -46,6 +46,9 @@ const DEFEND_REST_DAYS = 21;
 const WORSE_BY_POSITIONS = 3;
 
 /** Everything a run needs for one customer. */
+/** Urgent fixes allowed over the weekly page limit. */
+const URGENT_EXTRA = 2;
+
 interface Ctx {
   accountId: string;
   /** Where pages are read from; on a Shopify store also where changes are written. */
@@ -57,6 +60,8 @@ interface Ctx {
   ourDomain: string;
   allowContent: boolean;
   maxPagesPerWeek: number;
+  /** Over the weekly limit: only urgent work (a search that fell, a page Google left out) may go ahead. */
+  urgentOnly?: boolean;
   /** The site's pages, loaded once per run for the duplicate guards. */
   index?: Promise<SiteItem[]>;
 }
@@ -280,7 +285,9 @@ async function planNextChange(
 ): Promise<Plan | null> {
   const hub: Hub = { accountId: ctx.accountId, conn, platform: ctx.platform, ourDomain: ctx.ourDomain, shared: new Map() };
   const apps = await readyApps(hub);
-  const cands = await gatherCandidates(hub, apps, notes);
+  const all = await gatherCandidates(hub, apps, notes);
+  // Urgent: winning back a slipping search, or getting a page Google left out into its index.
+  const cands = ctx.urgentOnly ? all.filter((c) => c.mode === "defend" || (c.weights["site-health"] ?? 0) >= 4) : all;
 
   const changedSince = async (days: number) =>
     new Set(
@@ -569,6 +576,8 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
+    // The weekly limit keeps the site steady, but it shouldn't block a rescue: a couple of urgent fixes may go over it.
+    const urgentRoom = capped && Number(pages) < ctx.maxPagesPerWeek + URGENT_EXTRA;
     // Emergency brake: when Google clicks suddenly fall, change nothing new until it's clear why.
     const traffic = await trafficCheck(conn).catch(() => null);
     const brake = traffic?.sharp
@@ -607,7 +616,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         );
       }
     }
-    if (capped && !preview) {
+    if (capped && !preview && !urgentRoom) {
       summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
     } else if (brake && !preview) {
       summary.push(brake);
@@ -631,9 +640,12 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
               status: "skipped",
               op: cand.op,
             }).then(() => undefined);
+      if (capped && !preview) ctx.urgentOnly = true;
       const plan = await planNextChange(ctx, conn, notes, recordGap);
       const gaps = notes.filter((n) => n.startsWith("Skipped “"));
-      if (!plan) {
+      if (!plan && ctx.urgentOnly) {
+        summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages), and nothing urgent needs fixing.`);
+      } else if (!plan) {
         summary.push(gaps.length ? `No change made. ${gaps.join(" ")}` : "No new opportunities to work on right now.");
       } else if (preview) {
         const { cand, page, improvement } = plan;

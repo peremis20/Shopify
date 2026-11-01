@@ -1,3 +1,4 @@
+import { report } from "./status";
 import crypto from "node:crypto";
 import { ensureSchema, sql } from "../db";
 
@@ -66,7 +67,11 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
     signal: AbortSignal.timeout(15000),
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Search results lookup failed: ${body?.message ?? res.status}`);
+  if (!res.ok) {
+    await report("serper", false, `${res.status}: ${body?.message ?? "lookup failed"}`);
+    throw new Error(`Search results lookup failed: ${body?.message ?? res.status}`);
+  }
+  await report("serper", true);
   const data = {
     query,
     organic: ((body.organic ?? []) as { position?: number; title?: string; link?: string; snippet?: string }[])

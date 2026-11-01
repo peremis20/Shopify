@@ -1,5 +1,6 @@
 import { ensureSchema, sql } from "../db";
 import { readPlatformSettings } from "./settings";
+import { report } from "./status";
 
 /**
  * Website authority from Open PageRank (free, openpagerank.com): a score
@@ -53,7 +54,20 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
       signal: AbortSignal.timeout(15000),
     }).catch((e) => (console.warn(`openpagerank request failed: ${(e as Error).message}`), null));
     if (!res?.ok) {
-      if (res) console.warn(`openpagerank ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
+      if (res) {
+        const text = await res.text().catch(() => "");
+        let why = text.slice(0, 600);
+        try {
+          const j = JSON.parse(text) as { error?: string; message?: string };
+          why = [j.error, j.message].filter(Boolean).join(" ") || why;
+        } catch {
+          /* not JSON */
+        }
+        console.warn(`openpagerank ${res.status}: ${why}`);
+        await report("openpagerank", false, `${res.status}: ${why}`);
+        // A bad key fails every batch the same way: stop instead of repeating it.
+        if (res.status === 401 || res.status === 403) break;
+      }
       continue;
     }
     const raw = await res.text().catch(() => "");
@@ -64,6 +78,7 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
       console.warn(`openpagerank sent something that isn't JSON: ${raw.slice(0, 300)}`);
     }
     if (!(body.response ?? []).some((r) => r.status_code === 200)) console.warn(`openpagerank returned no scores: ${raw.slice(0, 300)}`);
+    else await report("openpagerank", true);
     for (const r of body.response ?? []) {
       if (r.status_code !== 200) continue;
       const score = Number(r.page_rank_decimal);

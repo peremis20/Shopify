@@ -7,6 +7,7 @@ import type { PageHealth } from "@/lib/analytics/autopilot/health";
 import type { AutopilotChange, AutopilotRun } from "@/lib/analytics/autopilot/types";
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import type { OverviewResponse } from "@/lib/analytics/types";
+import type { Problem } from "@/lib/analytics/autopilot/inspector";
 import { formatNumber } from "./format";
 import { api } from "./seo-ui";
 import { Card, DeltaBadge, Skeleton } from "./ui";
@@ -25,6 +26,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const [settings, setSettings] = useState<AutopilotSettingsView | null>(null);
   const [ranks, setRanks] = useState<RankWatchRow[] | null>(null);
   const [health, setHealth] = useState<PageHealth[]>([]);
+  const [problems, setProblems] = useState<Problem[]>([]);
   const [authority, setAuthority] = useState<Authority | null>(null);
   const [prospects, setProspects] = useState<ProspectList | null>(null);
 
@@ -42,6 +44,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         setHealth(d.health ?? []);
       })
       .catch(() => setRanks([]));
+    api<{ problems: Problem[] }>("/api/inspector").then((d) => setProblems(d.problems ?? [])).catch(() => setProblems([]));
     api<Authority>("/api/seo/authority").then(setAuthority).catch(() => setAuthority(null));
     api<{ list: ProspectList | null }>("/api/seo/backlinks").then((d) => setProspects(d.list)).catch(() => setProspects(null));
   }, []);
@@ -69,6 +72,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   if (articles.length) done.push(`Wrote and posted ${articles.length} new ${articles.length === 1 ? "article" : "articles"}`);
   if (links) done.push(`Added ${links} ${links === 1 ? "link" : "links"} between your pages`);
   if (up) done.push(`${up} ${up === 1 ? "change has" : "changes have"} already moved you up on Google`);
+  for (const p of problems.filter((x) => x.who === "repaired")) done.push(`Caught and fixed a problem: ${p.text} ${p.fix}`);
   if (openProspects.length) done.push(`Found ${openProspects.length} ${openProspects.length === 1 ? "website" : "websites"} that could link to you`);
 
   // One next step, the most useful first.
@@ -89,6 +93,11 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   if (broken.length) warnings.push({ text: `${broken.length} ${broken.length === 1 ? "page has" : "pages have"} a serious problem Google can see, like not being indexed.`, page: "content" });
   if (settings && !settings.platformReady) warnings.push({ text: "The autopilot can't run: an AI key or the store connection is missing.", page: "settings" });
   else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
+  // What the Inspector found that needs a person (repairs it made itself show under "What I did").
+  for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
+    if (warnings.some((w) => w.text.startsWith("The last autopilot run") && p.id === "autopilot:failed")) continue;
+    warnings.push({ text: `${p.text} ${p.fix}`, page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") ? "keywords" : "content" });
+  }
   const lastRun = runs[0];
   if (lastRun && /fail|error/i.test(lastRun.status)) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
 

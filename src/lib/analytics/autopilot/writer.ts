@@ -1,3 +1,4 @@
+import { report } from "./status";
 import Anthropic from "@anthropic-ai/sdk";
 import { isRisky } from "./claims";
 import { trimWords } from "./guards";
@@ -501,11 +502,14 @@ async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string,
   const system = rulesFor(ai.site);
   for (const one of [ai, ...(ai.backups ?? [])]) {
     try {
-      return await askOne<T>(one, system, prompt, schema);
+      const out = await askOne<T>(one, system, prompt, schema);
+      void report("ai", true);
+      return out;
     } catch (err) {
       errors.push((err as Error).message);
     }
   }
+  void report("ai", false, errors.join(" "));
   throw new Error(`${errors.join(" ")} The next run will try again.`);
 }
 

@@ -1,3 +1,4 @@
+import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
@@ -711,6 +712,17 @@ export const backlinkEmail = (req: Request) =>
     }
   });
 
+/** What the Inspector found: problems, what agents repaired, and what needs the owner. */
+export const inspectorReport = (req: Request) =>
+  withAccount(req, async (account) => {
+    const conn = await getConnection(account.id);
+    const profile = await readProfile(account.id);
+    const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? undefined);
+    const problems = await inspect(account.id, conn, { repair: false, ourDomain: domain });
+    // Platform keys are the platform owner's job; customers only see their own site's problems.
+    return json({ problems: problems.filter((p) => !p.platform || account.admin) });
+  });
+
 /** Real keyword difficulty (0 to 100) for up to 25 searches, from what ranks on Google page one. */
 export const keywordDifficultyApi = (req: Request) =>
   withAccount(req, async (account) => {
@@ -986,6 +998,14 @@ export async function autopilotTick(): Promise<Response> {
     for (const accountId of await accountsDueForRun(3)) {
       const r = await runAutopilot(accountId, await getConnection(accountId), "schedule").catch((e) => ({ message: message(e) }));
       results.push(`account ${accountId}: ${r.message}`);
+    }
+    // The Inspector checks on every agent's work for the accounts touched this hour, and repairs what it can.
+    for (const accountId of new Set(upkeep)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
+      const found = await inspect(accountId, conn, { repair: true, ourDomain: domain }).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
+      if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
     }
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
     return json({ results });
