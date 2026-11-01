@@ -67,7 +67,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
     api<{ list: ProspectList | null }>("/api/seo/backlinks").then((d) => setProspects(d.list)).catch(() => setProspects(null));
   }, []);
 
-  // Sample data is for the preview only: a customer's own numbers are never made up.
+  // Only live numbers: a customer's own numbers are never made up.
   const gsc = data?.gsc?.status === "live" ? data.gsc.data : undefined;
   const pageOne = ranks?.filter((r) => r.position !== null && r.position <= 10) ?? [];
   const quoted = ranks?.filter((r) => r.quoted).length ?? 0;

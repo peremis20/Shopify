@@ -282,6 +282,10 @@ test("heartbeat: a recent finished run is healthy, a missing or stuck or failing
   assert.equal(judgeHeartbeat(base, now).ok, true);
   assert.equal(judgeHeartbeat(null, now).ok, false);
   assert.equal(judgeHeartbeat({ ...base, startedAt: ago(3) }, now).ok, false);
+  // One skipped run: no alarm in the seconds before the next one starts.
+  assert.equal(judgeHeartbeat({ ...base, startedAt: ago(2.01) }, now).ok, true);
+  // Error details never reach the public text.
+  assert.ok(!judgeHeartbeat({ ...base, failures: 3, ok: false, error: "secret detail" }, now).text.includes("secret"));
   assert.equal(judgeHeartbeat({ ...base, startedAt: ago(1.5), finishedAt: null }, now).ok, false);
   assert.equal(judgeHeartbeat({ ...base, startedAt: ago(0.2), finishedAt: null }, now).ok, true);
   assert.equal(judgeHeartbeat({ ...base, failures: 1, ok: false }, now).ok, true);

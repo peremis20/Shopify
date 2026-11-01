@@ -33,21 +33,39 @@ async function write(hb: Heartbeat): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-/** Called when a run begins. Never throws: the heartbeat must not stop the work. */
-export async function heartbeatStart(sabbath: boolean): Promise<void> {
+/**
+ * Called when a run begins; returns its start time, which heartbeatEnd needs.
+ * A previous run that never finished (killed by a time limit or a crash) counts
+ * as a failure here, since it never got to say so itself. Never throws.
+ */
+export async function heartbeatStart(sabbath: boolean): Promise<string> {
+  const startedAt = new Date().toISOString();
   try {
     const prev = await readHeartbeat();
-    await write({ startedAt: new Date().toISOString(), finishedAt: null, ok: null, error: null, sabbath, failures: prev?.failures ?? 0 });
+    const killed = Boolean(prev && !prev.finishedAt && !sabbath);
+    await write({
+      startedAt,
+      finishedAt: null,
+      ok: null,
+      error: killed ? "The last run never finished." : null,
+      sabbath,
+      failures: killed ? prev!.failures + 1 : (prev?.failures ?? 0),
+    });
   } catch (e) {
     console.error(`heartbeat not written: ${e instanceof Error ? e.message : e}`);
   }
+  return startedAt;
 }
 
-/** Called when a run ends, with the error that ended it, if any. */
-export async function heartbeatEnd(error: string | null): Promise<void> {
+/**
+ * Called when a run ends, with the error that ended it, if any. Only the run
+ * that wrote the current record may close it: a slow run that overlaps the
+ * next one must not mark the newer one finished.
+ */
+export async function heartbeatEnd(startedAt: string, error: string | null): Promise<void> {
   try {
     const cur = await readHeartbeat();
-    if (!cur) return;
+    if (!cur || cur.startedAt !== startedAt) return;
     await write({ ...cur, finishedAt: new Date().toISOString(), ok: !error, error: error?.slice(0, 400) ?? null, failures: error ? cur.failures + 1 : 0 });
   } catch (e) {
     console.error(`heartbeat not written: ${e instanceof Error ? e.message : e}`);
@@ -61,7 +79,8 @@ export interface Verdict {
 }
 
 /**
- * Is the hourly run healthy? Missing for over two hours, stuck for over an
+ * Is the hourly run healthy? The text is public (no error details, which can
+ * hold internal values). Missing for over two hours, stuck for over an
  * hour, or failing twice in a row is not. During the Sabbath, and in the two
  * hours after it ends, a quiet run is expected.
  */
@@ -70,8 +89,9 @@ export function judgeHeartbeat(hb: Heartbeat | null, now = new Date()): Verdict 
   if (!hb) return { ok: false, text: "The hourly run has never reported in." };
   const started = Date.parse(hb.startedAt);
   const age = now.getTime() - started;
-  if (age > 2 * HOUR) return { ok: false, text: `The hourly run hasn't happened in ${Math.round(age / HOUR)} hours.` };
+  // A little past two hours, so one skipped run doesn't flicker an alarm just before the next one starts.
+  if (age > 2 * HOUR + 10 * 60_000) return { ok: false, text: `The hourly run hasn't happened in ${Math.round(age / HOUR)} hours.` };
   if (!hb.finishedAt && age > HOUR) return { ok: false, text: "The hourly run started but never finished." };
-  if (hb.failures >= 2) return { ok: false, text: `The hourly run failed ${hb.failures} times in a row: ${hb.error ?? "no detail"}` };
+  if (hb.failures >= 2) return { ok: false, text: `The hourly run failed ${hb.failures} times in a row.` };
   return { ok: true, text: "The hourly run is working." };
 }

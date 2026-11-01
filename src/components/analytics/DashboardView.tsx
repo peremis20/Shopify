@@ -646,7 +646,7 @@ function Placeholder({ loading }: { loading: boolean }) {
   return loading ? (
     <Skeleton className="h-48" />
   ) : (
-    <p className="py-8 text-center text-sm text-dash-muted">Data unavailable. See the message above.</p>
+    <p className="py-8 text-center text-sm text-dash-muted">Nothing to show yet. See the message above.</p>
   );
 }
 

@@ -1070,12 +1070,11 @@ export async function autopilotTick(): Promise<Response> {
   // Sabbath rest: nothing runs from Friday sundown to Saturday sundown.
   // Only the heartbeat is noted, so the outside watcher knows the schedule itself still works.
   if (isSabbath()) {
-    await heartbeatStart(true);
-    await heartbeatEnd(null);
+    await heartbeatEnd(await heartbeatStart(true), null);
     console.log("autopilot tick: Sabbath rest, nothing runs until Saturday sundown");
     return json({ results: ["Sabbath rest"] });
   }
-  await heartbeatStart(false);
+  const beat = await heartbeatStart(false);
   try {
     // Rank checks and health first: a drop found this morning can be defended in today's run.
     const upkeep = [
@@ -1167,11 +1166,11 @@ export async function autopilotTick(): Promise<Response> {
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
-    await heartbeatEnd(null);
+    await heartbeatEnd(beat, null);
     return json({ results });
   } catch (err) {
     console.error(`autopilot tick failed: ${message(err)}`);
-    await heartbeatEnd(message(err));
+    await heartbeatEnd(beat, message(err));
     return json({ error: message(err) }, 500);
   }
 }
