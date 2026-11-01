@@ -136,12 +136,13 @@ const words = (s: string) =>
 // ---------- measuring ----------
 
 /** Today's position from the daily rank check, for sites without Search Console. */
-async function trackedPosition(accountId: string, query: string): Promise<{ position: number | null; clicks: number } | null> {
+async function trackedPosition(accountId: string, query: string): Promise<{ position: number | null; clicks: number | null } | null> {
   const [row] = await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${query.toLowerCase()}
     ORDER BY checked_on DESC LIMIT 1`;
   if (!row) return null;
-  // Not found in the results checked: recorded as exactly that (null), never as a made up position.
-  return { position: row.position === null ? null : Number(row.position), clicks: 0 };
+  // Not in the top 10 the check reads: recorded as exactly that (null), never as a made up position.
+  // The rank check sees no clicks, so clicks are unknown (null), not zero.
+  return { position: row.position === null ? null : Number(row.position), clicks: null };
 }
 
 async function positionFor(conn: Connection, query: string, page: string) {
@@ -173,14 +174,28 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
   const notes: string[] = [];
   for (const d of due) {
     // Search Console first; when it has nothing for this search yet (a new property), the daily Google rank check.
-    const now =
-      (conn.gscSiteUrl ? await positionFor(conn, d.query!, d.page_url!).catch(() => null) : null) ??
-      (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
+    // If Search Console errors, this change waits for the next run rather than being judged on weaker data.
+    let gscFailed = false;
+    const fromGsc = conn.gscSiteUrl
+      ? await positionFor(conn, d.query!, d.page_url!).catch(() => {
+          gscFailed = true;
+          return null;
+        })
+      : null;
+    if (gscFailed) {
+      notes.push(`Measuring “${d.query}” waits: Search Console didn't answer.`);
+      continue;
+    }
+    const now: { position: number | null; clicks: number | null } | null = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
-    // Dropped out of the results checked: worse when the page was really ranking before.
+    // Dropped out of the top 10 the rank check reads: worse only when the page was in that top 10 before.
     const droppedOut = Boolean(now) && now!.position === null;
-    const worse = now ? (now.position === null ? baseline <= 20 : now.position > baseline + WORSE_BY_POSITIONS && now.clicks <= baseClicks) : false;
+    const worse = now
+      ? now.position === null
+        ? baseline <= 10
+        : now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks)
+      : false;
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
       WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
@@ -188,11 +203,11 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       if (worse) {
         const note = await revertRow(ctx, c).catch((e) => `Undo failed: ${e.message}`);
         await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
-          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the results checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
+          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
       } else {
         await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(),
           result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
-          note = ${now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the results checked before or after; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
+          note = ${now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
       }
     }
     notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”`);

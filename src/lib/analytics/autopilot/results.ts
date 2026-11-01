@@ -22,7 +22,8 @@ export async function measuredResults(accountId: string): Promise<string[]> {
     SELECT field,
       count(*) FILTER (WHERE evaluated_at IS NULL AND status = 'applied') AS waiting,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND (result_position IS NULL OR baseline_position IS NULL) AND coalesce(note, '') NOT LIKE 'Dropped out%') AS nodata,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position IS NOT NULL) AS entered,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position IS NOT NULL AND result_position <= 10) AS entered,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position > 10) AS stilloff,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND note LIKE 'Dropped out%') AS dropped,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS compared,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position < baseline_position - 0.5) AS up,
@@ -41,13 +42,14 @@ export async function measuredResults(accountId: string): Promise<string[]> {
     const dropped = Number(r.dropped);
     // Not ranked before (stored as 25, the "off page one" marker), so no before position to compare with.
     const entered = Number(r.entered);
+    const stillOff = Number(r.stilloff);
     waiting += Number(r.waiting);
-    if (compared + nodata + dropped + entered === 0) continue;
-    measured += compared + nodata + dropped + entered;
+    if (compared + nodata + dropped + entered + stillOff === 0) continue;
+    measured += compared + nodata + dropped + entered + stillOff;
     const name = LABEL[String(r.field)] ?? r.field;
     if (!compared) {
       lines.push(
-        `Measured result, ${name}: ${nodata + dropped + entered} measured, ${entered ? `${entered} not ranked before and now found in the results, ` : ""}${dropped ? `${dropped} dropped out of the results checked, ` : ""}${nodata} without enough Google data to compare.`
+        `Measured result, ${name}: ${nodata + dropped + entered + stillOff} measured, ${entered ? `${entered} not on page one before and now on page one, ` : ""}${stillOff ? `${stillOff} still not on page one, ` : ""}${dropped ? `${dropped} dropped off page one, ` : ""}${nodata} without enough Google data to compare.`
       );
       continue;
     }
@@ -58,8 +60,9 @@ export async function measuredResults(accountId: string): Promise<string[]> {
       `Measured result, ${name}: ${compared} compared with Google data, ${r.up} moved up, ${r.down} moved down, ${same} about the same, ` +
         `average position change ${pos >= 0 ? "up" : "down"} ${Math.abs(pos).toFixed(1)}` +
         (clk !== null ? `, average clicks change ${clk >= 0 ? "up" : "down"} ${Math.abs(clk).toFixed(1)}` : "") +
-        (entered ? `, ${entered} more not ranked before and now found in the results` : "") +
-        (dropped ? `, ${dropped} more dropped out of the results checked` : "") +
+        (entered ? `, ${entered} more not on page one before and now on page one` : "") +
+        (stillOff ? `, ${stillOff} more still not on page one` : "") +
+        (dropped ? `, ${dropped} more dropped off page one` : "") +
         (nodata ? `, ${nodata} more without enough data` : "") +
         "."
     );
