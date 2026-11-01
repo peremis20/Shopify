@@ -73,6 +73,14 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   return lines;
 }
 
+/** Which way one change went between two rank checks (null: not in the top 10 that day). */
+export function earlyBucket(before: number | null, now: number | null): "up" | "down" | "same" | "reached" | "dropped" | "still" {
+  if (before === null && now === null) return "still";
+  if (before === null) return "reached";
+  if (now === null) return "dropped";
+  return now < before ? "up" : now > before ? "down" : "same";
+}
+
 /**
  * Early readings for changes made at least a week ago that haven't reached their four week measurement. Both
  * numbers come from the same daily Google rank check (which reads the top 10): the last check on or before the
@@ -100,14 +108,7 @@ async function earlyReadings(accountId: string): Promise<string[]> {
   for (const r of rows) {
     const f = String(r.field);
     const b = by.get(f) ?? { up: 0, down: 0, same: 0, reached: 0, dropped: 0, still: 0 };
-    const before = r.before === null ? null : Number(r.before);
-    const now = r.now === null ? null : Number(r.now);
-    if (before === null && now === null) b.still++;
-    else if (before === null) b.reached++;
-    else if (now === null) b.dropped++;
-    else if (now < before) b.up++;
-    else if (now > before) b.down++;
-    else b.same++;
+    b[earlyBucket(r.before === null ? null : Number(r.before), r.now === null ? null : Number(r.now))]++;
     by.set(f, b);
   }
   return [...by.entries()].map(

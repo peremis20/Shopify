@@ -31,4 +31,4 @@ About 20,000 visitors a month from Google, and revenue from them. Every feature 
 
 ## Releasing
 
-`npm run build:neon`, commit and push, then point the `release` row in `insights_settings` at the new commit (url, sha256 of `neon/insights/release/server.mjs`, assets). The function picks it up within a minute.
+`npm run build:neon` (it runs `npm test` first; a failing test stops the release), commit and push, then point the `release` row in `insights_settings` at the new commit (url, sha256 of `neon/insights/release/server.mjs`, assets). The function picks it up within a minute.

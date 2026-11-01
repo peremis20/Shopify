@@ -172,6 +172,15 @@ export async function setProspectStatus(accountId: string, url: string, status: 
 /** Which finds are worth most when the list is full: a fixable broken link first, a site that only mentions a competitor last. */
 const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2, roundup: 3, podcast: 4, guest: 5, competitor: 6 };
 
+/** When new finds must be trimmed to `room`: the most valuable kinds and strongest sites stay, in their listed order. */
+export function keepBestFresh<P extends { kind: string; authority: number | null }>(fresh: P[], room: number): P[] {
+  if (fresh.length <= room) return fresh;
+  const best = new Set(
+    [...fresh].sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0)).slice(0, room)
+  );
+  return fresh.filter((p) => best.has(p));
+}
+
 /**
  * Upgrades prospects with what another agent found (the Broken Link Agent), keeping the owner's marks.
  * Each update replaces a new prospect on the same page, or is added when the page isn't listed.
@@ -200,16 +209,7 @@ export async function upsertProspects(accountId: string, updates: Prospect[], ou
   // trimmed, the most valuable kinds and strongest sites stay, in their listed order.
   const marked = list.prospects.filter((p) => p.status !== "new");
   const fresh = list.prospects.filter((p) => p.status === "new");
-  const room = Math.max(0, MAX - marked.length);
-  let kept = fresh;
-  if (fresh.length > room) {
-    const best = new Set(
-      [...fresh]
-        .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0))
-        .slice(0, room)
-    );
-    kept = fresh.filter((p) => best.has(p));
-  }
+  const kept = keepBestFresh(fresh, Math.max(0, MAX - marked.length));
   await save(accountId, { ...list, prospects: [...kept, ...marked] });
   const on = new Set([...kept, ...marked].map((p) => p.url));
   return new Set(updates.map((u) => u.url).filter((u) => on.has(u)));

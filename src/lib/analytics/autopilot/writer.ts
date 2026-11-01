@@ -141,6 +141,10 @@ export function polish(text: string): string {
   return (text ?? "")
     .replace(/\bHCI\b/g, "HCl") // hydrochloride salts (berberine HCl), often mistyped with a capital i
     .replace(/[\u2010\u2011]/g, "-") // unusual hyphen characters some models write, shown oddly by some fonts
+    // No dashes in anything the site shows: a dash between words (em, en or a spaced hyphen) becomes a comma.
+    .replace(/\s*[\u2012-\u2015]\s*/g, ", ")
+    .replace(/\s+-\s+/g, ", ")
+    .replace(/,\s*,/g, ",")
     .replace(/(\s*\|\s*[^|]+)\1+$/, "$1")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
@@ -867,7 +871,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
  * dropped. Web addresses and the names in `keep` (the brand and site addresses, which may contain digits) are set aside
  * first, so they don't count as numbers or break sentences. Returns the text and how many sentences were dropped.
  */
-function safeEmailText(raw: string, keep: string[], allowedUrls: string[] = []): { text: string; dropped: number; total: number } {
+export function safeEmailText(raw: string, keep: string[], allowedUrls: string[] = []): { text: string; dropped: number; total: number } {
   const saved: { text: string; url: boolean }[] = [];
   const hide = (url: boolean) => (m: string) => `\u0000${saved.push({ text: m, url }) - 1}\u0000`;
   let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide(true));

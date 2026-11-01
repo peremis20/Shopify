@@ -163,6 +163,21 @@ async function positionFor(conn: Connection, query: string, page: string) {
   return body.rows?.[0] ?? null;
 }
 
+/**
+ * The verdict on one measured change. Worse means it fell more than WORSE_BY_POSITIONS places without gaining
+ * clicks (unknown clicks count as no gain), or it left the top 10 the rank check reads after being in it.
+ * No reading at all is never worse.
+ */
+export function measuredWorse(
+  baseline: number,
+  now: { position: number | null; clicks: number | null } | null,
+  baseClicks: number
+): { worse: boolean; droppedOut: boolean } {
+  if (!now) return { worse: false, droppedOut: false };
+  if (now.position === null) return { worse: baseline <= 10, droppedOut: true };
+  return { worse: now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks), droppedOut: false };
+}
+
 /** Looks at pages changed at least 4 weeks ago; keeps what helped and undoes what hurt. */
 async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]> {
   const due = await sql`
@@ -205,13 +220,7 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     const now: { position: number | null; clicks: number | null } | null = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
-    // Dropped out of the top 10 the rank check reads: worse only when the page was in that top 10 before.
-    const droppedOut = Boolean(now) && now!.position === null;
-    const worse = now
-      ? now.position === null
-        ? baseline <= 10
-        : now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks)
-      : false;
+    const { worse, droppedOut } = measuredWorse(baseline, now, baseClicks);
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
       WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
