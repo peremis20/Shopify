@@ -85,7 +85,7 @@ async function earlyReadings(accountId: string): Promise<string[]> {
     FROM insights_autopilot_changes c
     JOIN LATERAL (
       SELECT position FROM insights_rank_daily d
-      WHERE d.account_id = c.account_id AND d.query = lower(c.query) AND d.checked_on <= c.created_at::date
+      WHERE d.account_id = c.account_id AND d.query = lower(c.query) AND d.checked_on < c.created_at::date AND d.checked_on >= c.created_at::date - 14
       ORDER BY d.checked_on DESC LIMIT 1
     ) b ON true
     JOIN LATERAL (
