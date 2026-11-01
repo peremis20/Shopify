@@ -8,6 +8,7 @@ import type { AutopilotChange, AutopilotRun } from "@/lib/analytics/autopilot/ty
 import type { AutopilotSettingsView } from "@/lib/analytics/autopilot/settings";
 import type { OverviewResponse } from "@/lib/analytics/types";
 import type { Problem } from "@/lib/analytics/autopilot/inspector";
+import type { StrategyReport } from "@/lib/analytics/autopilot/strategist";
 import { formatNumber } from "./format";
 import { api } from "./seo-ui";
 import { Card, DeltaBadge, Skeleton } from "./ui";
@@ -27,6 +28,21 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const [ranks, setRanks] = useState<RankWatchRow[] | null>(null);
   const [health, setHealth] = useState<PageHealth[]>([]);
   const [problems, setProblems] = useState<Problem[]>([]);
+  const [strategy, setStrategy] = useState<StrategyReport | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  async function planNow() {
+    setPlanning(true);
+    setPlanError(null);
+    try {
+      const d = await api<{ report: StrategyReport | null; error?: string }>("/api/strategy", { refresh: true });
+      setStrategy(d.report);
+    } catch (e) {
+      setPlanError(e instanceof Error ? e.message : "Couldn't plan right now");
+    } finally {
+      setPlanning(false);
+    }
+  }
   const [authority, setAuthority] = useState<Authority | null>(null);
   const [prospects, setProspects] = useState<ProspectList | null>(null);
 
@@ -44,6 +60,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         setHealth(d.health ?? []);
       })
       .catch(() => setRanks([]));
+    api<{ report: StrategyReport | null }>("/api/strategy").then((d) => setStrategy(d.report)).catch(() => setStrategy(null));
     api<{ problems: Problem[] }>("/api/inspector").then((d) => setProblems(d.problems ?? [])).catch(() => setProblems([]));
     api<Authority>("/api/seo/authority").then(setAuthority).catch(() => setAuthority(null));
     api<{ list: ProspectList | null }>("/api/seo/backlinks").then((d) => setProspects(d.list)).catch(() => setProspects(null));
@@ -174,6 +191,8 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         </div>
       )}
 
+      <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} planning={planning} error={planError} onPlan={planNow} />
+
       <Card>
         <p className="mb-3 font-serif text-xl text-dash-ink">Your next step</p>
         {!ready ? (
@@ -240,5 +259,80 @@ function Jump({ label, sub, onClick }: { label: string; sub: string; onClick: ()
       <p className="font-semibold text-dash-ink">{label}</p>
       <p className="text-xs text-dash-muted">{sub}</p>
     </button>
+  );
+}
+
+/** The Strategist's week: progress to the goal, the moves that survived review, and the ones that didn't. */
+function Plan({ strategy, visitors, planning, error, onPlan }: {
+  strategy: StrategyReport | null;
+  visitors: number | null;
+  planning: boolean;
+  error: string | null;
+  onPlan: () => void;
+}) {
+  const [showDropped, setShowDropped] = useState(false);
+  const goal = strategy?.goal ?? 20_000;
+  const now = visitors ?? strategy?.visitors ?? null;
+  const pct = now !== null ? Math.min(100, (now / goal) * 100) : 0;
+  const kept = strategy?.moves.filter((m) => m.kept) ?? [];
+  const dropped = strategy?.moves.filter((m) => !m.kept) ?? [];
+  return (
+    <Card>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <p className="font-serif text-xl text-dash-ink">This week&apos;s plan</p>
+        {strategy && <span className="text-xs text-dash-muted">Planned {new Date(strategy.at).toLocaleDateString()} · reviewed by a second AI</span>}
+      </div>
+      <div className="mb-4">
+        <div className="mb-1 flex justify-between text-xs text-dash-muted">
+          <span>Goal: {formatNumber(goal)} visitors a month from Google</span>
+          <span className="tabular-nums">{now !== null ? `${formatNumber(now)} now (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` : "not measured yet"}</span>
+        </div>
+        <div className="h-2 overflow-hidden rounded-full bg-[#F1ECE3]">
+          <div className="h-full rounded-full bg-dash-green" style={{ width: `${Math.max(pct, now ? 1 : 0)}%` }} />
+        </div>
+      </div>
+      {!strategy ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="min-w-0 flex-1 text-dash-muted">The Strategist plans each week from your real numbers. The first plan comes within a day.</p>
+          <button onClick={onPlan} disabled={planning} className="rounded-xl border border-dash-line px-4 py-2 text-sm font-semibold text-dash-green disabled:opacity-50">
+            {planning ? "Planning..." : "Plan now"}
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="text-dash-ink">{strategy.assessment}</p>
+          {kept.length > 0 && (
+            <ol className="mt-3 space-y-2">
+              {kept.map((m, i) => (
+                <li key={i} className="flex gap-3 text-sm">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-dash-green text-xs font-semibold text-white">{i + 1}</span>
+                  <div className="min-w-0">
+                    <p className="text-dash-ink">{m.action}</p>
+                    <p className="text-xs text-dash-muted">{m.why}{m.done ? ` ${m.done}` : ""}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
+          {dropped.length > 0 && (
+            <div className="mt-3">
+              <button onClick={() => setShowDropped((v) => !v)} className="text-xs font-semibold text-dash-muted hover:underline">
+                {showDropped ? "Hide" : "Show"} {dropped.length} {dropped.length === 1 ? "idea" : "ideas"} the reviewer turned down
+              </button>
+              {showDropped && (
+                <ul className="mt-2 space-y-1.5">
+                  {dropped.map((m, i) => (
+                    <li key={i} className="text-xs text-dash-muted">
+                      <span className="line-through">{m.action}</span> <span className="text-dash-ink">{m.challenge}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {error && <p className="mt-2 text-xs text-dash-down">{error}</p>}
+    </Card>
   );
 }

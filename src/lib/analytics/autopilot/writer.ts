@@ -771,3 +771,69 @@ Sound like a real person writing one email, not a template: plain and friendly, 
   );
   return { subject: polish(out.subject), body: out.body.replace(/[\u2010-\u2015]/g, ",").trim() };
 }
+
+/* ---------- Strategist (strategist.ts): a weekly plan, and a second AI that challenges it ---------- */
+
+export interface StrategyMove {
+  /** "target": aim at this search (Rank for this). "cluster": build articles around a topic. "fix": something to repair. "hold": stop doing something. */
+  kind: "target" | "cluster" | "fix" | "hold";
+  /** The exact search, copied from the facts, for "target" and "cluster". */
+  keyword: string | null;
+  action: string;
+  why: string;
+}
+
+export interface StrategyPlan {
+  assessment: string;
+  moves: StrategyMove[];
+}
+
+const MOVE_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["target", "cluster", "fix", "hold"] },
+    keyword: { type: ["string", "null"] },
+    action: { type: "string" },
+    why: { type: "string" },
+  },
+  required: ["kind", "keyword", "action", "why"],
+};
+
+export async function planStrategy(ai: AiProvider, facts: string): Promise<StrategyPlan> {
+  return askJson<StrategyPlan>(
+    { ...ai, site: undefined },
+    `You are the SEO strategist for this website. The goal: reach 20,000 visitors a month from Google search and turn them into revenue. Other agents do the work every day (improving pages, writing articles, tracking ranks, finding backlinks); your job is to point them at what will move the numbers most, and to say plainly what isn't working.
+
+Facts from this week (real data, nothing else is known):
+${facts}
+
+Think like a seasoned SEO: searches already at positions 4 to 20 are the fastest wins; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated.
+
+Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers). Never invent searches, numbers or results. No hyphens or dashes in the text.`,
+    { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }
+  );
+}
+
+/** A second AI (another provider when there is one) challenges each move: kept only when the facts back it. */
+export async function challengeStrategy(ai: AiProvider, facts: string, plan: StrategyPlan): Promise<{ keep: boolean[]; notes: string[] }> {
+  const others = [ai, ...(ai.backups ?? [])];
+  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
+  const out = await askJson<{ verdicts: { keep: boolean; note: string }[] }>(
+    { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
+    `You are a skeptical senior SEO reviewing another strategist's weekly plan for a website aiming at 20,000 Google visitors a month. Challenge every move: is it backed by the facts, is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
+
+Facts:
+${facts}
+
+Plan:
+${plan.moves.map((m, i) => `${i + 1}. [${m.kind}] ${m.action} (${m.keyword ?? "no search"}): ${m.why}`).join("\n")}
+
+Return JSON "verdicts": one per move, in order, each with "keep" (true or false) and "note" (one plain sentence: why it holds up, or what is wrong with it). No hyphens or dashes.`,
+    {
+      type: "object",
+      properties: { verdicts: { type: "array", items: { type: "object", properties: { keep: { type: "boolean" }, note: { type: "string" } }, required: ["keep", "note"] } } },
+      required: ["verdicts"],
+    }
+  );
+  return { keep: plan.moves.map((_, i) => out.verdicts[i]?.keep ?? false), notes: plan.moves.map((_, i) => out.verdicts[i]?.note ?? "") };
+}

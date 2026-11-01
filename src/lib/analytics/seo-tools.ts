@@ -76,6 +76,15 @@ export async function gscSearchCount(conn: Connection): Promise<number> {
   return rows.length;
 }
 
+/** All clicks from Google search to the site in the last 28 days. */
+export async function gscClicks28d(conn: Connection): Promise<number> {
+  if (!conn.gscSiteUrl) return 0;
+  const { auth, site } = requireSite(conn);
+  const { current } = resolveRange("28d", 3);
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: [], rowLimit: 1 });
+  return rows.reduce((a, r) => a + r.clicks, 0);
+}
+
 /** Below this many searches, Search Console alone is too thin to work from. */
 export const THIN_GSC = 20;
 

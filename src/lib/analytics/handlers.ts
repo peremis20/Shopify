@@ -1,3 +1,4 @@
+import { accountsDueForStrategy, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
@@ -712,6 +713,25 @@ export const backlinkEmail = (req: Request) =>
     }
   });
 
+/** The Strategist's plan for the week. POST with {refresh: true} plans again now (at most once a day). */
+export const strategyReport = (req: Request) =>
+  withAccount(req, async (account) => {
+    let report = await readStrategy(account.id);
+    const body = req.method === "POST" ? ((await req.json().catch(() => ({}))) as { refresh?: boolean }) : {};
+    const fresh = report && Date.now() - Date.parse(report.at) < 24 * 3600 * 1000;
+    if (body.refresh && !fresh) {
+      const conn = await getConnection(account.id);
+      const profile = await readProfile(account.id);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+      try {
+        report = (await runStrategist(account.id, conn, domain)) ?? report;
+      } catch (err) {
+        return json({ report, error: message(err) }, 502);
+      }
+    }
+    return json({ report });
+  });
+
 /** What the Inspector found: problems, what agents repaired, and what needs the owner. */
 export const inspectorReport = (req: Request) =>
   withAccount(req, async (account) => {
@@ -1006,6 +1026,14 @@ export async function autopilotTick(): Promise<Response> {
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
       const found = await inspect(accountId, conn, { repair: true, ourDomain: domain }).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
+    }
+    // The Strategist plans each site's week (one site per hour, so AI use stays small).
+    for (const accountId of await accountsDueForStrategy(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
+      const plan = await runStrategist(accountId, conn, domain).catch((e) => (console.error(`strategist failed: ${message(e)}`), null));
+      if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
     return json({ results });
