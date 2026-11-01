@@ -180,6 +180,7 @@ function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
               <span className="min-w-0">
                 <span className="text-dash-ink">{m.action}</span>
                 <span className="block text-xs text-dash-muted">{m.why}</span>
+                {m.evidence && <span className="block text-[11px] text-dash-muted">Based on: {m.evidence}</span>}
               </span>
             </li>
           ))}

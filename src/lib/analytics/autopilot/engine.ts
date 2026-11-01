@@ -27,7 +27,7 @@ import { EditedMeanwhile, siteFor, type SiteAccess } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
-import { recordReviewNotes } from "./reviews";
+import { measuredResults } from "./results";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
@@ -292,6 +292,7 @@ async function planNextChange(
   notes: string[],
   recordGap: ((cand: Candidate, page: StoreResource, idea: string) => Promise<void>) | null
 ): Promise<Plan | null> {
+  let results: Promise<string[]> | undefined;
   const hub: Hub = { accountId: ctx.accountId, conn, platform: ctx.platform, ourDomain: ctx.ourDomain, shared: new Map() };
   const apps = await readyApps(hub);
   const all = await gatherCandidates(hub, apps, notes);
@@ -331,6 +332,8 @@ async function planNextChange(
     if (!cand || !page) return null;
 
     const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
+    // What this site's own past changes did, measured: the writer and its reviewer learn from it.
+    briefs.push(...(await (results ??= measuredResults(ctx.accountId).catch(() => []))));
     const improvement = await writeImprovement(
       ctx.ai,
       page,
@@ -344,7 +347,6 @@ async function planNextChange(
       briefs,
       ctx.allowContent
     );
-    if (!ctx.preview) await recordReviewNotes(ctx.accountId, "page change", [improvement.suggestion]).catch(() => undefined);
     if (improvement.reviewNote) notes.push(`${new URL(cand.op.page).pathname}: ${improvement.reviewNote}`);
     if (improvement.intentMatch) return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used };
 

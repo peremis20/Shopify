@@ -1,5 +1,5 @@
 import { readAuthorityPlan } from "./authority-coach";
-import { readReviewNotes } from "./reviews";
+import { measuredResults } from "./results";
 import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -12,7 +12,7 @@ import { aiProvider, readPlatformSettings, type AiProvider } from "./settings";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
 import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
-import { challengeStrategy, planStrategy, type StrategyMove } from "./writer";
+import { backedByFacts, challengeStrategy, planStrategy, type StrategyMove } from "./writer";
 
 /**
  * The Strategist: once a week it reads everything the other agents learned
@@ -50,7 +50,7 @@ export async function readStrategy(accountId: string): Promise<StrategyReport | 
 export const strategyDue = (r: StrategyReport | null) => !r || Date.now() - Date.parse(r.at) > WEEK;
 
 /** Everything the agents know, as plain facts the strategist (and its critic) can check against. */
-async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; context: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
+async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
   const lines: string[] = [];
   const known = new Set<string>();
   let visitors: number | null = null;
@@ -99,19 +99,13 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   }
   const problems = await inspect(accountId, conn, { repair: false, ourDomain }).catch(() => []);
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
-  // The Authority Coach's view, so content and links pull the same way.
+  // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
+  lines.push(...(await measuredResults(accountId).catch(() => [])));
+  // The Authority Coach shares what it measured (not its plan): link sources found from competitors this week.
   const authority = await readAuthorityPlan(accountId).catch(() => null);
-  // It is the other agent's opinion, not data, so it travels apart from the facts.
-  const notes = await readReviewNotes(accountId).catch(() => []);
-  const context = [
-    authority
-      ? `The Authority Coach's plan this week (its opinion, not data; do not treat it as fact): ${authority.assessment} Moves: ${authority.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
-      : "",
-    // What the reviewing agents suggested while checking this site's work: ideas to weigh, not facts.
-    notes.length ? `Ideas from the agents that checked this site's work lately (opinions, not data):\n${notes.slice(0, 10).map((n) => `- ${n.agent}: ${n.note}`).join("\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  if (authority?.studied.length) {
+    lines.push(`Link sources found from competitors (Authority Coach, ${authority.at.slice(0, 10)}): ` + authority.studied.map((s) => `${s.domain}: ${s.found}`).join("; ") + ".");
+  }
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
   // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
   let revenue: number | null = null;
@@ -128,7 +122,7 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
     }
   }
 
-  return { facts: lines.join("\n"), context, known, visitors, revenue };
+  return { facts: lines.join("\n"), known, visitors, revenue };
 }
 
 /** Plans the week, has it challenged, acts on what survives. */
@@ -136,8 +130,8 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const platform = await readPlatformSettings();
   const ai: AiProvider | null = aiProvider(platform);
   if (!ai) return null;
-  const { facts, context, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
-  const plan = await planStrategy(ai, context ? `${facts}\n\n${context}` : facts);
+  const { facts, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
+  const plan = await planStrategy(ai, facts);
   const moves = plan.moves.slice(0, 5);
   // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
   let checked = true;
@@ -153,6 +147,11 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     const k = m.keyword?.trim().toLowerCase() ?? null;
     let kept = verdict.keep[i];
     let challenge = verdict.notes[i];
+    // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
+    if (kept && !backedByFacts(m.evidence, facts)) {
+      kept = false;
+      challenge = "Dropped: the number it rests on isn't in this week's data.";
+    }
     // The agents only act on searches that really appear in the data, never invented ones.
     if (kept && k && (m.kind === "target" || m.kind === "cluster") && (!known.has(k) || isJunkKeyword(k, { faith }))) {
       kept = false;

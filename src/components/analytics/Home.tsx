@@ -352,6 +352,7 @@ function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
                   <div className="min-w-0">
                     <p className="text-dash-ink">{m.action}</p>
                     <p className="text-xs text-dash-muted">{m.why}{m.done ? ` ${m.done}` : ""}</p>
+                    {m.evidence && <p className="text-[11px] text-dash-muted">Based on: {m.evidence}</p>}
                   </div>
                 </li>
               ))}

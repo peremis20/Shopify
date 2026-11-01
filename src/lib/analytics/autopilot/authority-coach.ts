@@ -7,8 +7,7 @@ import { clientListKnown, otherClient } from "./clients";
 import { fetchSerp } from "./serp";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
-import { readStrategy } from "./strategist";
-import { challengeStrategy, planAuthority, type AuthorityMove } from "./writer";
+import { backedByFacts, challengeStrategy, planAuthority, type AuthorityMove } from "./writer";
 
 /**
  * The Authority Coach. Once a week per site it:
@@ -151,15 +150,10 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     const top = [...byPage.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
     if (top.length) lines.push("Pages that already earn the most Google clicks (90 days), the best ones to offer: " + top.map(([p, c]) => `${p} (${c})`).join("; "));
   }
-  const strategy = await readStrategy(accountId).catch(() => null);
   const facts = lines.join("\n");
-  // The other agent's plan is an opinion, not data: it goes in as context, apart from the facts.
-  const context = strategy
-    ? `The Strategist's plan this week (its opinion, not data; do not treat it as fact): ${strategy.assessment} Moves: ${strategy.moves.filter((m) => m.kept).map((m) => m.action).join(" ")}`
-    : "";
 
   // 3. Plan, then a second AI challenges each move.
-  const plan = await planAuthority(ai, context ? `${facts}\n\n${context}` : facts);
+  const plan = await planAuthority(ai, facts);
   const moves = plan.moves.slice(0, 5);
   let checked = true;
   const verdict = await challengeStrategy(ai, facts, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch(() => {
@@ -169,7 +163,12 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const report: AuthorityPlan = {
     at: new Date().toISOString(),
     assessment: plan.assessment,
-    moves: moves.map((m, i) => ({ ...m, kept: verdict.keep[i], challenge: verdict.notes[i] })),
+    // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
+    moves: moves.map((m, i) =>
+      verdict.keep[i] && !backedByFacts(m.evidence, facts)
+        ? { ...m, kept: false, challenge: "Dropped: the number it rests on isn't in this week's data." }
+        : { ...m, kept: verdict.keep[i], challenge: verdict.notes[i] }
+    ),
     studied,
     checked,
   };

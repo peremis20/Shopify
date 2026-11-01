@@ -86,8 +86,6 @@ export interface PageImprovement {
   intentMatch: boolean;
   /** When intentMatch is false: what the page would need, as a content idea. */
   missingForIntent: string;
-  /** The reviewing AI's idea for ranking faster next time. */
-  suggestion?: string;
   /** What the reviewing AI turned down, in plain words. */
   reviewNote?: string;
 }
@@ -583,12 +581,11 @@ Keep the SEO title and description if they are already strong for this search; y
   let metaDescription = safe(trimWords(polish(out.metaDescription), 170), page.metaDescription);
   // A second AI checks every part that would change; it can reject a part or offer a stronger title or description.
   // If the check can't run, nothing changes (the run fails visibly and tries again).
-  let suggestion = "";
   const titleChanged = Boolean(metaTitle) && metaTitle !== (page.metaTitle ?? "");
   const descChanged = Boolean(metaDescription) && metaDescription !== (page.metaDescription ?? "");
   let reviewNote = "";
   if (out.intentMatch !== false && (titleChanged || descChanged || section)) {
-    const r = await reviewImprovement(ai, page, target.query, {
+    const r = await reviewImprovement(ai, page, target.query, briefs, {
       metaTitle: titleChanged ? metaTitle : "",
       metaDescription: descChanged ? metaDescription : "",
       contentSectionHtml: section,
@@ -605,7 +602,6 @@ Keep the SEO title and description if they are already strong for this search; y
     ].filter(Boolean);
     if (turnedDown.length) reviewNote = `The reviewing AI turned down the ${turnedDown.join(", ")}, so ${turnedDown.length === 1 ? "it was" : "they were"} left out.`;
     if (!r.keepSection) section = "";
-    suggestion = r.suggestion;
   }
   return {
     metaTitle,
@@ -617,7 +613,6 @@ Keep the SEO title and description if they are already strong for this search; y
     reason: out.reason.trim(),
     intentMatch: out.intentMatch !== false,
     missingForIntent: (out.missingForIntent ?? "").trim(),
-    suggestion,
     reviewNote,
   };
 }
@@ -707,8 +702,6 @@ export interface NewArticle {
   summary: string;
   html: string;
   slug: string;
-  /** The reviewing AI's idea for ranking faster next time. */
-  suggestion?: string;
 }
 
 const ARTICLE_SCHEMA = {
@@ -748,7 +741,7 @@ export async function writeNewArticle(
     /** Broad searches to work in naturally as support (the main search stays the focus). */
     supporting?: string[];
   }
-): Promise<NewArticle | { rejected: string; suggestion: string } | null> {
+): Promise<NewArticle | { rejected: string } | null> {
   const prompt = `Write a new article for this website that can rank on Google page one for the search "${brief.keyword}".
 
 What ranks on page one now (learn what searchers expect; never copy their wording):
@@ -781,7 +774,7 @@ If this search isn't a fit for this website's business, return an empty string f
     brief.competitors.map((c) => `${c.domain}: ${c.title}`),
     { title: out.title, metaTitle: out.metaTitle, metaDescription: out.metaDescription, html }
   );
-  if (!r.publish) return { rejected: r.reason || "The reviewing AI didn't think it was good enough to publish.", suggestion: r.suggestion };
+  if (!r.publish) return { rejected: r.reason || "The reviewing AI didn't think it was good enough to publish." };
   const drop = new Set(r.drop);
   html = dropBlocks(html, (_t, i) => drop.has(i));
   // Too little left to stand as an article.
@@ -802,7 +795,6 @@ If this search isn't a fit for this website's business, return an empty string f
     summary: safe(trimWords(polish(out.summary), 300)),
     html,
     slug: slug || "article",
-    suggestion: r.suggestion,
   };
 }
 
@@ -821,7 +813,7 @@ export async function writeOutreach(
     brokenLink?: string | null;
     anchor?: string | null;
   }
-): Promise<{ subject: string; body: string; suggestion?: string }> {
+): Promise<{ subject: string; body: string }> {
   const ask =
     p.kind === "competitor"
       ? `Their page "${p.pageTitle}" covers ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as another helpful resource for their readers, in one sentence on what it covers. Never mention or criticize any other site.`
@@ -865,7 +857,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const keepsLinks = (t: string) => links.every((u) => t.includes(u));
     const useBody = rb && rb.text && rb.dropped === 0 && keepsLinks(rb.text) ? rb.text : body.text;
     const useSubject = rs && rs.text && rs.dropped === 0 ? rs.text : subject.text;
-    return { subject: polish(useSubject) || "A quick note about your page", body: useBody, suggestion: r.suggestion };
+    return { subject: polish(useSubject) || "A quick note about your page", body: useBody };
   }
   throw new Error("Couldn't write a safe email for this one. Try again, or write a short note of your own.");
 }
@@ -928,6 +920,8 @@ export interface StrategyMove {
   keyword: string | null;
   action: string;
   why: string;
+  /** The exact fact the move rests on, copied from the facts; a move whose evidence isn't in the data is dropped. */
+  evidence: string;
 }
 
 export interface StrategyPlan {
@@ -942,8 +936,9 @@ const MOVE_SCHEMA = {
     keyword: { type: ["string", "null"] },
     action: { type: "string" },
     why: { type: "string" },
+    evidence: { type: "string", description: "The fact this move rests on, copied word for word from the facts." },
   },
-  required: ["kind", "keyword", "action", "why"],
+  required: ["kind", "keyword", "action", "why", "evidence"],
 };
 
 export async function planStrategy(ai: AiProvider, facts: string): Promise<StrategyPlan> {
@@ -956,7 +951,7 @@ ${facts}
 
 Think like a seasoned SEO: refreshing pages already at positions 4 to 20 is the fastest win, faster than new pages; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated; backlinks come easier to a page worth linking to, so you may suggest one "asset" move: a resource other sites would cite (a clear guide, checklist or comparison), built only from what the site can honestly say, never invented data or surveys.
 
-Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers). Never invent searches, numbers or results. No hyphens or dashes in the text.`,
+Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of what was kept and stop what was undone. Never invent searches, numbers or results. No hyphens or dashes in the text.`,
     { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }
   );
 }
@@ -965,20 +960,20 @@ Return JSON: "assessment" (3 short plain sentences: where the site stands agains
 export async function challengeStrategy(
   ai: AiProvider,
   facts: string,
-  plan: { moves: { kind: string; keyword: string | null; action: string; why: string }[] },
+  plan: { moves: { kind: string; keyword: string | null; action: string; why: string; evidence?: string }[] },
   role = "strategist's weekly plan"
 ): Promise<{ keep: boolean[]; notes: string[] }> {
   const others = [ai, ...(ai.backups ?? [])];
   const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
   const out = await askJson<{ verdicts: { keep: boolean; note: string }[] }>(
     { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
-    `You are a skeptical senior SEO reviewing another ${role} for a website aiming at 20,000 Google visitors a month. Challenge every move: is it backed by the facts, is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
+    `You are a skeptical senior SEO reviewing another ${role} for a website aiming at 20,000 Google visitors a month. Judge only by the data: is each move backed by the facts (its evidence must say what the move claims), is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
 
 Facts:
 ${facts}
 
 Plan:
-${plan.moves.map((m, i) => `${i + 1}. [${m.kind}] ${m.action} (${m.keyword ?? "no search"}): ${m.why}`).join("\n")}
+${plan.moves.map((m, i) => `${i + 1}. [${m.kind}] ${m.action} (${m.keyword ?? "no search"}): ${m.why} Evidence: ${m.evidence ?? "(none)"}`).join("\n")}
 
 Return JSON "verdicts": one per move, in order, each with "keep" (true or false) and "note" (one plain sentence: why it holds up, or what is wrong with it). No hyphens or dashes.`,
     {
@@ -1027,6 +1022,8 @@ export interface AuthorityMove {
   keyword: string | null;
   action: string;
   why: string;
+  /** The exact fact the move rests on, copied from the facts. */
+  evidence: string;
 }
 
 export async function planAuthority(ai: AiProvider, facts: string): Promise<{ assessment: string; moves: AuthorityMove[] }> {
@@ -1037,7 +1034,7 @@ export async function planAuthority(ai: AiProvider, facts: string): Promise<{ as
 Facts from this week (real data from the other agents, nothing else is known):
 ${facts}
 
-Return JSON: "assessment" (3 short plain sentences: where the site's authority stands, the best opportunity, the biggest gap) and "moves" (at most 5, best first). Each move: kind (outreach, asset, fix or stop), keyword (a site, page or topic copied from the facts, else null), action (one sentence the owner or an agent can act on this week), why (one sentence citing the numbers). Never invent sites, numbers or results. No hyphens or dashes in the text.`,
+Return JSON: "assessment" (3 short plain sentences: where the site's authority stands, the best opportunity, the biggest gap) and "moves" (at most 5, best first). Each move: kind (outreach, asset, fix or stop), keyword (a site, page or topic copied from the facts, else null), action (one sentence the owner or an agent can act on this week), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Never invent sites, numbers or results. No hyphens or dashes in the text.`,
     {
       type: "object",
       properties: {
@@ -1046,14 +1043,39 @@ Return JSON: "assessment" (3 short plain sentences: where the site's authority s
           type: "array",
           items: {
             type: "object",
-            properties: { kind: { type: "string", enum: ["outreach", "asset", "fix", "stop"] }, keyword: { type: ["string", "null"] }, action: { type: "string" }, why: { type: "string" } },
-            required: ["kind", "keyword", "action", "why"],
+            properties: {
+              kind: { type: "string", enum: ["outreach", "asset", "fix", "stop"] },
+              keyword: { type: ["string", "null"] },
+              action: { type: "string" },
+              why: { type: "string" },
+              evidence: { type: "string" },
+            },
+            required: ["kind", "keyword", "action", "why", "evidence"],
           },
         },
       },
       required: ["assessment", "moves"],
     }
   );
+}
+
+/**
+ * True when a move's evidence really is in the data: its words (at least 15 characters, ignoring case, spacing and
+ * punctuation) appear in the facts, and every number it quotes appears there too.
+ */
+export function backedByFacts(evidence: string | null | undefined, facts: string): boolean {
+  const norm = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, " ").replace(/\s+/g, " ").trim();
+  const e = norm(evidence ?? "");
+  if (e.length < 15) return false;
+  const f = norm(facts);
+  if (f.includes(e)) return true;
+  // Allow a light paraphrase only when every number in it is a number from the facts and most words are there.
+  const nums = e.match(/\d+(\.\d+)?/g) ?? [];
+  const factNums = new Set(f.match(/\d+(\.\d+)?/g) ?? []);
+  if (!nums.length || !nums.every((n) => factNums.has(n))) return false;
+  const words = e.split(" ").filter((w) => w.length > 3 && !/\d/.test(w));
+  const factWords = new Set(f.split(" "));
+  return words.length > 0 && words.filter((w) => factWords.has(w)).length / words.length >= 0.8;
 }
 
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
@@ -1065,11 +1087,6 @@ function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
   return { ...critic, site: keepSite ? ai.site : undefined, backups: others.filter((o) => o !== critic) };
 }
 
-const SUGGESTION = {
-  type: "string",
-  description: "One plain sentence: the single best way to make work like this rank faster for this site next time, from what you saw. Empty if nothing useful.",
-};
-
 /**
  * A second AI checks a page change before it is made: is each part right for the search, better than what is there,
  * and free of invented facts? It can offer a stronger title or description, which then pass the same guards.
@@ -1078,11 +1095,16 @@ async function reviewImprovement(
   ai: AiProvider,
   page: StoreResource,
   query: string,
+  /** The real data the writer had: Search Console, page one, search volumes, this site's measured results. */
+  briefs: string[],
   change: { metaTitle: string; metaDescription: string; contentSectionHtml: string }
-): Promise<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string; suggestion: string }> {
+): Promise<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string }> {
   const prompt = `You are a senior SEO checking another writer's change to a page before it goes live. Your job is to stop mistakes and make it rank faster.
 
 Search the page is aimed at: ${query}
+Data (real numbers; judge by these, not by opinion):
+${briefs.filter(Boolean).join("\n\n").slice(0, 6000) || "(none)"}
+
 Address: ${page.url}
 Current SEO title: ${page.metaTitle ?? "(not set)"}
 Current meta description: ${page.metaDescription ?? "(not set)"}
@@ -1095,9 +1117,9 @@ Proposed SEO title: ${change.metaTitle || "(unchanged)"}
 Proposed meta description: ${change.metaDescription || "(unchanged)"}
 Proposed new section: ${change.contentSectionHtml ? `\n"""\n${change.contentSectionHtml}\n"""` : "(none)"}
 
-For each proposed part, keep it only if it matches what people searching that want, is at least as good as the current one, reads naturally (no keyword stuffing), and states nothing the page text doesn't support. When unsure, do not keep it.
+For each proposed part, keep it only if the data supports it: it matches what people searching that want (Search Console and page one above), is at least as good as the current one, reads naturally (no keyword stuffing), and states nothing the page text doesn't support. When unsure, do not keep it.
 If you can write a clearly stronger SEO title (under 60 characters) or meta description (under 155 characters) for this search, using only what the page supports, give it in betterTitle or betterDescription; otherwise return an empty string. No hyphens or dashes.`;
-  const out = await askJson<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string; suggestion: string }>(
+  const out = await askJson<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string }>(
     reviewerOf(ai),
     prompt,
     {
@@ -1108,9 +1130,8 @@ If you can write a clearly stronger SEO title (under 60 characters) or meta desc
         keepSection: { type: "boolean" },
         betterTitle: { type: "string" },
         betterDescription: { type: "string" },
-        suggestion: SUGGESTION,
       },
-      required: ["keepTitle", "keepDescription", "keepSection", "betterTitle", "betterDescription", "suggestion"],
+      required: ["keepTitle", "keepDescription", "keepSection", "betterTitle", "betterDescription"],
     }
   );
   return {
@@ -1119,7 +1140,6 @@ If you can write a clearly stronger SEO title (under 60 characters) or meta desc
     keepSection: out.keepSection === true,
     betterTitle: (out.betterTitle ?? "").trim(),
     betterDescription: (out.betterDescription ?? "").trim(),
-    suggestion: (out.suggestion ?? "").trim(),
   };
 }
 
@@ -1129,7 +1149,7 @@ async function reviewArticle(
   keyword: string,
   pageOne: string[],
   article: { title: string; metaTitle: string; metaDescription: string; html: string }
-): Promise<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string; suggestion: string }> {
+): Promise<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string }> {
   const blocks = blocksOf(article.html);
   const prompt = `You are a senior SEO editor checking another writer's new article before it is published on this website. Your job is to stop mistakes and help it reach Google page one for "${keyword}".
 
@@ -1144,7 +1164,7 @@ ${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
 1. publish: true only if the article fits this website, answers what people searching "${keyword}" want at least as well as page one, and opens with a direct answer. Give the reason in one plain sentence.
 2. drop: the numbers of blocks to remove because they state something that is not well established general knowledge, give health, dose or safety advice, are off topic, or are filler.
 3. betterTitle and betterMetaDescription: a clearly stronger title (under 60 characters) or description (under 155 characters) for this search, or an empty string. No hyphens or dashes.`;
-  const out = await askJson<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string; suggestion: string }>(
+  const out = await askJson<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string }>(
     reviewerOf(ai),
     prompt,
     {
@@ -1155,9 +1175,8 @@ ${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
         drop: { type: "array", items: { type: "integer" } },
         betterTitle: { type: "string" },
         betterMetaDescription: { type: "string" },
-        suggestion: SUGGESTION,
       },
-      required: ["publish", "reason", "drop", "betterTitle", "betterMetaDescription", "suggestion"],
+      required: ["publish", "reason", "drop", "betterTitle", "betterMetaDescription"],
     }
   );
   return {
@@ -1166,7 +1185,6 @@ ${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
     drop: (out.drop ?? []).map(Number).filter(Number.isInteger),
     betterTitle: (out.betterTitle ?? "").trim(),
     betterMetaDescription: (out.betterMetaDescription ?? "").trim(),
-    suggestion: (out.suggestion ?? "").trim(),
   };
 }
 
@@ -1195,8 +1213,8 @@ async function reviewOutreach(
   /** What the writer was told about them: the facts the email may state. */
   given: string,
   email: { subject: string; body: string }
-): Promise<{ ok: boolean; subject: string; body: string; suggestion: string }> {
-  const out = await askJson<{ ok: boolean; subject: string; body: string; suggestion: string }>(
+): Promise<{ ok: boolean; subject: string; body: string }> {
+  const out = await askJson<{ ok: boolean; subject: string; body: string }>(
     reviewerOf(ai),
     `You check outreach emails before a website owner sends them. This one is from the owner of ${p.ourSite} to the person who runs ${p.siteName}, about their page "${p.pageTitle}".
 What is known about them and the reason for writing (these facts are true and may be stated): ${given}
@@ -1209,11 +1227,11 @@ ok: false if it claims anything beyond the known facts above (credentials, resul
 If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks.`,
     {
       type: "object",
-      properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" }, suggestion: SUGGESTION },
-      required: ["ok", "subject", "body", "suggestion"],
+      properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" } },
+      required: ["ok", "subject", "body"],
     }
   );
-  return { ok: out.ok === true, subject: (out.subject ?? "").trim(), body: (out.body ?? "").trim(), suggestion: (out.suggestion ?? "").trim() };
+  return { ok: out.ok === true, subject: (out.subject ?? "").trim(), body: (out.body ?? "").trim() };
 }
 
 /**
@@ -1224,9 +1242,9 @@ export async function reviewProspects(
   ai: AiProvider,
   ourSite: string,
   prospects: { domain: string; title: string; snippet: string; kind: string; topic: string }[]
-): Promise<{ keep: boolean[]; suggestion: string }> {
-  if (!prospects.length) return { keep: [], suggestion: "" };
-  const out = await askJson<{ keep: number[]; suggestion: string }>(
+): Promise<{ keep: boolean[] }> {
+  if (!prospects.length) return { keep: [] };
+  const out = await askJson<{ keep: number[] }>(
     reviewerOf(ai),
     `Another agent found these sites as backlink prospects for ${ourSite}. Check each one before the owner spends time on it.
 ${prospects.map((p, i) => `[${i}] ${p.domain} (${p.kind}, topic "${p.topic}"): "${p.title}". ${p.snippet.slice(0, 200)}`).join("\n")}
@@ -1234,10 +1252,10 @@ ${prospects.map((p, i) => `[${i}] ${p.domain} (${p.kind}, topic "${p.topic}"): "
 Return in "keep" the numbers of the sites worth contacting: a real site or publication related to ${ourSite}'s topics that could link to it honestly. Leave out link farms, sites selling paid or sponsored links, spam directories, scraped or auto generated pages, and sites on unrelated subjects. When unsure, leave it out.`,
     {
       type: "object",
-      properties: { keep: { type: "array", items: { type: "integer" } }, suggestion: SUGGESTION },
-      required: ["keep", "suggestion"],
+      properties: { keep: { type: "array", items: { type: "integer" } } },
+      required: ["keep"],
     }
   );
   const keep = new Set((out.keep ?? []).map(Number));
-  return { keep: prospects.map((_, i) => keep.has(i)), suggestion: (out.suggestion ?? "").trim() };
+  return { keep: prospects.map((_, i) => keep.has(i)) };
 }

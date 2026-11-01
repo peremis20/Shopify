@@ -45,7 +45,6 @@ import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/hea
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { checkAiKey, writeOutreach } from "./autopilot/writer";
-import { recordReviewNotes } from "./autopilot/reviews";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -731,7 +730,6 @@ export const backlinkEmail = (req: Request) =>
           brokenLink: p.brokenLink ?? null,
           anchor: p.anchor ?? null,
         });
-      await recordReviewNotes(account.id, "outreach email", [email.suggestion]).catch(() => undefined);
       return json({ subject: email.subject, body: email.body });
     } catch (err) {
       return json({ error: message(err) }, 502);
