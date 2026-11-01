@@ -12,11 +12,14 @@ import { readTargets } from "./targets";
  * - mentions: pages that already name the brand, often without a link
  * - resources: "resources" and "useful links" pages on the site's topics
  * - guest: sites on the topic that ask for guest articles ("write for us")
+ * - podcast: shows on the topic that invite guests (PR and Mentions Agent)
+ * - roundup: expert roundups on the topic that collect answers (PR and Mentions Agent)
+ * - broken: a page on the topic with a dead link the site can replace (Broken Link Agent, broken-links.ts)
  * Each one gets an outreach email the owner can copy and send themselves.
  * Nothing is ever sent automatically.
  */
 
-export type ProspectKind = "mention" | "resource" | "guest";
+export type ProspectKind = "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken";
 export type ProspectStatus = "new" | "contacted" | "won" | "skip";
 
 export interface Prospect {
@@ -32,6 +35,10 @@ export interface Prospect {
   foundAt: string;
   /** When the owner last changed the status (e.g. the day a link was won). */
   statusAt?: string;
+  /** Broken Link Agent: the dead link on their page, its link text, and the site's page to offer instead. */
+  brokenLink?: string;
+  anchor?: string;
+  ourPage?: string | null;
 }
 
 export interface ProspectList {
@@ -88,6 +95,9 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
     queries.push({ q: `"${t}" intitle:resources`, kind: "resource", topic: t });
     queries.push({ q: `"${t}" "useful links"`, kind: "resource", topic: t });
     queries.push({ q: `"${t}" "write for us"`, kind: "guest", topic: t });
+    // PR and Mentions Agent: shows and roundups that want people to speak on the topic.
+    queries.push({ q: `"${t}" podcast "be a guest"`, kind: "podcast", topic: t });
+    queries.push({ q: `"${t}" "expert roundup"`, kind: "roundup", topic: t });
   }
 
   // Without the customer list this can't tell customers apart, and saving would drop the owner's list: try again later.
@@ -131,4 +141,21 @@ export async function setProspectStatus(accountId: string, url: string, status: 
   list.prospects = list.prospects.map((p) => (p.url === url ? { ...p, status, statusAt: new Date().toISOString() } : p));
   await save(accountId, { ...list });
   return list;
+}
+
+/**
+ * Upgrades prospects with what another agent found (the Broken Link Agent), keeping the owner's marks.
+ * Each update replaces a new prospect on the same page, or is added when the page isn't listed.
+ */
+export async function upsertProspects(accountId: string, updates: Prospect[]): Promise<void> {
+  const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
+  for (const u of updates) {
+    const i = list.prospects.findIndex((p) => p.url === u.url || p.domain === u.domain);
+    if (i === -1) list.prospects.unshift(u);
+    else if (list.prospects[i].status === "new") list.prospects[i] = { ...list.prospects[i], ...u, status: "new" };
+  }
+  // Same cap as the weekly search: the owner's marks always stay, new finds are trimmed.
+  const marked = list.prospects.filter((p) => p.status !== "new");
+  const fresh = list.prospects.filter((p) => p.status === "new");
+  await save(accountId, { ...list, prospects: [...fresh.slice(0, Math.max(0, MAX - marked.length)), ...marked] });
 }

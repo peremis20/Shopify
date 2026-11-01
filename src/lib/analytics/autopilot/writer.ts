@@ -750,10 +750,27 @@ If this search isn't a fit for this website's business, return an empty string f
 /** A short, personal outreach email asking a site to link to this one. The owner sends it. */
 export async function writeOutreach(
   ai: AiProvider,
-  p: { kind: "mention" | "resource" | "guest"; siteName: string; pageTitle: string; pageUrl: string; ourSite: string; ourBrand: string | null; topic: string; ourPage: string | null }
+  p: {
+    kind: "mention" | "resource" | "guest" | "podcast" | "roundup" | "broken";
+    siteName: string;
+    pageTitle: string;
+    pageUrl: string;
+    ourSite: string;
+    ourBrand: string | null;
+    topic: string;
+    ourPage: string | null;
+    brokenLink?: string | null;
+    anchor?: string | null;
+  }
 ): Promise<{ subject: string; body: string }> {
   const ask =
-    p.kind === "mention"
+    p.kind === "broken" && p.brokenLink
+      ? `One link on their page no longer works: "${p.anchor ?? "a link"}" (${p.brokenLink}). Point it out helpfully as a small favor, first. Then suggest ${p.ourPage ?? p.ourSite} as a working replacement on the same subject, in one sentence on what it covers. No pressure.`
+      : p.kind === "podcast"
+        ? `They run a podcast on ${p.topic} that welcomes guests. Offer to be a guest: one specific episode idea on ${p.topic} and what their listeners would take away, from the angle of ${p.ourBrand ?? p.ourSite}. Keep claims modest.`
+        : p.kind === "roundup"
+          ? `They publish expert roundups on ${p.topic}. Offer a short, genuinely useful answer for a future roundup, naming the question you'd be glad to answer, and ask to be considered (with a link to ${p.ourSite} if they include it).`
+          : p.kind === "mention"
       ? `Their page mentions ${p.ourBrand ?? p.ourSite}. Thank them, and ask kindly whether they would add a link to ${p.ourSite} where it is mentioned, so their readers can find it.`
       : p.kind === "resource"
         ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`

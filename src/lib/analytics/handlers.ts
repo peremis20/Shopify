@@ -1,3 +1,4 @@
+import { accountsDueForBrokenLinks, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
@@ -706,7 +707,8 @@ export const backlinkEmail = (req: Request) =>
       const kw = new Set(t.keyword.split(/[^a-z0-9]+/));
       return t.page && words.length > 0 && words.every((w) => kw.has(w));
     });
-    const ourPage = best?.page ?? target?.page ?? null;
+    // The Broken Link Agent already picked the replacement page for a dead link.
+    const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
     try {
       return json(
         await writeOutreach(ai, {
@@ -718,6 +720,8 @@ export const backlinkEmail = (req: Request) =>
           ourBrand: profile.brandName ?? null,
           topic: p.topic,
           ourPage,
+          brokenLink: p.brokenLink ?? null,
+          anchor: p.anchor ?? null,
         })
       );
     } catch (err) {
@@ -1057,6 +1061,14 @@ export async function autopilotTick(): Promise<Response> {
       // Failed or couldn't run: wait a month instead of holding up the other sites.
       if (!done) await markPruneTried(accountId);
       if (done) results.push(`account ${accountId} pruning: ${done}`);
+    }
+    // The Broken Link Agent: once a week per site, one site per hour.
+    for (const accountId of await accountsDueForBrokenLinks(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
+      const done = await runBrokenLinks(accountId, conn, domain).catch((e) => (console.error(`broken links failed: ${message(e)}`), null));
+      if (done) results.push(`account ${accountId} broken links: ${done}`);
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of await accountsDueForStrategy(1)) {

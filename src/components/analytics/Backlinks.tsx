@@ -9,6 +9,9 @@ const KIND: Record<Prospect["kind"], { label: string; hint: string }> = {
   mention: { label: "Mentions you", hint: "Already names your brand. Ask them to add a link." },
   resource: { label: "Resource page", hint: "Lists helpful links on your topic. Suggest your page." },
   guest: { label: "Guest article", hint: "Takes articles from other sites. Offer one with a link back." },
+  podcast: { label: "Podcast", hint: "A show on your topic that invites guests. Offer to be on it." },
+  roundup: { label: "Expert roundup", hint: "Collects expert answers on your topic. Offer one." },
+  broken: { label: "Broken link", hint: "Has a dead link you can replace with your page. A helpful favor, and a strong way to earn a link." },
 };
 
 const STATUS: { id: ProspectStatus | "open"; label: string }[] = [
@@ -122,6 +125,12 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
         <span className="text-xs tabular-nums text-dash-muted" title="Site strength (Open PageRank)">{p.authority === null ? "not scored" : `${p.authority.toFixed(1)} / 10`}</span>
       </div>
       <p className="mt-1 whitespace-normal break-words text-xs text-dash-muted">{KIND[p.kind].hint} {p.snippet}</p>
+      {p.brokenLink && (
+        <p className="mt-1 whitespace-normal break-words text-xs text-dash-ink">
+          Dead link on their page: &ldquo;{p.anchor}&rdquo; (<span className="text-dash-muted">{p.brokenLink}</span>)
+          {p.ourPage && <> &middot; offer your page {(() => { try { return new URL(p.ourPage).pathname; } catch { return p.ourPage; } })()}</>}
+        </p>
+      )}
       <div className="mt-2 flex flex-wrap gap-2">
         {p.status === "new" && (
           <button onClick={write} disabled={busy} className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white disabled:opacity-50">
