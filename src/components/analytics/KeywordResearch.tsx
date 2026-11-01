@@ -155,6 +155,7 @@ export function KeywordResearch({ connection, searchQueries, range, onChanged }:
         href="https://ads.google.com/aw/keywordplanner/home"
         linkLabel="Open Keyword Planner"
       />
+      {connected && <SiteAuthority />}
       {!connected ? (
         <p className="text-sm text-dash-muted">
           Connect your Google account in Settings first. Keyword research uses the same sign in.
@@ -601,6 +602,41 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The site's own authority from Open PageRank (0 to 10), next to a plain
+ * guide to what it means for which searches to go after. Hidden until an
+ * Open PageRank key is set.
+ */
+function SiteAuthority() {
+  const [d, setD] = useState<{ ready: boolean; domain: string | null; authority: number | null } | null>(null);
+  useEffect(() => {
+    api<{ ready: boolean; domain: string | null; authority: number | null }>("/api/seo/authority")
+      .then(setD)
+      .catch(() => setD(null));
+  }, []);
+  if (!d?.ready || !d.domain) return null;
+  const a = d.authority;
+  const advice =
+    a === null
+      ? "Open PageRank doesn't have a score for your site yet, which is normal for newer sites. Start with Easy searches."
+      : a < 3
+        ? "A newer or smaller site: Easy searches first. Each one you win builds authority for the next."
+        : a < 5
+          ? "Growing: Easy and Medium searches are within reach, especially where page 1 has sites scoring under 5."
+          : "Strong: you can go after Medium and some Hard searches too.";
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-dash-line bg-white px-4 py-3 text-sm">
+      <div>
+        <p className="text-xs text-dash-muted">Site authority (Open PageRank)</p>
+        <p className="font-serif text-2xl text-dash-ink tabular-nums">{a === null ? "Not scored yet" : `${a.toFixed(1)} / 10`}</p>
+      </div>
+      <p className="min-w-0 flex-1 text-dash-muted">
+        <span className="font-semibold text-dash-ink">{d.domain}.</span> {advice}
+      </p>
     </div>
   );
 }

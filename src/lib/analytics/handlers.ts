@@ -1,3 +1,4 @@
+import { authorityOf, authorityReady } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
@@ -635,6 +636,17 @@ export const rankForThis = (req: Request) =>
     } catch (err) {
       return json({ error: message(err) }, 502);
     }
+  });
+
+/** The site's own authority (Open PageRank, 0 to 10), for SEO Tools. Null when no key is set. */
+export const siteAuthority = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (!(await authorityReady())) return json({ ready: false, domain: null, authority: null });
+    const [conn, profile] = await Promise.all([getConnection(account.id), readProfile(account.id)]);
+    const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? null);
+    if (!domain) return json({ ready: true, domain: null, authority: null });
+    const scores = await authorityOf([domain]).catch(() => new Map<string, number>());
+    return json({ ready: true, domain, authority: scores.get(domain.replace(/^www\./, "")) ?? null });
   });
 
 export const rankTargets = (req: Request) => withAccount(req, async (account) => json({ targets: await readTargets(account.id) }));

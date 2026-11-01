@@ -84,7 +84,7 @@ export function RankForThis({ keyword, monthlySearches, label = "Rank for this" 
       </button>
       {error && <span className="ml-2 text-xs text-dash-down">{error}</span>}
       {result && (
-        <div className="absolute right-0 z-30 mt-2 w-80 max-w-[85vw] whitespace-normal break-words rounded-xl border border-dash-line bg-white p-3 text-left text-xs leading-relaxed shadow-lg">
+        <div className="absolute right-0 z-30 mt-2 max-h-[70vh] w-80 max-w-[85vw] overflow-auto whitespace-normal break-words rounded-xl border border-dash-line bg-white p-3 text-left text-xs leading-relaxed shadow-lg">
           <button onClick={() => setResult(null)} className="float-right text-dash-muted hover:text-dash-ink" aria-label="Close">
             ✕
           </button>
@@ -111,6 +111,31 @@ export function RankForThis({ keyword, monthlySearches, label = "Rank for this" 
               <>No page on your site is about this yet, so the autopilot will write a new article for it from what ranks on Google page 1 and post it to your blog (up to 3 new articles a week, set in Autopilot). It&rsquo;s checked on Google daily in Rank tracker.</>
             )}
           </p>
+          {result.pageOne?.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1 font-semibold text-dash-ink">Who&rsquo;s on Google page 1</p>
+              <ol className="space-y-0.5">
+                {result.pageOne.map((p) => (
+                  <li key={`${p.position}-${p.domain}`} className="flex items-center justify-between gap-2">
+                    <span className="truncate">
+                      <span className="text-dash-muted">{p.position}.</span> {p.domain}
+                    </span>
+                    {p.authority !== null && (
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 font-medium tabular-nums ${p.authority < 5 ? "bg-dash-up/10 text-dash-up" : "bg-dash-down/10 text-dash-down"}`}
+                        title="Site authority from Open PageRank, 0 to 10. Under 5 is beatable."
+                      >
+                        {p.authority.toFixed(1)}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              {result.pageOne.some((p) => p.authority !== null) && (
+                <p className="mt-1 text-dash-muted">Green scores under 5 are sites you can outrank.</p>
+              )}
+            </div>
+          )}
           {result.easier.length > 0 && (
             <div className="mt-3">
               <p className="mb-1 font-semibold text-dash-ink">More long tail searches to rank for first</p>

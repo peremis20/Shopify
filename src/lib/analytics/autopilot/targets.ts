@@ -1,3 +1,4 @@
+import { authorityOf, authorityReady } from "./authority";
 import { ensureSchema, sql } from "../db";
 import { keywordIdeas, keywordVolumes } from "../keywords";
 import { isPostUrl, sitePages } from "../site-crawl";
@@ -39,6 +40,8 @@ export interface TargetResult {
   easier: { keyword: string; monthlySearches: number; why: string }[];
   /** For a broad search: the long tail ones added as main targets for it. */
   added: string[];
+  /** Who ranks on Google page one, with each site's authority (0 to 10, Open PageRank) when known. */
+  pageOne: { position: number; domain: string; authority: number | null }[];
 }
 
 /** How many long tail searches a broad one brings in as main targets. */
@@ -96,9 +99,13 @@ export async function addTarget(
   let winnable: boolean | null = null;
   let why = "Page 1 not checked (no search results key)";
   const easier: TargetResult["easier"] = [];
+  let pageOne: TargetResult["pageOne"] = [];
 
   if (opts.serperKey) {
     const serp = await fetchSerp(opts.serperKey, k);
+    const top = serp.organic.slice(0, 10);
+    const scores = (await authorityReady()) ? await authorityOf(top.map((o) => o.domain)).catch(() => new Map<string, number>()) : new Map<string, number>();
+    pageOne = top.map((o) => ({ position: o.position, domain: o.domain, authority: scores.get(o.domain.replace(/^www\./, "")) ?? null }));
     const r = await room(serp.organic, opts.ourDomain);
     winnable = r.ours !== null || r.small >= 3;
     why = describe(r.small, r.ours);
@@ -162,7 +169,7 @@ export async function addTarget(
       added.push(e.keyword);
     }
   }
-  return { target, easier: easier.filter((e) => !added.includes(e.keyword)), added };
+  return { target, easier: easier.filter((e) => !added.includes(e.keyword)), added, pageOne };
 }
 
 /** Broad targets that share a topic with a search: worked into its content as support. */
