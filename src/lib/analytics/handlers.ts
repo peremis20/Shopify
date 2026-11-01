@@ -2,7 +2,7 @@ import { accountsDueForStrategy, readStrategy, runStrategist } from "./autopilot
 import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
-import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { authorityOf, authorityReady, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
@@ -842,6 +842,7 @@ export const savePlatform = (req: Request) =>
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
+    forgetOprKey();
     const p = await readPlatformSettings();
     let claude: string | undefined;
     const ai = aiProvider(p);

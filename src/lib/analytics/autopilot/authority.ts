@@ -16,10 +16,10 @@ const OPR_HOSTS = ["https://openpagerank.keywordseverywhere.com", "https://openp
 export const STRONG_AUTHORITY = 5;
 
 let storedKey: { value: string | null; at: number } | null = null;
-/** The key from the platform keys in Autopilot settings (or OPR_API_KEY), cached for ten minutes. */
+/** The key from the platform keys in Autopilot settings (or OPR_API_KEY), cached for a minute so a new key takes over quickly. */
 async function oprKey(): Promise<string | null> {
   if (process.env.OPR_API_KEY) return process.env.OPR_API_KEY;
-  if (storedKey && Date.now() - storedKey.at < 600_000) return storedKey.value;
+  if (storedKey && Date.now() - storedKey.at < 60_000) return storedKey.value;
   const platform = await readPlatformSettings().catch(() => null);
   let value = platform?.oprKey ?? null;
   if (!value) {
@@ -30,6 +30,11 @@ async function oprKey(): Promise<string | null> {
   storedKey = { value, at: Date.now() };
   return value;
 }
+
+/** Forget the cached key (called when the platform keys are saved). */
+export const forgetOprKey = () => {
+  storedKey = null;
+};
 
 export const authorityReady = async () => Boolean(await oprKey().catch(() => null));
 
