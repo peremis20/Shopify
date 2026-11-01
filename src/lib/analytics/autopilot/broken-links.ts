@@ -73,16 +73,22 @@ const SKIP_LINKS = /(^|\.)(facebook|instagram|twitter|x|tiktok|linkedin|pinteres
 function privateIp(ip: string): boolean {
   if (ip.includes(":")) {
     const v = ip.toLowerCase();
-    return v === "::1" || v === "::" || v.startsWith("fc") || v.startsWith("fd") || v.startsWith("fe80") || v.startsWith("::ffff:");
+    return v === "::1" || v === "::" || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith("::ffff:") || v.startsWith("64:ff9b:");
   }
   const [a, b] = ip.split(".").map(Number);
   return (
-    a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224
+    a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19)) || (a === 192 && b === 0) || a >= 224
   );
 }
 
-/** Only ordinary public web addresses: http or https, the usual ports, a real public hostname. */
-async function isPublic(url: URL): Promise<boolean> {
+/**
+ * Only ordinary public web addresses: http or https, the usual ports, a real public hostname.
+ * "unresolved": the name doesn't resolve at all (never fetched; the dead domain check decides).
+ * A small gap remains between this lookup and the fetch's own (a host that changes its answer in between);
+ * the checks only read a status code, so it's accepted.
+ */
+async function isPublic(url: URL): Promise<boolean | "unresolved"> {
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (url.port && url.port !== "80" && url.port !== "443") return false;
   const host = url.hostname.toLowerCase();
@@ -90,22 +96,42 @@ async function isPublic(url: URL): Promise<boolean> {
   if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":") || host.startsWith("[")) return false;
   if (!host.includes(".") || /(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/.test(host)) return false;
   const addrs = await lookup(host, { all: true }).catch(() => null);
-  // Doesn't resolve: public as far as we know (the dead domain check decides what that means).
-  if (!addrs) return true;
+  if (!addrs || !addrs.length) return "unresolved";
   return addrs.every((a) => !privateIp(a.address));
 }
 
-/** A GET or HEAD that follows at most 3 redirects, checking every hop is a public address. Null when not allowed. */
-async function safeFetch(href: string, method: "GET" | "HEAD", timeoutMs: number): Promise<Response | null> {
+/**
+ * A GET or HEAD that follows at most 3 redirects, checking every hop is a public address.
+ * Null when not allowed; "unresolved" when a hop's name doesn't resolve.
+ */
+async function safeFetch(href: string, method: "GET" | "HEAD", timeoutMs: number): Promise<Response | null | "unresolved"> {
   let url = new URL(href);
   for (let hop = 0; hop <= 3; hop++) {
-    if (!(await isPublic(url))) return null;
+    const ok = await isPublic(url);
+    if (ok === "unresolved") return "unresolved";
+    if (!ok) return null;
     const res = await fetch(url, { method, headers: UA, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
     const next = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
     if (!next) return res;
+    await res.body?.cancel().catch(() => undefined);
     url = new URL(next, url);
   }
   return null;
+}
+
+/** Reads at most `max` characters of a page, then stops (a huge or endless page can't fill memory). */
+async function readCapped(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  while (text.length < max) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel().catch(() => undefined);
+  return text.slice(0, max);
 }
 
 const decodeEntities = (s: string) =>
@@ -134,17 +160,23 @@ function linksOn(html: string, pageUrl: string, ourDomain: string): { href: stri
   return [...out].slice(0, LINKS_PER_PAGE).map(([href, anchor]) => ({ href, anchor }));
 }
 
-type Verdict = "dead" | "missing-domain" | "alive";
+/** "skipped": not fetched (not a public address), so it says nothing about the network either way. */
+type Verdict = "dead" | "missing-domain" | "alive" | "skipped";
 
 /** Dead only on a clear sign: a GET answered 404 or 410. A domain that doesn't resolve is reported separately. */
 async function check(href: string): Promise<Verdict> {
   try {
     const head = await safeFetch(href, "HEAD", 7000);
-    if (!head) return "alive"; // not ours to fetch: never call it dead
+    if (head === "unresolved") return "missing-domain";
+    if (!head) return "skipped"; // not ours to fetch: never call it dead
+    await head.body?.cancel().catch(() => undefined);
     if (head.status !== 404 && head.status !== 410 && head.status !== 405 && head.status !== 501 && head.status !== 403 && head.status !== 400) return "alive";
     // Some servers answer HEAD wrongly: only a GET decides.
     const get = await safeFetch(href, "GET", 8000);
-    return get && (get.status === 404 || get.status === 410) ? "dead" : "alive";
+    if (get === "unresolved") return "missing-domain";
+    if (!get) return "skipped";
+    await get.body?.cancel().catch(() => undefined);
+    return get.status === 404 || get.status === 410 ? "dead" : "alive";
   } catch (e) {
     const code = (e as { cause?: { code?: string } }).cause?.code ?? "";
     return code === "ENOTFOUND" ? "missing-domain" : "alive";
@@ -180,8 +212,12 @@ export async function runBrokenLinks(accountId: string, conn: Connection | null,
     if (checks >= MAX_CHECKS || overBudget()) break;
     checkedPages[page.url] = new Date().toISOString();
     const res = await safeFetch(page.url, "GET", 9000).catch(() => null);
-    if (!res?.ok || !(res.headers.get("content-type") ?? "").includes("html")) continue;
-    const html = (await res.text().catch(() => "")).slice(0, 2_000_000);
+    if (!res || res === "unresolved") continue;
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html")) {
+      await res.body?.cancel().catch(() => undefined);
+      continue;
+    }
+    const html = await readCapped(res, 2_000_000).catch(() => "");
     const links = linksOn(html, page.url, ourDomain)
       .filter((l) => !isOther(new URL(l.href).hostname))
       .slice(0, MAX_CHECKS - checks);
@@ -192,8 +228,9 @@ export async function runBrokenLinks(accountId: string, conn: Connection | null,
       const batch = links.slice(i, i + 8);
       const verdicts = await Promise.all(batch.map((l) => check(l.href)));
       batch.forEach((l, j) => {
+        // Only real answers count as proof the network works.
         if (verdicts[j] === "alive") resolvedOk++;
-        else dead.push({ ...l, missing: verdicts[j] === "missing-domain" });
+        else if (verdicts[j] === "dead" || verdicts[j] === "missing-domain") dead.push({ ...l, missing: verdicts[j] === "missing-domain" });
       });
     }
     // The first dead link we can offer a real replacement for (this site's best page on its subject).

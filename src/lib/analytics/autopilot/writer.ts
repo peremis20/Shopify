@@ -775,38 +775,66 @@ export async function writeOutreach(
       : p.kind === "resource"
         ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`
         : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title), and say a link back to ${p.ourSite} would be appreciated.`;
-  const out = await askJson<{ subject: string; body: string }>(
-    ai,
-    `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
+  const prompt = `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${ask}
 Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only.
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
-Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`,
-    {
-      type: "object",
-      properties: { subject: { type: "string" }, body: { type: "string" } },
-      required: ["subject", "body"],
+Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`;
+  const schema = {
+    type: "object",
+    properties: { subject: { type: "string" }, body: { type: "string" } },
+    required: ["subject", "body"],
+  };
+  // Written, then checked like an article; when the checks remove too much, written once more, else the owner is told.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await askJson<{ subject: string; body: string }>(ai, prompt, schema);
+    const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
+    const body = safeEmailText(out.body ?? "", keep);
+    const subject = safeEmailText(out.subject ?? "", keep);
+    if (body.text && body.dropped <= body.total / 3) {
+      return { subject: polish(subject.text) || "A quick note about your page", body: body.text };
     }
-  );
-  // The same checks as articles: a sentence with a number, a health claim, an unsourced claim or an AI tell is dropped.
-  // Web addresses are set aside first, so their dots and digits don't count as sentences or numbers.
-  const urls: string[] = [];
-  const masked = out.body.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, (u) => `\u0000${urls.push(u) - 1}\u0000`);
-  const body = masked
+  }
+  throw new Error("Couldn't write a safe email for this one. Try again, or write a short note of your own.");
+}
+
+/**
+ * The article checks for an email: a sentence with a number, a health claim, an unsourced claim or an AI tell is
+ * dropped. Web addresses, bare domains and the names in `keep` (the brand, which may contain digits) are set aside
+ * first, so they don't count as numbers or break sentences. Returns the text and how many sentences were dropped.
+ */
+function safeEmailText(raw: string, keep: string[]): { text: string; dropped: number; total: number } {
+  const saved: string[] = [];
+  const hide = (m: string) => `\u0000${saved.push(m) - 1}\u0000`;
+  let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide);
+  masked = masked.replace(/\b[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\b/gi, hide);
+  for (const name of keep.sort((x, y) => y.length - x.length)) {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    masked = masked.replace(new RegExp(esc, "gi"), hide);
+  }
+  let dropped = 0;
+  let total = 0;
+  const text = masked
     .split(/\n/)
     .map((line) =>
       (line.match(/[^.!?]+[.!?]*\s*/g) ?? [line])
-        .filter((sentence) => !/\d/.test(sentence.replace(/\u0000\d+\u0000/g, "")))
-        .filter((sentence) => !isRisky(sentence) && !isUnsourced(sentence) && !hasAiTell(sentence))
+        .filter((sentence) => {
+          if (!sentence.trim()) return true;
+          total++;
+          const plain = sentence.replace(/\u0000\d+\u0000/g, "");
+          const ok = !/\d/.test(plain) && !isRisky(plain) && !isUnsourced(plain) && !hasAiTell(plain);
+          if (!ok) dropped++;
+          return ok;
+        })
         .join("")
         .trimEnd()
     )
     .join("\n")
-    .replace(/\u0000(\d+)\u0000/g, (_, i) => urls[Number(i)] ?? "")
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => saved[Number(i)] ?? "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-  return { subject: polish(out.subject), body };
+  return { text, dropped, total };
 }
 
 /* ---------- Strategist (strategist.ts): a weekly plan, and a second AI that challenges it ---------- */
