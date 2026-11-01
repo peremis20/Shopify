@@ -1,5 +1,5 @@
 import { readProspects } from "./backlinks";
-import { otherClient } from "./clients";
+import { clientListKnown, otherClient } from "./clients";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
@@ -127,7 +127,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   }
 
   // 4. Each site's data stays its own: no other customer in its backlink list, no site's own ranking in the shared caches.
-  if (opts.ourDomain) {
+  if (opts.ourDomain && (await clientListKnown())) {
     const isOther = await otherClient(opts.ourDomain);
     const list = await readProspects(accountId).catch(() => null);
     const crossed = (list?.prospects ?? []).filter((p) => isOther(p.domain));

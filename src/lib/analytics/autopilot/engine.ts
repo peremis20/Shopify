@@ -249,6 +249,8 @@ async function gatherBriefs(hub: Hub, apps: RankingApp[], cand: Candidate, notes
   const used: string[] = [];
   for (const app of apps) {
     if (!app.brief) continue;
+    // A page topic isn't a real search: don't study page one or search volumes for it.
+    if (cand.inferred && (app.id === "page-one" || app.id === "keyword-planner")) continue;
     const b = await app.brief(hub, cand).catch((e) => {
       notes.push(`${app.name} was skipped: ${(e as Error).message}`);
       return null;
@@ -325,7 +327,13 @@ async function planNextChange(
     const improvement = await writeImprovement(
       ctx.ai,
       page,
-      { query: cand.op.query, position: cand.op.position, impressions: cand.op.impressions, mode: cand.mode, previousPosition: cand.previousPosition },
+      {
+        query: cand.inferred ? `(no target search yet; page topic: ${cand.op.query})` : cand.op.query,
+        position: cand.op.position,
+        impressions: cand.op.impressions,
+        mode: cand.mode,
+        previousPosition: cand.previousPosition,
+      },
       briefs,
       ctx.allowContent
     );
@@ -409,7 +417,8 @@ async function suggestPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[
   const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
   const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
   if (schema) await suggest("schema", null, withoutAutopilotSchema(schema).trim() || schema);
-  const source = await linkSource(ctx, cand, page).catch(() => undefined);
+  // No internal link built around a page topic that isn't a real search.
+  const source = cand.inferred ? undefined : await linkSource(ctx, cand, page).catch(() => undefined);
   if (source) {
     const sentence = await writeInternalLink(ctx.ai, source, { path: new URL(op.page).pathname, query: op.query, title: page.title });
     if (sentence) await suggest("internal_link", null, sentence, source.id);
@@ -488,7 +497,7 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     }
   }
 
-  const source = await linkSource(ctx, cand, page);
+  const source = cand.inferred ? undefined : await linkSource(ctx, cand, page);
   if (source) {
     const path = new URL(op.page).pathname;
     const sentence = await writeInternalLink(ctx.ai, source, { path, query: op.query, title: page.title });

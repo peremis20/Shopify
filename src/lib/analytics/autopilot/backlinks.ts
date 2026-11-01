@@ -1,4 +1,4 @@
-import { otherClient } from "./clients";
+import { clientListKnown, otherClient } from "./clients";
 import { ensureSchema, sql } from "../db";
 import { authorityOf, authorityReady } from "./authority";
 import { isJunkKeyword } from "./keyword-guard";
@@ -90,6 +90,8 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
     queries.push({ q: `"${t}" "write for us"`, kind: "guest", topic: t });
   }
 
+  // Without the customer list this can't tell customers apart, and saving would drop the owner's list: try again later.
+  if (!(await clientListKnown())) throw new Error("The customer list couldn't be read, so backlink sites weren't refreshed this time.");
   const isOtherClient = await otherClient(ourDomain);
   const found = new Map<string, Prospect>();
   for (const { q, kind, topic } of queries) {

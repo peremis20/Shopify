@@ -46,3 +46,8 @@ export async function otherClient(ourDomain: string): Promise<(domain: string) =
     return false;
   };
 }
+
+/** Whether the customer list can be read right now. Anything that saves data based on it waits when it can't. */
+export async function clientListKnown(): Promise<boolean> {
+  return (await allClientDomains().then(() => true).catch(() => false));
+}
