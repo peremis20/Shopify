@@ -91,8 +91,8 @@ function notice(text,bad){var n=$("notice");if(!n)return;n.textContent=text||"";
 
 async function boot(){
   // Messages come only from this app's own short lived cookie, never from the address bar.
-  var note=null;document.cookie.split(";").forEach(function(c){var p=c.trim().split("=");if(p[0]==="ti_notice"){try{note=decodeURIComponent(p.slice(1).join("="))}catch(e){}}});
-  if(note)document.cookie="ti_notice=; Path=/; Max-Age=0; Secure; SameSite=Lax";
+  var note=null;document.cookie.split(";").forEach(function(c){var p=c.trim().split("=");if(p[0]==="__Host-ti_notice"){try{note=decodeURIComponent(p.slice(1).join("="))}catch(e){}}});
+  if(note)document.cookie="__Host-ti_notice=; Path=/; Max-Age=0; Secure; SameSite=Lax";
   if(location.search)history.replaceState(null,"","/");
   var d=await api("/api/me").catch(function(){return null});
   if(!d){$("app").replaceChildren(el("div",{class:"center"},[el("p",{class:"err",text:"Team Inbox couldn't be reached. Reload to try again."})]));return}

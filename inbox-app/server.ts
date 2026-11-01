@@ -107,7 +107,7 @@ function readCookie(req: Request, name: string): string | null {
 
 /** Signed in member, or null. */
 async function member(req: Request): Promise<{ email: string; owner: boolean } | null> {
-  const s = verify<{ email: string }>(readCookie(req, "ti_session"), secret());
+  const s = verify<{ email: string }>(readCookie(req, "__Host-ti_session"), secret());
   if (!s?.email) return null;
   const [m] = await sql`SELECT email, owner FROM inbox_members WHERE email = ${s.email}`;
   return m ? { email: m.email!, owner: m.owner === "t" } : null;
@@ -232,7 +232,7 @@ async function startGoogle(req: Request, purpose: "login" | "inbox", hint?: stri
     ...(purpose === "inbox" ? { access_type: "offline", prompt: "consent select_account", include_granted_scopes: "false" } : { prompt: "select_account" }),
     ...(hint && isEmail(hint) ? { login_hint: hint } : {}),
   });
-  return redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`, [cookie("ti_state", nonce, 600)]);
+  return redirect(`https://accounts.google.com/o/oauth2/v2/auth?${q}`, [cookie("__Host-ti_state", nonce, 600)]);
 }
 
 async function callback(req: Request): Promise<Response> {
@@ -240,7 +240,7 @@ async function callback(req: Request): Promise<Response> {
     return await finishSignIn(req);
   } catch (e) {
     console.error(`team inbox sign in: ${oneLine((e as Error).message)}`);
-    return redirect(`${appUrl()}/`, [cookie("ti_state", "", 0), `ti_notice=${encodeURIComponent("Sign in didn't finish. Please try again.")}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
+    return redirect(`${appUrl()}/`, [cookie("__Host-ti_state", "", 0), `__Host-ti_notice=${encodeURIComponent("Sign in didn't finish. Please try again.")}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
   }
 }
 
@@ -248,9 +248,9 @@ async function finishSignIn(req: Request): Promise<Response> {
   const url = new URL(req.url);
   // The message travels in a short lived cookie set by this app, so a crafted link can't put words on the page.
   const back = (msg: string) =>
-    redirect(`${appUrl()}/`, [cookie("ti_state", "", 0), `ti_notice=${encodeURIComponent(msg)}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
+    redirect(`${appUrl()}/`, [cookie("__Host-ti_state", "", 0), `__Host-ti_notice=${encodeURIComponent(msg)}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
   const state = verify<{ purpose: "login" | "inbox"; nonce: string }>(url.searchParams.get("state"), secret());
-  const nonce = readCookie(req, "ti_state");
+  const nonce = readCookie(req, "__Host-ti_state");
   if (!state || !nonce || nonce.length !== state.nonce.length || !sameSecret(state.nonce, nonce)) return back("That sign in expired. Please try again.");
   if (url.searchParams.get("error")) return back("Google sign in was cancelled.");
   const client = await googleClient();
@@ -263,7 +263,7 @@ async function finishSignIn(req: Request): Promise<Response> {
     const [m] = await sql`SELECT email FROM inbox_members WHERE email = ${email}`;
     if (!m) return back(`${email} isn't on the team yet. Ask the owner to add you.`);
     const session = sign({ email }, secret(), SESSION_DAYS * 86400);
-    return redirect(`${appUrl()}/`, [cookie("ti_state", "", 0), cookie("ti_session", session, SESSION_DAYS * 86400)]);
+    return redirect(`${appUrl()}/`, [cookie("__Host-ti_state", "", 0), cookie("__Host-ti_session", session, SESSION_DAYS * 86400)]);
   }
 
   // Connecting an inbox: only for a signed in member, and only with the permissions the app needs.
@@ -457,7 +457,7 @@ export default {
       if (req.method === "GET" && path === "/api/auth/login") return startGoogle(req, "login");
       if (req.method === "GET" && path === "/api/auth/google/callback") return callback(req);
       if (req.method === "POST" && path === "/api/auth/logout") {
-        return sameOrigin(req) ? json({ ok: true }, 200, { "Set-Cookie": cookie("ti_session", "", 0) }) : json({ error: "Refused." }, 403);
+        return sameOrigin(req) ? json({ ok: true }, 200, { "Set-Cookie": cookie("__Host-ti_session", "", 0) }) : json({ error: "Refused." }, 403);
       }
 
       const me = await member(req);
