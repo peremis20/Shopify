@@ -17,6 +17,7 @@ import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { Backlinks } from "./Backlinks";
 import { Scorecard } from "./Scorecard";
+import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
@@ -294,6 +295,7 @@ export function DashboardView() {
                 <>
                   <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
                   <RankHealth connected={connection?.mode === "oauth"} />
+                  <ExpertReview />
                 </>
               )}
               {page === "backlinks" && (

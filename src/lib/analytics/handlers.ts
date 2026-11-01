@@ -48,6 +48,7 @@ import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
+import { markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
 import { checkAiKey, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
@@ -771,6 +772,19 @@ export const strategyReport = (req: Request) =>
   });
 
 /** The Authority Coach's weekly plan. */
+/** Expert review: the reviewer, and the app's articles with whether each was reviewed. POST sets the reviewer or marks one reviewed. */
+export const expertReview = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = req.method === "POST" ? ((await req.json().catch(() => ({}))) as { reviewer?: Record<string, unknown>; reviewed?: string }) : {};
+    try {
+      if (b.reviewer) await saveReviewer(account.id, b.reviewer);
+      if (typeof b.reviewed === "string") await markReviewed(account.id, b.reviewed);
+    } catch (err) {
+      return json({ error: message(err), reviewer: await readReviewer(account.id), items: await reviewList(account.id) }, 400);
+    }
+    return json({ reviewer: await readReviewer(account.id), items: await reviewList(account.id) });
+  });
+
 /** Each agent's record on this site (Advanced view). */
 export const agentScorecard = (req: Request) => withAccount(req, async (account) => json({ scores: await readScorecard(account.id) }));
 

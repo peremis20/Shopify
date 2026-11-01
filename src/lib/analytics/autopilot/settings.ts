@@ -52,6 +52,8 @@ export interface AccountAutopilot {
 
 /** What the page may see: no secrets. */
 export interface AutopilotSettingsView extends AccountAutopilot {
+  /** Where owner emails go: the address this account signs in with. */
+  alertEmail?: string | null;
   shopConnected: boolean;
   /** A non-Shopify website read from its sitemap: changes come as a fix list. */
   website: {
@@ -199,6 +201,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     articlesPerWeek: acct.articlesPerWeek,
     allowContent: acct.allowContent,
     emailAlerts: acct.emailAlerts,
+    alertEmail: ((await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`.catch(() => []))[0]?.email as string | undefined) ?? null,
     shopDomain: acct.shopDomain,
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),

@@ -50,9 +50,13 @@ export function activeUpdate(updates: GoogleUpdate[], now = new Date()): { updat
   return null;
 }
 
-/** Updates whose rollout (plus the settling days) overlaps the window from `start` to `end`. */
+/**
+ * Core updates whose rollout (plus the settling days) overlaps the window from `start` to `end`. Spam updates are
+ * left out: they rarely move a normal site, and counting them would blind the measurement most of the year.
+ */
 export function updatesDuring(updates: GoogleUpdate[], start: Date, end: Date): GoogleUpdate[] {
   return updates.filter((u) => {
+    if (!/\bcore\b/i.test(u.name)) return false;
     const from = Date.parse(u.begin);
     const to = u.end ? Date.parse(u.end) + SETTLE_DAYS * 864e5 : Infinity;
     return from <= end.getTime() && to >= start.getTime();

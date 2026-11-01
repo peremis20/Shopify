@@ -2,6 +2,7 @@ import { readAuthorityPlan } from "./authority-coach";
 import { measuredResults } from "./results";
 import { readScorecard } from "./scorecard";
 import { rankingTurbulence } from "./google-updates";
+import { readReviewer, reviewList } from "./expert-review";
 import { pageValues } from "./signals";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -37,6 +38,8 @@ export interface StrategyReport {
   goal: number;
   /** The exact data the plan was made from, so every kept or dropped move can be checked afterwards. */
   facts?: string;
+  /** False when the reviewing AI was unavailable: the moves are shown but not acted on. */
+  checked?: boolean;
 }
 
 const GOAL = 20_000;
@@ -105,6 +108,12 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
   lines.push(...(await measuredResults(accountId).catch(() => [])));
+  // Expert review: a trust signal Google weighs heavily on health and money topics.
+  const items = await reviewList(accountId).catch(() => []);
+  if (items.length) {
+    const reviewer = await readReviewer(accountId).catch(() => null);
+    lines.push(`Expert review: ${items.filter((i) => i.reviewedAt).length} of ${items.length} app written articles reviewed${reviewer ? "" : " (no reviewer added yet)"}.`);
+  }
   const swing = await rankingTurbulence().catch(() => null);
   if (swing) lines.push(`Google update: ${swing}`);
   // Each agent's record on this site, counted: which agents' work is paying off.
@@ -194,7 +203,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     if (kept && m.kind === "asset" && !done) done = "An idea for you: the agents can't make this one on their own yet.";
     out.push({ ...m, keyword: k, kept, challenge, done });
   }
-  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL, facts };
+  const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL, facts, checked };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

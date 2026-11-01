@@ -4,13 +4,14 @@ import { readScorecard } from "./scorecard";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
 import { report } from "./status";
 import { readStrategy } from "./strategist";
+import { trimWords } from "./guards";
+import { polish } from "./writer";
 
 /**
- * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each one
- * at most every three days), and a short weekly report. Sent through Resend once the platform owner adds its key.
+ * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
+ * per occurrence), and a short weekly report. Sent through Resend once the platform owner adds its key.
  * Off when the owner turns emails off. Never on the Sabbath (the hourly check doesn't run then).
  */
-const REPEAT_DAYS = 3;
 
 async function ownerEmail(accountId: string): Promise<string | null> {
   const [row] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
@@ -35,18 +36,31 @@ export async function sendEmail(to: string, subject: string, text: string): Prom
   return true;
 }
 
-/** Urgent: what needs the owner, said once (again after three days if it's still there). */
+/** Problems worth an email: the site is losing traffic or the agents are stuck. Not nags the dashboard covers. */
+export const EMAIL_WORTHY = /^(traffic:drop|autopilot:failed|autopilot:stalled|ranks:stale)$/;
+
+/**
+ * Urgent: an email-worthy problem only the owner can fix, sent once when it appears. It is sent again only if it
+ * clears and later comes back, so a lasting problem never repeats in the inbox.
+ */
 export async function sendUrgentAlerts(accountId: string, problems: Problem[]): Promise<number> {
   await ensureSchema();
   const acct = await readAccountAutopilot(accountId);
   if (!acct.emailAlerts) return 0;
-  const urgent = problems.filter((p) => p.who === "owner" && !p.platform);
-  if (!urgent.length) return 0;
   const key = `alerts_sent:${accountId}`;
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`;
   const sent = (row?.value ? JSON.parse(row.value) : {}) as Record<string, string>;
-  const fresh = urgent.filter((p) => !sent[p.id] || Date.now() - Date.parse(sent[p.id]) > REPEAT_DAYS * 864e5);
-  if (!fresh.length) return 0;
+  // A problem that has cleared is forgotten, so it can be told again if it ever returns.
+  const open = new Set(problems.map((p) => p.id));
+  for (const id of Object.keys(sent)) if (!open.has(id)) delete sent[id];
+  const urgent = problems.filter((p) => p.who === "owner" && !p.platform && EMAIL_WORTHY.test(p.id));
+  const fresh = urgent.filter((p) => !sent[p.id]);
+  if (!fresh.length) {
+    await sql`
+      INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(sent)})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+    return 0;
+  }
   const to = await ownerEmail(accountId);
   if (!to) return 0;
   const text = [
@@ -55,9 +69,10 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
     `DashPatrol found ${fresh.length === 1 ? "something that needs you" : `${fresh.length} things that need you`}:`,
     "",
     ...fresh.map((p) => `${p.text}\n${p.fix}\n`),
-    "Everything else keeps running. You can turn these emails off in Autopilot settings.",
+    "Open DashPatrol to see the details. Everything else keeps running.",
+    "You can turn these emails off in Autopilot settings.",
   ].join("\n");
-  if (!(await sendEmail(to, fresh.length === 1 ? `Needs your attention: ${fresh[0].text.slice(0, 60)}` : "DashPatrol needs your attention", text))) return 0;
+  if (!(await sendEmail(to, fresh.length === 1 ? `Needs your attention: ${trimWords(fresh[0].text, 60)}` : "DashPatrol needs your attention", text))) return 0;
   for (const p of fresh) sent[p.id] = new Date().toISOString();
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(sent)})
@@ -70,15 +85,27 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const strategy = await readStrategy(accountId).catch(() => null);
   const scores = await readScorecard(accountId).catch(() => []);
   const [week] = await sql`
-    SELECT count(*) FILTER (WHERE field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
-      count(*) FILTER (WHERE field = 'new_article') AS articles, count(*) FILTER (WHERE field = 'internal_link') AS links
-    FROM insights_autopilot_changes WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND created_at > now() - interval '7 days'`;
+    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
+      count(*) FILTER (WHERE status = 'suggested') AS suggested,
+      count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'new_article') AS articles,
+      count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'internal_link') AS links
+    FROM insights_autopilot_changes WHERE account_id = ${accountId} AND created_at > now() - interval '7 days'`;
   const lines = ["Hello,", "", "Here is your DashPatrol week."];
-  if (strategy?.visitors != null) lines.push("", `Visitors from Google, last 28 days: ${strategy.visitors} (goal ${strategy.goal} a month).`);
-  lines.push(`This week: ${week.changes} page changes, ${week.articles} new articles, ${week.links} links between your pages.`);
-  if (strategy?.assessment) lines.push("", `Where things stand: ${strategy.assessment}`);
-  const kept = strategy?.moves.filter((m) => m.kept) ?? [];
-  if (kept.length) lines.push("", "This week's plan:", ...kept.map((m, i) => `${i + 1}. ${m.action}`));
+  lines.push(
+    "",
+    `This week: ${week.changes} page changes made, ${week.articles} new articles, ${week.links} links between your pages` +
+      (Number(week.suggested) ? `, ${week.suggested} changes on your fix list` : "") +
+      "."
+  );
+  // From the Strategist's latest plan, dated, and only when it's recent; only moves a second AI checked.
+  const fresh = strategy && Date.now() - Date.parse(strategy.at) < 8 * 864e5 ? strategy : null;
+  if (fresh) {
+    const made = new Date(fresh.at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+    if (fresh.visitors != null) lines.push(`Visitors from Google, the 28 days before ${made}: ${fresh.visitors} (goal ${fresh.goal} a month).`);
+    if (fresh.assessment) lines.push("", `Where things stood on ${made}: ${polish(fresh.assessment)}`);
+    const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
+    if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${polish(m.action)}`));
+  }
   if (scores.length) lines.push("", "What each agent did:", ...scores.map((s) => `${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`));
   lines.push("", "You can turn these emails off in Autopilot settings.");
   return lines.join("\n");

@@ -198,7 +198,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
                 checked={state.settings.emailAlerts}
                 onChange={(e) => save({ emailAlerts: e.target.checked })}
               />
-              Email me a weekly report and urgent alerts
+              Email me a weekly report and urgent alerts{state.settings.alertEmail ? ` (to ${state.settings.alertEmail})` : ""}
             </label>
             <div className="ml-auto flex flex-wrap gap-2">
               <button

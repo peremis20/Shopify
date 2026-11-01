@@ -220,6 +220,24 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
   }
 }
 
+/**
+ * True when the changed page fell more than WORSE_BY_POSITIONS places further than its untouched control over the
+ * same weeks; null when there's no usable control. Measures the control now (and records it) so both readings match.
+ */
+async function fellMoreThanControl(ctx: Ctx, conn: Connection, runId: string, baseline: number, nowPos: number | null): Promise<boolean | null> {
+  const [k] = await sql`SELECT id, page_url, query, baseline_position FROM insights_autopilot_controls
+    WHERE account_id = ${ctx.accountId} AND run_id = ${runId} AND evaluated_at IS NULL AND voided IS NULL AND baseline_position <> 25 LIMIT 1`;
+  if (!k || nowPos === null) return null;
+  const fromGsc = conn.gscSiteUrl ? await positionFor(conn, k.query!, k.page_url!) : null;
+  const c = fromGsc ?? (await trackedPosition(ctx.accountId, k.query!));
+  if (!c || c.position === null) return null;
+  await sql`UPDATE insights_autopilot_controls SET evaluated_at = now(), result_position = ${c.position}, result_clicks = ${c.clicks ?? null} WHERE id = ${k.id}`;
+  return relativeFall(baseline, nowPos, Number(k.baseline_position), c.position) > WORSE_BY_POSITIONS;
+}
+
+/** How many more places the changed page fell than its control (negative: it did better). */
+export const relativeFall = (base: number, now: number, ctlBase: number, ctlNow: number) => now - base - (ctlNow - ctlBase);
+
 /** Looks at pages changed at least 4 weeks ago; keeps what helped and undoes what hurt. */
 async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]> {
   const due = await sql`
@@ -268,7 +286,13 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     // Measured across a Google update: it moved every site, so a fall isn't blamed on the change (never undone),
     // and the result is kept apart from clean ones.
     const across = updatesDuring(updates, new Date(String(d.made)), new Date()).map((u) => u.name).join(", ") || null;
-    const worse = verdict.worse && !across;
+    // Across a core update the change is judged against its untouched control: undone only when it fell more
+    // than the control did. Without a control there's no fair verdict, so it's kept.
+    let worse = verdict.worse;
+    if (across && worse) {
+      const rel = await fellMoreThanControl(ctx, conn, String(d.run_id), baseline, now?.position ?? null).catch(() => null);
+      worse = rel === true;
+    }
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
       WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
@@ -276,11 +300,12 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       if (worse) {
         const note = await revertRow(ctx, c).catch((e) => `Undo failed: ${e.message}`);
         await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
-          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
+          across_update = ${across},
+          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}${across ? `, more than its untouched control during Google's ${across}` : ""}. ${note}`} WHERE id = ${c.id}`;
       } else {
         await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(), across_update = ${across},
           result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
-          note = ${across && verdict.worse ? `Fell, but measured across Google's ${across}, so it wasn't undone.` : now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
+          note = ${across && verdict.worse ? `Fell, but measured across Google's ${across} and not more than its untouched control (or with no control), so it wasn't undone.` : now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
       }
     }
     notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”${across ? ` (measured across Google's ${across})` : ""}`);

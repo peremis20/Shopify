@@ -154,7 +154,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     for (const kind of ["ai", "search"] as const) {
       const share = used[kind] / used.limits[kind];
       const name = kind === "ai" ? "AI" : "Google results";
-      if (share >= 1) problems.push({ id: `limit:${kind}`, text: `This site used its ${name} limit for the month (${used.limits[kind]}).`, fix: "What needs it pauses until next month, or the platform owner raises the limit.", who: "owner" });
+      if (share >= 1) problems.push({ id: `limit:${kind}`, text: `This site used its ${name} limit for the month (${used.limits[kind]}).`, fix: "What needs it pauses until next month, or the platform owner raises the limit.", who: "owner", platform: true });
       else if (share >= 0.8) problems.push({ id: `limit:${kind}`, text: `This site has used ${Math.round(share * 100)}% of its ${name} limit for the month.`, fix: "Work carries on; at the limit, what needs it pauses until next month.", who: "watching" });
     }
   }

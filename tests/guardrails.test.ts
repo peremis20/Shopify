@@ -215,3 +215,42 @@ test("google updates: a measurement window overlapping a rollout or its settling
   assert.equal(w("2026-06-10T00:00:00Z", "2026-07-08T00:00:00Z"), 1); // still settling on June 10
   assert.equal(w("2026-06-20T00:00:00Z", "2026-07-18T00:00:00Z"), 0);
 });
+
+import { relativeFall } from "../src/lib/analytics/autopilot/engine";
+import { EMAIL_WORTHY } from "../src/lib/analytics/autopilot/alerts";
+import { reviewedByline, withByline } from "../src/lib/analytics/autopilot/expert-review";
+
+test("google updates: spam updates don't blind the measurement, core updates do", () => {
+  const u = [
+    { name: "September 2026 spam update", begin: "2026-09-24T00:00:00Z", end: "2026-10-08T00:00:00Z" },
+    { name: "May 2026 core update", begin: "2026-05-21T00:00:00Z", end: "2026-06-02T00:00:00Z" },
+  ];
+  assert.equal(updatesDuring(u, new Date("2026-09-20T00:00:00Z"), new Date("2026-10-20T00:00:00Z")).length, 0);
+  assert.equal(updatesDuring(u, new Date("2026-05-01T00:00:00Z"), new Date("2026-05-30T00:00:00Z")).length, 1);
+});
+
+test("controls: during a core update a change is judged against its control", () => {
+  assert.equal(relativeFall(5, 12, 6, 11), 2); // fell 7, control fell 5: only 2 more
+  assert.equal(relativeFall(5, 12, 6, 6), 7); // the control held: the change fell 7 more
+  assert.equal(relativeFall(8, 5, 8, 9), -4); // it rose while the control fell
+});
+
+test("emails: only problems worth an inbox go out", () => {
+  assert.ok(EMAIL_WORTHY.test("traffic:drop"));
+  assert.ok(EMAIL_WORTHY.test("autopilot:stalled"));
+  assert.equal(EMAIL_WORTHY.test("google:recrawl"), false);
+  assert.equal(EMAIL_WORTHY.test("limit:ai"), false);
+  assert.equal(EMAIL_WORTHY.test("autopilot:idle"), false);
+});
+
+test("expert review: the byline is escaped, dated and replaced, never stacked", () => {
+  const r = { name: "Dr <Jane> Doe", credentials: "MD", url: "https://example.org/jane" };
+  const b = reviewedByline(r, new Date("2026-11-01T12:00:00Z"));
+  assert.ok(b.includes("Dr &lt;Jane&gt; Doe"));
+  assert.ok(b.includes("November 1, 2026"));
+  const once = withByline("<p>Body</p>", b);
+  const twice = withByline(once, reviewedByline({ ...r, credentials: "MD, MPH" }, new Date("2026-12-01T12:00:00Z")));
+  assert.equal((twice.match(/<!-- dashpatrol:reviewed -->/g) ?? []).length, 1);
+  assert.ok(twice.includes("MD, MPH") && !twice.includes("November 1"));
+  assert.ok(twice.endsWith("<p>Body</p>"));
+});
