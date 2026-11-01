@@ -49,14 +49,18 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
   if (!acct.emailAlerts) return 0;
   const key = `alerts_sent:${accountId}`;
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`;
-  // For each problem told: when it was sent and when it was last seen.
-  const raw = (row?.value ? JSON.parse(row.value) : {}) as Record<string, { sent: string; seen: string } | string>;
-  const sent: Record<string, { sent: string; seen: string }> = {};
-  for (const [id, v] of Object.entries(raw)) sent[id] = typeof v === "string" ? { sent: v, seen: v } : v;
+  // For each problem told: when it was sent, and how many complete checks in a row haven't found it.
+  const raw = (row?.value ? JSON.parse(row.value) : {}) as Record<string, { sent: string; missed?: number } | string>;
+  const sent: Record<string, { sent: string; missed: number }> = {};
+  for (const [id, v] of Object.entries(raw)) sent[id] = typeof v === "string" ? { sent: v, missed: 0 } : { sent: v.sent, missed: v.missed ?? 0 };
   const now = new Date().toISOString();
-  for (const p of problems) if (sent[p.id]) sent[p.id].seen = now;
-  // Forgotten only after a full day without it, so one flaky check doesn't send it twice.
-  for (const [id, v] of Object.entries(sent)) if (Date.now() - Date.parse(v.seen) > 864e5) delete sent[id];
+  // Called only with a complete check: an id it found is still open; one it didn't find is a miss. Forgotten after
+  // two misses in a row, however far apart the checks are, so a lasting problem is never sent twice.
+  const open = new Set(problems.map((p) => p.id));
+  for (const [id, v] of Object.entries(sent)) {
+    v.missed = open.has(id) ? 0 : v.missed + 1;
+    if (v.missed >= 2) delete sent[id];
+  }
   // Any problem worth an inbox that the agents haven't already repaired.
   const urgent = problems.filter((p) => p.who !== "repaired" && !p.platform && EMAIL_WORTHY.test(p.id));
   const fresh = urgent.filter((p) => !sent[p.id]);
@@ -78,7 +82,7 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
     "You can turn these emails off in Autopilot settings.",
   ].join("\n");
   if (!(await sendEmail(to, fresh.length === 1 ? `Needs your attention: ${trimWords(fresh[0].text, 60)}` : "DashPatrol needs your attention", text))) return 0;
-  for (const p of fresh) sent[p.id] = { sent: now, seen: now };
+  for (const p of fresh) sent[p.id] = { sent: now, missed: 0 };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(sent)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

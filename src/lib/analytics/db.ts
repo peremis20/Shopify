@@ -192,6 +192,15 @@ export function ensureSchema(): Promise<void> {
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS measure_tried_at timestamptz`;
     // The Google update(s) a change was measured across, if any: not undone for falling, kept apart in the results.
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS across_update text`;
+    // When a change was undone (by measurement or by hand), set by the database whenever the status becomes reverted.
+    await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS reverted_at timestamptz`;
+    await sql`CREATE OR REPLACE FUNCTION insights_mark_reverted() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.status = 'reverted' AND OLD.status IS DISTINCT FROM 'reverted' THEN NEW.reverted_at := now(); END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql`;
+    await sql`DROP TRIGGER IF EXISTS insights_mark_reverted ON insights_autopilot_changes`;
+    await sql`CREATE TRIGGER insights_mark_reverted BEFORE UPDATE ON insights_autopilot_changes FOR EACH ROW EXECUTE FUNCTION insights_mark_reverted()`;
     await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS email_alerts boolean`;
     // What each site spent this month: AI requests and paid Google results lookups.
     await sql`CREATE TABLE IF NOT EXISTS insights_usage (

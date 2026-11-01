@@ -115,23 +115,29 @@ export async function expireReviews(accountId: string): Promise<number> {
   const marks = (await readJson<Record<string, { at: string; by: string }>>(REVIEWS(accountId))) ?? {};
   const ids = Object.keys(marks);
   if (!ids.length) return 0;
+  // The article whose body changed: a new link goes into the source article (target_id); a section, alt text or
+  // link fix into the page itself (resource_id). An undo changes the body too, at the time it was undone.
   const touched = await sql`
-    SELECT DISTINCT coalesce(target_id, resource_id) AS rid, resource_id, target_id, created_at FROM insights_autopilot_changes
-    WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field IN ('content', 'internal_link', 'link_fix', 'alt')`;
-  const changedAfter = (rid: string, at: string) =>
-    touched.some((t) => (t.resource_id === rid || t.target_id === rid) && Date.parse(String(t.created_at)) > Date.parse(at));
+    SELECT CASE WHEN field = 'internal_link' THEN target_id ELSE resource_id END AS rid,
+      CASE WHEN status = 'reverted' THEN coalesce(reverted_at, created_at) ELSE created_at END AS at
+    FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'reverted') AND field IN ('content', 'internal_link', 'link_fix', 'alt')`;
+  const changedAfter = (rid: string, at: string) => touched.some((t) => t.rid === rid && Date.parse(String(t.at)) > Date.parse(at));
   const stale = ids.filter((rid) => changedAfter(rid, marks[rid].at));
   if (!stale.length) return 0;
   const site = await siteFor(accountId);
+  let done = 0;
   for (const rid of stale) {
-    if (site?.store && site.writer) {
-      const body = await getBody(site.store, "article", rid);
-      if (withoutByline(body) !== body) await site.writer.setBodyIfUnchanged("article", rid, body, withoutByline(body));
-    }
+    // The mark is dropped only once the byline is really off the article; otherwise the next check tries again.
+    if (!site?.store || !site.writer) continue;
+    const body = await getBody(site.store, "article", rid);
+    if (withoutByline(body) !== body) await site.writer.setBodyIfUnchanged("article", rid, body, withoutByline(body));
     delete marks[rid];
+    done++;
   }
+  if (!done) return 0;
   await writeJson(REVIEWS(accountId), marks);
-  return stale.length;
+  return done;
 }
 
 /** The owner confirms their expert read this article: the byline goes on it (Shopify), and it's recorded. */
