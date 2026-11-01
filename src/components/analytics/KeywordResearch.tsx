@@ -657,15 +657,27 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
  * guide to what it means for which searches to go after. Hidden until an
  * Open PageRank key is set.
  */
+interface AuthorityData {
+  ready: boolean;
+  domain: string | null;
+  authority: number | null;
+  history?: { day: string; score: number }[];
+  rivals?: { domain: string; authority: number | null; beats: number; searches: string[] }[];
+}
+
 function SiteAuthority() {
-  const [d, setD] = useState<{ ready: boolean; domain: string | null; authority: number | null } | null>(null);
+  const [d, setD] = useState<AuthorityData | null>(null);
   useEffect(() => {
-    api<{ ready: boolean; domain: string | null; authority: number | null }>("/api/seo/authority")
+    api<AuthorityData>("/api/seo/authority")
       .then(setD)
       .catch(() => setD(null));
   }, []);
   if (!d?.ready || !d.domain) return null;
   const a = d.authority;
+  const history = d.history ?? [];
+  const first = history[0];
+  const change = first && a !== null && history.length > 1 ? Math.round((a - first.score) * 10) / 10 : null;
+  const since = first ? new Date(`${first.day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
   const advice =
     a === null
       ? "Open PageRank doesn't have a score for your site yet, which is normal for newer sites. Start with Easy searches."
@@ -674,15 +686,53 @@ function SiteAuthority() {
         : a < 5
           ? "Growing: Easy and Medium searches are within reach, especially where page 1 has sites scoring under 5."
           : "Strong: you can go after Medium and some Hard searches too.";
+  const rivals = d.rivals ?? [];
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-dash-line bg-white px-4 py-3 text-sm">
-      <div>
-        <p className="text-xs text-dash-muted">Site authority (Open PageRank)</p>
-        <p className="font-serif text-2xl text-dash-ink tabular-nums">{a === null ? "Not scored yet" : `${a.toFixed(1)} / 10`}</p>
+    <div className="mb-4 rounded-xl border border-dash-line bg-white px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-3">
+        <div>
+          <p className="text-xs text-dash-muted">Site authority (Open PageRank)</p>
+          <p className="font-serif text-2xl text-dash-ink tabular-nums">{a === null ? "Not scored yet" : `${a.toFixed(1)} / 10`}</p>
+          {change !== null && (
+            <p className={`text-xs ${change > 0 ? "text-dash-up" : change < 0 ? "text-dash-down" : "text-dash-muted"}`}>
+              {change > 0 ? `Up ${change}` : change < 0 ? `Down ${Math.abs(change)}` : "No change"} since {since}
+            </p>
+          )}
+        </div>
+        {history.length > 1 && (
+          <div className="w-28" title="Your score over time">
+            <Sparkline values={history.map((h) => h.score)} />
+          </div>
+        )}
+        <p className="min-w-0 flex-1 text-dash-muted">
+          <span className="font-semibold text-dash-ink">{d.domain}.</span> {advice}
+        </p>
       </div>
-      <p className="min-w-0 flex-1 text-dash-muted">
-        <span className="font-semibold text-dash-ink">{d.domain}.</span> {advice}
-      </p>
+      {history.length <= 1 && a !== null && (
+        <p className="mt-1 text-xs text-dash-muted">Your score is saved each time you visit, so you can watch it grow here. Open PageRank updates about once a month.</p>
+      )}
+      {rivals.length > 0 && (
+        <div className="mt-3 border-t border-dash-line pt-3">
+          <p className="mb-2 text-xs font-semibold text-dash-ink">Sites that keep beating you</p>
+          <ul className="space-y-1.5">
+            {rivals.map((r) => {
+              const weaker = a !== null && r.authority !== null && r.authority <= a;
+              return (
+                <li key={r.domain} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+                  <span className="min-w-[10rem] break-words font-medium text-dash-ink">{r.domain}</span>
+                  <span className="tabular-nums text-dash-muted">{r.authority === null ? "not scored" : `${r.authority.toFixed(1)} / 10`}</span>
+                  <span className="text-dash-muted">
+                    above you on {r.beats} {r.beats === 1 ? "search" : "searches"}
+                    {r.searches.length > 0 && <span className="whitespace-normal break-words">: {r.searches.join(", ")}</span>}
+                  </span>
+                  {weaker && <span className="rounded-full bg-dash-up/10 px-2 py-0.5 text-xs font-medium text-dash-up">Beatable</span>}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-2 text-xs text-dash-muted">Beatable means their site is no stronger than yours, so better content on those searches can pass them.</p>
+        </div>
+      )}
     </div>
   );
 }

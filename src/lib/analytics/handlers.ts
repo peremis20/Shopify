@@ -1,5 +1,5 @@
 import { difficulties } from "./autopilot/difficulty";
-import { authorityOf, authorityReady } from "./autopilot/authority";
+import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
@@ -35,7 +35,7 @@ import {
 } from "./autopilot/shopify";
 import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
-import { checkSerpKey } from "./autopilot/serp";
+import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { checkAiKey } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
@@ -647,7 +647,21 @@ export const siteAuthority = (req: Request) =>
     const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? null);
     if (!domain) return json({ ready: true, domain: null, authority: null });
     const scores = await authorityOf([domain]).catch(() => new Map<string, number>());
-    return json({ ready: true, domain, authority: scores.get(domain.replace(/^www\./, "")) ?? null });
+    const authority = scores.get(domain.replace(/^www\./, "")) ?? null;
+    const history = authority !== null ? await recordAuthority(account.id, authority).catch(() => []) : await readAuthorityHistory(account.id).catch(() => []);
+    // Who beats you on the searches you're going after (main targets first, then the site's keyword list).
+    const platform = await readPlatformSettings();
+    let rivalList: Awaited<ReturnType<typeof rivals>> = [];
+    if (platform.serperKey) {
+      const [targets, siteKw] = await Promise.all([readTargets(account.id).catch(() => []), readSiteKeywords(account.id).catch(() => [])]);
+      const keywords = [
+        ...targets.filter((t) => t.role !== "support").map((t) => t.keyword),
+        ...siteKw.filter((k) => k.role !== "support").map((k) => k.keyword),
+      ];
+      const key = platform.serperKey;
+      rivalList = await rivals(account.id, keywords, domain, (q) => fetchSerp(key, q)).catch(() => []);
+    }
+    return json({ ready: true, domain, authority, history, rivals: rivalList });
   });
 
 /** Real keyword difficulty (0 to 100) for up to 25 searches, from what ranks on Google page one. */

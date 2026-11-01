@@ -66,3 +66,73 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
   }
   return out;
 }
+
+/* Your score over time: one reading a day, kept for about a year. */
+
+export interface AuthorityReading { day: string; score: number }
+const HISTORY_KEY = (accountId: string) => `opr_history:${accountId}`;
+
+export async function readAuthorityHistory(accountId: string): Promise<AuthorityReading[]> {
+  await ensureSchema();
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${HISTORY_KEY(accountId)}`;
+  return row?.value ? (JSON.parse(row.value) as AuthorityReading[]) : [];
+}
+
+export async function recordAuthority(accountId: string, score: number): Promise<AuthorityReading[]> {
+  const day = new Date().toISOString().slice(0, 10);
+  const all = (await readAuthorityHistory(accountId)).filter((r) => r.day !== day);
+  const next = [...all, { day, score }].sort((a, b) => a.day.localeCompare(b.day)).slice(-400);
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${HISTORY_KEY(accountId)}, ${JSON.stringify(next)})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  return next;
+}
+
+/* The sites that keep beating you: who ranks above you on your target searches, with their strength. */
+
+export interface Rival { domain: string; authority: number | null; beats: number; searches: string[] }
+const RIVALS_HOURS = 24;
+
+export async function rivals(
+  accountId: string,
+  keywords: string[],
+  ourDomain: string,
+  fetchSerp: (query: string) => Promise<{ organic: { position: number; domain: string }[] }>
+): Promise<Rival[]> {
+  await ensureSchema();
+  const cacheKey = `rivals:${accountId}`;
+  const [hit] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${cacheKey} AND fetched_at > now() - make_interval(hours => ${RIVALS_HOURS})`;
+  if (hit?.data) return JSON.parse(hit.data) as Rival[];
+
+  const ours = ourDomain.toLowerCase().replace(/^www\./, "");
+  const isOurs = (d: string) => {
+    const x = d.toLowerCase().replace(/^www\./, "");
+    return x === ours || x.endsWith(`.${ours}`);
+  };
+  const tally = new Map<string, { beats: number; searches: string[] }>();
+  for (const k of [...new Set(keywords)].slice(0, 10)) {
+    const serp = await fetchSerp(k).catch(() => null);
+    if (!serp) continue;
+    const top = serp.organic.slice(0, 10);
+    const our = top.find((r) => isOurs(r.domain))?.position ?? Infinity;
+    for (const r of top) {
+      if (isOurs(r.domain) || r.position >= our) continue;
+      const d = r.domain.toLowerCase().replace(/^www\./, "");
+      const t = tally.get(d) ?? { beats: 0, searches: [] };
+      t.beats++;
+      if (t.searches.length < 3) t.searches.push(k);
+      tally.set(d, t);
+    }
+  }
+  const best = [...tally.entries()].sort((a, b) => b[1].beats - a[1].beats).slice(0, 6);
+  const scores = await authorityOf(best.map(([d]) => d)).catch(() => new Map<string, number>());
+  const out: Rival[] = best.map(([domain, t]) => ({ domain, authority: scores.get(domain) ?? null, ...t }));
+  if (out.length) {
+    await sql`
+      INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${cacheKey}, ${JSON.stringify(out)}::jsonb, now())
+      ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
+  }
+  return out;
+}
