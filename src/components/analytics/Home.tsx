@@ -148,6 +148,12 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         </div>
       )}
 
+      <div className="grid grid-cols-3 gap-3">
+        <Jump label="Keywords" sub={ranks ? `${ranks.length} tracked, ${pageOne.length} on page 1` : "What to rank for"} onClick={() => onGo("keywords")} />
+        <Jump label="Content" sub={fixes.length ? `${fixes.length} ${fixes.length === 1 ? "fix" : "fixes"} ready to paste` : `${pages + articles.length} updates this week`} onClick={() => onGo("content")} />
+        <Jump label="Backlinks" sub={`${openProspects.length} ${openProspects.length === 1 ? "site" : "sites"} to reach out to`} onClick={() => onGo("backlinks")} />
+      </div>
+
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Stat
           label="Visitors from Google"
@@ -246,6 +252,19 @@ function Stat({ label, hint, value, badge }: { label: string; hint: string; valu
       {value === null ? <Skeleton className="mt-2 h-7 w-20" /> : <p className="mt-1 font-serif text-2xl text-dash-ink tabular-nums">{value}</p>}
       <div className="mt-1 min-h-[1.25rem] text-sm">{badge}</div>
     </div>
+  );
+}
+
+/** A shortcut to one of the main areas, with a live count. */
+function Jump({ label, sub, onClick }: { label: string; sub: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="group flex items-center justify-between gap-2 rounded-xl border border-dash-line bg-white px-4 py-2.5 text-left hover:border-dash-green/50">
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-dash-ink">{label}</span>
+        <span className="hidden truncate text-xs text-dash-muted sm:block">{sub}</span>
+      </span>
+      <span className="text-dash-muted group-hover:text-dash-green" aria-hidden>&rsaquo;</span>
+    </button>
   );
 }
 
