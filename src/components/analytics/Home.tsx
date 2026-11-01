@@ -126,10 +126,11 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const activity = [
     { n: pages, label: pages === 1 ? "page improved" : "pages improved" },
     { n: articles.length, label: articles.length === 1 ? "article posted" : "articles posted" },
-    { n: links, label: links === 1 ? "link added" : "links added" },
-    { n: openProspects.length, label: openProspects.length === 1 ? "backlink site found" : "backlink sites found" },
+    { n: links, label: links === 1 ? "link between your pages" : "links between your pages" },
+    { n: openProspects.length, label: openProspects.length === 1 ? "site to ask for a backlink" : "sites to ask for a backlink" },
   ];
   const repaired = problems.filter((x) => x.who === "repaired");
+  const wonLinks = prospects?.prospects.filter((p) => p.status === "won").length ?? 0;
 
   return (
     <div className="mt-5 space-y-4">
@@ -230,6 +231,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
                     </div>
                   ))}
                 </div>
+                {wonLinks > 0 && <p className="mt-2 text-xs text-dash-up">{wonLinks} {wonLinks === 1 ? "backlink" : "backlinks"} won so far.</p>}
                 {up > 0 && <p className="mt-2 text-xs text-dash-up">{up} {up === 1 ? "change has" : "changes have"} already moved you up on Google.</p>}
                 {repaired.map((p) => (
                   <p key={p.id} className="mt-2 text-xs text-dash-muted">Fixed on its own: {p.text}</p>
