@@ -4,7 +4,10 @@ import type { ComponentType, SVGProps } from "react";
 import type { IntegrationInfo } from "@/lib/analytics/types";
 import { BarsIcon, BoltIcon, CloseIcon, FileIcon, HomeIcon, KeyIcon, ListIcon, PlugIcon, SearchIcon } from "./Icons";
 
-const NAV: { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> }[] = [
+export type NavItem = { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> };
+
+/** Advanced view: every section of the dashboard. */
+export const NAV_ADVANCED: NavItem[] = [
   { id: "overview", label: "Overview", icon: HomeIcon },
   { id: "analytics", label: "Google Analytics", icon: BarsIcon },
   { id: "search-console", label: "Search Console", icon: SearchIcon },
@@ -15,7 +18,17 @@ const NAV: { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGEleme
   { id: "apps", label: "Connected Apps", icon: PlugIcon },
 ];
 
-export function Sidebar({ active, onNavigate, integrations, open, onClose }: {
+/** Simple view: five places, the home screen first. */
+export const NAV_SIMPLE: NavItem[] = [
+  { id: "home", label: "Home", icon: HomeIcon },
+  { id: "keywords", label: "Keywords", icon: KeyIcon },
+  { id: "content", label: "Content", icon: FileIcon },
+  { id: "backlinks", label: "Backlinks", icon: PlugIcon },
+  { id: "settings", label: "Settings", icon: BoltIcon },
+];
+
+export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations, open, onClose }: {
+  items?: NavItem[];
   active: string;
   onNavigate: (id: string) => void;
   integrations: IntegrationInfo[];
@@ -43,7 +56,7 @@ export function Sidebar({ active, onNavigate, integrations, open, onClose }: {
         </div>
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3">
-          {NAV.map(({ id, label, icon: Icon }) => (
+          {items.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => onNavigate(id)}

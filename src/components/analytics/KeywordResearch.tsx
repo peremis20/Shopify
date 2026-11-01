@@ -671,7 +671,7 @@ interface AuthorityData {
   rivals?: { domain: string; authority: number | null; beats: number; searches: string[] }[];
 }
 
-function SiteAuthority() {
+export function SiteAuthority() {
   const [d, setD] = useState<AuthorityData | null>(null);
   useEffect(() => {
     api<AuthorityData>("/api/seo/authority")

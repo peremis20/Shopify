@@ -13,7 +13,10 @@ import { KeywordResearch } from "./KeywordResearch";
 import { Onboarding } from "./Onboarding";
 import { SignInScreen } from "./SignIn";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
-import { Sidebar } from "./Sidebar";
+import { NAV_SIMPLE, Sidebar } from "./Sidebar";
+import { Home, type SimplePage } from "./Home";
+import { Backlinks } from "./Backlinks";
+import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
 import { Card, CardHeader, DeltaBadge, GaLogo, GscLogo, Skeleton, SourceError } from "./ui";
@@ -21,6 +24,7 @@ import { Card, CardHeader, DeltaBadge, GaLogo, GscLogo, Skeleton, SourceError } 
 const GREEN = "#1F4D36";
 const COPPER = "#B8693D";
 const RANGE_STORAGE_KEY = "insights.range";
+const MODE_STORAGE_KEY = "insights.view";
 
 export function DashboardView() {
   const [range, setRange] = useState<RangeKey>("28d");
@@ -28,6 +32,9 @@ export function DashboardView() {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState<string | null>(null);
   const [active, setActive] = useState("overview");
+  // Simple (the default): a home screen and five places. Advanced: every section on one page.
+  const [mode, setMode] = useState<"simple" | "advanced">("simple");
+  const [page, setPage] = useState<SimplePage>("home");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -62,6 +69,7 @@ export function DashboardView() {
     try {
       const saved = localStorage.getItem(RANGE_STORAGE_KEY);
       if (saved && RANGE_OPTIONS.some((o) => o.key === saved)) setRange(saved as RangeKey);
+      if (localStorage.getItem(MODE_STORAGE_KEY) === "advanced") setMode("advanced");
     } catch {
       /* storage unavailable, keep the default */
     }
@@ -99,6 +107,22 @@ export function DashboardView() {
     }
   }
 
+  function changeMode(m: "simple" | "advanced") {
+    setMode(m);
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, m);
+    } catch {
+      /* ignore */
+    }
+    window.scrollTo({ top: 0 });
+  }
+
+  function go(p: SimplePage) {
+    setPage(p);
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function navigate(id: string) {
     setActive(id);
     setMenuOpen(false);
@@ -115,8 +139,9 @@ export function DashboardView() {
   return (
     <div className="min-h-screen bg-dash-bg font-dash text-dash-ink">
       <Sidebar
-        active={active}
-        onNavigate={navigate}
+        items={mode === "simple" ? NAV_SIMPLE : undefined}
+        active={mode === "simple" ? page : active}
+        onNavigate={mode === "simple" ? (id) => go(id as SimplePage) : navigate}
         integrations={data?.integrations ?? []}
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
@@ -139,12 +164,26 @@ export function DashboardView() {
 
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">Welcome back!</h1>
+                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" ? SIMPLE_TITLE[page] : "Welcome back!"}</h1>
                 <p className="mt-1 text-dash-muted">
-                  Your website performance from Google Analytics and Search Console in one place.
+                  {mode === "simple" ? SIMPLE_SUB[page] : "Your website performance from Google Analytics and Search Console in one place."}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
+                <div className="flex rounded-xl border border-dash-line bg-white p-0.5 text-sm font-medium" role="tablist" aria-label="View">
+                  {(["simple", "advanced"] as const).map((m) => (
+                    <button
+                      key={m}
+                      role="tab"
+                      aria-selected={mode === m}
+                      onClick={() => changeMode(m)}
+                      title={m === "simple" ? "The essentials and your next step" : "Every chart, table and score"}
+                      className={`rounded-lg px-3 py-2 capitalize ${mode === m ? "bg-dash-green text-white" : "text-dash-muted hover:text-dash-ink"}`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
                 <button
                   onClick={() => setSettingsOpen(true)}
                   className="flex items-center gap-2 rounded-xl border border-dash-line bg-white px-3.5 py-2.5 text-sm font-medium text-dash-ink hover:border-dash-green/40"
@@ -239,6 +278,41 @@ export function DashboardView() {
             </div>
           )}
 
+          {mode === "simple" && (
+            <>
+              {page === "home" && <Home data={data} loading={loading} onGo={go} />}
+              {page === "keywords" && (
+                <KeywordResearch
+                  connection={connection}
+                  searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
+                  range={range}
+                  onChanged={() => load(range, true)}
+                />
+              )}
+              {page === "content" && (
+                <>
+                  <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
+                  <RankHealth connected={connection?.mode === "oauth"} />
+                </>
+              )}
+              {page === "backlinks" && (
+                <Card className="mt-5">
+                  <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
+                  <SiteAuthority />
+                  <Backlinks />
+                </Card>
+              )}
+              {page === "settings" && (
+                <ConnectedApps integrations={data?.integrations ?? []} onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))} />
+              )}
+              <p className="mt-8 text-center text-xs text-dash-muted">
+                Want every chart, table and score?{" "}
+                <button onClick={() => changeMode("advanced")} className="font-semibold text-dash-green hover:underline">Switch to Advanced</button>
+              </p>
+            </>
+          )}
+
+          {mode === "advanced" && (<>
           {/* KPI row */}
           <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Kpi
@@ -388,6 +462,7 @@ export function DashboardView() {
             integrations={data?.integrations ?? []}
             onSetup={(id) => (id === "keywords" ? navigate("keywords") : setSettingsOpen(true))}
           />
+          </>)}
         </div>
       </main>
 
@@ -402,6 +477,21 @@ export function DashboardView() {
     </div>
   );
 }
+
+const SIMPLE_TITLE: Record<SimplePage, string> = {
+  home: "Welcome back!",
+  keywords: "Keywords",
+  content: "Content",
+  backlinks: "Backlinks",
+  settings: "Settings",
+};
+const SIMPLE_SUB: Record<SimplePage, string> = {
+  home: "Here's how your site is doing on Google, and what to do next.",
+  keywords: "What people search for, how hard each one is, and where you rank.",
+  content: "Every change the autopilot made, new articles, and your site's health.",
+  backlinks: "Websites that could link to you, with the email written for each one.",
+  settings: "Your connected accounts and apps.",
+};
 
 function Kpi({ icon, label, value, badge, spark, loading }: {
   icon: ReactNode;
