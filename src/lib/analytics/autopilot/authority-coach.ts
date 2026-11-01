@@ -147,7 +147,13 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   );
   const strongest = ps.filter((p) => p.status === "new").sort((a, b) => (b.authority ?? 0) - (a.authority ?? 0)).slice(0, 5);
   if (strongest.length) {
-    lines.push("Strongest sites not contacted yet: " + strongest.map((p) => `${p.domain} (${p.kind}, strength ${p.authority ?? "unknown"})`).join("; "));
+    // "Strongest" only when strength was really measured; otherwise said plainly.
+    const measured = strongest.filter((p) => p.authority != null && p.authority > 0);
+    lines.push(
+      measured.length
+        ? "Strongest sites not contacted yet: " + measured.map((p) => `${p.domain} (${p.kind}, strength ${p.authority})`).join("; ")
+        : "Sites not contacted yet (strength not measured): " + strongest.map((p) => `${p.domain} (${p.kind})`).join("; ")
+    );
     // What each of those pages is about, from Google's result. It's their own wording, so it helps judge relevance
     // but is never evidence: it goes to the planner apart from the facts a move may quote.
     const flat = (t: string) => t.replace(/\s+/g, " ").trim();
