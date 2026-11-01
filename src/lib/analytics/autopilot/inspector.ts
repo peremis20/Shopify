@@ -51,6 +51,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: () => "Every AI key failed. Check the keys and their billing in Platform keys.",
     workaround: "No new changes or articles are written until one works.",
   },
+  email: {
+    name: "Owner emails (resend.com)",
+    fix: (d) => (/domain|verify|403/i.test(d) ? "Verify the sending domain in Resend, or change the email sender in Platform keys." : "Check the email key in Platform keys."),
+    workaround: "Reports and alerts still show on the dashboard.",
+  },
   "keyword-planner": {
     name: "Google Keyword Planner",
     fix: () => "Reconnect Google Ads under Keyword ideas.",
@@ -132,7 +137,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
 
   // 4. Rankings swinging for reasons that aren't the agents' work: changes wait to be judged, the owner is told why.
   const turbulence = await rankingTurbulence().catch(() => null);
-  if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and judge changes once it settles.", who: "watching" });
+  if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and the untouched control pages show what the changes did.", who: "watching" });
   const traffic = conn?.gscSiteUrl ? await trafficCheck(conn).catch(() => null) : null;
   if (traffic?.sharp) {
     problems.push({

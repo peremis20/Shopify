@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { queryPageRows90d } from "../seo-tools";
@@ -91,7 +92,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     for (const r of rivals) {
       if (found.length >= MAX_COMPETITOR_FINDS) break;
       if (isOther(r.domain)) continue;
-      const serp = await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(() => null);
+      const serp = await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(nullUnlessLimit);
       let n = 0;
       for (const x of serp?.organic ?? []) {
         const d = x.domain.toLowerCase().replace(/^www\./, "");

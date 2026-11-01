@@ -204,3 +204,14 @@ test("google updates: verdicts wait while rolling out and for two weeks after", 
   assert.equal(activeUpdate(u, new Date("2026-06-20T00:00:00Z")), null);
   assert.equal(activeUpdate([{ name: "x", begin: "2026-05-21T00:00:00Z", end: null }], new Date("2026-07-01T00:00:00Z"))?.settling, false);
 });
+
+import { updatesDuring } from "../src/lib/analytics/autopilot/google-updates";
+
+test("google updates: a measurement window overlapping a rollout or its settling time is flagged", () => {
+  const u = [{ name: "May 2026 core update", begin: "2026-05-21T00:00:00Z", end: "2026-06-02T00:00:00Z" }];
+  const w = (a: string, b: string) => updatesDuring(u, new Date(a), new Date(b)).length;
+  assert.equal(w("2026-04-01T00:00:00Z", "2026-05-01T00:00:00Z"), 0);
+  assert.equal(w("2026-05-01T00:00:00Z", "2026-05-30T00:00:00Z"), 1);
+  assert.equal(w("2026-06-10T00:00:00Z", "2026-07-08T00:00:00Z"), 1); // still settling on June 10
+  assert.equal(w("2026-06-20T00:00:00Z", "2026-07-18T00:00:00Z"), 0);
+});

@@ -20,6 +20,10 @@ export function PlatformForm({ settings, onSaved }: {
   const [githubKey, setGithubKey] = useState("");
   const [pagespeedKey, setPagespeedKey] = useState("");
   const [oprKey, setOprKey] = useState("");
+  const [resendKey, setResendKey] = useState("");
+  const [alertsFrom, setAlertsFrom] = useState("");
+  const [aiLimit, setAiLimit] = useState("");
+  const [searchLimit, setSearchLimit] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
   const [busy, setBusy] = useState(false);
@@ -41,6 +45,10 @@ export function PlatformForm({ settings, onSaved }: {
         githubModelsKey: githubKey,
         pagespeedKey,
         oprKey,
+        resendKey,
+        alertsFrom,
+        aiMonthlyLimit: aiLimit,
+        searchMonthlyLimit: searchLimit,
         shopifyClientId: clientId,
         shopifyClientSecret: clientSecret,
       });
@@ -51,6 +59,10 @@ export function PlatformForm({ settings, onSaved }: {
       setGithubKey("");
       setPagespeedKey("");
       setOprKey("");
+      setResendKey("");
+      setAlertsFrom("");
+      setAiLimit("");
+      setSearchLimit("");
       setClientSecret("");
       setNote(d.claudeError ? `Saved, but a key didn't work: ${d.claudeError}` : "Saved.");
       onSaved?.(d.settings);
@@ -114,12 +126,35 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-opr", "Open PageRank key (site authority on page one)", oprKey, setOprKey, has?.hasOpr)}
+        {input("pf-resend", "Email key (resend.com) for owner reports and alerts", resendKey, setResendKey, has?.hasEmail)}
+        {input("pf-from", "Email sender, e.g. DashPatrol <alerts@dashpatrol.com>", alertsFrom, setAlertsFrom, has?.hasEmail, false)}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(
+            [
+              ["pf-ai-limit", "AI requests per site each month", aiLimit, setAiLimit, has?.aiLimit ?? 3000],
+              ["pf-search-limit", "Google results lookups per site each month", searchLimit, setSearchLimit, has?.searchLimit ?? 1500],
+            ] as const
+          ).map(([id, label, value, set, now]) => (
+            <label key={id} className="block">
+              <span className="mb-1 block text-xs text-dash-muted">{label}</span>
+              <input
+                id={id}
+                type="number"
+                min={1}
+                value={value}
+                onChange={(e) => set(e.target.value)}
+                placeholder={`Now ${now}. Leave blank to keep`}
+                className="w-full rounded-lg border border-dash-line bg-white px-3 py-2"
+              />
+            </label>
+          ))}
+        </div>
         {input("pf-shop-id", "Shopify app Client ID", clientId, setClientId, has?.hasShopifyApp, false)}
         {input("pf-shop-secret", "Shopify app Client secret", clientSecret, setClientSecret, has?.hasShopifyApp)}
         {note && <p className="text-dash-ink">{note}</p>}
         <button
           type="submit"
-          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !pagespeedKey && !oprKey && !clientId && !clientSecret)}
+          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !pagespeedKey && !oprKey && !resendKey && !alertsFrom && !aiLimit && !searchLimit && !clientId && !clientSecret)}
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           {busy ? "Saving…" : "Save platform keys"}

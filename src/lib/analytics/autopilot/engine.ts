@@ -28,7 +28,7 @@ import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
 import { measuredResults } from "./results";
-import { rankingTurbulence } from "./google-updates";
+import { googleUpdates, updatesDuring, type GoogleUpdate } from "./google-updates";
 import { askGoogleToRecrawl } from "./recrawl";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
@@ -223,7 +223,7 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
 /** Looks at pages changed at least 4 weeks ago; keeps what helped and undoes what hurt. */
 async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]> {
   const due = await sql`
-    SELECT run_id, page_url, query, min(baseline_position) AS baseline_position, min(baseline_clicks) AS baseline_clicks
+    SELECT run_id, page_url, query, min(baseline_position) AS baseline_position, min(baseline_clicks) AS baseline_clicks, min(created_at) AS made
     FROM insights_autopilot_changes
     WHERE account_id = ${ctx.accountId} AND status = 'applied' AND field <> 'prune' AND run_id IS NOT NULL
       AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
@@ -231,6 +231,7 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     ORDER BY max(measure_tried_at) NULLS FIRST, min(created_at)
     LIMIT 5`;
   const notes: string[] = [];
+  const updates = due.length ? await googleUpdates().catch(() => [] as GoogleUpdate[]) : [];
   for (const d of due) {
     // Nothing to compare with (a new article had no position before it existed): kept, never judged on a made up
     // starting point. The Pruning agent judges new articles on their own data after three months.
@@ -262,7 +263,12 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     const now: { position: number | null; clicks: number | null } | null = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
-    const { worse, droppedOut } = measuredWorse(baseline, now, baseClicks);
+    const verdict = measuredWorse(baseline, now, baseClicks);
+    const { droppedOut } = verdict;
+    // Measured across a Google update: it moved every site, so a fall isn't blamed on the change (never undone),
+    // and the result is kept apart from clean ones.
+    const across = updatesDuring(updates, new Date(String(d.made)), new Date()).map((u) => u.name).join(", ") || null;
+    const worse = verdict.worse && !across;
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
       WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
@@ -272,12 +278,12 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
         await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
           note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}. ${note}`} WHERE id = ${c.id}`;
       } else {
-        await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(),
+        await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(), across_update = ${across},
           result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
-          note = ${now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
+          note = ${across && verdict.worse ? `Fell, but measured across Google's ${across}, so it wasn't undone.` : now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
       }
     }
-    notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”`);
+    notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”${across ? ` (measured across Google's ${across})` : ""}`);
   }
   return notes;
 }
@@ -716,11 +722,10 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   let changed = false;
   let previewOut: AutopilotPreview | undefined;
   try {
-    // No verdicts while rankings swing for reasons that aren't the change: a Google update, or a sudden site wide drop.
+    // No verdicts while this site's clicks have just fallen sharply (a site problem or penalty, not the change).
+    // Google updates don't stop measuring: changes measured across one are never undone and are kept apart.
     const traffic = await trafficCheck(conn).catch(() => null);
-    const hold =
-      (await rankingTurbulence().catch(() => null)) ??
-      (traffic?.sharp ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week, so changes aren't judged until that settles.` : null);
+    const hold = traffic?.sharp ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week, so changes aren't judged until that settles.` : null;
     if (hold && !preview) summary.push(`Measuring waits: ${hold}`);
     if (!preview && !hold) summary.push(...(await measureOlderChanges(ctx, conn)));
     if (!preview && !hold) await measureControls(ctx, conn).catch((e) => console.error(`controls not measured: ${(e as Error).message}`));

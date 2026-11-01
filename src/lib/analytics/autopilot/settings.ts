@@ -30,6 +30,10 @@ export interface PlatformSettings {
   oprKey?: string;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
+  /** resend.com, for owner emails (weekly report, urgent alerts). */
+  resendKey?: string;
+  /** The sender, on a domain verified in Resend, e.g. "DashPatrol <alerts@dashpatrol.com>". */
+  alertsFrom?: string;
   /** Per site and month: AI requests and paid Google results lookups (defaults in usage.ts). */
   aiMonthlyLimit?: number;
   searchMonthlyLimit?: number;
@@ -41,6 +45,8 @@ export interface AccountAutopilot {
   /** New articles the autopilot may post a week (1 to 7). */
   articlesPerWeek: number;
   allowContent: boolean;
+  /** The weekly report and urgent alerts by email (on unless the owner turns them off). */
+  emailAlerts: boolean;
   shopDomain?: string;
 }
 
@@ -56,7 +62,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasShopifyApp: boolean };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -77,6 +83,8 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
     oprKey: process.env.OPR_API_KEY || stored.oprKey,
+    resendKey: process.env.RESEND_API_KEY || stored.resendKey,
+    alertsFrom: process.env.ALERTS_FROM || stored.alertsFrom,
     aiMonthlyLimit: Number(process.env.AI_MONTHLY_LIMIT) || stored.aiMonthlyLimit,
     searchMonthlyLimit: Number(process.env.SEARCH_MONTHLY_LIMIT) || stored.searchMonthlyLimit,
     shopifyClientId: process.env.SHOPIFY_API_KEY || stored.shopifyClientId,
@@ -133,6 +141,7 @@ export async function readAccountAutopilot(accountId: string): Promise<AccountAu
     maxPagesPerWeek: Number(row?.max_pages_per_week ?? 4),
     articlesPerWeek: Number(row?.articles_per_week ?? 3),
     allowContent: row ? yes(row.allow_content) : true,
+    emailAlerts: row?.email_alerts == null ? true : yes(row.email_alerts),
     shopDomain: row?.shop_domain ?? undefined,
     shopTokenEnc: row?.shop_token_enc ?? null,
   };
@@ -148,14 +157,15 @@ export async function saveAccountAutopilot(
     max: Math.min(14, Math.max(1, Math.round(patch.maxPagesPerWeek ?? cur.maxPagesPerWeek))),
     articles: Math.min(7, Math.max(1, Math.round(patch.articlesPerWeek ?? cur.articlesPerWeek))),
     allowContent: patch.allowContent ?? cur.allowContent,
+    emailAlerts: patch.emailAlerts ?? cur.emailAlerts,
     shop: patch.shopDomain !== undefined ? patch.shopDomain || null : cur.shopDomain ?? null,
     token: patch.shopTokenEnc !== undefined ? patch.shopTokenEnc : cur.shopTokenEnc,
   };
   await sql`
-    INSERT INTO insights_account_autopilot (account_id, enabled, max_pages_per_week, articles_per_week, allow_content, shop_domain, shop_token_enc)
-    VALUES (${accountId}, ${next.enabled}, ${next.max}, ${next.articles}, ${next.allowContent}, ${next.shop}, ${next.token})
+    INSERT INTO insights_account_autopilot (account_id, enabled, max_pages_per_week, articles_per_week, allow_content, email_alerts, shop_domain, shop_token_enc)
+    VALUES (${accountId}, ${next.enabled}, ${next.max}, ${next.articles}, ${next.allowContent}, ${next.emailAlerts}, ${next.shop}, ${next.token})
     ON CONFLICT (account_id) DO UPDATE SET enabled = EXCLUDED.enabled, max_pages_per_week = EXCLUDED.max_pages_per_week,
-      articles_per_week = EXCLUDED.articles_per_week,
+      articles_per_week = EXCLUDED.articles_per_week, email_alerts = EXCLUDED.email_alerts,
       allow_content = EXCLUDED.allow_content, shop_domain = EXCLUDED.shop_domain, shop_token_enc = EXCLUDED.shop_token_enc`;
 }
 
@@ -188,11 +198,12 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     maxPagesPerWeek: acct.maxPagesPerWeek,
     articlesPerWeek: acct.articlesPerWeek,
     allowContent: acct.allowContent,
+    emailAlerts: acct.emailAlerts,
     shopDomain: acct.shopDomain,
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }

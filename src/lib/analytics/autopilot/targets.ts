@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import { authorityOf, authorityReady } from "./authority";
 import { keywordDifficulty } from "./difficulty";
 import { ensureSchema, sql } from "../db";
@@ -142,7 +143,7 @@ export async function addTarget(
         .sort((a, b) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0))
         .slice(0, 6);
       for (const i of longTail) {
-        const s = await fetchSerp(opts.serperKey, i.keyword).catch(() => null);
+        const s = await fetchSerp(opts.serperKey, i.keyword).catch(nullUnlessLimit);
         if (!s) continue;
         const rr = await room(s.organic, opts.ourDomain);
         if (rr.ours !== null || rr.small >= 3) easier.push({ keyword: i.keyword.toLowerCase(), monthlySearches: i.avgMonthlySearches ?? 0, why: describe(rr.small, rr.ours) });

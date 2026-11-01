@@ -191,6 +191,15 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
               />
               Add new sections to blog posts and pages
             </label>
+            <label className="flex items-center gap-2">
+              <input
+                id="ap-email"
+                type="checkbox"
+                checked={state.settings.emailAlerts}
+                onChange={(e) => save({ emailAlerts: e.target.checked })}
+              />
+              Email me a weekly report and urgent alerts
+            </label>
             <div className="ml-auto flex flex-wrap gap-2">
               <button
                 onClick={() =>

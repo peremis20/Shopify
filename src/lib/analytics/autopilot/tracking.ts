@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { toIso } from "../dates";
@@ -133,7 +134,7 @@ export async function trackRanks(accountId: string, conn: Connection, serpKey: s
   for (let i = 0; i < queries.length; i += 5) {
     await Promise.all(
       queries.slice(i, i + 5).map(async (q) => {
-        const serp = await fetchSerp(serpKey, q).catch(() => null);
+        const serp = await fetchSerp(serpKey, q).catch(nullUnlessLimit);
         if (!serp) return;
         const ours = serp.organic.find((r) => isOurs(r.domain, ourDomain));
         // Quoted in Google's answer box? Unknown (null) for page one results cached before this was recorded.

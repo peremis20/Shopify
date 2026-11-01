@@ -87,11 +87,11 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     SELECT field,
       count(*) FILTER (WHERE status IN ('applied', 'kept', 'reverted')) AS made,
       count(*) FILTER (WHERE status = 'suggested') AS suggested,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS compared,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position < baseline_position - 0.5) AS up,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position > baseline_position + 0.5) AS down,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL) AS compared,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position < baseline_position - 0.5) AS up,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position > baseline_position + 0.5) AS down,
       count(*) FILTER (WHERE status = 'reverted' AND (note LIKE 'Ranking dropped%' OR note LIKE 'Dropped out:%')) AS undone,
-      coalesce(sum(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25), 0) AS gain
+      coalesce(sum(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL), 0) AS gain
     FROM insights_autopilot_changes WHERE account_id = ${accountId} GROUP BY field`;
   const stats: FieldStats[] = rows.map((r) => ({
     field: String(r.field),

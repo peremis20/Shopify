@@ -7,9 +7,10 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { accountsDueForWeeklyReport, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
-import { rankingTurbulence } from "./autopilot/google-updates";
+import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
@@ -865,6 +866,7 @@ export const saveAutopilot = (req: Request) =>
       maxPagesPerWeek: typeof b.maxPagesPerWeek === "number" ? b.maxPagesPerWeek : undefined,
       articlesPerWeek: typeof b.articlesPerWeek === "number" ? b.articlesPerWeek : undefined,
       allowContent: typeof b.allowContent === "boolean" ? b.allowContent : undefined,
+      emailAlerts: typeof b.emailAlerts === "boolean" ? b.emailAlerts : undefined,
     });
     return json({ settings: await autopilotView(account.id, account.admin) });
   });
@@ -882,6 +884,10 @@ export const savePlatform = (req: Request) =>
       serperKey: str("serperKey"),
       pagespeedKey: str("pagespeedKey"),
       oprKey: str("oprKey"),
+      resendKey: str("resendKey"),
+      alertsFrom: str("alertsFrom"),
+      aiMonthlyLimit: Number(b.aiMonthlyLimit) > 0 ? Number(b.aiMonthlyLimit) : undefined,
+      searchMonthlyLimit: Number(b.searchMonthlyLimit) > 0 ? Number(b.searchMonthlyLimit) : undefined,
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
     });
@@ -1070,6 +1076,9 @@ export async function autopilotTick(): Promise<Response> {
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
       const found = await forSite(accountId, () => inspect(accountId, conn, { repair: true, ourDomain: domain })).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
+      // What only the owner can fix reaches them by email, not just on the dashboard.
+      const mailed = await sendUrgentAlerts(accountId, found).catch((e) => (console.error(`alerts failed: ${message(e)}`), 0));
+      if (mailed) results.push(`account ${accountId} emailed ${mailed} urgent ${mailed === 1 ? "alert" : "alerts"}`);
     }
     // The pruning check: once a month per site, one site per hour.
     for (const accountId of await accountsDueForPrune(1)) {
@@ -1082,7 +1091,7 @@ export async function autopilotTick(): Promise<Response> {
       const ai = settings ? aiProvider(settings) : null;
       const sells = profile ? siteBrief(profile).sells : "health and wellness products";
       // Nothing is taken down while rankings swing for every site (a Google update) or this site's clicks just fell.
-      const update = await rankingTurbulence().catch(() => null);
+      const update = await updateRollingOut().catch(() => null);
       const fell = !update && conn ? (await trafficCheck(conn).catch(() => null))?.sharp : false;
       const swing = update ?? (fell ? "this site's Google clicks fell sharply last week." : null);
       if (swing) {
@@ -1116,6 +1125,11 @@ export async function autopilotTick(): Promise<Response> {
       const plan = domain ? await forSite(accountId, () => runAuthorityCoach(accountId, conn, domain)).catch((e) => (console.error(`authority coach failed: ${message(e)}`), null)) : null;
       if (plan) results.push(`account ${accountId} authority plan: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves kept`);
       else await markAuthorityTried(accountId, "no plan this week");
+    }
+    // The weekly report email, one site per hour.
+    for (const accountId of await accountsDueForWeeklyReport(1)) {
+      const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
+      if (sent) results.push(`account ${accountId} weekly report emailed`);
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of await accountsDueForStrategy(1)) {

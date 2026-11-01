@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import { otherClient } from "./clients";
 import { ensureSchema, sql } from "../db";
 import { readPlatformSettings } from "./settings";
@@ -152,7 +153,7 @@ export async function rivals(
   const isOther = await otherClient(ourDomain);
   const tally = new Map<string, { beats: number; searches: string[] }>();
   for (const k of [...new Set(keywords)].slice(0, 10)) {
-    const serp = await fetchSerp(k).catch(() => null);
+    const serp = await fetchSerp(k).catch(nullUnlessLimit);
     if (!serp) continue;
     const top = serp.organic.slice(0, 10);
     const our = top.find((r) => isOurs(r.domain))?.position ?? Infinity;

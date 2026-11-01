@@ -31,6 +31,15 @@ export class SpendingLimitReached extends Error {
   name = "SpendingLimitReached";
 }
 
+/**
+ * For a `.catch` that turns a failed lookup into "nothing found": a reached spending limit is passed on instead, so
+ * the work pauses visibly rather than saving "nothing found" as if it were a result.
+ */
+export const nullUnlessLimit = (e: unknown): null => {
+  if (e instanceof SpendingLimitReached) throw e;
+  return null;
+};
+
 const month = () => new Date().toISOString().slice(0, 7);
 
 /** Counts one paid request for the current site, and refuses it once the site's monthly limit is used up. */
@@ -45,6 +54,9 @@ export async function spend(kind: Spend): Promise<void> {
     RETURNING ai, search`;
   const used = Number(kind === "ai" ? row.ai : row.search);
   if (used > limit) {
+    // Refused requests aren't spent, so they don't count.
+    await sql`UPDATE insights_usage SET ai = ai - ${kind === "ai" ? 1 : 0}, search = search - ${kind === "search" ? 1 : 0}
+      WHERE account_id = ${accountId} AND month = ${month()}`.catch(() => undefined);
     throw new SpendingLimitReached(
       `This site used its ${kind === "ai" ? "AI" : "Google results"} limit for the month (${limit}). That part pauses until next month.`
     );

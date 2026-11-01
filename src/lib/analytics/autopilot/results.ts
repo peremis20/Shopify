@@ -25,10 +25,11 @@ export async function measuredResults(accountId: string): Promise<string[]> {
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position IS NOT NULL AND result_position <= 10) AS entered,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position > 10) AS stilloff,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND note LIKE 'Dropped out%') AS dropped,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS compared,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position < baseline_position - 0.5) AS up,
-      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND result_position > baseline_position + 0.5) AS down,
-      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25) AS gain,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND across_update IS NOT NULL) AS acrossupdate,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL) AS compared,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position < baseline_position - 0.5) AS up,
+      count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position > baseline_position + 0.5) AS down,
+      avg(baseline_position - result_position) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL) AS gain,
       avg(result_clicks - baseline_clicks) FILTER (WHERE evaluated_at IS NOT NULL AND result_clicks IS NOT NULL AND baseline_clicks IS NOT NULL) AS clicks
     FROM insights_autopilot_changes
     WHERE account_id = ${accountId} AND field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))
@@ -43,13 +44,15 @@ export async function measuredResults(accountId: string): Promise<string[]> {
     // Not ranked before (stored as 25, the "off page one" marker), so no before position to compare with.
     const entered = Number(r.entered);
     const stillOff = Number(r.stilloff);
+    // Measured across a Google update: real numbers, but not clean evidence about the change.
+    const acrossUpdate = Number(r.acrossupdate);
     waiting += Number(r.waiting);
-    if (compared + nodata + dropped + entered + stillOff === 0) continue;
-    measured += compared + nodata + dropped + entered + stillOff;
+    if (compared + nodata + dropped + entered + stillOff + acrossUpdate === 0) continue;
+    measured += compared + nodata + dropped + entered + stillOff + acrossUpdate;
     const name = LABEL[String(r.field)] ?? r.field;
     if (!compared) {
       lines.push(
-        `Measured result, ${name}: ${nodata + dropped + entered + stillOff} measured, ${entered ? `${entered} not on page one before and now on page one, ` : ""}${stillOff ? `${stillOff} still not on page one, ` : ""}${dropped ? `${dropped} dropped off page one, ` : ""}${nodata} without enough Google data to compare.`
+        `Measured result, ${name}: ${nodata + dropped + entered + stillOff + acrossUpdate} measured, ${entered ? `${entered} not on page one before and now on page one, ` : ""}${stillOff ? `${stillOff} still not on page one, ` : ""}${acrossUpdate ? `${acrossUpdate} measured across a Google update, ` : ""}${dropped ? `${dropped} dropped off page one, ` : ""}${nodata} without enough Google data to compare.`
       );
       continue;
     }
@@ -62,6 +65,7 @@ export async function measuredResults(accountId: string): Promise<string[]> {
         (clk !== null ? `, average clicks change ${clk >= 0 ? "up" : "down"} ${Math.abs(clk).toFixed(1)}` : "") +
         (entered ? `, ${entered} more not on page one before and now on page one` : "") +
         (stillOff ? `, ${stillOff} more still not on page one` : "") +
+        (acrossUpdate ? `, ${acrossUpdate} more measured across a Google update (left out of these numbers)` : "") +
         (dropped ? `, ${dropped} more dropped off page one` : "") +
         (nodata ? `, ${nodata} more without enough data` : "") +
         "."

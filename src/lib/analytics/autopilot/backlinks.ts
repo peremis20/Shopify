@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import { clientListKnown, otherClient } from "./clients";
 import { ensureSchema, sql } from "../db";
 import { authorityOf, authorityReady } from "./authority";
@@ -130,7 +131,7 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
   const isOtherClient = await otherClient(ourDomain);
   const found = new Map<string, Prospect>();
   for (const { q, kind, topic } of queries) {
-    const serp = await fetchSerp(serperKey, q).catch(() => null);
+    const serp = await fetchSerp(serperKey, q).catch(nullUnlessLimit);
     for (const r of serp?.organic ?? []) {
       const domain = r.domain.toLowerCase().replace(/^www\./, "");
       if (domain === ours || domain.endsWith(`.${ours}`) || NOT_PROSPECTS.test(domain) || isBig(domain) || isOtherClient(domain)) continue;

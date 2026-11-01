@@ -1,3 +1,4 @@
+import { nullUnlessLimit } from "./usage";
 import { easeRank, keywordDifficulty } from "./difficulty";
 import { authorityOf, authorityReady, STRONG_AUTHORITY } from "./authority";
 import { ensureSchema, sql } from "../db";
@@ -178,7 +179,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
     let rival = "";
     if (serperKey) {
       // Who's on page one for this page's topic, and what the best smaller competitor ranks for.
-      const serp = await fetchSerp(serperKey, subject.slice(0, 80).toLowerCase()).catch(() => null);
+      const serp = await fetchSerp(serperKey, subject.slice(0, 80).toLowerCase()).catch(nullUnlessLimit);
       const comp = serp?.organic.find((r) => r.domain !== ourDomain && !isBig(r.domain));
       if (comp) {
         rival = comp.domain;
@@ -214,7 +215,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
   if (serperKey) {
     // Look at page one for the main targets: keep the ones with room for a site like this.
     for (const k of items.filter((i) => i.role === "main").slice(0, SERP_CHECKS)) {
-      const serp = await fetchSerp(serperKey, k.keyword).catch(() => null);
+      const serp = await fetchSerp(serperKey, k.keyword).catch(nullUnlessLimit);
       if (!serp) continue;
       const { small, ours } = await room(serp.organic, ourDomain);
       k.winnable = ours !== null || small >= 3;

@@ -1,8 +1,10 @@
 import { ensureSchema, sql } from "../db";
 
 /**
- * Google's own list of ranking updates (Search Status Dashboard). While one rolls out, and for two weeks after,
- * rankings swing for every site, so no change is judged (kept or undone) on them. Public facts: one shared cache.
+ * Google's own list of ranking updates (Search Status Dashboard). A change measured across one (its rollout plus
+ * two weeks) is never undone for falling, and its result is set apart from clean ones: the update moved every
+ * site. The control pages, measured across the same update, still show the change's own effect. Public facts:
+ * one shared cache.
  */
 export interface GoogleUpdate {
   name: string;
@@ -48,6 +50,15 @@ export function activeUpdate(updates: GoogleUpdate[], now = new Date()): { updat
   return null;
 }
 
+/** Updates whose rollout (plus the settling days) overlaps the window from `start` to `end`. */
+export function updatesDuring(updates: GoogleUpdate[], start: Date, end: Date): GoogleUpdate[] {
+  return updates.filter((u) => {
+    const from = Date.parse(u.begin);
+    const to = u.end ? Date.parse(u.end) + SETTLE_DAYS * 864e5 : Infinity;
+    return from <= end.getTime() && to >= start.getTime();
+  });
+}
+
 /** In plain words, why verdicts wait right now; null when Google is calm (or its list can't be read). */
 export async function rankingTurbulence(): Promise<string | null> {
   const updates = await googleUpdates().catch((e) => {
@@ -58,6 +69,12 @@ export async function rankingTurbulence(): Promise<string | null> {
   if (!a) return null;
   const day = (iso: string) => iso.slice(0, 10);
   return a.settling
-    ? `Google's ${a.update.name} finished on ${day(a.update.end!)} and rankings are still settling, so changes aren't judged until ${day(new Date(Date.parse(a.update.end!) + SETTLE_DAYS * 864e5).toISOString())}.`
-    : `Google is rolling out its ${a.update.name} (since ${day(a.update.begin)}), so changes aren't judged until it settles.`;
+    ? `Google's ${a.update.name} finished on ${day(a.update.end!)} and rankings are still settling (until about ${day(new Date(Date.parse(a.update.end!) + SETTLE_DAYS * 864e5).toISOString())}). Changes measured across it aren't undone for falling.`
+    : `Google is rolling out its ${a.update.name} (since ${day(a.update.begin)}). Changes measured across it aren't undone for falling.`;
+}
+
+/** Only while an update is actively rolling out (not settling): the one time nothing is taken down. */
+export async function updateRollingOut(): Promise<string | null> {
+  const a = activeUpdate(await googleUpdates().catch(() => [] as GoogleUpdate[]));
+  return a && !a.settling ? `Google is rolling out its ${a.update.name}.` : null;
 }
