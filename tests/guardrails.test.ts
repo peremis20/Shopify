@@ -174,3 +174,13 @@ test("controls: pairs left out are said, never hidden", () => {
 test("text: hyphens inside numbers (phone, date, B-12) are left alone", () => {
   assert.equal(polish("Call 555-1234 on 2026-11-01 about B-12"), "Call 555-1234 on 2026-11-01 about B-12");
 });
+
+test("text: a dash after a bold label becomes a comma, never joins words", () => {
+  assert.equal(polish("<p><strong>Tip</strong> — drink water</p>"), "<p><strong>Tip</strong>, drink water</p>");
+  assert.equal(polish("<em>Note</em> – read"), "<em>Note</em>, read");
+  assert.equal(polish("<p>Done —</p>"), "<p>Done</p>");
+});
+
+test("text: a dash before an inline tag keeps the words apart", () => {
+  assert.equal(polish("<p>Calm — <em>rested</em></p>"), "<p>Calm, <em>rested</em></p>");
+});

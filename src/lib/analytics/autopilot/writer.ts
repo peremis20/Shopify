@@ -143,7 +143,8 @@ export function polish(text: string): string {
     .replace(/[\u2010\u2011]/g, "-") // unusual hyphen characters some models write, shown oddly by some fonts
     // No dashes in anything the site shows: a dash between words (em, en or a spaced hyphen) becomes a comma.
     .replace(/(\d)(?:\s*[\u2013\u2014\u2015]\s*|\s+-\s+)(\d)/g, "$1 to $2") // a range: "2–3 weeks" reads "2 to 3 weeks"
-    .replace(/(^|>)\s*[\u2013-\u2015]\s*/g, "$1") // a dash opening a line or list item is dropped
+    .replace(/(^|<(?:p|li|h2|h3)>)\s*[\u2013-\u2015]\s*/g, "$1") // a dash opening a block is dropped
+    .replace(/\s*[\u2013-\u2015]\s*(?=<\/(?:p|li|h2|h3)>|$)/g, "") // and so is one closing it
     .replace(/\s*[\u2013-\u2015]\s*/g, ", ")
     .replace(/\s+-\s+/g, ", ")
     .replace(/,\s*,/g, ",")
