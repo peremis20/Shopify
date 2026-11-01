@@ -31,7 +31,7 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     name: "Open PageRank (site strength)",
     fix: (d) =>
       /keywordseverywhere|DomCop|moved/i.test(d)
-        ? "Open PageRank moved to openpagerank.keywordseverywhere.com and old keys stopped working. Sign in there with a Keywords Everywhere account, create the free key (30,000 sites a month), and paste it in Platform keys."
+        ? "The saved key is an old one. Create a free key at openpagerank.keywordseverywhere.com and paste it in Platform keys."
         : "Check the Open PageRank key in Platform keys.",
     workaround: "Until then, difficulty scores judge page 1 by the list of big publishers instead.",
   },
@@ -63,8 +63,9 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     const p = PART_FIX[part];
     problems.push({
       id: `service:${part}`,
-      text: `${p.name} isn't working${st.lastOk ? ` (last worked ${new Date(st.lastOk).toLocaleDateString()})` : ""}: ${st.detail ?? "unknown error"}`,
-      fix: `${p.fix(st.detail ?? "")} ${p.workaround}`,
+      // Short and plain: what's broken and the one thing to do. The service's own wording stays in the logs.
+      text: `${p.name} isn't working${st.lastOk ? ` (last worked ${new Date(st.lastOk).toLocaleDateString()})` : ""}.`,
+      fix: p.fix(st.detail ?? ""),
       who: "owner",
       platform: true,
     });
