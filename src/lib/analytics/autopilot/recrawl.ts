@@ -10,7 +10,9 @@ const lastSent = new Map<string, number>();
 
 /** Never holds up the run: after 15 seconds it gives up quietly and the next run tries again. */
 export function askGoogleToRecrawl(conn: Connection): Promise<string | null> {
-  return Promise.race([resubmit(conn), new Promise<null>((done) => setTimeout(() => done(null), 15_000))]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<null>((done) => (timer = setTimeout(() => done(null), 15_000)));
+  return Promise.race([resubmit(conn), limit]).finally(() => clearTimeout(timer));
 }
 
 async function resubmit(conn: Connection): Promise<string | null> {
