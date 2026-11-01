@@ -148,7 +148,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
                 {w.text}
               </span>
               {w.allowGoogle ? (
-                <button onClick={() => void goToGoogle("setup").catch(() => undefined)} className="text-xs font-semibold text-dash-green hover:underline">Allow</button>
+                <button onClick={() => void goToGoogle("recrawl").catch(() => undefined)} className="text-xs font-semibold text-dash-green hover:underline">Allow</button>
               ) : (
                 <button onClick={() => onGo(w.page)} className="text-xs font-semibold text-dash-green hover:underline">Take a look</button>
               )}

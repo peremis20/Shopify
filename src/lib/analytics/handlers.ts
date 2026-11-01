@@ -150,7 +150,8 @@ export async function authStart(req: Request): Promise<Response> {
   }
   const asked = new URL(req.url).searchParams.get("purpose");
   // "setup" adds the permissions "Set it up for me" needs, on top of what was already granted.
-  const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : "signin";
+  // "recrawl" adds only permission to manage Search Console, so the app can ask Google to look at changed pages sooner.
+  const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : asked === "recrawl" ? "recrawl" : "signin";
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
   }
@@ -163,7 +164,14 @@ export async function authStart(req: Request): Promise<Response> {
     client_id: client.id,
     redirect_uri: redirectUri(req),
     response_type: "code",
-    scope: (purpose === "ads" ? ADS_OAUTH_SCOPES : purpose === "setup" ? [...OAUTH_SCOPES, ...SETUP_SCOPES] : OAUTH_SCOPES).join(" "),
+    scope: (purpose === "ads"
+      ? ADS_OAUTH_SCOPES
+      : purpose === "setup"
+        ? [...OAUTH_SCOPES, ...SETUP_SCOPES]
+        : purpose === "recrawl"
+          ? [...OAUTH_SCOPES, "https://www.googleapis.com/auth/webmasters"]
+          : OAUTH_SCOPES
+    ).join(" "),
     include_granted_scopes: "true",
     access_type: "offline",
     prompt: "consent",
@@ -418,7 +426,8 @@ export const googleLinkStart = (req: Request) =>
     const acct = await readAccountAutopilot(account.id);
     const embedded = Boolean(req.headers.get("authorization"));
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
-    const purpose = new URL(req.url).searchParams.get("purpose") === "setup" ? "&purpose=setup" : "";
+    const asked = new URL(req.url).searchParams.get("purpose");
+    const purpose = asked === "setup" || asked === "recrawl" ? `&purpose=${asked}` : "";
     return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back))}${purpose}` });
   });
 

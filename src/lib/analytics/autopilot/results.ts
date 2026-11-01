@@ -74,45 +74,52 @@ export async function measuredResults(accountId: string): Promise<string[]> {
 }
 
 /**
- * Early readings for changes made at least a week ago that haven't reached their four week measurement: today's
- * position from the daily Google rank check (which reads the top 10) against the position before the change.
- * Real numbers, but early: nothing is kept or undone on them.
+ * Early readings for changes made at least a week ago that haven't reached their four week measurement. Both
+ * numbers come from the same daily Google rank check (which reads the top 10): the last check on or before the
+ * day of the change, and the latest check a week or more after it. Real numbers, but early: nothing is kept or
+ * undone on them.
  */
 async function earlyReadings(accountId: string): Promise<string[]> {
   const rows = await sql`
-    SELECT c.field, c.baseline_position AS before, r.position AS now
+    SELECT c.field, b.position AS before, a.position AS now
     FROM insights_autopilot_changes c
     JOIN LATERAL (
       SELECT position FROM insights_rank_daily d
-      WHERE d.account_id = c.account_id AND d.query = lower(c.query) ORDER BY d.checked_on DESC LIMIT 1
-    ) r ON true
+      WHERE d.account_id = c.account_id AND d.query = lower(c.query) AND d.checked_on <= c.created_at::date
+      ORDER BY d.checked_on DESC LIMIT 1
+    ) b ON true
+    JOIN LATERAL (
+      SELECT position FROM insights_rank_daily d
+      WHERE d.account_id = c.account_id AND d.query = lower(c.query) AND d.checked_on >= (c.created_at + interval '7 days')::date
+      ORDER BY d.checked_on DESC LIMIT 1
+    ) a ON true
     WHERE c.account_id = ${accountId} AND c.status = 'applied' AND c.evaluated_at IS NULL AND c.run_id IS NOT NULL
-      AND c.created_at < now() - interval '7 days' AND c.baseline_position IS NOT NULL
+      AND c.created_at < now() - interval '7 days'
       AND c.field = ANY(string_to_array(${Object.keys(LABEL).join(",")}, ','))`;
-  const by = new Map<string, { up: number; down: number; same: number; top10: number; notTop10: number }>();
+  const by = new Map<string, { up: number; down: number; same: number; reached: number; dropped: number; still: number }>();
   for (const r of rows) {
     const f = String(r.field);
-    const b = by.get(f) ?? { up: 0, down: 0, same: 0, top10: 0, notTop10: 0 };
-    const before = Number(r.before);
-    if (r.now === null) b.notTop10++;
-    else if (before === 25) b.top10++; // was off page one, now in the top 10
-    else {
-      const now = Number(r.now);
-      if (now < before - 0.5) b.up++;
-      else if (now > before + 0.5) b.down++;
-      else b.same++;
-    }
+    const b = by.get(f) ?? { up: 0, down: 0, same: 0, reached: 0, dropped: 0, still: 0 };
+    const before = r.before === null ? null : Number(r.before);
+    const now = r.now === null ? null : Number(r.now);
+    if (before === null && now === null) b.still++;
+    else if (before === null) b.reached++;
+    else if (now === null) b.dropped++;
+    else if (now < before) b.up++;
+    else if (now > before) b.down++;
+    else b.same++;
     by.set(f, b);
   }
   return [...by.entries()].map(
     ([f, b]) =>
-      `Early reading (a week or more in, not judged yet), ${LABEL[f] ?? f}: ` +
+      `Early reading from the daily rank check (a week or more in, not judged yet), ${LABEL[f] ?? f}: ` +
       [
         b.up && `${b.up} moved up`,
         b.down && `${b.down} moved down`,
-        b.same && `${b.same} about the same`,
-        b.top10 && `${b.top10} reached the top 10 from off page one`,
-        b.notTop10 && `${b.notTop10} not in the top 10 yet`,
+        b.same && `${b.same} same position`,
+        b.reached && `${b.reached} reached the top 10`,
+        b.dropped && `${b.dropped} dropped out of the top 10`,
+        b.still && `${b.still} not in the top 10 before or now`,
       ]
         .filter(Boolean)
         .join(", ") +
