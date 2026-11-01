@@ -28,6 +28,7 @@ import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
 import { measuredResults } from "./results";
+import { askGoogleToRecrawl } from "./recrawl";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
@@ -622,6 +623,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const summary: string[] = [];
   const notes: string[] = [];
   let status = "done";
+  let changed = false;
   let previewOut: AutopilotPreview | undefined;
   try {
     if (!preview) summary.push(...(await measureOlderChanges(ctx, conn)));
@@ -664,6 +666,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
           status: posted.resourceType === "site" ? "suggested" : "applied",
           note: posted.note || (posted.live ? "Published." : "Saved as a draft: turn on new content in Autopilot settings to publish automatically."),
         });
+        if (posted.live) changed = true;
         summary.push(
           posted.url
             ? `${posted.live ? "Published" : "Drafted"} a new article for "${posted.keyword}": ${posted.url}`
@@ -737,6 +740,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         summary.push(`Preview: ${describe(cand).replace(/^(Defended|Pushed|Improved)/, (w) => `would have ${w.toLowerCase()}`)}. ${changes.length} change${changes.length === 1 ? "" : "s"} planned, nothing written.`);
       } else {
         const done = await applyPlan(ctx, runId, plan);
+        if (done.length && ctx.site.writer) changed = true;
         const reviewed = notes.filter((n) => n.includes("The reviewing AI turned down"));
         const told = [...plan.summaries, ...gaps, ...reviewed];
         const extra = told.length ? ` ${told.join(" ")}` : "";
@@ -750,6 +754,11 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   } catch (err) {
     status = "failed";
     summary.push((err as Error).message);
+  }
+  // Pages changed on the site: tell Google now instead of waiting for its next visit.
+  if (changed && !preview) {
+    const said = await askGoogleToRecrawl(conn, ctx.ourDomain).catch(() => null);
+    if (said) summary.push(said);
   }
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}
