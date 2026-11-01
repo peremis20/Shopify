@@ -64,7 +64,7 @@ export function pathKey(u: string): string {
     } catch {
       /* keep it encoded */
     }
-    p = p.toLowerCase().replace(/\/+$/, "");
+    p = p.normalize("NFC").toLowerCase().replace(/\/+$/, "");
     return p || "/";
   } catch {
     return "";
@@ -126,6 +126,8 @@ export const restoreTarget = (accountId: string, url: string) => setTargetLive(a
 
 /** After the reviewer keeps an article, it isn't looked at again for this long. */
 const KEPT_DAYS = 180;
+/** AI reviews per monthly run; the rest wait for next month (keeps the hourly check quick). */
+const MAX_REVIEWS = 5;
 
 /**
  * `origin` is the site's address, like https://example.com (used to turn the site's paths into full addresses).
@@ -175,6 +177,7 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
   );
 
   let acted = 0;
+  let reviews = 0;
   const notes: string[] = [];
   for (const a of articles) {
     try {
@@ -224,7 +227,8 @@ export async function runPruner(accountId: string, conn: Connection, site: SiteA
       const redirect = into ? ` Add a redirect from ${path} to ${new URL(into.url).pathname} so anyone with the old link lands somewhere useful.` : "";
 
       // Another agent looks at it first. No reviewer, or any doubt: it stays.
-      if (!ai) continue;
+      if (!ai || reviews >= MAX_REVIEWS) continue;
+      reviews++;
       const verdict = await reviewTakedown(ai, { title: a.title, url: a.url, text: plainText(a.body ?? ""), into: into?.url ?? null, siteSells: sells }).catch(() => null);
       if (!verdict?.remove) {
         pages[a.key] = { stage: "kept", since: new Date().toISOString(), url: a.url, appMade: Boolean(appMade) };

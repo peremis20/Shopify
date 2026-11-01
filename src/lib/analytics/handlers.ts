@@ -1046,11 +1046,13 @@ export async function autopilotTick(): Promise<Response> {
       const site = conn ? await siteFor(accountId).catch(() => null) : null;
       const profile = await readProfile(accountId).catch(() => null);
       const host = profile?.siteDomain ?? (conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : null);
+      // Everything it needs is read safely first, so a failure here can't escape and stall the hourly check.
+      const settings = await readPlatformSettings().catch(() => null);
+      const ai = settings ? aiProvider(settings) : null;
+      const sells = profile ? siteBrief(profile).sells : "health and wellness products";
       const done =
         conn && site && host
-          ? await runPruner(accountId, conn, site, `https://${host}`, aiProvider(await readPlatformSettings()), siteBrief(profile!).sells).catch(
-              (e) => (console.error(`pruner failed: ${message(e)}`), null)
-            )
+          ? await runPruner(accountId, conn, site, `https://${host}`, ai, sells).catch((e) => (console.error(`pruner failed: ${message(e)}`), null))
           : null;
       // Failed or couldn't run: wait a month instead of holding up the other sites.
       if (!done) await markPruneTried(accountId);
