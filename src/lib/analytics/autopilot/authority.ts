@@ -51,9 +51,19 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
     const res = await fetch(`https://openpagerank.com/api/v1.0/getPageRank?${qs}`, {
       headers: { "API-OPR": key },
       signal: AbortSignal.timeout(15000),
-    }).catch(() => null);
-    if (!res?.ok) continue;
-    const body = (await res.json().catch(() => ({}))) as { response?: { domain: string; page_rank_decimal: number | string; status_code: number }[] };
+    }).catch((e) => (console.warn(`openpagerank request failed: ${(e as Error).message}`), null));
+    if (!res?.ok) {
+      if (res) console.warn(`openpagerank ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
+      continue;
+    }
+    const raw = await res.text().catch(() => "");
+    let body: { response?: { domain: string; page_rank_decimal: number | string; status_code: number }[] } = {};
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      console.warn(`openpagerank sent something that isn't JSON: ${raw.slice(0, 300)}`);
+    }
+    if (!(body.response ?? []).some((r) => r.status_code === 200)) console.warn(`openpagerank returned no scores: ${raw.slice(0, 300)}`);
     for (const r of body.response ?? []) {
       if (r.status_code !== 200) continue;
       const score = Number(r.page_rank_decimal);
