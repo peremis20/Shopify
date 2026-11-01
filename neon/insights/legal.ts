@@ -22,7 +22,8 @@ p,li{color:var(--ink)}small{color:var(--muted)}a{color:inherit}
 
 const contact = () => {
   const email = (process.env.SUPPORT_EMAIL ?? "").trim();
-  return email ? `<a href="mailto:${email}">${email}</a>` : "the person who invited you to the test";
+  // A plain address only, so a typo can't break the page.
+  return /^[^\s@<>"']+@[^\s@<>"']+\.[a-z]{2,}$/i.test(email) ? `<a href="mailto:${email}">${email}</a>` : "the person who invited you to the test";
 };
 
 export const privacyHtml = () =>
@@ -33,23 +34,33 @@ export const privacyHtml = () =>
 <p>DashPatrol helps your website rank on Google. It reads your site and its Google data, improves pages, writes articles you allow, and measures what worked.</p>
 <h2>What we read</h2>
 <ul>
-<li>Your Google account email and name, to sign you in.</li>
-<li>Google Search Console and Google Analytics data for the sites you connect, read only. If you click Allow, DashPatrol may also resubmit sitemaps already listed in your Search Console so Google looks at changed pages sooner. It never changes anything else there.</li>
-<li>Your website's pages, and on Shopify or WordPress the content you let the app change.</li>
+<li>Your Google account email, to sign you in.</li>
+<li>Google Search Console and Google Analytics data for the sites you connect.</li>
+<li>Your website's pages. On Shopify, WordPress, Webflow and Wix the app changes the content you allow; with the snippet, it shows its changes on your pages; on other sites it gives you a fix list.</li>
+</ul>
+<h2>What we change in your Google accounts</h2>
+<ul>
+<li>Normally nothing: Search Console and Analytics are read only.</li>
+<li>If you use Set it up for me, DashPatrol verifies your site, adds it and its sitemap to Search Console, and creates a Google Analytics property for it.</li>
+<li>If you click Allow, it may resubmit sitemaps already listed in your Search Console so Google looks at changed pages sooner.</li>
 </ul>
 <h2>How we use it</h2>
 <ul>
 <li>Only to run DashPatrol for you: planning, improving pages, writing articles, tracking rankings and reporting results.</li>
-<li>Page text and search data are sent to AI providers (Anthropic, Groq, GitHub Models or Google Gemini) to write and check changes, to serper.dev to look up Google results, to Open PageRank for public site strength scores, and to Resend to email you.</li>
+<li>Page text and search data are sent to AI providers (Anthropic, Groq, GitHub Models or Google Gemini) to write and check changes.</li>
+<li>Searches are sent to serper.dev to look up Google results, and to Google Ads Keyword Planner (through DashPatrol's own Ads account) for search volumes.</li>
+<li>Page addresses are sent to Google PageSpeed Insights for site health checks, and domains to Open PageRank for public site strength scores.</li>
+<li>Your email address and reports are sent to Resend to email you.</li>
+<li>Changes are written to your site through its own platform (Shopify, WordPress, Webflow or Wix), with the access you gave.</li>
 <li>Each site is worked on with its own data only. Your data is never shared with other customers, never sold, and never used for ads.</li>
 <li>DashPatrol's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.</li>
 </ul>
 <h2>Where it is kept</h2>
-<p>In a database hosted by Neon. Google sign in tokens are stored encrypted.</p>
+<p>In a database hosted by Neon. Sign in tokens and site access keys (Google, Shopify, WordPress, Webflow, Wix) are stored encrypted. Your data is kept until you ask us to delete it; disconnecting stops DashPatrol reading it but doesn't delete what was already stored.</p>
 <h2>Your choices</h2>
 <ul>
 <li>Disconnect Google, your store or your site at any time in Settings; DashPatrol then stops reading it.</li>
-<li>Undo any change the app made from the Content page.</li>
+<li>Undo any change the app made to your pages from the Content page (fix list items you pasted in are undone by hand).</li>
 <li>Turn emails off in Autopilot settings.</li>
 <li>To have your data deleted, contact ${contact()}.</li>
 </ul>
@@ -65,7 +76,7 @@ export const termsHtml = () =>
 <h2>Your site</h2>
 <ul>
 <li>You confirm you may connect the sites and accounts you add, and allow DashPatrol to change their content within the settings you choose.</li>
-<li>You stay responsible for what is published on your site. Review changes on the Content page; any change can be undone there.</li>
+<li>You stay responsible for what is published on your site. Review changes on the Content page, where any change the app made to your pages can be undone.</li>
 <li>On health and other sensitive topics, have a qualified expert review articles. A "Reviewed by" line is only added when you confirm that review happened.</li>
 </ul>
 <h2>No guarantees</h2>
