@@ -46,7 +46,7 @@ function difficultyOf(keyword: string, searches: number | null): Difficulty {
   return "hard";
 }
 /** Real score (0 to 100) from Google page one, when it has been checked. */
-interface Scored { score: number; label: Difficulty; avgAuthority: number | null; targeted: number; big: number; ours: number | null }
+interface Scored { score: number; label: Difficulty; avgAuthority: number | null; targeted: number; big: number; ours: number | null; local?: boolean }
 const ESTIMATE_SCORE: Record<Difficulty, number> = { easy: 20, medium: 50, hard: 80 };
 const DIFFICULTY_STYLE: Record<Difficulty, string> = {
   easy: "bg-dash-up/10 text-dash-up",
@@ -606,6 +606,9 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                           if (!real) {
                             const d = difficultyOf(i.keyword, i.avgMonthlySearches);
                             return <span className="whitespace-nowrap text-xs capitalize text-dash-muted" title="Estimate, not checked on Google yet">{d} (est.)</span>;
+                          }
+                          if (real.local || /\b(near me|nearby|open now)\b/i.test(i.keyword)) {
+                            return <span className="whitespace-nowrap rounded-full bg-[#F1ECE3] px-2 py-0.5 text-xs font-medium text-dash-muted" title="People want a place nearby. Google shows map listings first, so an article can't win this one.">Local, skip</span>;
                           }
                           const why = [
                             real.avgAuthority !== null ? `Page 1 site strength ${real.avgAuthority}/10` : null,

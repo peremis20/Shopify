@@ -2,6 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { authorityOf, authorityReady } from "./authority";
 import { fetchSerp } from "./serp";
 import { isBig, topicWords } from "./site-keywords";
+import { junkReason } from "./keyword-guard";
 
 /**
  * Keyword difficulty from 0 to 100, built from what ranks on Google page one
@@ -26,6 +27,8 @@ export interface Difficulty {
   big: number;
   /** This site's position on page one, if it's there. */
   ours: number | null;
+  /** A local search ("near me"): Google shows map listings first, so an article can't win it whatever the score. */
+  local?: boolean;
 }
 
 const CACHE_DAYS = 7;
@@ -71,6 +74,7 @@ export async function keywordDifficulty(keyword: string, serperKey: string, ourD
     targeted,
     big,
     ours,
+    ...(junkReason(k, { faith: true }) === "local search" ? { local: true } : {}),
   };
   await sql`
     INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${`kd:${k}`}, ${JSON.stringify(result)}::jsonb, now())
