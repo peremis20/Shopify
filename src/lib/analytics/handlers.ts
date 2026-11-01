@@ -48,7 +48,7 @@ import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
-import { markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
+import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
 import { checkAiKey, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
@@ -1088,10 +1088,16 @@ export async function autopilotTick(): Promise<Response> {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
-      const found = await forSite(accountId, () => inspect(accountId, conn, { repair: true, ourDomain: domain })).catch((e) => (console.error(`inspector failed: ${message(e)}`), []));
+      let inspected = true;
+      const found = await forSite(accountId, () => inspect(accountId, conn, { repair: true, ourDomain: domain })).catch(
+        (e) => ((inspected = false), console.error(`inspector failed: ${message(e)}`), [] as Awaited<ReturnType<typeof inspect>>)
+      );
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
       // What only the owner can fix reaches them by email, not just on the dashboard.
-      const mailed = await sendUrgentAlerts(accountId, found).catch((e) => (console.error(`alerts failed: ${message(e)}`), 0));
+      // Only from a complete check: a failed one says nothing about what cleared.
+      const mailed = inspected ? await sendUrgentAlerts(accountId, found).catch((e) => (console.error(`alerts failed: ${message(e)}`), 0)) : 0;
+      // A reviewed article an agent changed since loses its Reviewed by line until the expert reads it again.
+      await expireReviews(accountId).catch((e) => console.error(`reviews not checked: ${message(e)}`));
       if (mailed) results.push(`account ${accountId} emailed ${mailed} urgent ${mailed === 1 ? "alert" : "alerts"}`);
     }
     // The pruning check: once a month per site, one site per hour.

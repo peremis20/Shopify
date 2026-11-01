@@ -29,6 +29,7 @@ import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
 import { measuredResults } from "./results";
 import { googleUpdates, updatesDuring, type GoogleUpdate } from "./google-updates";
+import { expireReviews } from "./expert-review";
 import { askGoogleToRecrawl } from "./recrawl";
 import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
@@ -225,9 +226,12 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
  * same weeks; null when there's no usable control. Measures the control now (and records it) so both readings match.
  */
 async function fellMoreThanControl(ctx: Ctx, conn: Connection, runId: string, baseline: number, nowPos: number | null): Promise<boolean | null> {
-  const [k] = await sql`SELECT id, page_url, query, baseline_position FROM insights_autopilot_controls
-    WHERE account_id = ${ctx.accountId} AND run_id = ${runId} AND evaluated_at IS NULL AND voided IS NULL AND baseline_position <> 25 LIMIT 1`;
+  const [k] = await sql`SELECT id, page_url, query, baseline_position, evaluated_at, result_position FROM insights_autopilot_controls
+    WHERE account_id = ${ctx.accountId} AND run_id = ${runId} AND voided IS NULL AND baseline_position <> 25 LIMIT 1`;
   if (!k || nowPos === null) return null;
+  // Already measured (the controls' own pass got to it first): its stored reading is used.
+  if (k.evaluated_at) return k.result_position === null ? null : relativeFall(baseline, nowPos, Number(k.baseline_position), Number(k.result_position)) > WORSE_BY_POSITIONS;
+  // A Search Console error is thrown, so this change waits and retries like any other.
   const fromGsc = conn.gscSiteUrl ? await positionFor(conn, k.query!, k.page_url!) : null;
   const c = fromGsc ?? (await trackedPosition(ctx.accountId, k.query!));
   if (!c || c.position === null) return null;
@@ -290,7 +294,14 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     // than the control did. Without a control there's no fair verdict, so it's kept.
     let worse = verdict.worse;
     if (across && worse) {
-      const rel = await fellMoreThanControl(ctx, conn, String(d.run_id), baseline, now?.position ?? null).catch(() => null);
+      let rel: boolean | null;
+      try {
+        rel = await fellMoreThanControl(ctx, conn, String(d.run_id), baseline, now?.position ?? null);
+      } catch {
+        await sql`UPDATE insights_autopilot_changes SET measure_tried_at = now() WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied'`;
+        notes.push(`Measuring “${d.query}” waits: its control couldn't be read.`);
+        continue;
+      }
       worse = rel === true;
     }
     const changes = await sql`
@@ -897,6 +908,8 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     ? await sql`SELECT count(*) AS n FROM insights_autopilot_changes WHERE run_id = ${runId} AND status = 'applied'`.catch(() => [{ n: 0 }])
     : [{ n: 0 }];
   if (Number(appliedNow) > 0) {
+    // A reviewed article this run changed loses its Reviewed by line right away, not at the next check.
+    await expireReviews(accountId).catch((e) => console.error(`reviews not checked: ${(e as Error).message}`));
     const said = await askGoogleToRecrawl(conn).catch(() => null);
     if (said) summary.push(said);
   }

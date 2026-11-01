@@ -49,11 +49,16 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
   if (!acct.emailAlerts) return 0;
   const key = `alerts_sent:${accountId}`;
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`;
-  const sent = (row?.value ? JSON.parse(row.value) : {}) as Record<string, string>;
-  // A problem that has cleared is forgotten, so it can be told again if it ever returns.
-  const open = new Set(problems.map((p) => p.id));
-  for (const id of Object.keys(sent)) if (!open.has(id)) delete sent[id];
-  const urgent = problems.filter((p) => p.who === "owner" && !p.platform && EMAIL_WORTHY.test(p.id));
+  // For each problem told: when it was sent and when it was last seen.
+  const raw = (row?.value ? JSON.parse(row.value) : {}) as Record<string, { sent: string; seen: string } | string>;
+  const sent: Record<string, { sent: string; seen: string }> = {};
+  for (const [id, v] of Object.entries(raw)) sent[id] = typeof v === "string" ? { sent: v, seen: v } : v;
+  const now = new Date().toISOString();
+  for (const p of problems) if (sent[p.id]) sent[p.id].seen = now;
+  // Forgotten only after a full day without it, so one flaky check doesn't send it twice.
+  for (const [id, v] of Object.entries(sent)) if (Date.now() - Date.parse(v.seen) > 864e5) delete sent[id];
+  // Any problem worth an inbox that the agents haven't already repaired.
+  const urgent = problems.filter((p) => p.who !== "repaired" && !p.platform && EMAIL_WORTHY.test(p.id));
   const fresh = urgent.filter((p) => !sent[p.id]);
   if (!fresh.length) {
     await sql`
@@ -73,7 +78,7 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
     "You can turn these emails off in Autopilot settings.",
   ].join("\n");
   if (!(await sendEmail(to, fresh.length === 1 ? `Needs your attention: ${trimWords(fresh[0].text, 60)}` : "DashPatrol needs your attention", text))) return 0;
-  for (const p of fresh) sent[p.id] = new Date().toISOString();
+  for (const p of fresh) sent[p.id] = { sent: now, seen: now };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(sent)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

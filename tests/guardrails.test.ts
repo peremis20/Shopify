@@ -254,3 +254,11 @@ test("expert review: the byline is escaped, dated and replaced, never stacked", 
   assert.ok(twice.includes("MD, MPH") && !twice.includes("November 1"));
   assert.ok(twice.endsWith("<p>Body</p>"));
 });
+
+import { withoutByline } from "../src/lib/analytics/autopilot/expert-review";
+
+test("expert review: the byline comes off cleanly when the article changes", () => {
+  const b = reviewedByline({ name: "Jane Doe", credentials: "RD", url: null }, new Date("2026-11-01T00:00:00Z"));
+  assert.equal(withoutByline(withByline("<p>Body</p>", b)), "<p>Body</p>");
+  assert.equal(withoutByline("<p>Body</p>"), "<p>Body</p>");
+});

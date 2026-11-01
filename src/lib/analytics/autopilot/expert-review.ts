@@ -1,5 +1,5 @@
 import { ensureSchema, sql } from "../db";
-import { getBody, setBody } from "./shopify";
+import { getBody } from "./shopify";
 import { siteFor } from "./site-source";
 
 /**
@@ -63,6 +63,10 @@ export async function reviewList(accountId: string): Promise<ReviewItem[]> {
   const rows = await sql`
     SELECT DISTINCT ON (resource_id) resource_id, page_url, query, created_at FROM insights_autopilot_changes
     WHERE account_id = ${accountId} AND field = 'new_article' AND status IN ('applied', 'kept') AND resource_type = 'article'
+      AND NOT EXISTS (
+        SELECT 1 FROM insights_autopilot_changes p
+        WHERE p.account_id = ${accountId} AND p.field = 'prune' AND p.status IN ('applied', 'kept') AND p.resource_id = insights_autopilot_changes.resource_id
+      )
     ORDER BY resource_id, created_at DESC`;
   const marks = (await readJson<Record<string, { at: string; by: string }>>(REVIEWS(accountId))) ?? {};
   return rows
@@ -96,6 +100,40 @@ export function withByline(body: string, byline: string): string {
   return `${byline}\n${rest.replace(/^\s+/, "")}`;
 }
 
+/** Takes the byline off (the text between the markers). */
+export function withoutByline(body: string): string {
+  const s = body.indexOf(START);
+  const e = body.indexOf(END);
+  return s !== -1 && e > s ? (body.slice(0, s) + body.slice(e + END.length)).replace(/^\s+/, "") : body;
+}
+
+/**
+ * A reviewed article that any agent changed after the review (a new section, a link, a fixed link) no longer
+ * matches what the expert read: its Reviewed by line comes off and it waits for review again.
+ */
+export async function expireReviews(accountId: string): Promise<number> {
+  const marks = (await readJson<Record<string, { at: string; by: string }>>(REVIEWS(accountId))) ?? {};
+  const ids = Object.keys(marks);
+  if (!ids.length) return 0;
+  const touched = await sql`
+    SELECT DISTINCT coalesce(target_id, resource_id) AS rid, resource_id, target_id, created_at FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND status IN ('applied', 'kept') AND field IN ('content', 'internal_link', 'link_fix', 'alt')`;
+  const changedAfter = (rid: string, at: string) =>
+    touched.some((t) => (t.resource_id === rid || t.target_id === rid) && Date.parse(String(t.created_at)) > Date.parse(at));
+  const stale = ids.filter((rid) => changedAfter(rid, marks[rid].at));
+  if (!stale.length) return 0;
+  const site = await siteFor(accountId);
+  for (const rid of stale) {
+    if (site?.store && site.writer) {
+      const body = await getBody(site.store, "article", rid);
+      if (withoutByline(body) !== body) await site.writer.setBodyIfUnchanged("article", rid, body, withoutByline(body));
+    }
+    delete marks[rid];
+  }
+  await writeJson(REVIEWS(accountId), marks);
+  return stale.length;
+}
+
 /** The owner confirms their expert read this article: the byline goes on it (Shopify), and it's recorded. */
 export async function markReviewed(accountId: string, resourceId: string): Promise<ReviewItem[]> {
   const reviewer = await readReviewer(accountId);
@@ -103,9 +141,10 @@ export async function markReviewed(accountId: string, resourceId: string): Promi
   const item = (await reviewList(accountId)).find((i) => i.resourceId === resourceId);
   if (!item) throw new Error("That article isn't one the app wrote on this site.");
   const site = await siteFor(accountId);
-  if (!site?.store) throw new Error("The byline can be added automatically on Shopify only. Add it by hand on this site.");
+  if (!site?.store || !site.writer) throw new Error("The byline can be added automatically on Shopify only. Add it by hand on this site.");
   const body = await getBody(site.store, "article", resourceId);
-  await setBody(site.store, "article", resourceId, withByline(body, reviewedByline(reviewer, new Date())));
+  // Written only if nobody changed the article meanwhile.
+  await site.writer.setBodyIfUnchanged("article", resourceId, body, withByline(body, reviewedByline(reviewer, new Date())));
   const marks = (await readJson<Record<string, { at: string; by: string }>>(REVIEWS(accountId))) ?? {};
   marks[resourceId] = { at: new Date().toISOString(), by: `${reviewer.name}, ${reviewer.credentials}` };
   await writeJson(REVIEWS(accountId), marks);
