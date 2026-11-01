@@ -90,8 +90,10 @@ var nameOf=function(h){var m=String(h||"").match(/^\\s*"?([^"<]+?)"?\\s*</);retu
 function notice(text,bad){var n=$("notice");if(!n)return;n.textContent=text||"";n.hidden=!text;n.className="notice"+(bad?" bad":"")}
 
 async function boot(){
-  var q=new URLSearchParams(location.search);var note=q.get("notice"),err=q.get("error");
-  if(note||err)history.replaceState(null,"","/");
+  // Messages come only from this app's own short lived cookie, never from the address bar.
+  var note=null;document.cookie.split(";").forEach(function(c){var p=c.trim().split("=");if(p[0]==="ti_notice"){try{note=decodeURIComponent(p.slice(1).join("="))}catch(e){}}});
+  if(note)document.cookie="ti_notice=; Path=/; Max-Age=0; Secure; SameSite=Lax";
+  if(location.search)history.replaceState(null,"","/");
   var d=await api("/api/me").catch(function(){return null});
   if(!d){$("app").replaceChildren(el("div",{class:"center"},[el("p",{class:"err",text:"Team Inbox couldn't be reached. Reload to try again."})]));return}
   if(!d.setUp){$("app").replaceChildren(el("div",{class:"center"},[el("div",{class:"card"},[el("h1",{text:"Team Inbox"}),el("p",{text:"Not set up yet. Open the setup link you were given."})])]));return}
@@ -140,14 +142,14 @@ function renderMid(){
   M.replaceChildren(head,el("ul",{class:"list"},S.messages.map(function(m){
     return el("li",null,[el("button",{type:"button",class:"msg"+(m.unread?" unread":""),"aria-current":String(S.open&&S.open.id===m.id),onclick:function(){openMsg(m)}},[
       el("span",{class:"row spread"},[el("span",{class:"from",text:nameOf(m.from)}),el("span",{class:"meta",text:when(m.date)})]),
-      el("span",{class:"subj",text:m.subject}),el("span",{class:"snip",text:m.snippet}),
+      el("span",{class:"subj",text:m.subject+(m.count>1?"  ("+m.count+")":"")}),el("span",{class:"snip",text:m.snippet}),
       S.filter?null:el("span",null,[el("span",{class:"tag",text:addr[m.inboxId]||""})])])])})));
 }
 
 async function openMsg(m){
   S.open=m;S.thread=null;renderMid();renderRight();
   try{S.thread=await api("/api/thread?"+new URLSearchParams({inbox:m.inboxId,thread:m.threadId}));
-    if(m.unread){api("/api/modify",{inbox:m.inboxId,message:m.id,action:"read"}).then(function(){m.unread=false;renderMid()}).catch(function(){})}}
+    if(m.unread){api("/api/modify",{inbox:m.inboxId,thread:m.threadId,action:"read"}).then(function(){m.unread=false;renderMid()}).catch(function(){})}}
   catch(e){notice(e.message,true)}
   renderRight();
 }
@@ -170,8 +172,8 @@ function renderRight(){
   };
   R.replaceChildren(
     el("div",{class:"row spread"},[el("h2",{text:last.subject||"(no subject)"}),el("div",{class:"row"},[
-      el("button",{type:"button",text:"Archive",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,message:S.open.id,action:"archive"});S.messages=S.messages.filter(function(x){return x.threadId!==S.open.threadId});S.open=null;renderMid();renderRight()}catch(e){notice(e.message,true)}}}),
-      el("button",{type:"button",text:"Mark unread",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,message:S.open.id,action:"unread"});S.open.unread=true;renderMid()}catch(e){notice(e.message,true)}}})])]),
+      el("button",{type:"button",text:"Archive",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:S.open.threadId,action:"archive"});S.messages=S.messages.filter(function(x){return x.threadId!==S.open.threadId});S.open=null;renderMid();renderRight()}catch(e){notice(e.message,true)}}}),
+      el("button",{type:"button",text:"Mark unread",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:S.open.threadId,action:"unread"});S.open.unread=true;renderMid()}catch(e){notice(e.message,true)}}})])]),
     el("p",{class:"meta",text:"In "+t.inbox.address}),
     el("div",null,t.messages.map(function(m){return el("div",{class:"mail"},[
       el("div",{class:"row spread"},[el("span",{class:"from",text:m.from}),el("span",{class:"meta",text:new Date(m.date).toLocaleString()})]),
@@ -182,7 +184,7 @@ function renderRight(){
 async function removeInbox(b){
   var i=S.inboxes.find(function(x){return x.id===S.filter});if(!i)return;
   if(b.dataset.armed!=="1"){b.dataset.armed="1";b.textContent="Click again to remove "+i.address;return}
-  try{await api("/api/inbox/remove",{inbox:i.id});S.filter=null;notice("Removed "+i.address+". Google was told to end its login.");load()}catch(e){notice(e.message,true)}
+  try{await api("/api/inbox/remove",{inbox:i.id});S.filter=null;notice("Removed "+i.address+".");load()}catch(e){notice(e.message,true)}
 }
 
 async function showTeam(){

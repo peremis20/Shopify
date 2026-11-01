@@ -187,6 +187,28 @@ async function pool<T, R>(items: T[], n: number, run: (t: T) => Promise<R>): Pro
   return out;
 }
 
+/**
+ * Ends the app's Google login for an address, but only when no other member still uses that address: Google's
+ * revoke ends the whole grant for that Google account, so it would cut off everyone sharing the inbox.
+ */
+async function revokeIfUnused(address: string, refreshSealed: string): Promise<void> {
+  const [{ n }] = await sql`SELECT count(*) AS n FROM inbox_accounts WHERE address = ${address}`;
+  if (Number(n) > 0) return;
+  const r = unseal(refreshSealed, secret());
+  if (r) await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(r)}`, { method: "POST" }).catch(() => undefined);
+}
+
+interface Msg {
+  id: string;
+  threadId?: string;
+  snippet?: string;
+  internalDate: string;
+  labelIds?: string[];
+  payload?: { headers?: { name: string; value: string }[] } & Record<string, unknown>;
+}
+/** Drafts, trash and spam aren't part of the conversation shown or answered. */
+const isReal = (m: Msg) => !(m.labelIds ?? []).some((l) => l === "DRAFT" || l === "TRASH" || l === "SPAM");
+
 async function myAccount(email: string, id: unknown): Promise<Row | null> {
   if (!/^\d{1,18}$/.test(String(id ?? ""))) return null;
   const [a] = await sql`SELECT * FROM inbox_accounts WHERE id = ${String(id)} AND member = ${email}`;
@@ -214,11 +236,22 @@ async function startGoogle(req: Request, purpose: "login" | "inbox", hint?: stri
 }
 
 async function callback(req: Request): Promise<Response> {
+  try {
+    return await finishSignIn(req);
+  } catch (e) {
+    console.error(`team inbox sign in: ${oneLine((e as Error).message)}`);
+    return redirect(`${appUrl()}/`, [cookie("ti_state", "", 0), `ti_notice=${encodeURIComponent("Sign in didn't finish. Please try again.")}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
+  }
+}
+
+async function finishSignIn(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const back = (msg: string) => redirect(`${appUrl()}/?notice=${encodeURIComponent(msg)}`, [cookie("ti_state", "", 0)]);
+  // The message travels in a short lived cookie set by this app, so a crafted link can't put words on the page.
+  const back = (msg: string) =>
+    redirect(`${appUrl()}/`, [cookie("ti_state", "", 0), `ti_notice=${encodeURIComponent(msg)}; Path=/; Secure; SameSite=Lax; Max-Age=60`]);
   const state = verify<{ purpose: "login" | "inbox"; nonce: string }>(url.searchParams.get("state"), secret());
   const nonce = readCookie(req, "ti_state");
-  if (!state || !nonce || !sameSecret(state.nonce, nonce)) return back("That sign in expired. Please try again.");
+  if (!state || !nonce || nonce.length !== state.nonce.length || !sameSecret(state.nonce, nonce)) return back("That sign in expired. Please try again.");
   if (url.searchParams.get("error")) return back("Google sign in was cancelled.");
   const client = await googleClient();
   if (!client) return back("Team Inbox isn't set up yet.");
@@ -253,25 +286,29 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
   const q = `in:inbox${unread ? " is:unread" : ""}`;
   const results = await pool(chosen, 3, async (a) => {
     try {
-      const list = await gmail<{ messages?: { id: string; threadId: string }[] }>(a, `messages?maxResults=20&q=${encodeURIComponent(q)}`);
-      const msgs = await pool(list.messages ?? [], 6, (m) =>
-        gmail<{ id: string; threadId: string; snippet: string; internalDate: string; labelIds?: string[]; payload?: { headers?: { name: string; value: string }[] } }>(
-          a,
-          `messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`
-        )
+      // One row per conversation: the latest real message (no drafts) speaks for the thread.
+      const list = await gmail<{ threads?: { id: string }[] }>(a, `threads?maxResults=20&q=${encodeURIComponent(q)}`);
+      const threads = await pool(list.threads ?? [], 6, (t) =>
+        gmail<{ id: string; messages?: Msg[] }>(a, `threads/${t.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`)
       );
       return {
         inbox: { id: a.id, address: a.address, error: null as string | null },
-        messages: msgs.map((m) => ({
-          inboxId: a.id,
-          id: m.id,
-          threadId: m.threadId,
-          from: header(m.payload?.headers, "From") ?? "",
-          subject: header(m.payload?.headers, "Subject") ?? "(no subject)",
-          snippet: m.snippet ?? "",
-          date: Number(m.internalDate),
-          unread: (m.labelIds ?? []).includes("UNREAD"),
-        })),
+        messages: threads.flatMap((t) => {
+          const real = (t.messages ?? []).filter(isReal);
+          const last = real[real.length - 1];
+          if (!last) return [];
+          return [{
+            inboxId: a.id,
+            id: last.id,
+            threadId: t.id,
+            from: header(last.payload?.headers, "From") ?? "",
+            subject: header(real[0].payload?.headers, "Subject") || "(no subject)",
+            snippet: last.snippet ?? "",
+            date: Number(last.internalDate),
+            unread: real.some((m) => (m.labelIds ?? []).includes("UNREAD")),
+            count: real.length,
+          }];
+        }),
       };
     } catch (e) {
       return { inbox: { id: a.id, address: a.address, error: (e as Error).message, reconnect: Boolean((e as { reconnect?: boolean }).reconnect) }, messages: [] };
@@ -285,10 +322,10 @@ async function readThread(me: { email: string }, url: URL): Promise<Response> {
   const a = await myAccount(me.email, url.searchParams.get("inbox"));
   const id = gmailId(url.searchParams.get("thread"));
   if (!a || !id) return json({ error: "Not found." }, 404);
-  const t = await gmail<{ messages?: { id: string; internalDate: string; labelIds?: string[]; payload?: { headers?: { name: string; value: string }[] } & Record<string, unknown> }[] }>(a, `threads/${id}?format=full`);
+  const t = await gmail<{ messages?: Msg[] }>(a, `threads/${id}?format=full`);
   return json({
     inbox: { id: a.id, address: a.address },
-    messages: (t.messages ?? []).map((m) => ({
+    messages: (t.messages ?? []).filter(isReal).map((m) => ({
       id: m.id,
       from: header(m.payload?.headers, "From") ?? "",
       to: header(m.payload?.headers, "To") ?? "",
@@ -307,11 +344,11 @@ async function reply(me: { email: string }, body: Record<string, unknown>): Prom
   const text = typeof body.text === "string" ? body.text : "";
   if (!a || !threadId || !messageId) return json({ error: "Not found." }, 404);
   if (!text.trim() || text.length > 50_000) return json({ error: "Write a reply first (up to 50,000 characters)." }, 400);
-  const m = await gmail<{ threadId: string; payload?: { headers?: { name: string; value: string }[] } }>(
+  const m = await gmail<{ threadId: string; labelIds?: string[]; payload?: { headers?: { name: string; value: string }[] } }>(
     a,
     `messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References`
   );
-  if (m.threadId !== threadId) return json({ error: "Not found." }, 404);
+  if (m.threadId !== threadId || !isReal({ id: messageId, internalDate: "0", labelIds: m.labelIds })) return json({ error: "Not found." }, 404);
   const h = m.payload?.headers;
   const who = replyRecipients(a.address!, { from: header(h, "From"), replyTo: header(h, "Reply-To"), to: header(h, "To"), cc: header(h, "Cc") }, body.all === true);
   if (!who.to.length) return json({ error: "There's no one to reply to on this message." }, 400);
@@ -330,24 +367,22 @@ async function reply(me: { email: string }, body: Record<string, unknown>): Prom
 
 async function modify(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
-  const id = gmailId(body.message);
+  const id = gmailId(body.thread);
   const action = body.action;
   if (!a || !id) return json({ error: "Not found." }, 404);
   const change =
     action === "read" ? { removeLabelIds: ["UNREAD"] } : action === "unread" ? { addLabelIds: ["UNREAD"] } : action === "archive" ? { removeLabelIds: ["INBOX"] } : null;
   if (!change) return json({ error: "Unknown action." }, 400);
-  await gmail(a, `messages/${id}/modify`, { method: "POST", body: change });
+  await gmail(a, `threads/${id}/modify`, { method: "POST", body: change });
   return json({ ok: true });
 }
 
 async function removeInbox(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
   if (!a) return json({ error: "Not found." }, 404);
-  const refresh = unseal(a.refresh_sealed!, secret());
-  // Google is told to end the login too, so nothing keeps access after removal.
-  if (refresh) await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(refresh)}`, { method: "POST" }).catch(() => undefined);
   await sql`DELETE FROM inbox_accounts WHERE id = ${a.id} AND member = ${me.email}`;
   accessCache.delete(a.id!);
+  await revokeIfUnused(a.address!, a.refresh_sealed!);
   return json({ ok: true });
 }
 
@@ -361,14 +396,18 @@ async function team(me: { email: string; owner: boolean }, req: Request): Promis
       if (!isEmail(add)) return json({ error: "That isn't an email address." }, 400);
       await sql`INSERT INTO inbox_members (email) VALUES (${add}) ON CONFLICT (email) DO NOTHING`;
     }
-    if (remove && remove !== me.email) {
-      // Their connected inboxes go too, with Google told to end each login.
-      for (const a of await sql`SELECT * FROM inbox_accounts WHERE member = ${remove}`) {
-        const r = unseal(a.refresh_sealed!, secret());
-        if (r) await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(r)}`, { method: "POST" }).catch(() => undefined);
-      }
+    if (remove) {
+      const [target] = await sql`SELECT email, owner FROM inbox_members WHERE email = ${remove}`;
+      if (!target) return json({ error: "That person isn't on the team." }, 404);
+      if (target.owner === "t") return json({ error: "An owner can't be removed." }, 400);
+      // Their connected inboxes go too; a login no one else shares is ended with Google.
+      const theirs = await sql`SELECT * FROM inbox_accounts WHERE member = ${remove}`;
       await sql`DELETE FROM inbox_accounts WHERE member = ${remove}`;
       await sql`DELETE FROM inbox_members WHERE email = ${remove} AND NOT owner`;
+      for (const a of theirs) {
+        accessCache.delete(a.id!);
+        await revokeIfUnused(a.address!, a.refresh_sealed!);
+      }
     }
   }
   const rows = await sql`SELECT email, owner FROM inbox_members ORDER BY owner DESC, email`;
@@ -378,7 +417,7 @@ async function team(me: { email: string; owner: boolean }, req: Request): Promis
 async function setup(req: Request): Promise<Response> {
   const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   const token = env("SETUP_TOKEN");
-  if (!token || typeof b.token !== "string" || !sameSecret(b.token, token)) return json({ error: "This setup link isn't valid." }, 403);
+  if (token.length < 32 || typeof b.token !== "string" || b.token.length !== token.length || !sameSecret(b.token, token)) return json({ error: "This setup link isn't valid." }, 403);
   if (await googleClient()) return json({ error: "Team Inbox is already set up." }, 409);
   const id = String(b.clientId ?? "").trim();
   const sec = String(b.clientSecret ?? "").trim();
@@ -417,7 +456,9 @@ export default {
       if (req.method === "POST" && path === "/api/setup") return sameOrigin(req) ? setup(req) : json({ error: "Refused." }, 403);
       if (req.method === "GET" && path === "/api/auth/login") return startGoogle(req, "login");
       if (req.method === "GET" && path === "/api/auth/google/callback") return callback(req);
-      if (req.method === "POST" && path === "/api/auth/logout") return json({ ok: true }, 200, { "Set-Cookie": cookie("ti_session", "", 0) });
+      if (req.method === "POST" && path === "/api/auth/logout") {
+        return sameOrigin(req) ? json({ ok: true }, 200, { "Set-Cookie": cookie("ti_session", "", 0) }) : json({ error: "Refused." }, 403);
+      }
 
       const me = await member(req);
       if (req.method === "GET" && path === "/api/me") {

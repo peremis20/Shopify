@@ -52,3 +52,23 @@ test("inbox: messages show as plain text only", () => {
   assert.equal(addressIn('"Jane" <Jane@X.com>'), "jane@x.com");
   assert.equal(addressIn("not an address"), null);
 });
+
+import { encodeHeader, isEmail } from "../inbox-app/core";
+
+test("inbox: long non ASCII subjects are split into short encoded words", () => {
+  const h = encodeHeader("Réunion de l'équipe ".repeat(5));
+  for (const w of h.split("\r\n ")) assert.ok(w.length <= 75, w);
+  const back = h.split("\r\n ").map((w) => Buffer.from(w.slice(10, -2), "base64").toString("utf8")).join("");
+  assert.equal(back, "Réunion de l'équipe ".repeat(5).trim());
+});
+
+test("inbox: addresses are plain ASCII, IDN top level domains allowed", () => {
+  assert.equal(isEmail("josé@exämple.de"), false);
+  assert.equal(isEmail("ivan@shop.xn--p1ai"), true);
+  assert.equal(isEmail("info@peremis.com"), true);
+});
+
+test("inbox: a message in another character set reads correctly", () => {
+  const latin1 = Buffer.from([0x43, 0x61, 0x66, 0xe9]).toString("base64url"); // "Café" in ISO-8859-1
+  assert.equal(textOf({ mimeType: "text/plain", headers: [{ name: "Content-Type", value: 'text/plain; charset="ISO-8859-1"' }], body: { data: latin1 } }), "Café");
+});

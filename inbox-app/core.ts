@@ -59,7 +59,8 @@ export function sameSecret(a: string, b: string): boolean {
 // ---------- email addresses ----------
 
 export const normEmail = (e: unknown) => String(e ?? "").trim().toLowerCase();
-export const isEmail = (e: string) => /^[^\s@<>"',;:()[\]]+@[^\s@<>"',;:()[\]]+\.[a-z]{2,}$/i.test(e);
+/** Plain ASCII addresses only (internationalized ones would need encoding in headers); IDN top level domains allowed. */
+export const isEmail = (e: string) => /^[\x21-\x7e]+$/.test(e) && /^[^\s@<>"',;:()[\]]+@[^\s@<>"',;:()[\]]+\.[a-z0-9-]{2,}$/i.test(e);
 
 /** The bare address inside a header like `"Jane Doe" <jane@x.com>`. */
 export function addressIn(header: string | undefined): string | null {
@@ -85,7 +86,19 @@ export const oneLine = (v: string) => v.replace(/[\r\n]+/g, " ").trim();
 /** RFC 2047 for a header that has non ASCII characters. */
 export function encodeHeader(v: string): string {
   const s = oneLine(v);
-  return /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`;
+  if (/^[\x20-\x7e]*$/.test(s)) return s;
+  // Encoded words of at most 75 characters, never splitting a character across words.
+  const words: string[] = [];
+  let cur = "";
+  for (const ch of s) {
+    if (Buffer.byteLength(cur + ch, "utf8") > 45) {
+      words.push(cur);
+      cur = "";
+    }
+    cur += ch;
+  }
+  if (cur) words.push(cur);
+  return words.map((w) => `=?UTF-8?B?${Buffer.from(w, "utf8").toString("base64")}?=`).join("\r\n ");
 }
 
 export interface ReplyInput {
@@ -145,11 +158,22 @@ export function replyRecipients(
 
 interface Part {
   mimeType?: string;
+  headers?: { name: string; value: string }[];
   body?: { data?: string };
   parts?: Part[];
 }
 
-const fromB64url = (d: string) => Buffer.from(d.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
+/** A part's text in its own character set (Gmail returns the bytes as sent), UTF-8 when unknown. */
+function decodePart(p: Part): string {
+  const bytes = Buffer.from((p.body?.data ?? "").replace(/-/g, "+").replace(/_/g, "/"), "base64");
+  const ct = header(p.headers, "Content-Type") ?? "";
+  const cs = (ct.match(/charset\s*=\s*"?([A-Za-z0-9_.:-]+)"?/i)?.[1] ?? "utf-8").toLowerCase();
+  try {
+    return new TextDecoder(cs).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
 
 /** HTML turned into readable plain text. The page shows only text, so no sender's HTML ever runs. */
 export function htmlToText(html: string): string {
@@ -172,7 +196,7 @@ export function htmlToText(html: string): string {
 export function textOf(payload: Part | undefined): string {
   const find = (p: Part | undefined, type: string): string | null => {
     if (!p) return null;
-    if (p.mimeType === type && p.body?.data) return fromB64url(p.body.data);
+    if (p.mimeType === type && p.body?.data) return decodePart(p);
     for (const c of p.parts ?? []) {
       const t = find(c, type);
       if (t !== null) return t;
