@@ -398,7 +398,7 @@ export function DashboardView() {
                       <MiniStat label="Total Clicks" value={formatNumber(gsc.data.totals.clicks.value)} badge={<DeltaBadge delta={gsc.data.totals.clicks} />} />
                       <MiniStat label="Impressions" value={formatNumber(gsc.data.totals.impressions.value)} badge={<DeltaBadge delta={gsc.data.totals.impressions} />} />
                       <MiniStat label="Average CTR" value={formatPct(gsc.data.totals.ctr.value)} badge={<DeltaBadge delta={gsc.data.totals.ctr} />} />
-                      <MiniStat label="Avg. Position" value={gsc.data.totals.position.value.toFixed(1)} badge={<DeltaBadge delta={gsc.data.totals.position} lowerIsBetter />} />
+                      <MiniStat label="Avg. Position" value={gsc.data.totals.impressions.value > 0 ? gsc.data.totals.position.value.toFixed(1) : "n/a"} badge={gsc.data.totals.impressions.value > 0 && gsc.data.totals.impressions.previous > 0 ? <DeltaBadge delta={gsc.data.totals.position} lowerIsBetter /> : undefined} />
                     </div>
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-serif text-lg">Clicks &amp; Impressions</h3>
