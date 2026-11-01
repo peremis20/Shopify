@@ -938,26 +938,26 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
   const w = ctx.site?.writer;
   if (c.resource_type === "snippet") {
     // The snippet only serves live changes, so marking it undone removes it from the site.
-    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
     return "Removed from your site (the snippet stops showing it right away).";
   }
   if (c.resource_type === "site" || !w) {
     // A change pasted in by hand is changed back by hand.
     const back = c.before_value && field !== "content" && field !== "schema" && field !== "internal_link" ? `put back: ${c.before_value}` : "remove what was added";
-    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
     return `This one didn't help; ${back}.`;
   }
   if (field === "prune") {
     // Undo a take down: publish the article again.
     if (ctx.site?.mode !== "shopify" || !ctx.site.store) throw new Error("Only Shopify articles are taken down automatically.");
     await setArticlePublished(ctx.site.store, c.resource_id!, true);
-    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
     await restoreTarget(ctx.accountId, c.page_url!).catch(() => undefined);
     return "Published again.";
   }
   if (field === "new_article") {
     await unpublishArticle(ctx.accountId, ctx.site, c.resource_id!);
-    await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
     // Its search no longer has a live page, and pillars written from now on won't link to it
     // (a pillar already published keeps its link until the owner edits it).
     const t = (await readTargets(ctx.accountId).catch(() => [])).find((x) => x.keyword === c.query);
@@ -988,7 +988,7 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     }
     await w.setBody(type, id, restored);
   }
-  await sql`UPDATE insights_autopilot_changes SET status = 'reverted' WHERE id = ${c.id}`;
+  await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
   return "Restored the previous version.";
 }
 
