@@ -109,3 +109,31 @@ test("claims: disease claims are caught", () => {
   assert.ok(isRisky("This supplement cures diabetes."));
   assert.equal(isRisky("Magnesium is a mineral found in leafy greens."), false);
 });
+
+import { scoreChanges, scoreProspects } from "../src/lib/analytics/autopilot/scorecard";
+
+test("scorecard: groups fields into agents and reports measured effect", () => {
+  const s = scoreChanges([
+    { field: "meta_title", made: 3, suggested: 1, compared: 2, up: 1, down: 1, undone: 1, gainSum: -1 },
+    { field: "content", made: 1, suggested: 0, compared: 0, up: 0, down: 0, undone: 0, gainSum: 0 },
+    { field: "internal_link", made: 2, suggested: 0, compared: 0, up: 0, down: 0, undone: 0, gainSum: 0 },
+  ]);
+  const page = s.find((x) => x.agent === "Page improver")!;
+  assert.equal(page.did, "4 changes made on the site, 1 suggested");
+  assert.equal(page.result, "2 measured: 1 moved up, 1 moved down, average down 0.5 places, 1 undone for falling.");
+  assert.equal(s.find((x) => x.agent === "Link builder")!.result, "Nothing measured yet (four weeks after each change).");
+  assert.equal(s.find((x) => x.agent === "Article writer")!.result, null);
+});
+
+test("scorecard: backlink agents count found, emailed and won", () => {
+  const s = scoreProspects([
+    { kind: "broken", status: "won" },
+    { kind: "broken", status: "new" },
+    { kind: "mention", status: "contacted" },
+    { kind: "competitor", status: "new" },
+  ]);
+  assert.equal(s[0].did, "2 backlink sites found");
+  assert.equal(s[0].result, "1 emailed, 1 link won.");
+  assert.equal(s[1].result, "1 emailed, 0 links won.");
+  assert.equal(s[2].result, "None emailed yet.");
+});

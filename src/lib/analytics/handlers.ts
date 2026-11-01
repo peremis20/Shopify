@@ -44,6 +44,7 @@ import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
+import { readScorecard } from "./autopilot/scorecard";
 import { checkAiKey, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -765,6 +766,9 @@ export const strategyReport = (req: Request) =>
   });
 
 /** The Authority Coach's weekly plan. */
+/** Each agent's record on this site (Advanced view). */
+export const agentScorecard = (req: Request) => withAccount(req, async (account) => json({ scores: await readScorecard(account.id) }));
+
 export const authorityPlanReport = (req: Request) => withAccount(req, async (account) => json({ plan: await readAuthorityPlan(account.id) }));
 
 /** What the Inspector found: problems, what agents repaired, and what needs the owner. */

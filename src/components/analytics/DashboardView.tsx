@@ -16,6 +16,7 @@ import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { Backlinks } from "./Backlinks";
+import { Scorecard } from "./Scorecard";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
@@ -313,6 +314,7 @@ export function DashboardView() {
           )}
 
           {mode === "advanced" && (<>
+          <Scorecard />
           {/* KPI row */}
           <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Kpi
