@@ -126,6 +126,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
 
   // 2. Everything the agents know, as facts the planner (and its critic) can check against.
   const lines: string[] = [];
+  const about: string[] = [];
   const hist = await readAuthorityHistory(accountId).catch(() => []);
   lines.push(
     hist.length
@@ -146,8 +147,10 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const strongest = ps.filter((p) => p.status === "new").sort((a, b) => (b.authority ?? 0) - (a.authority ?? 0)).slice(0, 5);
   if (strongest.length) {
     lines.push("Strongest sites not contacted yet: " + strongest.map((p) => `${p.domain} (${p.kind}, strength ${p.authority ?? "unknown"})`).join("; "));
-    // What each of those pages is about, from Google's own result: the data to judge relevance by.
-    for (const p of strongest) lines.push(`${p.domain} page found on Google: "${p.title}". ${p.snippet.replace(/\s+/g, " ").slice(0, 160)}`);
+    // What each of those pages is about, from Google's result. It's their own wording, so it helps judge relevance
+    // but is never evidence: it goes to the planner apart from the facts a move may quote.
+    const flat = (t: string) => t.replace(/\s+/g, " ").trim();
+    for (const p of strongest) about.push(`${p.domain} page found on Google (their own words, not verified): "${flat(p.title)}". ${flat(p.snippet).slice(0, 160)}`);
   }
   if (conn?.gscSiteUrl) {
     const rows = await queryPageRows90d(conn).catch(() => []);
@@ -159,10 +162,11 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const facts = lines.join("\n");
 
   // 3. Plan, then a second AI challenges each move.
-  const plan = await planAuthority(ai, facts);
+  const shown = about.length ? `${facts}\n${about.join("\n")}` : facts;
+  const plan = await planAuthority(ai, shown);
   const moves = plan.moves.slice(0, 5);
   let checked = true;
-  const verdict = await challengeStrategy(ai, facts, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch(() => {
+  const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch(() => {
     checked = false;
     return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") };
   });
@@ -177,7 +181,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     ),
     studied,
     checked,
-    facts,
+    facts: shown,
   };
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})
