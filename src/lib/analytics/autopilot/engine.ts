@@ -68,6 +68,8 @@ interface Ctx {
   urgentOnly?: boolean;
   /** The site's pages, loaded once per run for the duplicate guards. */
   index?: Promise<SiteItem[]>;
+  /** A preview run: nothing is changed or recorded. */
+  preview?: boolean;
 }
 
 const siteOf = (ctx: Ctx) => (ctx.index ??= ctx.site.index().catch(() => []));
@@ -342,7 +344,8 @@ async function planNextChange(
       briefs,
       ctx.allowContent
     );
-    await recordReviewNotes(ctx.accountId, "page change", [improvement.suggestion]).catch(() => undefined);
+    if (!ctx.preview) await recordReviewNotes(ctx.accountId, "page change", [improvement.suggestion]).catch(() => undefined);
+    if (improvement.reviewNote) notes.push(`${new URL(cand.op.page).pathname}: ${improvement.reviewNote}`);
     if (improvement.intentMatch) return { cand, page, improvement: await guardDuplicates(ctx, page, improvement, notes), summaries, apps: used };
 
     const idea = improvement.missingForIntent || "People searching this want something the page doesn't have yet.";
@@ -568,6 +571,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       : (profile.siteDomain ?? ""),
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
+    preview: trigger === "preview",
   };
   const preview = trigger === "preview";
 

@@ -114,7 +114,11 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     }
     if (found.length) {
       // Only the sites the reviewing AI let through count as found.
-      const accepted = await upsertProspects(accountId, found, ours);
+      const accepted = await upsertProspects(accountId, found, ours).catch((e) => {
+        // Seen on the status board through the AI report; these finds are searched again next week.
+        console.error(`authority coach: competitor finds not listed: ${(e as Error).message}`);
+        return new Set<string>();
+      });
       for (const s of studied) s.found = found.filter((f) => f.rival === s.domain && accepted.has(f.url)).length;
     }
   }

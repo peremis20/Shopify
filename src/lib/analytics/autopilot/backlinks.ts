@@ -16,13 +16,15 @@ import { reviewProspects } from "./writer";
 async function reviewed(accountId: string, ourSite: string, finds: Prospect[]): Promise<Prospect[]> {
   if (!finds.length) return finds;
   const ai = aiProvider(await readPlatformSettings());
-  if (!ai) return [];
+  // Thrown, not swallowed: the list stays as it was and the next run searches again.
+  if (!ai) throw new Error("Add an AI key so new backlink sites can be checked before they are listed.");
   const out: Prospect[] = [];
   const notes: string[] = [];
   for (let i = 0; i < finds.length; i += 40) {
     const chunk = finds.slice(i, i + 40);
-    const r = await reviewProspects(ai, ourSite, chunk).catch(() => null);
-    if (!r) continue;
+    const r = await reviewProspects(ai, ourSite, chunk).catch((e) => {
+      throw new Error(`New backlink sites couldn't be checked by the reviewing AI, so the list wasn't changed. ${(e as Error).message}`);
+    });
     chunk.forEach((p, j) => r.keep[j] && out.push(p));
     notes.push(r.suggestion);
   }

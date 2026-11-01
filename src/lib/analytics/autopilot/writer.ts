@@ -88,6 +88,8 @@ export interface PageImprovement {
   missingForIntent: string;
   /** The reviewing AI's idea for ranking faster next time. */
   suggestion?: string;
+  /** What the reviewing AI turned down, in plain words. */
+  reviewNote?: string;
 }
 
 const IMPROVEMENT_SCHEMA = {
@@ -584,7 +586,8 @@ Keep the SEO title and description if they are already strong for this search; y
   let suggestion = "";
   const titleChanged = Boolean(metaTitle) && metaTitle !== (page.metaTitle ?? "");
   const descChanged = Boolean(metaDescription) && metaDescription !== (page.metaDescription ?? "");
-  if (titleChanged || descChanged || section) {
+  let reviewNote = "";
+  if (out.intentMatch !== false && (titleChanged || descChanged || section)) {
     const r = await reviewImprovement(ai, page, target.query, {
       metaTitle: titleChanged ? metaTitle : "",
       metaDescription: descChanged ? metaDescription : "",
@@ -594,6 +597,12 @@ Keep the SEO title and description if they are already strong for this search; y
     const keepOr = (kept: boolean, mine: string, current: string | null) => (kept ? mine : (current ?? ""));
     metaTitle = better(r.betterTitle, 70) || (titleChanged ? keepOr(r.keepTitle, metaTitle, page.metaTitle) : metaTitle);
     metaDescription = better(r.betterDescription, 170) || (descChanged ? keepOr(r.keepDescription, metaDescription, page.metaDescription) : metaDescription);
+    const turnedDown = [
+      titleChanged && !r.keepTitle && !r.betterTitle ? "SEO title" : "",
+      descChanged && !r.keepDescription && !r.betterDescription ? "meta description" : "",
+      section && !r.keepSection ? "new section" : "",
+    ].filter(Boolean);
+    if (turnedDown.length) reviewNote = `The reviewing AI turned down the ${turnedDown.join(", ")}, so ${turnedDown.length === 1 ? "it was" : "they were"} left out.`;
     if (!r.keepSection) section = "";
     suggestion = r.suggestion;
   }
@@ -608,6 +617,7 @@ Keep the SEO title and description if they are already strong for this search; y
     intentMatch: out.intentMatch !== false,
     missingForIntent: (out.missingForIntent ?? "").trim(),
     suggestion,
+    reviewNote,
   };
 }
 
@@ -633,7 +643,12 @@ If the link would feel forced in this article, return an empty string.`;
   const html = cleanHtml(out.sentenceHtml, target.path);
   if (!html || isRisky(html) || hasAiTell(plainText(html))) return "";
   // A second AI checks the link fits; if it can't check, no link is added.
-  return (await reviewLink(ai, source, target, html).catch(() => false)) ? html : "";
+  return (await reviewLink(ai, source, target, html).catch((e) => {
+    console.error(`internal link not added, the reviewing AI couldn't check it: ${(e as Error).message}`);
+    return false;
+  }))
+    ? html
+    : "";
 }
 
 const ALLOWED = new Set(["h2", "h3", "p", "ul", "ol", "li", "strong", "em", "a"]);
@@ -840,11 +855,14 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const subject = safeEmailText(out.subject ?? "", keep, urls);
     if (!body.text || body.dropped > body.total / 3) continue;
     // A second AI checks it and may improve it; its version passes the same checks, else the first one stands.
-    const r = await reviewOutreach(ai, p, { subject: subject.text, body: body.text });
+    const r = await reviewOutreach(ai, p, ask, { subject: subject.text, body: body.text });
     if (!r.ok) continue;
     const rb = r.body ? safeEmailText(r.body, keep, urls) : null;
     const rs = r.subject ? safeEmailText(r.subject, keep, urls) : null;
-    const useBody = rb && rb.text && rb.dropped === 0 ? rb.text : body.text;
+    // The reviewer's version must still carry every link the first draft gave (the page to offer, the dead link).
+    const links = [p.ourPage, p.brokenLink, p.pageUrl].filter((u): u is string => Boolean(u) && body.text.includes(u!));
+    const keepsLinks = (t: string) => links.every((u) => t.includes(u));
+    const useBody = rb && rb.text && rb.dropped === 0 && keepsLinks(rb.text) ? rb.text : body.text;
     const useSubject = rs && rs.text && rs.dropped === 0 ? rs.text : subject.text;
     return { subject: polish(useSubject) || "A quick note about your page", body: useBody, suggestion: r.suggestion };
   }
@@ -1173,17 +1191,20 @@ Keep it only if the link is on the same subject, helps this article's readers, a
 async function reviewOutreach(
   ai: AiProvider,
   p: { siteName: string; pageTitle: string; ourSite: string },
+  /** What the writer was told about them: the facts the email may state. */
+  given: string,
   email: { subject: string; body: string }
 ): Promise<{ ok: boolean; subject: string; body: string; suggestion: string }> {
   const out = await askJson<{ ok: boolean; subject: string; body: string; suggestion: string }>(
     reviewerOf(ai),
     `You check outreach emails before a website owner sends them. This one is from the owner of ${p.ourSite} to the person who runs ${p.siteName}, about their page "${p.pageTitle}".
+What is known about them and the reason for writing (these facts are true and may be stated): ${given}
 Subject: ${email.subject}
 Body:
 """
 ${email.body}
 """
-ok: false if it claims anything not given above (credentials, results, numbers, that they link to someone), sounds like a template or spam, pushes too hard, or would embarrass the owner.
+ok: false if it claims anything beyond the known facts above (credentials, results, numbers), sounds like a template or spam, pushes too hard, or would embarrass the owner.
 If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks.`,
     {
       type: "object",
