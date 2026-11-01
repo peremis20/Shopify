@@ -439,12 +439,32 @@ const pageHeaders = (nonce: string) => ({
   "X-Content-Type-Options": "nosniff",
 });
 
+/**
+ * The public address can be set in the database (inbox_settings app_url), so moving to a new domain
+ * needs no redeploy and never touches the secrets. Checked once a minute.
+ */
+/** The address the visitor typed, and whether it is the long Neon one (only that one is moved). */
+const hostOf = (req: Request, url: URL) => (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host).toLowerCase();
+const onLongAddress = (req: Request, url: URL) => hostOf(req, url).endsWith(".neon.tech");
+let publicUrlAt = 0;
+async function loadPublicUrl(): Promise<void> {
+  if (Date.now() - publicUrlAt < 60_000) return;
+  publicUrlAt = Date.now();
+  const v = (await setting("app_url").catch(() => null))?.trim().replace(/\/+$/, "");
+  if (v && /^https:\/\/[a-z0-9.-]+$/i.test(v)) process.env.APP_URL = v;
+}
+
 export default {
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     try {
       await schema();
+      await loadPublicUrl();
+      // Pages opened on another address (the old long one) move to the public address.
+      if (req.method === "GET" && (path === "/" || path === "/setup") && appUrl() && onLongAddress(req, url) && appUrl() !== `https://${hostOf(req, url)}`) {
+        return new Response(null, { status: 301, headers: { Location: `${appUrl()}${url.pathname}${url.search}` } });
+      }
       if (req.method === "GET" && path === "/") {
         const nonce = crypto.randomBytes(16).toString("base64");
         return new Response(appHtml(nonce), { headers: pageHeaders(nonce) });

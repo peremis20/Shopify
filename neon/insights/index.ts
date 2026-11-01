@@ -1,5 +1,22 @@
 import * as api from "@/lib/analytics/handlers";
+import { sql } from "@/lib/analytics/db";
 import { privacyHtml, termsHtml } from "./legal";
+
+/**
+ * The public address can be set in the database (insights_settings app_url), so moving to a new
+ * domain needs no redeploy and never touches the secrets. Checked once a minute.
+ */
+/** The address the visitor typed, and whether it is the long Neon one (only that one is moved). */
+const hostOf = (req: Request, url: URL) => (req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host).toLowerCase();
+const onLongAddress = (req: Request, url: URL) => hostOf(req, url).endsWith(".neon.tech");
+let publicUrlAt = 0;
+async function loadPublicUrl(): Promise<void> {
+  if (Date.now() - publicUrlAt < 60_000) return;
+  publicUrlAt = Date.now();
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = 'app_url'`.catch(() => []);
+  const v = row?.value?.trim().replace(/\/+$/, "");
+  if (v && /^https:\/\/[a-z0-9.-]+$/i.test(v)) process.env.APP_URL = v;
+}
 
 /**
  * The Insights dashboard as a Neon Function. Serves the page and the same
@@ -114,7 +131,15 @@ ${bridge}<title>${api.APP_NAME}</title>
 
 export default {
   async fetch(req: Request): Promise<Response> {
-    const path = new URL(req.url).pathname.replace(/\/+$/, "") || "/";
+    const url = new URL(req.url);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    await loadPublicUrl();
+    // Pages opened on another address (the old long one) move to the public address.
+    const pub = (process.env.APP_URL ?? "").replace(/\/+$/, "");
+    const isPage = path === "/" || path === "/analytics" || path === "/privacy" || path === "/terms";
+    if (req.method === "GET" && isPage && pub && onLongAddress(req, url) && pub !== `https://${hostOf(req, url)}`) {
+      return new Response(null, { status: 301, headers: { Location: `${pub}${url.pathname}${url.search}` } });
+    }
 
     // Neon's scheduler calls this without the password. Neon strips client-set
     // X-Neon-* headers, so this header proves the call came from a trigger.
