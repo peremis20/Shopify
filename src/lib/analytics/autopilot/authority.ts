@@ -38,9 +38,10 @@ export async function authorityOf(domains: string[]): Promise<Map<string, number
   const list = [...new Set(domains.map((d) => d.toLowerCase().replace(/^www\./, "")).filter(Boolean))];
   if (!key || !list.length) return out;
   await ensureSchema();
+  // Values go over the wire as text, so the list is sent joined and split in Postgres.
   const cached = await sql`
     SELECT cache_key, data FROM insights_report_cache
-    WHERE cache_key = ANY(${list.map((d) => `opr:${d}`)}) AND fetched_at > now() - make_interval(days => ${CACHE_DAYS})`;
+    WHERE cache_key = ANY(string_to_array(${list.map((d) => `opr:${d}`).join(",")}, ',')) AND fetched_at > now() - make_interval(days => ${CACHE_DAYS})`;
   for (const r of cached) out.set(r.cache_key!.slice(4), Number(JSON.parse(r.data!).score));
   const missing = list.filter((d) => !out.has(d));
   // Up to 100 domains per request.
