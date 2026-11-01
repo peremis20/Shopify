@@ -181,7 +181,8 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(),
         result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
         note = ${"No position before this change to compare with; kept. New articles are judged by the Pruning agent."}
-        WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND query = ${d.query} AND status = 'applied'`;
+        WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND query = ${d.query} AND status = 'applied' AND field <> 'prune'
+          AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})`;
       notes.push(`Kept the new page for “${d.query}”: nothing before it to compare with.`);
       continue;
     }
