@@ -801,24 +801,26 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
 
 /**
  * The article checks for an email: a sentence with a number, a health claim, an unsourced claim or an AI tell is
- * dropped. Web addresses, bare domains and the names in `keep` (the brand, which may contain digits) are set aside
+ * dropped. Web addresses and the names in `keep` (the brand and site addresses, which may contain digits) are set aside
  * first, so they don't count as numbers or break sentences. Returns the text and how many sentences were dropped.
  */
 function safeEmailText(raw: string, keep: string[]): { text: string; dropped: number; total: number } {
   const saved: string[] = [];
   const hide = (m: string) => `\u0000${saved.push(m) - 1}\u0000`;
   let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide);
-  masked = masked.replace(/\b[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}\b/gi, hide);
+  // Only these exact names, as whole words: a brand like "Cure" must not hide that word inside a claim.
   for (const name of keep.sort((x, y) => y.length - x.length)) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    masked = masked.replace(new RegExp(esc, "gi"), hide);
+    masked = masked.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"), hide);
   }
   let dropped = 0;
   let total = 0;
   const text = masked
     .split(/\n/)
     .map((line) =>
-      (line.match(/[^.!?]+[.!?]*\s*/g) ?? [line])
+      // A sentence ends at . ! or ? followed by a space (so "2.oz" or a domain doesn't split one).
+      line
+        .split(/(?<=[.!?])\s+/)
         .filter((sentence) => {
           if (!sentence.trim()) return true;
           total++;
@@ -827,7 +829,7 @@ function safeEmailText(raw: string, keep: string[]): { text: string; dropped: nu
           if (!ok) dropped++;
           return ok;
         })
-        .join("")
+        .join(" ")
         .trimEnd()
     )
     .join("\n")
