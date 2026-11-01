@@ -166,7 +166,7 @@ export function DashboardView() {
 
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" ? SIMPLE_TITLE[page] : "Welcome back!"}</h1>
+                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" ? (page === "home" && usingDemo ? "Welcome!" : SIMPLE_TITLE[page]) : usingDemo ? "Welcome!" : "Welcome back!"}</h1>
                 <p className="mt-1 text-dash-muted">
                   {mode === "simple" ? SIMPLE_SUB[page] : "Your website performance from Google Analytics and Search Console in one place."}
                 </p>
@@ -257,7 +257,7 @@ export function DashboardView() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="flex items-center gap-2 text-dash-ink">
                   <InfoIcon className="h-5 w-5 shrink-0 text-dash-copper" />
-                  You&apos;re looking at sample data. Connect your Google account to see your real numbers.
+                  Connect your Google account to see your numbers here.
                 </p>
                 {connection?.oauthAvailable ? (
                   <ConnectButton />

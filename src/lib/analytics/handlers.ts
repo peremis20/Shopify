@@ -46,6 +46,7 @@ import {
 } from "./autopilot/shopify";
 import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
+import { heartbeatEnd, heartbeatStart, judgeHeartbeat, readHeartbeat } from "./autopilot/heartbeat";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
@@ -1067,10 +1068,14 @@ export const revertAutopilot = (req: Request) =>
 export async function autopilotTick(): Promise<Response> {
   const results: string[] = [];
   // Sabbath rest: nothing runs from Friday sundown to Saturday sundown.
+  // Only the heartbeat is noted, so the outside watcher knows the schedule itself still works.
   if (isSabbath()) {
+    await heartbeatStart(true);
+    await heartbeatEnd(null);
     console.log("autopilot tick: Sabbath rest, nothing runs until Saturday sundown");
     return json({ results: ["Sabbath rest"] });
   }
+  await heartbeatStart(false);
   try {
     // Rank checks and health first: a drop found this morning can be defended in today's run.
     const upkeep = [
@@ -1162,11 +1167,23 @@ export async function autopilotTick(): Promise<Response> {
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
+    await heartbeatEnd(null);
     return json({ results });
   } catch (err) {
     console.error(`autopilot tick failed: ${message(err)}`);
+    await heartbeatEnd(message(err));
     return json({ error: message(err) }, 500);
   }
+}
+
+/**
+ * Public and safe for any uptime monitor: only whether the hourly run is
+ * healthy, never a site's data. 503 when it isn't, so a monitor can alert.
+ */
+export async function heartbeat(): Promise<Response> {
+  const hb = await readHeartbeat().catch(() => null);
+  const v = judgeHeartbeat(hb);
+  return json({ ok: v.ok, text: v.text, lastRun: hb?.startedAt ?? null }, v.ok ? 200 : 503);
 }
 
 // ---------- Shopify connection ----------

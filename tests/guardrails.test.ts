@@ -270,3 +270,28 @@ test("search console: an empty summary row is no data, never position 0", () => 
   assert.equal(gscReading(undefined), null);
   assert.deepEqual(gscReading({ position: 7.2, clicks: 3, impressions: 40 }), { position: 7.2, clicks: 3, impressions: 40 });
 });
+
+// ---------- the outside watcher's heartbeat ----------
+import { judgeHeartbeat } from "../src/lib/analytics/autopilot/heartbeat";
+
+test("heartbeat: a recent finished run is healthy, a missing or stuck or failing one is not", () => {
+  // A Monday afternoon in Texas, far from the Sabbath.
+  const now = new Date("2026-11-02T20:00:00Z");
+  const ago = (h: number) => new Date(now.getTime() - h * 3_600_000).toISOString();
+  const base = { startedAt: ago(0.5), finishedAt: ago(0.4), ok: true, error: null, sabbath: false, failures: 0 };
+  assert.equal(judgeHeartbeat(base, now).ok, true);
+  assert.equal(judgeHeartbeat(null, now).ok, false);
+  assert.equal(judgeHeartbeat({ ...base, startedAt: ago(3) }, now).ok, false);
+  assert.equal(judgeHeartbeat({ ...base, startedAt: ago(1.5), finishedAt: null }, now).ok, false);
+  assert.equal(judgeHeartbeat({ ...base, startedAt: ago(0.2), finishedAt: null }, now).ok, true);
+  assert.equal(judgeHeartbeat({ ...base, failures: 1, ok: false }, now).ok, true);
+  assert.equal(judgeHeartbeat({ ...base, failures: 2, ok: false, error: "boom" }, now).ok, false);
+});
+
+test("heartbeat: quiet is expected during the Sabbath and just after it", () => {
+  // Saturday noon in Texas, and Saturday about an hour after sundown.
+  assert.equal(judgeHeartbeat(null, new Date("2026-11-07T18:00:00Z")).ok, true);
+  assert.equal(judgeHeartbeat(null, new Date("2026-11-08T00:30:00Z")).ok, true);
+  // Sunday afternoon: quiet is a problem again.
+  assert.equal(judgeHeartbeat(null, new Date("2026-11-08T20:00:00Z")).ok, false);
+});

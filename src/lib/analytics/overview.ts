@@ -1,5 +1,4 @@
 import { resolveRange } from "./dates";
-import { demoGa, demoGsc } from "./demo";
 import { envGa4PropertyId, fetchGa4, ga4OpenUrl } from "./ga4";
 import { getServiceAccount, type GoogleAuth } from "./google-auth";
 import { envGscSiteUrl, fetchGsc, gscOpenUrl } from "./gsc";
@@ -83,11 +82,11 @@ async function load<T>(
   missing: string,
   ranges: PeriodRanges,
   live: (auth: GoogleAuth, id: string, r: PeriodRanges) => Promise<T>,
-  demo: (r: PeriodRanges) => T,
   openUrl: (id: string) => string
 ): Promise<SourceResult<T>> {
+  // Not connected: no numbers at all. Made up sample numbers would read as the customer's own.
   if (!auth) {
-    return { status: "demo", range: ranges.current, data: demo(ranges) };
+    return { status: "demo", range: ranges.current, data: null };
   }
   if (!id) {
     return { status: "error", range: ranges.current, data: null, error: missing };
@@ -124,9 +123,9 @@ export async function getOverview(
   // GA4 is complete through yesterday; Search Console lags about 3 days.
   const [ga, gsc] = await Promise.all([
     load(source.auth, source.gaId, "Choose a Google Analytics property in Settings.",
-      resolveRange(rangeKey, 1), (auth, id, ranges) => fetchGa4(auth, id, ranges, excludeHosts), demoGa, ga4OpenUrl),
+      resolveRange(rangeKey, 1), (auth, id, ranges) => fetchGa4(auth, id, ranges, excludeHosts), ga4OpenUrl),
     load(source.auth, source.site, "Choose a Search Console property in Settings.",
-      resolveRange(rangeKey, 3), fetchGsc, demoGsc, gscOpenUrl),
+      resolveRange(rangeKey, 3), fetchGsc, gscOpenUrl),
   ]);
 
   const data: OverviewResponse = {

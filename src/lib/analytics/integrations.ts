@@ -19,7 +19,7 @@ const fromSource = (s: SourceStatus): IntegrationStatus => (s === "live" ? "conn
 
 const DETAIL: Record<IntegrationStatus, string> = {
   connected: "Pulling live data",
-  demo: "Showing sample data",
+  demo: "Not connected",
   error: "Connection problem",
   coming_soon: "Coming soon",
   setup: "Needs setup",

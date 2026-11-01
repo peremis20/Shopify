@@ -67,7 +67,8 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
     api<{ list: ProspectList | null }>("/api/seo/backlinks").then((d) => setProspects(d.list)).catch(() => setProspects(null));
   }, []);
 
-  const gsc = data?.gsc?.data;
+  // Sample data is for the preview only: a customer's own numbers are never made up.
+  const gsc = data?.gsc?.status === "live" ? data.gsc.data : undefined;
   const pageOne = ranks?.filter((r) => r.position !== null && r.position <= 10) ?? [];
   const quoted = ranks?.filter((r) => r.quoted).length ?? 0;
   const pageOneBefore = ranks?.filter((r) => r.previous !== null && r.previous <= 10).length ?? 0;
@@ -122,7 +123,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
     .filter((x) => x.gain >= 1)
     .sort((a, b) => b.gain - a.gain)[0];
 
-  const sales = data?.ga?.data?.organicSales;
+  const sales = data?.ga?.status === "live" ? data.ga.data?.organicSales : undefined;
   const salesTracked = sales && (sales.orders.value > 0 || sales.orders.previous > 0 || sales.revenue.value > 0);
   const money = (n: number) =>
     new Intl.NumberFormat(undefined, { style: "currency", currency: sales?.currency || "USD", maximumFractionDigits: 0 }).format(n);
