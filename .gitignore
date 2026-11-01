@@ -32,3 +32,4 @@ next-env.d.ts
 
 # Neon Function build output
 /neon/dist/
+/inbox-app/dist/
