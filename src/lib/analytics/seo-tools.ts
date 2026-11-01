@@ -76,6 +76,34 @@ export async function gscSearchCount(conn: Connection): Promise<number> {
   return rows.length;
 }
 
+export interface QueryPageRow {
+  query: string;
+  page: string;
+  clicks: number;
+}
+
+/** Every search and page pair with its Google clicks over 90 days (one request; match against it in memory). */
+export async function queryPageRows90d(conn: Connection): Promise<QueryPageRow[]> {
+  if (!conn.gscSiteUrl) return [];
+  const { auth, site } = requireSite(conn);
+  const { current } = resolveRange("90d", 3);
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query", "page"], rowLimit: 5000 });
+  return rows.map((r) => ({ query: r.keys[0].toLowerCase(), page: r.keys[1].split("#")[0], clicks: r.clicks }));
+}
+
+/** The page with the most clicks on searches containing all the words (whole words only: "and" must not match "sandals"). */
+export function bestPageIn(rows: QueryPageRow[], topicWords: string[]): { page: string; clicks: number } | null {
+  if (!topicWords.length) return null;
+  const byPage = new Map<string, number>();
+  for (const r of rows) {
+    const q = new Set(r.query.split(/[^a-z0-9]+/));
+    if (!topicWords.every((w) => q.has(w))) continue;
+    byPage.set(r.page, (byPage.get(r.page) ?? 0) + r.clicks);
+  }
+  const best = [...byPage.entries()].sort((a, b) => b[1] - a[1])[0];
+  return best && best[1] > 0 ? { page: best[0], clicks: best[1] } : null;
+}
+
 /**
  * The site's page that already does best on Google for a topic: most clicks over
  * 90 days on searches containing all its words. This is the page worth offering
@@ -83,19 +111,7 @@ export async function gscSearchCount(conn: Connection): Promise<number> {
  */
 export async function bestPageForTopic(conn: Connection, topicWords: string[]): Promise<{ page: string; clicks: number } | null> {
   if (!conn.gscSiteUrl || !topicWords.length) return null;
-  const { auth, site } = requireSite(conn);
-  const { current } = resolveRange("90d", 3);
-  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query", "page"], rowLimit: 5000 });
-  const byPage = new Map<string, number>();
-  for (const r of rows) {
-    // Whole words only ("and" must not match "sandals").
-    const q = new Set(r.keys[0].toLowerCase().split(/[^a-z0-9]+/));
-    if (!topicWords.every((w) => q.has(w))) continue;
-    const page = r.keys[1].split("#")[0];
-    byPage.set(page, (byPage.get(page) ?? 0) + r.clicks);
-  }
-  const best = [...byPage.entries()].sort((a, b) => b[1] - a[1])[0];
-  return best && best[1] > 0 ? { page: best[0], clicks: best[1] } : null;
+  return bestPageIn(await queryPageRows90d(conn), topicWords);
 }
 
 /** Google impressions per page (address without #fragment) over the last 90 days, and how many rows the report had. */

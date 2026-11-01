@@ -150,7 +150,9 @@ export async function setProspectStatus(accountId: string, url: string, status: 
 export async function upsertProspects(accountId: string, updates: Prospect[]): Promise<void> {
   const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
   for (const u of updates) {
-    const i = list.prospects.findIndex((p) => p.url === u.url || p.domain === u.domain);
+    // The same page first; the same site only when the page isn't listed.
+    let i = list.prospects.findIndex((p) => p.url === u.url);
+    if (i === -1) i = list.prospects.findIndex((p) => p.domain === u.domain);
     if (i === -1) list.prospects.unshift(u);
     else if (list.prospects[i].status === "new") list.prospects[i] = { ...list.prospects[i], ...u, status: "new" };
   }

@@ -780,14 +780,33 @@ export async function writeOutreach(
     `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${ask}
-Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only. Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`,
+Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only.
+Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
+Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`,
     {
       type: "object",
       properties: { subject: { type: "string" }, body: { type: "string" } },
       required: ["subject", "body"],
     }
   );
-  return { subject: polish(out.subject), body: out.body.replace(/[\u2010-\u2015]/g, ",").trim() };
+  // The same checks as articles: a sentence with a number, a health claim, an unsourced claim or an AI tell is dropped.
+  // Web addresses are set aside first, so their dots and digits don't count as sentences or numbers.
+  const urls: string[] = [];
+  const masked = out.body.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, (u) => `\u0000${urls.push(u) - 1}\u0000`);
+  const body = masked
+    .split(/\n/)
+    .map((line) =>
+      (line.match(/[^.!?]+[.!?]*\s*/g) ?? [line])
+        .filter((sentence) => !/\d/.test(sentence.replace(/\u0000\d+\u0000/g, "")))
+        .filter((sentence) => !isRisky(sentence) && !isUnsourced(sentence) && !hasAiTell(sentence))
+        .join("")
+        .trimEnd()
+    )
+    .join("\n")
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => urls[Number(i)] ?? "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { subject: polish(out.subject), body };
 }
 
 /* ---------- Strategist (strategist.ts): a weekly plan, and a second AI that challenges it ---------- */

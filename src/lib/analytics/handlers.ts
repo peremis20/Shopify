@@ -1,4 +1,4 @@
-import { accountsDueForBrokenLinks, runBrokenLinks } from "./autopilot/broken-links";
+import { accountsDueForBrokenLinks, markBrokenLinksChecked, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
@@ -1069,6 +1069,8 @@ export async function autopilotTick(): Promise<Response> {
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
       const done = await runBrokenLinks(accountId, conn, domain).catch((e) => (console.error(`broken links failed: ${message(e)}`), null));
       if (done) results.push(`account ${accountId} broken links: ${done}`);
+      // Failed: wait a week instead of holding up the other sites.
+      else await markBrokenLinksChecked(accountId, "the last check failed");
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of await accountsDueForStrategy(1)) {
