@@ -191,7 +191,8 @@ export const folderOf = (v: unknown): Folder => (typeof v === "string" && Object
 export function mailQuery(folder: unknown, unread: boolean, search: unknown, primary = false): string {
   const s = oneLine(String(search ?? "")).slice(0, 300);
   const f = folderOf(folder);
-  return [FOLDERS[f], primary && f === "inbox" ? "category:primary" : "", unread ? "is:unread" : "", s ? `(${s})` : ""].filter(Boolean).join(" ");
+  // Important only keeps the Primary and Updates tabs (orders, shipping), and never narrows a search.
+  return [FOLDERS[f], primary && f === "inbox" && !s ? "{category:primary category:updates}" : "", unread ? "is:unread" : "", s ? `(${s})` : ""].filter(Boolean).join(" ");
 }
 
 /** What a thread action does in Gmail: the path to post to and the label change, or null when unknown. */
@@ -501,7 +502,13 @@ const pctDecode = (v: string) => {
   }
 };
 
-/** A mailto: link as the email to send: one real address, a one line subject and a short body. */
+export const UNSUB_SUBJECT = "Unsubscribe";
+export const UNSUB_BODY = "Please unsubscribe this address.";
+
+/**
+ * A mailto: link as the email to send from the owner's mailbox: only to the one address in the link, with a fixed
+ * body. The sender's subject is kept only when it is short, plain and says unsubscribe; their body is never used.
+ */
 export function parseMailto(uri: string | undefined): { to: string; subject: string; body: string } | null {
   const s = String(uri ?? "").trim();
   if (!/^mailto:/i.test(s)) return null;
@@ -513,14 +520,11 @@ export function parseMailto(uri: string | undefined): { to: string; subject: str
     const k = pctDecode(i >= 0 ? pair.slice(0, i) : pair).toLowerCase();
     if (k && !(k in params)) params[k] = pctDecode(i >= 0 ? pair.slice(i + 1) : "");
   }
-  const candidates = [...pctDecode(q >= 0 ? rest.slice(0, q) : rest).split(","), ...(params.to ?? "").split(",")];
-  const to = candidates.map((c) => normEmail(c)).find((c) => isEmail(c));
-  if (!to) return null;
-  return {
-    to,
-    subject: oneLine(params.subject ?? "").slice(0, 200) || "Unsubscribe",
-    body: (params.body ?? "").replace(/\r\n?/g, "\n").slice(0, 2000) || "Unsubscribe",
-  };
+  // Exactly one recipient, the one in the link itself: no extra "to", cc or bcc from the sender.
+  const to = normEmail(pctDecode(q >= 0 ? rest.slice(0, q) : rest));
+  if (!isEmail(to)) return null;
+  const subject = params.subject ?? "";
+  return { to, subject: /^[\w\s-]{0,60}$/.test(subject) && /unsubscribe/i.test(subject) ? oneLine(subject) : UNSUB_SUBJECT, body: UNSUB_BODY };
 }
 
 /** True when List-Unsubscribe-Post asks for the RFC 8058 one click POST. */
@@ -599,6 +603,15 @@ export function senderMatches(rule: string, address: string | null): boolean {
   const a = normEmail(address);
   if (!a || !rule) return false;
   return rule.startsWith("@") ? a.slice(a.lastIndexOf("@")) === rule : a === rule;
+}
+
+/**
+ * Whether a rule would hit the team's own mail: an exact team address, or a domain that any team address uses
+ * (an exact rule for someone else at that domain, like a shared gmail.com, is still allowed).
+ */
+export function ruleTargetsTeam(rule: string, team: (string | null | undefined)[]): boolean {
+  const addrs = team.map(normEmail).filter((e) => e.includes("@"));
+  return rule.startsWith("@") ? addrs.some((e) => e.slice(e.lastIndexOf("@")) === rule) : addrs.includes(rule);
 }
 
 /**

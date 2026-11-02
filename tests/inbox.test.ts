@@ -196,6 +196,7 @@ import {
   parseMailto,
   ruleQueries,
   ruleSender,
+  ruleTargetsTeam,
   safeUnsubUrl,
   senderMatches,
   senderTotals,
@@ -216,14 +217,21 @@ test("inbox: List-Unsubscribe gives its https and mailto addresses", () => {
 });
 
 test("inbox: mailto unsubscribe links become a safe email", () => {
-  assert.deepEqual(parseMailto("mailto:leave@x.com?subject=Unsubscribe%20me&body=please"), { to: "leave@x.com", subject: "Unsubscribe me", body: "please" });
-  assert.deepEqual(parseMailto("mailto:LEAVE@x.com"), { to: "leave@x.com", subject: "Unsubscribe", body: "Unsubscribe" });
+  const fixed = "Please unsubscribe this address.";
+  assert.deepEqual(parseMailto("mailto:leave@x.com?subject=Unsubscribe%20me&body=please%20wire%20money"), { to: "leave@x.com", subject: "Unsubscribe me", body: fixed });
+  assert.deepEqual(parseMailto("mailto:LEAVE@x.com"), { to: "leave@x.com", subject: "Unsubscribe", body: fixed });
+  assert.equal(parseMailto("mailto:leave@x.com?subject=Buy%20now")?.subject, "Unsubscribe");
+  assert.equal(parseMailto("mailto:leave@x.com?subject=unsubscribe:%20invoice%20%2399")?.subject, "Unsubscribe");
+  assert.equal(parseMailto("mailto:leave@x.com?subject=unsub_123-list")?.subject, "Unsubscribe");
+  assert.equal(parseMailto("mailto:leave@x.com?subject=unsubscribe_123-list")?.subject, "unsubscribe_123-list");
+  assert.deepEqual(parseMailto("mailto:leave@x.com?to=boss@y.com&cc=z@y.com&bcc=w@y.com")?.to, "leave@x.com");
+  assert.equal(parseMailto("mailto:a@x.com,b@y.com"), null);
   assert.equal(parseMailto("mailto:?subject=x"), null);
   assert.equal(parseMailto("https://x.com"), null);
   const evil = parseMailto("mailto:a@x.com%0D%0ABcc:evil@y.com?subject=hi%0D%0ABcc:%20evil@y.com");
   assert.equal(evil, null);
-  const inj = parseMailto("mailto:a@x.com?subject=hi%0D%0ABcc:%20evil@y.com");
-  assert.equal(inj?.subject, "hi Bcc: evil@y.com");
+  const inj = parseMailto("mailto:a@x.com?subject=unsubscribe%0D%0ABcc:%20evil@y.com");
+  assert.equal(inj?.subject, "Unsubscribe");
   const raw = decode(buildReply({ from: "info@peremis.com", to: [inj!.to], cc: [], subject: inj!.subject, inReplyTo: null, references: null, body: inj!.body }));
   assert.ok(!/^Bcc:/im.test(raw.split("\r\n\r\n")[0]));
 });
@@ -261,7 +269,13 @@ test("inbox: rules match an exact address or a whole domain", () => {
   const many = ruleQueries(Array.from({ length: 45 }, (_, i) => `u${i}@x.com`));
   assert.equal(many.length, 3);
   assert.ok(many[0].startsWith("in:inbox from:(u0@x.com OR "));
-  assert.equal(mailQuery("inbox", false, "", true), "in:inbox category:primary");
+  assert.equal(mailQuery("inbox", false, "", true), "in:inbox {category:primary category:updates}");
+  assert.equal(mailQuery("inbox", false, "invoice", true), "in:inbox (invoice)");
+  assert.ok(ruleTargetsTeam("info@peremis.com", ["INFO@peremis.com", "jimmy@gmail.com"]));
+  assert.ok(ruleTargetsTeam("@peremis.com", ["info@peremis.com"]));
+  assert.ok(ruleTargetsTeam("@gmail.com", ["info@peremis.com", "jimmy@gmail.com"]));
+  assert.ok(!ruleTargetsTeam("deals@gmail.com", ["jimmy@gmail.com"]));
+  assert.ok(!ruleTargetsTeam("@shop.com", ["info@peremis.com", null]));
   assert.equal(mailQuery("sent", false, "", true), "in:sent");
 });
 

@@ -404,7 +404,7 @@ function senderRow(g,addr){
   del.onclick=async function(){if(del.dataset.armed!=="1"){del.dataset.armed="1";del.textContent="Click again to delete all from "+g.address;return}
     del.disabled=true;msg.textContent="Deleting…";
     try{var r=await api("/api/sender/trash",{inbox:g.inboxId,sender:g.address});
-      var t="Moved "+r.count+(r.count===1?" conversation":" conversations")+" from "+g.address+" to Trash."+(r.failed?" "+r.failed+" couldn't be moved.":"")+(r.more?" There is more. Click again to keep going.":"");
+      var t="Moved "+r.count+(r.count===1?" email":" emails")+" from "+g.address+" to Trash."+(r.failed?" "+r.failed+" couldn't be moved.":"")+(r.more?" There is more. Click again to keep going.":"");
       if(r.more){del.dataset.armed="";del.disabled=false;del.textContent="Delete more";msg.textContent=t}else{dropSender(g);renderRight();notice(t,r.failed>0)}}
     catch(e){msg.textContent=e.message;del.disabled=false}};
   acts.push(del);

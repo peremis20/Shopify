@@ -46,6 +46,7 @@ import {
   ruleAction,
   ruleQueries,
   ruleSender,
+  ruleTargetsTeam,
   safeUnsubUrl,
   senderMatches,
   senderTotals,
@@ -202,11 +203,20 @@ async function accessToken(account: Row): Promise<string> {
 
 async function gmail<T>(account: Row, path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   const token = await accessToken(account);
-  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
-    method: init?.method ?? "GET",
-    headers: { Authorization: `Bearer ${token}`, ...(init?.body ? { "Content-Type": "application/json" } : {}) },
-    body: init?.body ? JSON.stringify(init.body) : undefined,
-  });
+  const call = () =>
+    fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
+      method: init?.method ?? "GET",
+      headers: { Authorization: `Bearer ${token}`, ...(init?.body ? { "Content-Type": "application/json" } : {}) },
+      body: init?.body ? JSON.stringify(init.body) : undefined,
+    });
+  let res = await call();
+  // Too many at once: wait a moment (Google's Retry-After, at most 5 seconds) and try once more.
+  if (res.status === 429) {
+    const wait = Math.min(5, Math.max(1, Number(res.headers.get("retry-after")) || 1.5)) * 1000;
+    await res.body?.cancel().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, wait));
+    res = await call();
+  }
   const body = (await res.json().catch(() => ({}))) as T & { error?: { message?: string } };
   if (res.status === 401) {
     accessCache.delete(account.id!);
@@ -628,6 +638,8 @@ async function listIds(a: Row, kind: "messages" | "threads", q: string, cap: num
   return { ids: ids.slice(0, cap), more: Boolean(token) || ids.length > cap };
 }
 
+/** Gmail calls at once for one inbox in the clean up work. */
+const GMAIL_PARALLEL = 4;
 const UNSUB_HEADERS = "metadataHeaders=From&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post";
 const SENDERS_CAP = 500;
 const sendersCache = new Map<string, { at: number; rows: SenderRow[]; partial: boolean; skipped: number }>();
@@ -639,7 +651,7 @@ async function senderRows(a: Row, fresh: boolean): Promise<{ rows: SenderRow[]; 
   const list = await listIds(a, "messages", "in:inbox newer_than:30d", SENDERS_CAP);
   let skipped = 0;
   const rows = (
-    await pool(list.ids, 8, async (m) => {
+    await pool(list.ids, GMAIL_PARALLEL, async (m) => {
       try {
         const full = await gmail<Msg>(a, `messages/${m.id}?format=metadata&${UNSUB_HEADERS}`);
         const h = full.payload?.headers;
@@ -768,35 +780,41 @@ async function unsubscribe(me: { email: string }, body: Record<string, unknown>)
 }
 
 const TRASH_CAP = 500;
-/** Moves every conversation from one sender in this inbox to Trash, up to 500 a click. */
+/**
+ * Moves this sender's inbox mail of the last 30 days to Trash (the same mail the Clean up count shows), up to 500 a
+ * click. Only messages whose From is exactly that address move; the conversations they are in, and any replies, stay.
+ */
 async function trashSender(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
   const sender = normEmail(body.sender);
   if (!a || !isEmail(sender)) return json({ error: "Not found." }, 404);
-  const list = await listIds(a, "threads", `from:${sender}`, TRASH_CAP);
-  let failed = 0;
-  await pool(list.ids, 8, (t) => gmail(a, `threads/${t.id}/trash`, { method: "POST" }).catch(() => { failed++; }));
-  sendersCache.delete(a.id!);
-  if (failed) console.error(`team inbox delete all ${sender}: ${failed} failed`);
-  return json({ count: list.ids.length - failed, failed, more: list.more });
+  const r = await applyRules(a, [{ id: "", sender, action: "trash" }], "newer_than:30d", TRASH_CAP);
+  if (r.failed) console.error(`team inbox delete all ${sender}: ${r.failed} failed`);
+  return json({ count: r.moved, failed: r.failed, more: r.more });
 }
 
 type RuleRow = { id: string; sender: string; action: string };
 /**
  * Applies rules to one inbox: finds matching inbox mail, checks each sender exactly, then trashes or archives the
- * message. Up to `cap` messages a run. Returns how many were moved.
+ * message (never the whole conversation). The newest `cap` messages a run; `more` says some are left for later.
  */
-async function applyRules(a: Row, rules: RuleRow[], recent: boolean, cap: number): Promise<number> {
-  if (!rules.length) return 0;
+async function applyRules(a: Row, rules: RuleRow[], extra: string, cap: number): Promise<{ moved: number; failed: number; more: boolean }> {
+  if (!rules.length) return { moved: 0, failed: 0, more: false };
   const ids = new Map<string, true>();
-  for (const q of ruleQueries(rules.map((r) => r.sender), recent ? "newer_than:2d" : "")) {
-    if (ids.size >= cap) break;
-    for (const m of (await listIds(a, "messages", q, cap - ids.size)).ids) ids.set(m.id, true);
+  let more = false;
+  for (const q of ruleQueries(rules.map((r) => r.sender), extra)) {
+    if (ids.size >= cap) {
+      more = true;
+      break;
+    }
+    const list = await listIds(a, "messages", q, cap - ids.size);
+    more ||= list.more;
+    for (const m of list.ids) ids.set(m.id, true);
   }
-  if (!ids.size) return 0;
+  if (!ids.size) return { moved: 0, failed: 0, more };
   const toTrash: string[] = [];
   const toArchive: string[] = [];
-  await pool([...ids.keys()], 6, async (id) => {
+  await pool([...ids.keys()], GMAIL_PARALLEL, async (id) => {
     const m = await gmail<Msg>(a, `messages/${id}?format=metadata&metadataHeaders=From`).catch(() => null);
     const from = addressIn(header(m?.payload?.headers, "From"));
     const hits = rules.filter((r) => senderMatches(r.sender, from));
@@ -808,10 +826,11 @@ async function applyRules(a: Row, rules: RuleRow[], recent: boolean, cap: number
     await gmail(a, "messages/batchModify", { method: "POST", body: { ids: toArchive, removeLabelIds: ["INBOX"] } });
     moved += toArchive.length;
   }
-  const done = await pool(toTrash, 6, (id) => gmail(a, `messages/${id}/trash`, { method: "POST" }).then(() => 1, () => 0));
-  moved += done.reduce((n: number, x) => n + x, 0);
+  const done = await pool(toTrash, GMAIL_PARALLEL, (id) => gmail(a, `messages/${id}/trash`, { method: "POST" }).then(() => 1, () => 0));
+  const trashed = done.reduce((n: number, x) => n + x, 0);
+  moved += trashed;
   if (moved) sendersCache.delete(a.id!);
-  return moved;
+  return { moved, failed: toTrash.length - trashed, more };
 }
 
 async function rulesByAccount(memberEmail: string | null): Promise<Map<string, RuleRow[]>> {
@@ -833,7 +852,7 @@ async function quickRules(memberEmail: string, accounts: Row[]): Promise<number>
   const counts = await pool(due.filter((a) => by.has(a.id!)), 3, async (a) => {
     quickAt.set(a.id!, Date.now());
     try {
-      return await applyRules(a, by.get(a.id!)!, true, QUICK_CAP);
+      return (await applyRules(a, by.get(a.id!)!, "newer_than:2d", QUICK_CAP)).moved;
     } catch (e) {
       console.error(`team inbox rules ${a.address}: ${oneLine((e as Error).message)}`);
       return 0;
@@ -842,7 +861,7 @@ async function quickRules(memberEmail: string, accounts: Row[]): Promise<number>
   return counts.reduce((n, x) => n + x, 0);
 }
 
-/** POST /api/sweep from a Neon trigger: every member's rules on every inbox, recent mail, answered with a count. */
+/** POST /api/sweep from a Neon trigger: every member's rules on every inbox, up to 200 a run each, answered with a count. */
 async function sweepAll(): Promise<Response> {
   const by = await rulesByAccount(null);
   if (!by.size) return json({ count: 0 });
@@ -850,7 +869,8 @@ async function sweepAll(): Promise<Response> {
   const accounts = await sql`SELECT * FROM inbox_accounts WHERE id = ANY(${`{${ids.join(",")}}`}::bigint[])`;
   const counts = await pool(accounts, 3, async (a) => {
     try {
-      return await applyRules(a, by.get(a.id!) ?? [], true, 200);
+      // Any age: this also finishes what a new rule left for later.
+      return (await applyRules(a, by.get(a.id!) ?? [], "", 200)).moved;
     } catch (e) {
       console.error(`team inbox sweep ${a.address}: ${oneLine((e as Error).message)}`);
       return 0;
@@ -871,17 +891,20 @@ async function addRule(me: { email: string }, body: Record<string, unknown>): Pr
   if (!sender) return json({ error: "Write an email address, or a whole domain like @shop.com." }, 400);
   const action = ruleAction(body.action ?? "trash");
   if (!action) return json({ error: "Unknown action." }, 400);
-  if (normEmail(a.address) === sender || senderMatches(sender, a.address!)) return json({ error: "A rule can't remove this inbox's own mail." }, 400);
+  // Never the team's own mail: any connected inbox, any member, or a domain one of them uses.
+  const team = await sql`SELECT address AS e FROM inbox_accounts UNION SELECT email AS e FROM inbox_members`;
+  if (ruleTargetsTeam(sender, team.map((t) => t.e))) return json({ error: "A rule can't remove your team's own mail." }, 400);
   const [{ n }] = await sql`SELECT count(*) AS n FROM inbox_rules WHERE member = ${me.email}`;
   if (Number(n) >= 500) return json({ error: "You have 500 rules. Remove some first." }, 400);
   const [r] = await sql`
     INSERT INTO inbox_rules (member, account_id, sender, action) VALUES (${me.email}, ${a.id}, ${sender}, ${action})
     ON CONFLICT (member, account_id, sender) DO UPDATE SET action = EXCLUDED.action RETURNING id`;
   // The mail already there is handled now, not only new mail.
+  // The newest 100 now; anything older is left to the scheduled sweep and later loads.
   let swept = 0;
   let error: string | null = null;
   try {
-    swept = await applyRules(a, [{ id: r.id!, sender, action }], false, 500);
+    swept = (await applyRules(a, [{ id: r.id!, sender, action }], "", 100)).moved;
   } catch (e) {
     error = (e as Error).message;
     console.error(`team inbox rule sweep ${a.address}: ${oneLine(error)}`);
