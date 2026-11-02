@@ -96,6 +96,23 @@ const routes: Record<string, Handler> = {
  * The dashboard page. Opened by Shopify inside its admin (a `shop` parameter),
  * it loads App Bridge first and allows only Shopify admin to frame it.
  */
+/**
+ * Plain HTML shown before the app loads (and to anyone without JavaScript, like Google's app reviewers): what
+ * DashPatrol is, what it does with Google data, and links to the privacy policy and terms. React replaces it.
+ */
+const HOME_TEXT = `<main style="max-width:720px;margin:0 auto;padding:48px 16px;font:16px/1.6 system-ui,sans-serif">
+<h1>DashPatrol</h1>
+<p>DashPatrol helps your website rank on Google and turn that traffic into sales. Sign in with Google, connect your site (Shopify, WordPress, Webflow, Wix or any site through a small snippet), and DashPatrol plans each week from your real numbers, improves your pages, writes articles you allow, and measures every change so it keeps what works and undoes what doesn't.</p>
+<h2>How DashPatrol uses your Google data</h2>
+<ul>
+<li>Google Search Console (read only): the searches your pages show up for, with clicks and positions, so it knows which pages to improve and can track results.</li>
+<li>Google Analytics (read only): visits and sales from Google, to measure whether each change helped.</li>
+<li>Only when you click Set it up for me: it verifies your site, adds it and its sitemap to Search Console, and creates an Analytics property for it.</li>
+<li>Your data is used only to run DashPatrol for your own site. It is never sold, never shared with other customers and never used for ads.</li>
+</ul>
+<p><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a></p>
+</main>`;
+
 async function page(req: Request): Promise<Response> {
   const assets = (process.env.ASSET_BASE_URL ?? "").replace(/\/$/, "");
   const shop = new URL(req.url).searchParams.get("shop") ?? "";
@@ -108,7 +125,7 @@ async function page(req: Request): Promise<Response> {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
+${embedded ? '<meta name="robots" content="noindex">\n' : ""}<meta name="description" content="DashPatrol helps your website rank on Google: it reads your Search Console and Analytics, improves your pages, writes articles you allow and measures what worked.">
 ${bridge}<title>${api.APP_NAME}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter:wght@400;500;600&display=swap">
@@ -116,7 +133,7 @@ ${bridge}<title>${api.APP_NAME}</title>
 <style>:root{--font-serif:"Fraunces",Georgia,serif;--font-dash:"Inter",system-ui,sans-serif}body{margin:0;background:#F7F3EC;color:#2B2A27}</style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">${embedded ? "" : HOME_TEXT}</div>
 <script src="${assets}/app.js"></script>
 </body>
 </html>`;

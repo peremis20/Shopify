@@ -1,6 +1,6 @@
 /**
  * The privacy policy and terms, served at /privacy and /terms. Plain words, describing only what the app really
- * does. The contact address comes from SUPPORT_EMAIL; without it the pages point to the sign in email instead.
+ * does. The contact address comes from SUPPORT_EMAIL, or else the first platform owner in ADMIN_EMAILS.
  */
 const page = (title: string, body: string) => `<!doctype html>
 <html lang="en">
@@ -21,17 +21,18 @@ p,li{color:var(--ink)}small{color:var(--muted)}a{color:inherit}
 </html>`;
 
 const contact = () => {
-  const email = (process.env.SUPPORT_EMAIL ?? "").trim();
   // A plain address only, so a typo can't break the page.
-  return /^[^\s@<>"']+@[^\s@<>"']+\.[a-z]{2,}$/i.test(email) ? `<a href="mailto:${email}">${email}</a>` : "the person who invited you to the test";
+  const ok = (e: string) => /^[^\s@<>"',]+@[^\s@<>"',]+\.[a-z]{2,}$/i.test(e);
+  const email = [process.env.SUPPORT_EMAIL ?? "", ...(process.env.ADMIN_EMAILS ?? "").split(",")].map((e) => e.trim()).find(ok);
+  return email ? `<a href="mailto:${email}">${email}</a>` : "DashPatrol support through the app";
 };
 
 export const privacyHtml = () =>
   page(
     "DashPatrol privacy policy",
-    `<h1>Privacy policy</h1><small>Last updated November 1, 2026. DashPatrol is in a small test.</small>
+    `<h1>Privacy policy</h1><small>Last updated November 2, 2026.</small>
 <h2>What DashPatrol does</h2>
-<p>DashPatrol helps your website rank on Google. It reads your site and its Google data, improves pages, writes articles you allow, and measures what worked.</p>
+<p>DashPatrol helps your website rank on Google. It reads your site and its Google data, improves pages, writes articles you allow, and measures what worked. This policy covers the DashPatrol app at app.dashpatrol.io.</p>
 <h2>What we read</h2>
 <ul>
 <li>Your Google account email, to sign you in.</li>
@@ -62,7 +63,8 @@ export const privacyHtml = () =>
 <li>Disconnect Google, your store or your site at any time in Settings; DashPatrol then stops reading it.</li>
 <li>Undo any change the app made to your pages from the Content page (fix list items you pasted in are undone by hand).</li>
 <li>Turn emails off in Autopilot settings.</li>
-<li>To have your data deleted, contact ${contact()}.</li>
+<li>To have your data deleted, including stored Google sign in tokens, contact ${contact()}.</li>
+<li>You can remove DashPatrol's access to your Google account at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
 </ul>
 <h2>Contact</h2><p>Questions: ${contact()}.</p>`
   );
@@ -70,9 +72,9 @@ export const privacyHtml = () =>
 export const termsHtml = () =>
   page(
     "DashPatrol terms",
-    `<h1>Terms of use</h1><small>Last updated November 1, 2026. DashPatrol is in a small, free test.</small>
-<h2>The test</h2>
-<p>DashPatrol is offered free during this test, as it is, and may change or stop. Features can have mistakes.</p>
+    `<h1>Terms of use</h1><small>Last updated November 2, 2026.</small>
+<h2>The service</h2>
+<p>DashPatrol is free during early access and is offered as it is. It may change, and features can have mistakes. If paid plans start, you will be told before anything is charged.</p>
 <h2>Your site</h2>
 <ul>
 <li>You confirm you may connect the sites and accounts you add, and allow DashPatrol to change their content within the settings you choose.</li>
