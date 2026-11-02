@@ -22,7 +22,7 @@ Only list the scopes customers are asked for. The Google Ads scope (adwords) is 
 | Scope | Type | Why DashPatrol needs it |
 |---|---|---|
 | openid, email | non sensitive | Sign the customer in and know which account is theirs. |
-| analytics.readonly | sensitive | Read visits and revenue from Google search for the customer's own site, to measure whether each page change helped. |
+| analytics.readonly | sensitive | Read visits and revenue from organic search for the customer's own site, to measure whether each page change helped. |
 | webmasters.readonly | sensitive | Read the searches the customer's pages appear for, with clicks and positions, to pick pages to improve and track rankings. |
 | siteverification | sensitive | Only when the customer clicks Set it up for me: verify their site so it can be added to Search Console. |
 | webmasters | sensitive | Only when the customer clicks Set it up for me (or Allow on sitemap resubmit): add the site and its sitemap to Search Console. |

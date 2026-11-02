@@ -896,7 +896,7 @@ p,li{color:var(--ink)}small{color:var(--muted)}a{color:inherit}
 <h2>How DashPatrol uses your Google data</h2>
 <ul>
 <li>Google Search Console (read only): the searches your pages show up for, with clicks and positions, so it knows which pages to improve and can track results.</li>
-<li>Google Analytics (read only): visits and sales from Google, to measure whether each change helped.</li>
+<li>Google Analytics (read only): visits and sales from search, to measure whether each change helped.</li>
 <li>Only when you click Set it up for me: it verifies your site, adds it and its sitemap to Search Console, and creates an Analytics property for it.</li>
 <li>Your data is used only to run DashPatrol for your own site. It is never sold, never shared with other customers and never used for ads.</li>
 </ul>
