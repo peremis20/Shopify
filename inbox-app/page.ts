@@ -229,6 +229,9 @@ async function unsubSenders(targets,btn,head){
     catch(e){return{sender:t.sender,error:e.message}}});
   S.busy=false;var out=unsubReport(res);
   if(!head)renderMid();senderNote(out.text,out.links,out.bad,head);
+  // Senders that give no way to unsubscribe: one click blocks them, but only when the owner chooses (receipts and bank alerts often have no link either).
+  var noWay=targets.filter(function(t,i){var r=res[i];return r&&!r.error&&!r.done});
+  var n=$("notice");if(noWay.length&&!head&&n)n.append(" ",el("button",{type:"button",class:"danger",text:noWay.length===1?"Block it":"Block them",onclick:function(e){blockSenders(noWay,e.currentTarget,null)}}));
 }
 async function blockSenders(targets,btn,head){
   if(S.busy)return;S.busy=true;if(btn)btn.disabled=true;
