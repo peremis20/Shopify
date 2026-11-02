@@ -209,5 +209,19 @@ export function textOf(payload: Part | undefined): string {
   return html !== null ? htmlToText(html) : "";
 }
 
+/** The message's HTML part, or null. Shown only inside a sandboxed frame where nothing in it can run. */
+export function htmlOf(payload: Part | undefined): string | null {
+  const find = (p: Part | undefined): string | null => {
+    if (!p) return null;
+    if (p.mimeType === "text/html" && p.body?.data) return decodePart(p);
+    for (const c of p.parts ?? []) {
+      const t = find(c);
+      if (t !== null) return t;
+    }
+    return null;
+  };
+  return find(payload);
+}
+
 export const header = (headers: { name: string; value: string }[] | undefined, name: string) =>
   headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;

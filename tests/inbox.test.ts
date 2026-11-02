@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressIn, buildReply, htmlToText, replyRecipients, replySubject, seal, sign, textOf, unseal, verify } from "../inbox-app/core";
+import { addressIn, buildReply, htmlOf, htmlToText, replyRecipients, replySubject, seal, sign, textOf, unseal, verify } from "../inbox-app/core";
 
 const S = "x".repeat(40);
 const decode = (raw: string) => Buffer.from(raw, "base64url").toString("utf8");
@@ -71,4 +71,17 @@ test("inbox: addresses are plain ASCII, IDN top level domains allowed", () => {
 test("inbox: a message in another character set reads correctly", () => {
   const latin1 = Buffer.from([0x43, 0x61, 0x66, 0xe9]).toString("base64url"); // "Café" in ISO-8859-1
   assert.equal(textOf({ mimeType: "text/plain", headers: [{ name: "Content-Type", value: 'text/plain; charset="ISO-8859-1"' }], body: { data: latin1 } }), "Café");
+});
+
+test("inbox: the designed (HTML) part of an email is found for the sandboxed view", () => {
+  const b64 = (s: string) => Buffer.from(s).toString("base64url");
+  const payload = {
+    mimeType: "multipart/alternative",
+    parts: [
+      { mimeType: "text/plain", body: { data: b64("Balance alert") } },
+      { mimeType: "text/html", headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }], body: { data: b64("<h1>Balance alert</h1><p>$42.10</p>") } },
+    ],
+  };
+  assert.equal(htmlOf(payload), "<h1>Balance alert</h1><p>$42.10</p>");
+  assert.equal(htmlOf({ mimeType: "text/plain", body: { data: b64("hi") } }), null);
 });

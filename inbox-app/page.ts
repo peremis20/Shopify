@@ -1,4 +1,4 @@
-/** The Team Inbox page and its one time setup page. All text is set with textContent: no email HTML ever runs. */
+/** The Team Inbox page and its one time setup page. All text is set with textContent; an email's own HTML is shown only in a sandboxed frame where nothing runs. */
 
 const fonts =
   '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">';
@@ -177,8 +177,37 @@ function renderRight(){
     el("p",{class:"meta",text:"In "+t.inbox.address}),
     el("div",null,t.messages.map(function(m){return el("div",{class:"mail"},[
       el("div",{class:"row spread"},[el("span",{class:"from",text:m.from}),el("span",{class:"meta",text:new Date(m.date).toLocaleString()})]),
-      el("div",{class:"meta",text:"To "+m.to+(m.cc?"  Cc "+m.cc:"")}),el("div",{class:"body",text:m.text||"(no text)"})])})),
+      el("div",{class:"meta",text:"To "+m.to+(m.cc?"  Cc "+m.cc:"")}),showBody(m)])})),
     el("div",{class:"mail"},[el("h2",{text:"Reply"}),box,el("div",{class:"row",style:"margin-top:8px"},[send,el("label",{class:"row",style:"display:flex;color:var(--ink)"},[all,el("span",{text:"Reply to everyone"})]),msg])]));
+}
+
+// An email's own design is shown in a sandboxed frame: nothing in it can run, submit forms or reach this page.
+// Its policy blocks outside images until the reader asks, since they can tell the sender the mail was opened.
+function emailDoc(html,images){
+  // Parsed into an inert document first (nothing loads while parsing), so outside images, styles and frames can be removed for real.
+  var d=new DOMParser().parseFromString(html,"text/html");
+  d.querySelectorAll("script,iframe,frame,object,embed,form,link,meta,base").forEach(function(n){n.remove()});
+  d.querySelectorAll("*").forEach(function(n){
+    for(var i=n.attributes.length-1;i>=0;i--){var a=n.attributes[i].name,v=n.attributes[i].value.replace(/\\s+/g,"").toLowerCase();if(a.slice(0,2)==="on"||((a==="href"||a==="xlink:href")&&/^(javascript|data|vbscript):/.test(v)))n.removeAttribute(a)}
+    if(!images){
+      ["src","srcset","background","poster"].forEach(function(a){var v=n.getAttribute(a);if(v&&!/^(data|cid):/i.test(v.trim()))n.removeAttribute(a)});
+      var st=n.getAttribute("style");if(st&&/url\\(/i.test(st))n.setAttribute("style",st.replace(/url\\([^)]*\\)/gi,"none"));
+    }
+  });
+  if(!images)d.querySelectorAll("style").forEach(function(n){n.textContent=n.textContent.replace(/url\\([^)]*\\)/gi,"none").replace(/@import[^;]*;/gi,"")});
+  var policy="default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:"+(images?" https:":"");
+  var head='<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="'+policy+'"><base target="_blank"><style>body{margin:12px;font:14px/1.5 system-ui,sans-serif;color:#1d1d1f;background:#fff;overflow-wrap:anywhere}img{max-width:100%;height:auto}</style>';
+  var styles=Array.prototype.map.call(d.querySelectorAll("style"),function(n){return n.outerHTML}).join("");
+  return "<!doctype html><html><head>"+head+styles+"</head><body>"+d.body.innerHTML+"</body></html>";
+}
+function showBody(m){
+  if(!m.html)return el("div",{class:"body",text:m.text||"(no text)"});
+  var frame=el("iframe",{sandbox:"allow-popups allow-popups-to-escape-sandbox",title:"Email from "+m.from,referrerpolicy:"no-referrer",style:"width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#fff;margin-top:8px"});
+  frame.srcdoc=emailDoc(m.html,false);
+  var imgs=el("button",{type:"button",text:"Show images",onclick:function(){frame.srcdoc=emailDoc(m.html,true);imgs.remove()}});
+  var plain=el("div",{class:"body",text:m.text||"(no text version)",hidden:""});
+  var toggle=el("button",{type:"button",text:"Text version",onclick:function(){var t=plain.hidden;plain.hidden=!t;frame.hidden=t;toggle.textContent=t?"Designed version":"Text version"}});
+  return el("div",null,[el("div",{class:"row",style:"margin-top:8px"},[imgs,toggle]),frame,plain]);
 }
 
 async function removeInbox(b){

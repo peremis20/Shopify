@@ -19,6 +19,7 @@ import {
   seal,
   sign,
   textOf,
+  htmlOf,
   unseal,
   verify,
 } from "./core";
@@ -333,6 +334,7 @@ async function readThread(me: { email: string }, url: URL): Promise<Response> {
       subject: header(m.payload?.headers, "Subject") ?? "",
       date: Number(m.internalDate),
       text: textOf(m.payload as never).slice(0, 100_000),
+      html: (htmlOf(m.payload as never) ?? "").slice(0, 600_000) || null,
     })),
   });
 }
@@ -434,7 +436,7 @@ async function setup(req: Request): Promise<Response> {
 const pageHeaders = (nonce: string) => ({
   "Content-Type": "text/html; charset=utf-8",
   "Cache-Control": "no-store",
-  "Content-Security-Policy": `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://accounts.google.com`,
+  "Content-Security-Policy": `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https:; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://accounts.google.com`,
   "Referrer-Policy": "no-referrer",
   "X-Content-Type-Options": "nosniff",
 });
