@@ -38,7 +38,7 @@ button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,
 .body{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:8px;font-size:14px}
 textarea,input{width:100%;font:14px var(--body);color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:9px 10px}
 textarea{min-height:140px;resize:vertical}
-.notice{padding:9px 12px;border-radius:8px;background:var(--soft);margin:10px 16px 0}.notice.bad{background:var(--warnsoft);color:var(--warn)}
+.notice{padding:9px 40px 9px 12px;border-radius:8px;background:var(--soft);margin:10px 16px 0;position:relative}.notice .close{position:absolute;top:4px;right:6px;border:0;background:none;font-size:18px;line-height:1;padding:4px 8px;color:inherit;cursor:pointer}.notice.bad{background:var(--warnsoft);color:var(--warn)}
 .empty{color:var(--muted);border:1px dashed var(--line);border-radius:10px;padding:14px;margin-top:10px}
 .center{max-width:560px;margin:10vh auto;padding:0 max(16px,env(safe-area-inset-left,0px)) 0 max(16px,env(safe-area-inset-right,0px))}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;display:grid;gap:12px}
@@ -114,7 +114,10 @@ var when=function(ms){var d=new Date(ms),n=new Date();return d.toDateString()===
 var nameOf=function(h){var m=String(h||"").match(/^\\s*"?([^"<]+?)"?\\s*</);return m?m[1]:String(h||"")};
 var sizeOf=function(n){n=Number(n)||0;return n<1024?n+" B":n<1048576?Math.round(n/1024)+" KB":(n/1048576).toFixed(1)+" MB"};
 function put(n){n.replaceChildren.apply(n,Array.prototype.slice.call(arguments,1).filter(Boolean))}
-function notice(text,bad){var n=$("notice");if(!n)return;n.textContent=text||"";n.hidden=!text;n.className="notice"+(bad?" bad":"")}
+// Every message can be closed; a plain success message also fades on its own after 12 seconds.
+function closable(n,bad){var x=el("button",{type:"button",class:"close","aria-label":"Close message",text:"×",onclick:function(){n.hidden=true}});n.append(x);
+  var stamp=String(Date.now());n.dataset.stamp=stamp;if(!bad)setTimeout(function(){if(n.dataset.stamp===stamp&&!n.querySelector("a,button:not(.close)"))n.hidden=true},12000)}
+function notice(text,bad){var n=$("notice");if(!n)return;n.textContent=text||"";n.hidden=!text;n.className="notice"+(bad?" bad":"");if(text)closable(n,bad)}
 function toRight(){if(window.matchMedia("(max-width: 980px)").matches){var R=$("right");if(R&&R.scrollIntoView)R.scrollIntoView({behavior:"smooth",block:"start"})}}
 
 async function boot(){
@@ -208,7 +211,7 @@ async function each(list,limit,fn){var out=new Array(list.length),i=0;
   var ws=[];for(var k=0;k<Math.min(limit,list.length);k++)ws.push(work());await Promise.all(ws);return out}
 // A result line, with the unsubscribe pages to open as buttons (new tab, nothing about this page passed on).
 function report(n,text,links,bad){if(!n)return;n.textContent=text||"";
-  (links||[]).forEach(function(l){n.append(" ",el("a",{class:"btn",href:l.url,target:"_blank",rel:"noopener noreferrer",text:"Open page for "+l.sender}))})}
+  (links||[]).forEach(function(l){n.append(" ",el("a",{class:"btn",href:l.url,target:"_blank",rel:"noopener noreferrer",text:"Open page for "+l.sender}))});if(text&&n.id==="notice")closable(n,bad)}
 function senderNote(text,links,bad,head){
   if(head&&S.open&&keyOf(S.open)===head){S.headNote={key:head,text:text,links:links||[],bad:bad};renderRight();return}
   var n=$("notice");if(!n)return;n.hidden=!text;n.className="notice"+(bad?" bad":"");report(n,text,links,bad)}
