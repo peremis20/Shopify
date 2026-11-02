@@ -148,7 +148,7 @@ async function load(more){
   try{var p={folder:S.folder};if(S.unread)p.unread="1";if(S.filter)p.inbox=S.filter;if(S.search)p.q=S.search;if(S.primary&&S.folder==="inbox")p.primary="1";if(more&&S.next)p.pages=JSON.stringify(S.next);
     var d=await api("/api/mail?"+new URLSearchParams(p));
     if(mine!==S.seq)return;
-    if(more)S.messages=S.messages.concat(d.messages).sort(function(a,b){return b.date-a.date});else{S.inboxes=d.inboxes;S.messages=d.messages}
+    if(more)S.messages=S.messages.concat(d.messages).sort(function(a,b){return b.date-a.date});else{var prev={};S.inboxes.forEach(function(i){prev[i.id]=i});S.inboxes=d.inboxes.map(function(i){var o=prev[i.id];return typeof i.total!=="number"&&o&&typeof o.total==="number"?Object.assign({},i,{total:o.total,unread:o.unread}):i});S.messages=d.messages}
     var nx={},any=false;d.inboxes.forEach(function(i){if(i.next){nx[i.id]=i.next;any=true}});S.next=any?nx:null;
     if(d.swept)notice("Your rules removed "+d.swept+(d.swept===1?" email.":" emails."))}
   catch(e){if(mine!==S.seq)return;if(e.status===401){location.href="/";return}notice(e.message,true)}
@@ -160,7 +160,7 @@ function renderLeft(){
   var folders=FOLDERS.map(function(f){return el("li",null,[el("button",{type:"button","aria-pressed":String(S.folder===f[0]),onclick:function(){S.folder=f[0];load()}},[el("span",{class:"addr",text:f[1]})])])});
   var items=[el("li",null,[el("button",{type:"button","aria-pressed":String(!S.filter),onclick:function(){S.filter=null;load()}},[el("span",{class:"addr",text:"All inboxes"})])])];
   S.inboxes.forEach(function(i){items.push(el("li",null,[el("button",{type:"button","aria-pressed":String(S.filter===i.id),onclick:function(){S.filter=i.id;load()}},[
-    el("span",{class:"addr",text:i.address}),i.error?el("span",{class:"err",text:i.error}):null]),
+    el("span",{class:"addr",text:i.address}),typeof i.total==="number"?el("span",{class:"meta",text:i.total.toLocaleString()+" in inbox"+(i.unread?", "+i.unread.toLocaleString()+" unread":"")}):null,i.error?el("span",{class:"err",text:i.error}):null]),
     i.reconnect?el("a",{class:"btn",href:"/api/auth/connect?hint="+encodeURIComponent(i.address),text:"Connect "+i.address+" again",style:"margin:4px 0 0"}):null]))});
   var hint=el("input",{id:"hint",type:"email",placeholder:"info@yourdomain.com","aria-label":"Address to connect"});
   put(L,
@@ -248,11 +248,16 @@ async function blockSenders(targets,btn,head){
   await load();senderNote(out.text,[],out.bad,head);
 }
 
+// Total emails in the inbox (Gmail's count) for the shown inbox, or all inboxes added up.
+function inboxCount(){if(S.folder!=="inbox")return null;var list=S.filter?S.inboxes.filter(function(i){return i.id===S.filter}):S.inboxes;
+  var known=list.filter(function(i){return typeof i.total==="number"});if(!known.length)return null;
+  var t=0,u=0;known.forEach(function(i){t+=i.total;u+=i.unread||0});
+  return el("span",{class:"meta",text:t.toLocaleString()+(t===1?" email":" emails")+(u?", "+u.toLocaleString()+" unread":"")+(known.length<list.length?" (some inboxes not counted)":"")})}
 function renderMid(){
   var M=$("mid");if(!M)return;
   var fname=(FOLDERS.find(function(f){return f[0]===S.folder})||FOLDERS[0])[1];
   var iname=S.filter?(S.inboxes.find(function(i){return i.id===S.filter})||{}).address||"":"All inboxes";
-  var head=el("div",{class:"row spread"},[el("h2",{text:fname+" · "+iname}),
+  var head=el("div",{class:"row spread"},[el("div",null,[el("h2",{text:fname+" · "+iname}),inboxCount()]),
     el("div",{class:"row"},[S.folder==="inbox"?el("button",{type:"button",id:"primary","aria-pressed":String(S.primary),text:S.primary?"Important only":"Showing all",title:"Important only shows the Primary tab",onclick:function(){S.primary=!S.primary;store.set("ti_primary",S.primary?"1":"0");load()}}):null,
       el("button",{type:"button","aria-pressed":String(S.unread),text:S.unread?"Showing unread":"Unread only",onclick:function(){S.unread=!S.unread;load()}}),el("button",{type:"button",text:"Refresh",onclick:function(){load()}})])]);
   var q=el("input",{type:"search",id:"q",placeholder:"Search mail","aria-label":"Search mail"});q.value=S.search;

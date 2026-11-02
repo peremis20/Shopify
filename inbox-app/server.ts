@@ -370,8 +370,10 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
         )
       ).filter((t): t is { id: string; messages?: Msg[] } => t !== null);
       const self = normEmail(a.address);
+      // Gmail's own counts for the whole inbox (one cheap call), shown next to each inbox.
+      const counts = pageToken ? null : await gmail<{ messagesTotal?: number; messagesUnread?: number }>(a, "labels/INBOX").catch(() => null);
       return {
-        inbox: { id: a.id, address: a.address, error: null as string | null, next: list.nextPageToken ?? null },
+        inbox: { id: a.id, address: a.address, error: null as string | null, next: list.nextPageToken ?? null, total: counts?.messagesTotal ?? null, unread: counts?.messagesUnread ?? null },
         messages: threads.flatMap((t) => {
           const real = (t.messages ?? []).filter(keep);
           const last = real[real.length - 1];
