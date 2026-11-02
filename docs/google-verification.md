@@ -7,9 +7,9 @@ Everything Google asks for, ready to paste. Steps happen in Google Cloud Console
 * App name: DashPatrol
 * User support email: your support address
 * App logo: optional (adding one adds a logo review)
-* Application home page: https://app.dashpatrol.io
-* Privacy policy: https://app.dashpatrol.io/privacy
-* Terms of service: https://app.dashpatrol.io/terms
+* Application home page: https://dashpatrol.io
+* Privacy policy: https://dashpatrol.io/privacy
+* Terms of service: https://dashpatrol.io/terms
 * Authorized domains: dashpatrol.io
 * Developer contact email: your email
 
@@ -38,7 +38,7 @@ Short justification to paste:
 
 Record about 2 minutes, in English, showing:
 
-1. The home page at app.dashpatrol.io, with the address bar visible.
+1. The home page at dashpatrol.io, with the address bar visible, then Open DashPatrol.
 2. Clicking Sign in with Google, and the consent screen showing the app name and scopes.
 3. The dashboard showing Search Console and Analytics numbers for your own site (proof the read scopes are used).
 4. Clicking Set it up for me, the second consent screen with the write scopes, and the result (site added in Search Console, Analytics property created).

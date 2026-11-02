@@ -1,6 +1,6 @@
 import * as api from "@/lib/analytics/handlers";
 import { sql } from "@/lib/analytics/db";
-import { privacyHtml, termsHtml } from "./legal";
+import { homeHtml, privacyHtml, termsHtml } from "./legal";
 
 /**
  * The public address can be set in the database (insights_settings app_url), so moving to a new
@@ -155,6 +155,16 @@ export default {
     const pub = (process.env.APP_URL ?? "").replace(/\/+$/, "");
     const isPage = path === "/" || path === "/analytics" || path === "/privacy" || path === "/terms";
     if (req.method === "GET" && isPage && pub && onLongAddress(req, url) && pub !== `https://${hostOf(req, url)}`) {
+      return new Response(null, { status: 301, headers: { Location: `${pub}${url.pathname}${url.search}` } });
+    }
+
+    // The bare domain (dashpatrol.io for app.dashpatrol.io) is the public home page: it shows what DashPatrol is,
+    // the policy and terms, and sends everything else to the app.
+    const pubHost = pub.replace(/^https:\/\//, "").toLowerCase();
+    if (pubHost.startsWith("app.") && hostOf(req, url) === pubHost.slice(4)) {
+      if (req.method !== "GET" && req.method !== "HEAD") return new Response("Not found", { status: 404 });
+      const html = path === "/" ? () => homeHtml(pub) : path === "/privacy" ? privacyHtml : path === "/terms" ? termsHtml : null;
+      if (html) return new Response(html(), { headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "frame-ancestors 'none'" } });
       return new Response(null, { status: 301, headers: { Location: `${pub}${url.pathname}${url.search}` } });
     }
 
