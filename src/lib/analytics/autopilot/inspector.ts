@@ -56,6 +56,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: (d) => (/domain|verify|403/i.test(d) ? "Verify the sending domain in Resend, or change the email sender in Platform keys." : "Check the email key in Platform keys."),
     workaround: "Reports and alerts still show on the dashboard.",
   },
+  "ai-review": {
+    name: "The second AI that checks the work",
+    fix: () => "Add a key from a second AI provider in Platform keys, so every change can be checked by a different AI.",
+    workaround: "Page changes and new articles wait until it is added; plans are shown but not acted on.",
+  },
   "keyword-planner": {
     name: "Google Keyword Planner",
     fix: () => "Reconnect Google Ads under Keyword ideas.",

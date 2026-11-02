@@ -15,7 +15,7 @@ import { aiProvider, readPlatformSettings, type AiProvider } from "./settings";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
 import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
-import { backedByFacts, challengeStrategy, planStrategy, type StrategyMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type StrategyMove } from "./writer";
 
 /**
  * The Strategist: once a week it reads everything the other agents learned
@@ -154,9 +154,11 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const moves = plan.moves.slice(0, 5);
   // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
   let checked = true;
-  const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch(() => {
+  const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch((e) => {
     checked = false;
-    return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable, so nothing was acted on.") };
+    console.error(`strategist review failed: ${(e as Error).message}`);
+    const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";
+    return { keep: moves.map(() => true), notes: moves.map(() => `Not challenged: ${why}, so nothing was acted on.`) };
   });
 
   const faith = await faithAllowed(accountId);

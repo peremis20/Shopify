@@ -1047,7 +1047,12 @@ async function revertRow(ctx: Ctx, c: Row, opts: { checkLive?: boolean } = {}): 
     if (opts.checkLive) {
       // A read that fails throws, so the undo waits for the next run rather than writing blind.
       const live = await ctx.site.resolve(c.page_url!);
-      if (live && live.id === c.resource_id) {
+      // The page is gone (deleted or moved by the owner): nothing to undo, and retrying would fail every day.
+      if (!live) {
+        await sql`UPDATE insights_autopilot_changes SET status = 'kept', note = ${"The page is no longer on the site, so there was nothing to undo."} WHERE id = ${c.id}`;
+        return "Nothing to undo: the page is gone.";
+      }
+      if (live.id === c.resource_id) {
         const now = field === "meta_title" ? live.metaTitle : live.metaDescription;
         if (ownerChangedSeo(now, c.after_value)) {
           const note = `The ${field === "meta_title" ? "title" : "description"} was changed on the site after this change, so the owner's version was kept.`;

@@ -236,7 +236,8 @@ export async function authCallback(req: Request): Promise<Response> {
       // A ticket only attaches Google to the account it was made for, in a browser that isn't signed in to another account,
       // and once: a link someone else sends can't capture this browser's Google connection for their account.
       const here = await currentAccount(req).catch(() => null);
-      if (here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
+      // Only a ticket made from a signed in browser is tied to that session; one made inside Shopify admin has no cookie to match.
+      if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
       if (link.session && !here) throw new Error("Please sign in again, then connect Google from the app.");
       if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
     }

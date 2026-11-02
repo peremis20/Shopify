@@ -424,10 +424,13 @@ test("claims: only a real negation near the claim excuses it", () => {
   assert.equal(isRisky("Never stop taking your medication."), false);
 });
 
-test("claims: relieves, eases, manages and drug alternatives are caught", () => {
+test("claims: relieves, eases and drug alternatives are caught; managing and referrals are fine", () => {
   assert.ok(isRisky("It relieves arthritis pain."));
   assert.ok(isRisky("Eases migraines in minutes."));
-  assert.ok(isRisky("Helps you manage diabetes."));
+  assert.equal(isRisky("Tips for managing type 2 diabetes with food."), false);
+  assert.equal(isRisky("Talk to your doctor before you stop taking your medication."), false);
+  assert.ok(isRisky("This cures diabetes, talk to your doctor."));
+  assert.ok(isRisky("Ask your doctor: this supplement treats arthritis."));
   assert.ok(isRisky("A natural alternative to ibuprofen."));
 });
 
@@ -442,6 +445,17 @@ test("numbers: a number counts only with the same unit, spelled out ones too, sc
   assert.ok(numbersKnown("Lasts about fifty capsules.", page));
   assert.ok(numbersKnown("Vitamin B12 helps.", "<p>With vitamin B12 for energy.</p>"));
   assert.ok(numbersKnown("Top tips for one of the best routines.", ""));
+  assert.ok(numbersKnown("Step 1: 3 ways to start.", ""));
+  assert.ok(numbersKnown("Take 500 mg.", "<p>Each serving has 500 milligrams.</p>"));
+  assert.ok(numbersKnown("Take 2 daily.", "<p>Take 2 capsules daily.</p>"));
+  assert.equal(numbersKnown("Take 4 daily.", "<p>Take 2 capsules daily.</p>"), false);
+  assert.equal(numbersKnown("Take 3 a day.", "<p>Take 2 capsules daily.</p>"), false);
+});
+
+test("network guard: WordPress.com hosts are public, private ranges are not", () => {
+  assert.equal(privateIp("192.0.78.9"), false);
+  assert.ok(privateIp("192.0.2.1"));
+  assert.ok(privateIp("10.0.0.1"));
 });
 
 test("evidence: a short fragment without a number fails", () => {

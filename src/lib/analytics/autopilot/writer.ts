@@ -202,10 +202,34 @@ export function quantitiesIn(text: string): string[] {
 
 /** True when every number in `text` appears in `facts` with the same thing counted (a bare number anywhere in them). */
 export function numbersKnown(text: string, facts: string): boolean {
-  const known = quantitiesIn(plainText(facts));
+  // Dose talk ("take 3 a day") never gets the small count allowance: an invented dose is advice.
+  const dose = /\b(?:take|takes|taking|daily|a day|per day|times|twice|dose|doses|serving|servings)\b/i.test(plainText(text));
+  const known = quantitiesIn(plainText(facts)).map(unitNormal);
   const pairs = new Set(known);
   const bare = new Set(known.map((q) => q.split(" ")[0]));
-  return quantitiesIn(plainText(text)).every((q) => (q.endsWith(" ") ? bare.has(q.trim()) : pairs.has(q)));
+  return quantitiesIn(plainText(text))
+    .map(unitNormal)
+    .every((q) => {
+      const [n, unit = ""] = q.split(" ");
+      // A measurement (%, money, doses, time spans, weights) must match with its unit.
+      if (MEASURE.has(unit)) return pairs.has(q);
+      // A count or label ("Step 1", "3 ways", "2 capsules" vs "2 daily") needs only the number, and small counts are fine.
+      return (!dose && Number(n) <= 10 && Number.isInteger(Number(n))) || bare.has(n);
+    });
+}
+
+/** Unit spellings read the same: "500 milligrams" is "500 mg". */
+const UNIT_ALIASES: Record<string, string> = {
+  milligram: "mg", microgram: "mcg", gram: "g", kilogram: "kg", ounce: "oz", pound: "lb", lbs: "lb", millilit: "ml",
+  milliliter: "ml", millilitre: "ml", liter: "l", litre: "l", calorie: "kcal", cal: "kcal", minute: "min", hr: "hour", yr: "year",
+};
+const MEASURE = new Set(["%", "$", "mg", "mcg", "g", "kg", "oz", "lb", "ml", "l", "kcal", "iu", "min", "hour", "day", "week", "month", "year", "time", "x",
+  // Doses: an invented "take 2 capsules" is advice, so it must match the page.
+  "capsule", "tablet", "pill", "serving", "scoop", "drop", "dose", "softgel", "gummy", "gummie"]);
+function unitNormal(q: string): string {
+  const [n, unit] = q.split(" ");
+  if (!unit) return q;
+  return `${n} ${UNIT_ALIASES[unit] ?? unit}`;
 }
 
 const BODY = /<(p|li)>([\s\S]*?)<\/\1>/g;
@@ -1188,7 +1212,12 @@ export const NO_SECOND_AI =
  */
 export function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
   const others = (ai.backups ?? []).filter((o) => o.kind !== ai.kind);
-  if (!others.length) throw new Error(NO_SECOND_AI);
+  if (!others.length) {
+    // On the status board, so the Inspector tells the platform owner that work is waiting for a second AI key.
+    void report("ai-review", false, "Only one AI service is set up. A second one, from another provider, is needed to check the work before anything changes on a site.");
+    throw new Error(NO_SECOND_AI);
+  }
+  void report("ai-review", true);
   return { ...others[0], site: keepSite ? ai.site : undefined, backups: others.slice(1) };
 }
 

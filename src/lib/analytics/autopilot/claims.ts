@@ -31,7 +31,7 @@ const DISEASES = [
 ].join("|");
 
 const CURE_VERBS =
-  "cures?|curing|treats?|treating|prevents?|preventing|heals?|healing|reverses?|reversing|eliminates?|eliminating|fights?|fighting|kills?|killing|stops?|remed(?:y|ies)|relieves?|relieving|eases?|easing|manages?|managing";
+  "cures?|curing|treats?|treating|prevents?|preventing|heals?|healing|reverses?|reversing|eliminates?|eliminating|fights?|fighting|kills?|killing|stops?|remed(?:y|ies)|relieves?|relieving|eases?|easing";
 /** The disease after the verb, for the "remedy for a disease" rule. */
 const CURE_NOUNS = "cure|remedy|relief|fighter|killer";
 
@@ -45,7 +45,14 @@ const NEGATION =
   /\b(?:not|no|never|nothing|cannot|can't|won't|doesn't|don't|didn't|isn't|aren't|wasn't|shouldn't|neither)\b(?!\s+(?:only|just|merely|doubt|wonder|matter|question)\b)/i;
 const NEGATION_WORDS = 4;
 
+/** A sentence that sends the reader to a professional ("talk to your doctor before you stop...") advises rather than claims. */
+const REFERRAL = /\b(?:talk|speak|check)\s+(?:to|with)\s+(?:your|a)\s+(?:doctor|physician|pharmacist|health\s*care\s+provider)|\b(?:ask|consult|see)\s+(?:your|a)\s+(?:doctor|physician|pharmacist|health\s*care\s+provider)/i;
+
 function negated(text: string, start: number): boolean {
+  // "Talk to your doctor before you stop taking ..." advises; "This cures diabetes, talk to your doctor" still claims.
+  const before = text.slice(sentenceStart(text, start), start);
+  const ref = before.match(REFERRAL);
+  if (ref && /\b(?:before|if|whether|when|about)\b/i.test(before.slice((ref.index ?? 0) + ref[0].length))) return true;
   const clause = text.slice(sentenceStart(text, start), start).split(/[,;:]/).pop() ?? "";
   return NEGATION.test(clause.trim().split(/\s+/).slice(-NEGATION_WORDS).join(" "));
 }

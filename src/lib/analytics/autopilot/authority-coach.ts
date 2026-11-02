@@ -8,7 +8,7 @@ import { clientListKnown, otherClient } from "./clients";
 import { fetchSerp } from "./serp";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
-import { backedByFacts, challengeStrategy, planAuthority, type AuthorityMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, type AuthorityMove } from "./writer";
 
 /**
  * The Authority Coach. Once a week per site it:
@@ -174,9 +174,11 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const plan = await planAuthority(ai, shown);
   const moves = plan.moves.slice(0, 5);
   let checked = true;
-  const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch(() => {
+  const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch((e) => {
     checked = false;
-    return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable.") };
+    console.error(`authority coach review failed: ${(e as Error).message}`);
+    const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";
+    return { keep: moves.map(() => true), notes: moves.map(() => `Not challenged: ${why}. Treat these as unchecked ideas.`) };
   });
   const report: AuthorityPlan = {
     at: new Date().toISOString(),

@@ -52,10 +52,10 @@ export function privateIp(ip: string): boolean {
     const v = ip.toLowerCase().replace(/^\[|\]$/g, "");
     return v === "::1" || v === "::" || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith("::ffff:") || v.startsWith("64:ff9b:");
   }
-  const [a, b] = ip.split(".").map(Number);
+  const [a, b, c] = ip.split(".").map(Number);
   return (
     a === 0 || a === 10 || a === 127 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
-    (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19)) || (a === 192 && b === 0) || a >= 224
+    (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19)) || (a === 192 && b === 0 && (c === 0 || c === 2)) || a >= 224
   );
 }
 
