@@ -13,8 +13,9 @@ const css = `
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--body)}
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px max(16px,env(safe-area-inset-left,0px)) 12px max(16px,env(safe-area-inset-right,0px));border-bottom:1px solid var(--line);background:var(--card)}
 h1{font:700 22px/1 var(--display);margin:0}h2{font:700 16px/1.2 var(--display);margin:0 0 8px}
-.wrap{display:grid;grid-template-columns:240px minmax(0,1fr) minmax(0,1.3fr);height:calc(100% - 59px)}
-@media (max-width:980px){.wrap{grid-template-columns:minmax(0,1fr);height:auto}}
+#app{height:100%;display:flex;flex-direction:column}
+.wrap{display:grid;grid-template-columns:240px minmax(0,1fr) minmax(0,1.3fr);flex:1;min-height:0}
+@media (max-width:980px){#app{height:auto;display:block}.wrap{grid-template-columns:minmax(0,1fr)}.col{overflow:visible}.midtop{top:0}}
 .col{min-width:0;overflow:auto;padding:14px 16px;border-right:1px solid var(--line)}
 .col:last-child{border-right:0;background:var(--card)}
 button,.btn{font:600 13.5px var(--body);border-radius:8px;padding:7px 12px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer;text-decoration:none;display:inline-block}
@@ -46,6 +47,7 @@ select{width:100%;font:14px var(--body);color:var(--ink);background:var(--paper)
 .line{display:flex;gap:6px;align-items:stretch}.line .msg{flex:1;min-width:0}
 .pick{display:flex;align-items:center;padding:0 4px;cursor:pointer}.pick input,.check{width:18px;height:18px;margin:0;accent-color:var(--accent)}
 .star{padding:4px 9px;font-size:17px;line-height:1;color:var(--muted)}.star[aria-pressed=true]{color:var(--star)}
+.midtop{position:sticky;top:-14px;z-index:3;background:var(--paper);margin:-14px -16px 0;padding:14px 16px 8px;border-bottom:1px solid var(--line)}
 .bulk{margin-top:10px;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
 .danger{color:var(--warn)}.danger:hover{border-color:var(--warn)}
 .search{margin-top:10px;flex-wrap:nowrap}.search input{flex:1;min-width:0}
@@ -270,7 +272,8 @@ function renderMid(){
       acts.push(senderButton("unsub",targets),senderButton("block",targets))}
   }
   var bar=el("div",{class:"row bulk"},[el("label",{class:"row",style:"display:flex;color:var(--ink);gap:6px"},[all,el("span",{text:n?n+" selected":"Select all"})])].concat(acts));
-  put(M,head,search,bar,el("ul",{class:"list"},S.messages.map(function(m){
+  // The heading, search and action bar stay pinned while the list scrolls, so Delete, Unsubscribe and Block are always in reach.
+  put(M,el("div",{class:"midtop"},[head,search,bar]),el("ul",{class:"list"},S.messages.map(function(m){
     var k=keyOf(m);
     var cb=el("input",{type:"checkbox","aria-label":"Select "+m.subject});cb.checked=Boolean(S.sel[k]);
     cb.onchange=function(){if(cb.checked)S.sel[k]=true;else delete S.sel[k];renderMid()};
