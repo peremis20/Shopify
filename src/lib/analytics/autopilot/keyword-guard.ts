@@ -1,6 +1,6 @@
 /**
  * Guardrail for keyword ideas. Keyword Planner returns plenty of searches no
- * health or wellness site should aim at: stuttered phrases ("health health
+ * website should aim at: stuttered phrases ("health health
  * insurance", "symptoms of of stroke"), local searches a website can't win
  * ("doctor near me"), and off topic ones that only share a word with a page
  * ("life church" next to an article about a life change). Everything the
