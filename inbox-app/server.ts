@@ -7,6 +7,8 @@
  * SETUP_TOKEN (opens the one time setup page). DATABASE_URL is provided by Neon.
  */
 import crypto from "node:crypto";
+import dns from "node:dns";
+import https from "node:https";
 import {
   addressIn,
   attachmentsOf,
@@ -39,6 +41,16 @@ import {
   decodeEntities,
   unseal,
   verify,
+  groupSenders,
+  isPrivateIp,
+  ruleAction,
+  ruleQueries,
+  ruleSender,
+  safeUnsubUrl,
+  senderMatches,
+  senderTotals,
+  unsubscribePlan,
+  type SenderRow,
 } from "./core";
 import { appHtml, setupHtml } from "./page";
 
@@ -84,6 +96,15 @@ function schema(): Promise<void> {
       refresh_sealed text NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (member, address)
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS inbox_rules (
+      id bigserial PRIMARY KEY,
+      member text NOT NULL,
+      account_id bigint NOT NULL,
+      sender text NOT NULL,
+      action text NOT NULL CHECK (action IN ('trash', 'archive')),
+      created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (member, account_id, sender)
     )`;
   })().catch((e) => {
     ready = null;
@@ -311,7 +332,7 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
   const accounts = await sql`SELECT * FROM inbox_accounts WHERE member = ${me.email} ORDER BY address`;
   const only = url.searchParams.get("inbox");
   const folder = folderOf(url.searchParams.get("folder"));
-  const q = mailQuery(folder, url.searchParams.get("unread") === "1", url.searchParams.get("q"));
+  const q = mailQuery(folder, url.searchParams.get("unread") === "1", url.searchParams.get("q"), url.searchParams.get("primary") === "1");
   // Paging: the next page token of each inbox, so "Load more" works across all inboxes too.
   let pages: Record<string, string> | null = null;
   if (url.searchParams.get("pages")) {
@@ -324,6 +345,8 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
     }
   }
   const chosen = accounts.filter((a) => (!only || a.id === only) && (!pages || pages[a.id!]));
+  // The member's "always delete" rules run first on recent inbox mail, so the list already reflects them.
+  const swept = pages ? 0 : await quickRules(me.email, chosen);
   const keep = shownIn(folder);
   const results = await pool(chosen, 3, async (a) => {
     try {
@@ -365,7 +388,7 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
     }
   });
   const all = results.flatMap((r) => r.messages).sort((x, y) => y.date - x.date);
-  return json({ inboxes: accounts.map((a) => results.find((r) => r.inbox.id === a.id)?.inbox ?? { id: a.id, address: a.address, error: null }), messages: all });
+  return json({ inboxes: accounts.map((a) => results.find((r) => r.inbox.id === a.id)?.inbox ?? { id: a.id, address: a.address, error: null }), messages: all, swept });
 }
 
 const CID_MESSAGE_BYTES = 5 * 1024 * 1024;
@@ -588,10 +611,296 @@ async function bulk(me: { email: string }, body: Record<string, unknown>): Promi
   return json({ done: results.filter((r) => r.ok).map((r) => ({ inbox: r.inbox, thread: r.thread })), failed: failed.length, error: failed[0]?.error ?? null });
 }
 
+// ---------- junk mail: senders, unsubscribe, delete all, rules ----------
+
+/** Ids of messages or threads matching a search, page by page, up to `cap`. */
+async function listIds(a: Row, kind: "messages" | "threads", q: string, cap: number): Promise<{ ids: { id: string; threadId?: string }[]; more: boolean }> {
+  const ids: { id: string; threadId?: string }[] = [];
+  let token = "";
+  do {
+    const page = await gmail<{ messages?: { id: string; threadId?: string }[]; threads?: { id: string }[]; nextPageToken?: string }>(
+      a,
+      `${kind}?maxResults=${Math.min(500, cap - ids.length)}&q=${encodeURIComponent(q)}${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`
+    );
+    ids.push(...((kind === "messages" ? page.messages : page.threads) ?? []));
+    token = page.nextPageToken ?? "";
+  } while (token && ids.length < cap);
+  return { ids: ids.slice(0, cap), more: Boolean(token) || ids.length > cap };
+}
+
+const UNSUB_HEADERS = "metadataHeaders=From&metadataHeaders=List-Unsubscribe&metadataHeaders=List-Unsubscribe-Post";
+const SENDERS_CAP = 500;
+const sendersCache = new Map<string, { at: number; rows: SenderRow[]; partial: boolean; skipped: number }>();
+
+/** One inbox's last 30 days of inbox mail, as sender rows. Kept for 10 minutes so the screen opens fast again. */
+async function senderRows(a: Row, fresh: boolean): Promise<{ rows: SenderRow[]; partial: boolean; skipped: number }> {
+  const hit = sendersCache.get(a.id!);
+  if (hit && !fresh && Date.now() - hit.at < 600_000) return hit;
+  const list = await listIds(a, "messages", "in:inbox newer_than:30d", SENDERS_CAP);
+  let skipped = 0;
+  const rows = (
+    await pool(list.ids, 8, async (m) => {
+      try {
+        const full = await gmail<Msg>(a, `messages/${m.id}?format=metadata&${UNSUB_HEADERS}`);
+        const h = full.payload?.headers;
+        return { inboxId: a.id!, from: header(h, "From"), date: Number(full.internalDate), listUnsubscribe: header(h, "List-Unsubscribe"), listUnsubscribePost: header(h, "List-Unsubscribe-Post"), self: a.address! } as SenderRow;
+      } catch {
+        skipped++;
+        return null;
+      }
+    })
+  ).filter((r): r is SenderRow => r !== null);
+  const out = { at: Date.now(), rows, partial: list.more, skipped };
+  sendersCache.set(a.id!, out);
+  return out;
+}
+
+async function senders(me: { email: string }, url: URL): Promise<Response> {
+  const accounts = await sql`SELECT * FROM inbox_accounts WHERE member = ${me.email} ORDER BY address`;
+  const only = url.searchParams.get("inbox");
+  const chosen = accounts.filter((a) => !only || a.id === only);
+  const fresh = url.searchParams.get("fresh") === "1";
+  const results = await pool(chosen, 3, async (a) => {
+    try {
+      const r = await senderRows(a, fresh);
+      return { inbox: { id: a.id, address: a.address, error: null as string | null, partial: r.partial, skipped: r.skipped }, rows: r.rows };
+    } catch (e) {
+      console.error(`team inbox senders: ${oneLine((e as Error).message)}`);
+      return { inbox: { id: a.id, address: a.address, error: (e as Error).message, partial: false, skipped: 0, reconnect: Boolean((e as { reconnect?: boolean }).reconnect) }, rows: [] };
+    }
+  });
+  const groups = groupSenders(results.flatMap((r) => r.rows));
+  return json({ ...senderTotals(groups), senders: groups.slice(0, 300), inboxes: results.map((r) => r.inbox) });
+}
+
+/** Called with every address a host name points to: any private one stops the request, so a name can't lead inside. */
+function guardedLookup(hostname: string, opts: { all?: boolean }, cb: (err: Error | null, address?: unknown, family?: number) => void) {
+  dns.lookup(hostname, { all: true, verbatim: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs.length || addrs.some((x) => isPrivateIp(x.address))) return cb(Object.assign(new Error("That address isn't allowed."), { code: "EBLOCKED" }));
+    if (opts?.all) cb(null, addrs);
+    else cb(null, addrs[0].address, addrs[0].family);
+  });
+}
+
+/** RFC 8058 one click unsubscribe, made by the server: https only, public hosts only, 10 seconds in all, at most 3 redirects. */
+function oneClickPost(raw: string, deadline = Date.now() + 10_000, hops = 0): Promise<number> {
+  const target = safeUnsubUrl(raw);
+  if (!target) return Promise.reject(new Error("That unsubscribe address isn't allowed."));
+  const left = deadline - Date.now();
+  if (left <= 0) return Promise.reject(new Error("The sender's site took too long."));
+  return new Promise((resolve, reject) => {
+    const body = "List-Unsubscribe=One-Click";
+    const req = https.request(
+      target,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "Content-Length": String(Buffer.byteLength(body)), "User-Agent": "TeamInbox/1.0" },
+        // Its own agent, so no shared or proxy agent can skip the address check.
+        agent: new https.Agent({ keepAlive: false }),
+        lookup: guardedLookup as unknown as https.RequestOptions["lookup"],
+        signal: AbortSignal.timeout(left),
+        timeout: left,
+      },
+      (res) => {
+        const code = res.statusCode ?? 0;
+        const loc = res.headers.location;
+        res.destroy();
+        if (code >= 300 && code < 400 && loc && hops < 3) {
+          let next: string;
+          try {
+            next = new URL(loc, target).toString();
+          } catch {
+            return resolve(code);
+          }
+          return oneClickPost(next, deadline, hops + 1).then(resolve, reject);
+        }
+        resolve(code);
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("The sender's site took too long.")));
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
+/** The newest message from this sender in the inbox, with its unsubscribe headers. Checked to be from that exact address. */
+async function latestFrom(a: Row, sender: string): Promise<Msg | null> {
+  const list = await gmail<{ messages?: { id: string }[] }>(a, `messages?maxResults=10&q=${encodeURIComponent(`from:${sender}`)}`);
+  let first: Msg | null = null;
+  for (const m of list.messages ?? []) {
+    const full = await gmail<Msg>(a, `messages/${m.id}?format=metadata&${UNSUB_HEADERS}`).catch(() => null);
+    if (!full || addressIn(header(full.payload?.headers, "From")) !== sender) continue;
+    first ??= full;
+    if (header(full.payload?.headers, "List-Unsubscribe")) return full;
+  }
+  return first;
+}
+
+async function unsubscribe(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const a = await myAccount(me.email, body.inbox);
+  const sender = normEmail(body.sender);
+  if (!a || !isEmail(sender)) return json({ error: "Not found." }, 404);
+  const m = await latestFrom(a, sender);
+  if (!m) return json({ error: `No email from ${sender} was found in ${a.address}.` }, 404);
+  const h = m.payload?.headers;
+  const plan = unsubscribePlan(header(h, "List-Unsubscribe"), header(h, "List-Unsubscribe-Post"));
+  if (!plan) return json({ done: "none", message: `${sender} gives no way to unsubscribe. You can delete their mail or make a rule.` });
+  let why = "";
+  if (plan.kind === "post") {
+    try {
+      const code = await oneClickPost(plan.url);
+      if (code >= 200 && code < 300) return json({ done: "posted", message: `Unsubscribed ${a.address} from ${sender}.` });
+      why = `their site answered ${code}`;
+    } catch (e) {
+      why = oneLine((e as Error).message);
+    }
+    console.error(`team inbox unsubscribe ${sender}: ${why}`);
+  }
+  const mail = plan.kind === "link" ? null : plan.mailto;
+  if (mail) {
+    const raw = buildMessage({ from: a.address!, to: [mail.to], cc: [], subject: mail.subject, body: mail.body });
+    await gmail<{ id: string }>(a, "messages/send", { method: "POST", body: { raw } });
+    return json({ done: "emailed", message: `Sent an unsubscribe email to ${mail.to} from ${a.address}.` });
+  }
+  if (plan.link) return json({ done: "link", url: plan.link, message: `${sender} needs you to finish on their page.${why ? ` The quick way didn't work: ${why}.` : ""}` });
+  return json({ error: `Couldn't unsubscribe from ${sender}: ${why || "no way was given"}.` }, 502);
+}
+
+const TRASH_CAP = 500;
+/** Moves every conversation from one sender in this inbox to Trash, up to 500 a click. */
+async function trashSender(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const a = await myAccount(me.email, body.inbox);
+  const sender = normEmail(body.sender);
+  if (!a || !isEmail(sender)) return json({ error: "Not found." }, 404);
+  const list = await listIds(a, "threads", `from:${sender}`, TRASH_CAP);
+  let failed = 0;
+  await pool(list.ids, 8, (t) => gmail(a, `threads/${t.id}/trash`, { method: "POST" }).catch(() => { failed++; }));
+  sendersCache.delete(a.id!);
+  if (failed) console.error(`team inbox delete all ${sender}: ${failed} failed`);
+  return json({ count: list.ids.length - failed, failed, more: list.more });
+}
+
+type RuleRow = { id: string; sender: string; action: string };
+/**
+ * Applies rules to one inbox: finds matching inbox mail, checks each sender exactly, then trashes or archives the
+ * message. Up to `cap` messages a run. Returns how many were moved.
+ */
+async function applyRules(a: Row, rules: RuleRow[], recent: boolean, cap: number): Promise<number> {
+  if (!rules.length) return 0;
+  const ids = new Map<string, true>();
+  for (const q of ruleQueries(rules.map((r) => r.sender), recent ? "newer_than:2d" : "")) {
+    if (ids.size >= cap) break;
+    for (const m of (await listIds(a, "messages", q, cap - ids.size)).ids) ids.set(m.id, true);
+  }
+  if (!ids.size) return 0;
+  const toTrash: string[] = [];
+  const toArchive: string[] = [];
+  await pool([...ids.keys()], 6, async (id) => {
+    const m = await gmail<Msg>(a, `messages/${id}?format=metadata&metadataHeaders=From`).catch(() => null);
+    const from = addressIn(header(m?.payload?.headers, "From"));
+    const hits = rules.filter((r) => senderMatches(r.sender, from));
+    if (!m || !hits.length || !(m.labelIds ?? []).includes("INBOX")) return;
+    (hits.some((r) => r.action === "trash") ? toTrash : toArchive).push(id);
+  });
+  let moved = 0;
+  if (toArchive.length) {
+    await gmail(a, "messages/batchModify", { method: "POST", body: { ids: toArchive, removeLabelIds: ["INBOX"] } });
+    moved += toArchive.length;
+  }
+  const done = await pool(toTrash, 6, (id) => gmail(a, `messages/${id}/trash`, { method: "POST" }).then(() => 1, () => 0));
+  moved += done.reduce((n: number, x) => n + x, 0);
+  if (moved) sendersCache.delete(a.id!);
+  return moved;
+}
+
+async function rulesByAccount(memberEmail: string | null): Promise<Map<string, RuleRow[]>> {
+  const rows = memberEmail
+    ? await sql`SELECT r.id, r.account_id, r.sender, r.action FROM inbox_rules r JOIN inbox_accounts a ON a.id = r.account_id AND a.member = r.member WHERE r.member = ${memberEmail}`
+    : await sql`SELECT r.id, r.account_id, r.sender, r.action FROM inbox_rules r JOIN inbox_accounts a ON a.id = r.account_id AND a.member = r.member`;
+  const by = new Map<string, RuleRow[]>();
+  for (const r of rows) by.set(r.account_id!, [...(by.get(r.account_id!) ?? []), { id: r.id!, sender: r.sender!, action: r.action! }]);
+  return by;
+}
+
+const QUICK_CAP = 50;
+const quickAt = new Map<string, number>();
+/** On each mail load: rules run on the last 2 days of the shown inboxes, at most once a minute per inbox. */
+async function quickRules(memberEmail: string, accounts: Row[]): Promise<number> {
+  const due = accounts.filter((a) => Date.now() - (quickAt.get(a.id!) ?? 0) > 60_000);
+  if (!due.length) return 0;
+  const by = await rulesByAccount(memberEmail);
+  const counts = await pool(due.filter((a) => by.has(a.id!)), 3, async (a) => {
+    quickAt.set(a.id!, Date.now());
+    try {
+      return await applyRules(a, by.get(a.id!)!, true, QUICK_CAP);
+    } catch (e) {
+      console.error(`team inbox rules ${a.address}: ${oneLine((e as Error).message)}`);
+      return 0;
+    }
+  });
+  return counts.reduce((n, x) => n + x, 0);
+}
+
+/** POST /api/sweep from a Neon trigger: every member's rules on every inbox, recent mail, answered with a count. */
+async function sweepAll(): Promise<Response> {
+  const by = await rulesByAccount(null);
+  if (!by.size) return json({ count: 0 });
+  const ids = [...by.keys()];
+  const accounts = await sql`SELECT * FROM inbox_accounts WHERE id = ANY(${`{${ids.join(",")}}`}::bigint[])`;
+  const counts = await pool(accounts, 3, async (a) => {
+    try {
+      return await applyRules(a, by.get(a.id!) ?? [], true, 200);
+    } catch (e) {
+      console.error(`team inbox sweep ${a.address}: ${oneLine((e as Error).message)}`);
+      return 0;
+    }
+  });
+  return json({ count: counts.reduce((n, x) => n + x, 0) });
+}
+
+async function listRules(me: { email: string }): Promise<Response> {
+  const rows = await sql`SELECT r.id, r.account_id, a.address, r.sender, r.action, r.created_at FROM inbox_rules r JOIN inbox_accounts a ON a.id = r.account_id AND a.member = r.member WHERE r.member = ${me.email} ORDER BY a.address, r.sender`;
+  return json({ rules: rows.map((r) => ({ id: r.id, inbox: r.account_id, address: r.address, sender: r.sender, action: r.action, created: r.created_at })) });
+}
+
+async function addRule(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const a = await myAccount(me.email, body.inbox);
+  if (!a) return json({ error: "Pick the inbox for this rule." }, 404);
+  const sender = ruleSender(body.sender);
+  if (!sender) return json({ error: "Write an email address, or a whole domain like @shop.com." }, 400);
+  const action = ruleAction(body.action ?? "trash");
+  if (!action) return json({ error: "Unknown action." }, 400);
+  if (normEmail(a.address) === sender || senderMatches(sender, a.address!)) return json({ error: "A rule can't remove this inbox's own mail." }, 400);
+  const [{ n }] = await sql`SELECT count(*) AS n FROM inbox_rules WHERE member = ${me.email}`;
+  if (Number(n) >= 500) return json({ error: "You have 500 rules. Remove some first." }, 400);
+  const [r] = await sql`
+    INSERT INTO inbox_rules (member, account_id, sender, action) VALUES (${me.email}, ${a.id}, ${sender}, ${action})
+    ON CONFLICT (member, account_id, sender) DO UPDATE SET action = EXCLUDED.action RETURNING id`;
+  // The mail already there is handled now, not only new mail.
+  let swept = 0;
+  let error: string | null = null;
+  try {
+    swept = await applyRules(a, [{ id: r.id!, sender, action }], false, 500);
+  } catch (e) {
+    error = (e as Error).message;
+    console.error(`team inbox rule sweep ${a.address}: ${oneLine(error)}`);
+  }
+  return json({ id: r.id, sender, action, swept, error });
+}
+
+async function removeRule(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const id = String(body.id ?? "");
+  if (!/^\d{1,18}$/.test(id)) return json({ error: "Not found." }, 404);
+  const gone = await sql`DELETE FROM inbox_rules WHERE id = ${id} AND member = ${me.email} RETURNING id`;
+  return gone.length ? json({ ok: true }) : json({ error: "Not found." }, 404);
+}
+
 async function removeInbox(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
   if (!a) return json({ error: "Not found." }, 404);
   await sql`DELETE FROM inbox_accounts WHERE id = ${a.id} AND member = ${me.email}`;
+  await sql`DELETE FROM inbox_rules WHERE account_id = ${a.id} AND member = ${me.email}`;
   accessCache.delete(a.id!);
   await revokeIfUnused(a.address!, a.refresh_sealed!);
   return json({ ok: true });
@@ -614,6 +923,7 @@ async function team(me: { email: string; owner: boolean }, req: Request): Promis
       // Their connected inboxes go too; a login no one else shares is ended with Google.
       const theirs = await sql`SELECT * FROM inbox_accounts WHERE member = ${remove}`;
       await sql`DELETE FROM inbox_accounts WHERE member = ${remove}`;
+      await sql`DELETE FROM inbox_rules WHERE member = ${remove}`;
       await sql`DELETE FROM inbox_members WHERE email = ${remove} AND NOT owner`;
       for (const a of theirs) {
         accessCache.delete(a.id!);
@@ -691,6 +1001,12 @@ export default {
         return sameOrigin(req) ? json({ ok: true }, 200, { "Set-Cookie": cookie("__Host-ti_session", "", 0) }) : json({ error: "Refused." }, 403);
       }
 
+      // Neon's scheduler calls this without a session. Neon strips client set X-Neon-* headers, so this header
+      // proves the call came from a trigger. It only applies rules the members made, and answers with a count.
+      if (req.method === "POST" && path === "/api/sweep") {
+        return req.headers.get("x-neon-trigger-invocation-id") ? sweepAll() : json({ error: "Refused." }, 403);
+      }
+
       const me = await member(req);
       if (req.method === "GET" && path === "/api/me") {
         return json({ setUp: Boolean(await googleClient()), me: me ? { email: me.email, owner: me.owner } : null });
@@ -701,6 +1017,8 @@ export default {
       if (req.method === "GET" && path === "/api/thread") return readThread(me, url);
       if (req.method === "GET" && path === "/api/attachment") return attachment(me, url);
       if (req.method === "GET" && path === "/api/team") return team(me, req);
+      if (req.method === "GET" && path === "/api/senders") return senders(me, url);
+      if (req.method === "GET" && path === "/api/rules") return listRules(me);
       if (req.method === "POST") {
         if (!sameOrigin(req)) return json({ error: "Refused." }, 403);
         if (path === "/api/team") return team(me, req);
@@ -711,6 +1029,10 @@ export default {
         if (path === "/api/send") return send(me, body);
         if (path === "/api/forward") return forward(me, body);
         if (path === "/api/inbox/remove") return removeInbox(me, body);
+        if (path === "/api/unsubscribe") return unsubscribe(me, body);
+        if (path === "/api/sender/trash") return trashSender(me, body);
+        if (path === "/api/rules/add") return addRule(me, body);
+        if (path === "/api/rules/remove") return removeRule(me, body);
       }
       return json({ error: "Not found." }, 404);
     } catch (e) {

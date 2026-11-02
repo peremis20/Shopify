@@ -49,6 +49,10 @@ select{width:100%;font:14px var(--body);color:var(--ink);background:var(--paper)
 .search{margin-top:10px;flex-wrap:nowrap}.search input{flex:1;min-width:0}
 .atts{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:4px}.atts li{gap:8px}
 .form{display:grid;gap:8px}
+.senders{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:6px}
+.sender{border:1px solid var(--line);border-radius:10px;padding:9px 11px;display:grid;gap:6px}
+.count{font:700 15px var(--display);min-width:2.5em;text-align:right}
+.rules{margin-top:18px}.rules select,.rules input{width:auto;flex:1 1 160px}
 @media (max-width:980px){.folders{display:flex;flex-wrap:wrap}.folders li{flex:1 1 40%}}
 `;
 
@@ -93,7 +97,8 @@ const appScript = `
 "use strict";
 var $=function(id){return document.getElementById(id)};
 function el(t,a,k){var n=document.createElement(t);if(a)for(var x in a){if(x==="text")n.textContent=a[x];else if(x==="class")n.className=a[x];else if(x.slice(0,2)==="on")n.addEventListener(x.slice(2),a[x]);else n.setAttribute(x,a[x]);}(k||[]).forEach(function(c){if(c)n.append(c)});return n}
-var S={me:null,inboxes:[],messages:[],filter:null,folder:"inbox",search:"",unread:false,open:null,thread:null,threadError:null,loading:false,next:null,seq:0,openSeq:0,sel:{},view:null,draft:null,fwd:null};
+var store={get:function(k){try{return localStorage.getItem(k)}catch(e){return null}},set:function(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+var S={primary:store.get("ti_primary")!=="0",clean:{inbox:"",data:null,loading:false,error:null,rules:null,seq:0},me:null,inboxes:[],messages:[],filter:null,folder:"inbox",search:"",unread:false,open:null,thread:null,threadError:null,loading:false,next:null,seq:0,openSeq:0,sel:{},view:null,draft:null,fwd:null};
 var FOLDERS=[["inbox","Inbox"],["starred","Starred"],["sent","Sent"],["trash","Trash"]];
 var keyOf=function(m){return m.inboxId+":"+m.threadId};
 async function api(p,b){var r=await fetch(p,b?{method:"POST",headers:{"Content-Type":"application/json","X-Team-Inbox":"1"},body:JSON.stringify(b)}:{});var d=await r.json().catch(function(){return{}});if(!r.ok)throw Object.assign(new Error(d.error||"Something went wrong."),{status:r.status});return d}
@@ -129,11 +134,12 @@ function layout(){
 // Each load carries a number; an older answer that arrives late is dropped, so the list always matches the buttons.
 async function load(more){
   var mine=++S.seq;if(!more){S.loading=true;S.next=null;S.sel={};renderLeft();renderMid()}
-  try{var p={folder:S.folder};if(S.unread)p.unread="1";if(S.filter)p.inbox=S.filter;if(S.search)p.q=S.search;if(more&&S.next)p.pages=JSON.stringify(S.next);
+  try{var p={folder:S.folder};if(S.unread)p.unread="1";if(S.filter)p.inbox=S.filter;if(S.search)p.q=S.search;if(S.primary&&S.folder==="inbox")p.primary="1";if(more&&S.next)p.pages=JSON.stringify(S.next);
     var d=await api("/api/mail?"+new URLSearchParams(p));
     if(mine!==S.seq)return;
     if(more)S.messages=S.messages.concat(d.messages).sort(function(a,b){return b.date-a.date});else{S.inboxes=d.inboxes;S.messages=d.messages}
-    var nx={},any=false;d.inboxes.forEach(function(i){if(i.next){nx[i.id]=i.next;any=true}});S.next=any?nx:null}
+    var nx={},any=false;d.inboxes.forEach(function(i){if(i.next){nx[i.id]=i.next;any=true}});S.next=any?nx:null;
+    if(d.swept)notice("Your rules removed "+d.swept+(d.swept===1?" email.":" emails."))}
   catch(e){if(mine!==S.seq)return;if(e.status===401){location.href="/";return}notice(e.message,true)}
   S.loading=false;renderLeft();renderMid();
 }
@@ -149,6 +155,7 @@ function renderLeft(){
   put(L,
     el("button",{class:"primary",type:"button",id:"compose",text:"Write an email",style:"width:100%",onclick:function(){compose()}}),
     el("ul",{class:"inboxes folders","aria-label":"Folders"},folders),
+    el("button",{type:"button",id:"cleanup",text:"Clean up",style:"width:100%","aria-pressed":String(S.view==="clean"),onclick:function(){showClean()}}),
     el("h2",{text:"Inboxes",style:"margin-top:14px"}),
     S.inboxes.length?null:el("p",{class:"empty",text:"No inbox connected yet. Add one below; you'll sign in to it with Google."}),
     el("ul",{class:"inboxes"},items),
@@ -191,7 +198,8 @@ function renderMid(){
   var fname=(FOLDERS.find(function(f){return f[0]===S.folder})||FOLDERS[0])[1];
   var iname=S.filter?(S.inboxes.find(function(i){return i.id===S.filter})||{}).address||"":"All inboxes";
   var head=el("div",{class:"row spread"},[el("h2",{text:fname+" · "+iname}),
-    el("div",{class:"row"},[el("button",{type:"button","aria-pressed":String(S.unread),text:S.unread?"Showing unread":"Unread only",onclick:function(){S.unread=!S.unread;load()}}),el("button",{type:"button",text:"Refresh",onclick:function(){load()}})])]);
+    el("div",{class:"row"},[S.folder==="inbox"?el("button",{type:"button",id:"primary","aria-pressed":String(S.primary),text:S.primary?"Important only":"Showing all",title:"Important only shows the Primary tab",onclick:function(){S.primary=!S.primary;store.set("ti_primary",S.primary?"1":"0");load()}}):null,
+      el("button",{type:"button","aria-pressed":String(S.unread),text:S.unread?"Showing unread":"Unread only",onclick:function(){S.unread=!S.unread;load()}}),el("button",{type:"button",text:"Refresh",onclick:function(){load()}})])]);
   var q=el("input",{type:"search",id:"q",placeholder:"Search mail","aria-label":"Search mail"});q.value=S.search;
   var search=el("form",{class:"row search",role:"search",onsubmit:function(e){e.preventDefault();S.search=q.value.trim();load()}},[q,el("button",{type:"submit",text:"Search"}),
     S.search?el("button",{type:"button",text:"Clear",onclick:function(){S.search="";load()}}):null]);
@@ -229,7 +237,7 @@ function renderMid(){
 }
 
 async function openMsg(m){
-  var mine=++S.openSeq;S.view=null;S.fwd=null;S.open=m;S.thread=null;S.threadError=null;renderMid();renderRight();
+  var mine=++S.openSeq;if(S.view==="clean"){S.view=null;renderLeft()}S.view=null;S.fwd=null;S.open=m;S.thread=null;S.threadError=null;renderMid();renderRight();
   // On a phone the email opens below the list: bring it into view.
   toRight();
   try{var t=await api("/api/thread?"+new URLSearchParams({inbox:m.inboxId,thread:m.threadId,folder:S.folder}));
@@ -243,7 +251,7 @@ async function openMsg(m){
 function field(label,input){return el("label",null,[el("span",{text:label}),input])}
 
 function compose(){
-  S.openSeq++;S.open=null;S.thread=null;S.fwd=null;S.view="compose";
+  S.openSeq++;S.open=null;S.thread=null;S.fwd=null;S.view="compose";renderLeft();
   if(!S.draft)S.draft={inbox:S.filter||(S.inboxes[0]||{}).id||"",to:"",cc:"",subject:"",text:""};
   renderMid();renderRight();toRight();var to=$("cto");if(to)to.focus();
 }
@@ -282,6 +290,7 @@ function forwardBox(t,m){
 function renderRight(){
   var R=$("right");if(!R)return;
   if(S.view==="compose")return renderCompose(R);
+  if(S.view==="clean")return renderClean(R);
   if(!S.open){put(R,el("p",{class:"empty",text:"Pick an email to read and answer it."}));return}
   if(S.threadError){put(R,el("p",{class:"err",text:S.threadError}),el("button",{type:"button",text:"Try again",onclick:function(){openMsg(S.open)}}));return}
   if(!S.thread){put(R,el("p",{class:"meta",text:"Opening…"}));return}
@@ -357,6 +366,102 @@ function showBody(m){
   return el("div",null,[el("div",{class:"row",style:"margin-top:8px"},[imgs,toggle]),frame,plain]);
 }
 
+// ---------- Clean up: senders, unsubscribe, delete all, rules ----------
+function showClean(){
+  S.openSeq++;S.open=null;S.thread=null;S.fwd=null;S.view="clean";
+  if(S.clean.inbox&&!S.inboxes.some(function(i){return i.id===S.clean.inbox}))S.clean.inbox="";
+  renderLeft();renderMid();renderRight();toRight();
+  if(!S.clean.data&&!S.clean.loading)loadSenders(false);
+  if(!S.clean.rules)loadRules();
+}
+async function loadSenders(fresh){
+  var C=S.clean,mine=++C.seq;C.loading=true;C.error=null;renderRight();
+  try{var p={};if(C.inbox)p.inbox=C.inbox;if(fresh)p.fresh="1";var d=await api("/api/senders?"+new URLSearchParams(p));if(mine!==C.seq)return;C.data=d}
+  catch(e){if(mine!==C.seq)return;if(e.status===401){location.href="/";return}C.error=e.message}
+  C.loading=false;renderRight();
+}
+async function loadRules(){
+  try{S.clean.rules=(await api("/api/rules")).rules}catch(e){S.clean.rules=[];notice(e.message,true)}
+  renderRight();
+}
+// After a sender's mail is deleted, the row and the count change at once.
+function dropSender(g){
+  var d=S.clean.data;if(!d)return;
+  d.senders=d.senders.filter(function(x){return x!==g});d.total-=g.count;if(g.unsub)d.unsubscribable-=g.count;
+}
+function senderRow(g,addr){
+  var who=g.name?g.name+" <"+g.address+">":g.address;
+  var msg=el("span",{class:"meta",role:"status"});
+  var acts=[];
+  if(g.unsub){var u=el("button",{type:"button",text:"Unsubscribe"});
+    u.onclick=async function(){u.disabled=true;msg.textContent="Unsubscribing…";
+      try{var r=await api("/api/unsubscribe",{inbox:g.inboxId,sender:g.address});msg.textContent=r.message||"";
+        if(r.done==="link"&&/^https:\\/\\//i.test(String(r.url||""))){msg.append(" ",el("a",{href:r.url,target:"_blank",rel:"noopener noreferrer",text:"Open their unsubscribe page"}))}
+        if(r.done==="posted"||r.done==="emailed"){g.unsub=null;u.textContent="Unsubscribed"}else u.disabled=false}
+      catch(e){msg.textContent=e.message;u.disabled=false}};
+    acts.push(u)}
+  var del=el("button",{type:"button",class:"danger",text:"Delete all "+g.count});
+  del.onclick=async function(){if(del.dataset.armed!=="1"){del.dataset.armed="1";del.textContent="Click again to delete all from "+g.address;return}
+    del.disabled=true;msg.textContent="Deleting…";
+    try{var r=await api("/api/sender/trash",{inbox:g.inboxId,sender:g.address});
+      var t="Moved "+r.count+(r.count===1?" conversation":" conversations")+" from "+g.address+" to Trash."+(r.failed?" "+r.failed+" couldn't be moved.":"")+(r.more?" There is more. Click again to keep going.":"");
+      if(r.more){del.dataset.armed="";del.disabled=false;del.textContent="Delete more";msg.textContent=t}else{dropSender(g);renderRight();notice(t,r.failed>0)}}
+    catch(e){msg.textContent=e.message;del.disabled=false}};
+  acts.push(del);
+  var rule=el("button",{type:"button",text:"Always delete from now on"});
+  rule.onclick=async function(){rule.disabled=true;msg.textContent="Saving rule…";
+    try{var r=await api("/api/rules/add",{inbox:g.inboxId,sender:g.address,action:"trash"});
+      var t="From now on mail from "+g.address+" goes to Trash."+(r.swept?" Moved "+r.swept+" now.":"")+(r.error?" Couldn't clear the old ones yet: "+r.error:"");
+      dropSender(g);await loadRules();notice(t,Boolean(r.error))}
+    catch(e){msg.textContent=e.message;rule.disabled=false}};
+  acts.push(rule);
+  return el("li",{class:"sender"},[
+    el("div",{class:"row spread"},[el("span",{class:"addr",text:who}),el("span",{class:"row"},[el("span",{class:"count",text:String(g.count)}),el("span",{class:"meta",text:"last "+when(g.last)})])]),
+    S.clean.inbox?null:el("span",null,[el("span",{class:"tag",text:addr[g.inboxId]||""})]),
+    el("div",{class:"row"},acts.concat([msg]))]);
+}
+function rulesBox(){
+  var rules=S.clean.rules;
+  var inbox=el("select",{id:"rinbox","aria-label":"Inbox for the rule"},S.inboxes.map(function(i){return el("option",{value:i.id,text:i.address})}));
+  if(S.clean.inbox)inbox.value=S.clean.inbox;
+  var who=el("input",{id:"rsender",type:"text",autocomplete:"off",placeholder:"news@shop.com or @shop.com","aria-label":"Sender or domain"});
+  var act=el("select",{id:"raction","aria-label":"What to do"},[el("option",{value:"trash",text:"Delete"}),el("option",{value:"archive",text:"Archive"})]);
+  var msg=el("span",{class:"meta",role:"status"});
+  var add=el("button",{type:"button",class:"primary",text:"Add rule"});
+  add.onclick=async function(){if(!who.value.trim()){msg.textContent="Write an address or @domain.com.";return}
+    add.disabled=true;msg.textContent="Saving rule…";
+    try{var r=await api("/api/rules/add",{inbox:inbox.value,sender:who.value.trim(),action:act.value});
+      await loadRules();notice("Rule saved for "+r.sender+"."+(r.swept?" Moved "+r.swept+" now.":"")+(r.error?" Couldn't clear the old ones yet: "+r.error:""),Boolean(r.error))}
+    catch(e){msg.textContent=e.message;add.disabled=false}};
+  var list=rules===null?el("p",{class:"meta",text:"Loading rules…"}):!rules.length?el("p",{class:"empty",text:"No rules yet. A rule deletes or archives mail from a sender as it arrives."}):
+    el("ul",{class:"list"},rules.map(function(r){return el("li",{class:"row spread mail"},[
+      el("span",{class:"addr",text:(r.action==="archive"?"Archive ":"Delete ")+r.sender+" in "+r.address}),
+      el("button",{type:"button",text:"Remove",onclick:async function(e){var b=e.currentTarget;b.disabled=true;try{await api("/api/rules/remove",{id:r.id});await loadRules();notice("Rule removed.")}catch(x){notice(x.message,true);b.disabled=false}}})])}));
+  return el("div",{class:"rules"},[el("h2",{text:"Rules"}),el("p",{class:"meta",text:"Rules run each time you open your mail and on a schedule."}),list,
+    S.inboxes.length?el("div",{class:"row",style:"margin-top:10px"},[inbox,who,act,add,msg]):null]);
+}
+function renderClean(R){
+  var C=S.clean;
+  if(!S.inboxes.length){put(R,el("h2",{text:"Clean up"}),el("p",{class:"empty",text:"Connect an inbox first."}));return}
+  var pick=el("select",{id:"cinbox","aria-label":"Inbox to clean up"},[el("option",{value:"",text:"All inboxes"})].concat(S.inboxes.map(function(i){return el("option",{value:i.id,text:i.address})})));
+  pick.value=C.inbox;pick.onchange=function(){C.inbox=pick.value;C.data=null;loadSenders(false)};
+  var head=el("div",{class:"row spread"},[el("h2",{text:"Clean up"}),el("div",{class:"row"},[pick,el("button",{type:"button",text:"Refresh",onclick:function(){loadSenders(true)}}),el("button",{type:"button",text:"Close",onclick:function(){S.view=null;renderLeft();renderRight()}})])]);
+  var intro=el("p",{class:"meta",text:"Who sent you the most in the last 30 days. Unsubscribe, delete it all, or make a rule."});
+  var body;
+  if(C.loading&&!C.data)body=el("p",{class:"meta",text:"Reading the last 30 days. This can take a little while…"});
+  else if(C.error)body=el("p",{class:"err",text:C.error});
+  else if(!C.data)body=null;
+  else{
+    var d=C.data,addr={};S.inboxes.forEach(function(i){addr[i.id]=i.address});
+    var notes=(d.inboxes||[]).filter(function(i){return i.error||i.partial||i.skipped}).map(function(i){
+      return el("p",{class:i.error?"err":"meta",text:i.address+": "+(i.error?i.error:i.partial?"only the newest 500 emails were read.":i.skipped+" emails couldn't be read.")})});
+    body=el("div",null,[el("p",{id:"cleancount",text:"Last 30 days: "+d.total+(d.total===1?" email, ":" emails, ")+d.unsubscribable+" from senders you can unsubscribe from"}),
+      C.loading?el("p",{class:"meta",text:"Refreshing…"}):null].concat(notes,[
+      d.senders.length?el("ul",{class:"senders"},d.senders.map(function(g){return senderRow(g,addr)})):el("p",{class:"empty",text:"No mail in the last 30 days."})]));
+  }
+  put(R,head,intro,body,rulesBox());
+}
+
 async function removeInbox(b){
   var i=S.inboxes.find(function(x){return x.id===S.filter});if(!i)return;
   if(b.dataset.armed!=="1"){b.dataset.armed="1";b.textContent="Click again to remove "+i.address;return}
@@ -364,7 +469,7 @@ async function removeInbox(b){
 }
 
 async function showTeam(){
-  var R=$("right");S.open=null;S.view=null;S.openSeq++;
+  var R=$("right");S.open=null;S.view=null;S.openSeq++;renderLeft();
   var render=function(d){var add=el("input",{type:"email",id:"newm",placeholder:"name@domain.com","aria-label":"Add a team member"});
     put(R,el("h2",{text:"Team"}),el("p",{class:"meta",text:"Only people listed here can sign in. Each person sees only the inboxes they connect themselves."}),
       el("ul",{class:"list"},d.members.map(function(m){return el("li",{class:"row spread mail"},[el("span",{class:"addr",text:m.email+(m.owner?" (owner)":"")}),

@@ -2,6 +2,7 @@
  * Team Inbox: pure helpers (no network, no database), kept apart so they can be tested.
  */
 import crypto from "node:crypto";
+import net from "node:net";
 
 // ---------- encryption and signing ----------
 
@@ -187,9 +188,10 @@ export type Folder = keyof typeof FOLDERS;
 export const folderOf = (v: unknown): Folder => (typeof v === "string" && Object.prototype.hasOwnProperty.call(FOLDERS, v) ? (v as Folder) : "inbox");
 
 /** The Gmail search for a folder, the unread filter and what the person typed (kept inside the folder). */
-export function mailQuery(folder: unknown, unread: boolean, search: unknown): string {
+export function mailQuery(folder: unknown, unread: boolean, search: unknown, primary = false): string {
   const s = oneLine(String(search ?? "")).slice(0, 300);
-  return [FOLDERS[folderOf(folder)], unread ? "is:unread" : "", s ? `(${s})` : ""].filter(Boolean).join(" ");
+  const f = folderOf(folder);
+  return [FOLDERS[f], primary && f === "inbox" ? "category:primary" : "", unread ? "is:unread" : "", s ? `(${s})` : ""].filter(Boolean).join(" ");
 }
 
 /** What a thread action does in Gmail: the path to post to and the label change, or null when unknown. */
@@ -390,4 +392,225 @@ export function contentDisposition(name: unknown): string {
   const plain = safe.replace(/[^\x20-\x7e]/g, "_").replace(/[%;\\"]/g, "_");
   const encoded = encodeURIComponent(safe).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
   return `attachment; filename="${plain}"; filename*=UTF-8''${encoded}`;
+}
+
+// ---------- junk mail: unsubscribe, senders and rules ----------
+
+/** The name part of a From header (`"Jane" <jane@x.com>` gives Jane), or "". */
+export function displayName(from: string | undefined): string {
+  const m = String(from ?? "").match(/^\s*"?([^"<]*?)"?\s*</);
+  return m ? oneLine(m[1]).slice(0, 120) : "";
+}
+
+/** Expands an IPv6 address to its 8 groups, or null. An embedded IPv4 tail is turned into two groups. */
+function ipv6Groups(ip: string): number[] | null {
+  let s = ip.toLowerCase().replace(/%.*$/, "");
+  const v4 = s.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (v4) {
+    const b = v4[1].split(".").map(Number);
+    if (b.some((x) => x > 255)) return null;
+    s = s.slice(0, -v4[1].length) + `${((b[0] << 8) | b[1]).toString(16)}:${((b[2] << 8) | b[3]).toString(16)}`;
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const part = (h: string) => (h ? h.split(":") : []);
+  const head = part(halves[0]);
+  const tail = halves.length === 2 ? part(halves[1]) : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0 || (halves.length === 1 && head.length !== 8)) return null;
+  const all = [...head, ...Array(fill).fill("0"), ...tail];
+  if (all.length !== 8 || all.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  return all.map((g) => parseInt(g, 16));
+}
+
+function privateV4(ip: string): boolean {
+  const b = ip.split(".").map(Number);
+  const [a, c] = [b[0], b[1]];
+  return (
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && c >= 64 && c <= 127) ||
+    (a === 169 && c === 254) ||
+    (a === 172 && c >= 16 && c <= 31) ||
+    (a === 192 && c === 168) ||
+    (a === 192 && c === 0 && (b[2] === 0 || b[2] === 2)) ||
+    (a === 198 && (c === 18 || c === 19)) ||
+    (a === 198 && c === 51 && b[2] === 100) ||
+    (a === 203 && c === 0 && b[2] === 113)
+  );
+}
+
+/** True for any address that isn't a plain public one: private, loopback, link local, multicast, reserved, or unparsable. */
+export function isPrivateIp(ip: string): boolean {
+  const kind = net.isIP(ip);
+  if (kind === 4) return privateV4(ip);
+  if (kind !== 6) return true;
+  const g = ipv6Groups(ip);
+  if (!g) return true;
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  if (g.slice(0, 7).every((x) => x === 0)) return true; // :: and ::1
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return privateV4(v4(g[6], g[7])); // mapped and compatible IPv4
+  if (g[0] === 0x64 && g[1] === 0xff9b) return privateV4(v4(g[6], g[7])); // NAT64
+  if ((g[0] & 0xfe00) === 0xfc00) return true; // unique local
+  if ((g[0] & 0xffc0) === 0xfe80 || (g[0] & 0xffc0) === 0xfec0) return true; // link and site local
+  if ((g[0] & 0xff00) === 0xff00) return true; // multicast
+  if (g[0] === 0x2001 && g[1] === 0x0db8) return true; // documentation
+  if (g[0] === 0x2002) return privateV4(v4(g[1], g[2])); // 6to4
+  if (g[0] === 0x2001 && g[1] === 0) return true; // Teredo
+  return false;
+}
+
+const INTERNAL_HOST = /(^|\.)(localhost|local|internal|intranet|lan|home|corp|localdomain|home\.arpa|in-addr\.arpa|ip6\.arpa)$/;
+
+/**
+ * An unsubscribe address the server may call: https, the normal port, no login in it, and a public host name
+ * or public IP. The name is checked again after it is looked up, so it can't point inside.
+ */
+export function safeUnsubUrl(raw: unknown): string | null {
+  const s = String(raw ?? "").trim();
+  if (!s || s.length > 2048 || /[\s<>]/.test(s)) return null;
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" || u.username || u.password || (u.port && u.port !== "443")) return null;
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (!host) return null;
+  if (net.isIP(host)) return isPrivateIp(host) ? null : u.toString();
+  if (!host.includes(".") || INTERNAL_HOST.test(host) || !/^[a-z0-9.-]+$/.test(host)) return null;
+  return u.toString();
+}
+
+/** The https and mailto addresses in a List-Unsubscribe header, in the order given. */
+export function parseListUnsubscribe(h: string | undefined): { https: string[]; mailto: string[] } {
+  const out = { https: [] as string[], mailto: [] as string[] };
+  for (const m of String(h ?? "").matchAll(/<([^<>]{1,2048})>/g)) {
+    const v = m[1].replace(/\s+/g, "");
+    if (/^https:\/\//i.test(v)) out.https.push(v);
+    else if (/^mailto:/i.test(v)) out.mailto.push(v);
+  }
+  return out;
+}
+
+const pctDecode = (v: string) => {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+};
+
+/** A mailto: link as the email to send: one real address, a one line subject and a short body. */
+export function parseMailto(uri: string | undefined): { to: string; subject: string; body: string } | null {
+  const s = String(uri ?? "").trim();
+  if (!/^mailto:/i.test(s)) return null;
+  const rest = s.slice(7);
+  const q = rest.indexOf("?");
+  const params: Record<string, string> = {};
+  for (const pair of (q >= 0 ? rest.slice(q + 1) : "").split("&")) {
+    const i = pair.indexOf("=");
+    const k = pctDecode(i >= 0 ? pair.slice(0, i) : pair).toLowerCase();
+    if (k && !(k in params)) params[k] = pctDecode(i >= 0 ? pair.slice(i + 1) : "");
+  }
+  const candidates = [...pctDecode(q >= 0 ? rest.slice(0, q) : rest).split(","), ...(params.to ?? "").split(",")];
+  const to = candidates.map((c) => normEmail(c)).find((c) => isEmail(c));
+  if (!to) return null;
+  return {
+    to,
+    subject: oneLine(params.subject ?? "").slice(0, 200) || "Unsubscribe",
+    body: (params.body ?? "").replace(/\r\n?/g, "\n").slice(0, 2000) || "Unsubscribe",
+  };
+}
+
+/** True when List-Unsubscribe-Post asks for the RFC 8058 one click POST. */
+export const isOneClick = (v: string | undefined) => /^\s*List-Unsubscribe\s*=\s*One-Click\s*$/i.test(String(v ?? ""));
+
+export type UnsubPlan =
+  | { kind: "post"; url: string; mailto: ReturnType<typeof parseMailto>; link: string | null }
+  | { kind: "mailto"; mailto: NonNullable<ReturnType<typeof parseMailto>>; link: string | null }
+  | { kind: "link"; link: string }
+  | null;
+
+/** How to unsubscribe: one click POST first, then an email, then a page for the person to open. */
+export function unsubscribePlan(listUnsubscribe: string | undefined, listUnsubscribePost: string | undefined): UnsubPlan {
+  const p = parseListUnsubscribe(listUnsubscribe);
+  const link = p.https.map(safeUnsubUrl).find((u): u is string => Boolean(u)) ?? null;
+  const mailto = p.mailto.map(parseMailto).find((m) => m !== null) ?? null;
+  if (link && isOneClick(listUnsubscribePost)) return { kind: "post", url: link, mailto, link };
+  if (mailto) return { kind: "mailto", mailto, link };
+  if (link) return { kind: "link", link };
+  return null;
+}
+
+export interface SenderRow { inboxId: string; from?: string; date: number; listUnsubscribe?: string; listUnsubscribePost?: string; self?: string }
+export interface SenderGroup { inboxId: string; address: string; name: string; count: number; last: number; unsub: "post" | "mailto" | "link" | null }
+
+/** Mail grouped by inbox and sender address, most mail first. The unsubscribe way comes from the newest message that has one. */
+export function groupSenders(rows: SenderRow[]): SenderGroup[] {
+  const by = new Map<string, SenderGroup & { unsubAt: number }>();
+  for (const r of rows) {
+    const address = addressIn(r.from);
+    if (!address || (r.self && normEmail(r.self) === address)) continue;
+    const key = `${r.inboxId}\n${address}`;
+    const g = by.get(key) ?? { inboxId: r.inboxId, address, name: "", count: 0, last: 0, unsub: null, unsubAt: -1 };
+    g.count++;
+    if (r.date >= g.last) {
+      g.last = r.date;
+      g.name = displayName(r.from) || g.name;
+    } else if (!g.name) g.name = displayName(r.from);
+    const plan = unsubscribePlan(r.listUnsubscribe, r.listUnsubscribePost);
+    if (plan && r.date > g.unsubAt) {
+      g.unsub = plan.kind;
+      g.unsubAt = r.date;
+    }
+    by.set(key, g);
+  }
+  return [...by.values()]
+    .map(({ unsubAt: _u, ...g }) => g)
+    .sort((a, b) => b.count - a.count || b.last - a.last || a.address.localeCompare(b.address));
+}
+
+/** The small count on the Clean up screen. */
+export function senderTotals(groups: SenderGroup[]): { total: number; unsubscribable: number } {
+  return {
+    total: groups.reduce((n, g) => n + g.count, 0),
+    unsubscribable: groups.reduce((n, g) => n + (g.unsub ? g.count : 0), 0),
+  };
+}
+
+/** A rule's sender: an exact address, or a whole domain written as @domain.com. Null when it is neither. */
+export function ruleSender(v: unknown): string | null {
+  const s = normEmail(v);
+  if (s.length > 254) return null;
+  if (!s.startsWith("@")) return isEmail(s) ? s : null;
+  const d = s.slice(1);
+  const labels = d.split(".");
+  if (labels.length < 2 || !/^[a-z0-9-]{2,}$/.test(labels[labels.length - 1])) return null;
+  return labels.every((l) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) ? s : null;
+}
+
+export const RULE_ACTIONS = ["trash", "archive"] as const;
+export type RuleAction = (typeof RULE_ACTIONS)[number];
+export const ruleAction = (v: unknown): RuleAction | null => (v === "trash" || v === "archive" ? v : null);
+
+/** Whether a sender address falls under a rule: the same address, or any address at exactly that domain. */
+export function senderMatches(rule: string, address: string | null): boolean {
+  const a = normEmail(address);
+  if (!a || !rule) return false;
+  return rule.startsWith("@") ? a.slice(a.lastIndexOf("@")) === rule : a === rule;
+}
+
+/**
+ * The Gmail searches that find mail for a set of rules, at most 20 senders each. Gmail's search is looser than the
+ * rule, so every match is checked again with senderMatches before anything is moved.
+ */
+export function ruleQueries(senders: string[], extra = ""): string[] {
+  const terms = [...new Set(senders.map(ruleSender).filter((s): s is string => Boolean(s)).map((s) => (s.startsWith("@") ? s.slice(1) : s)))];
+  const out: string[] = [];
+  for (let i = 0; i < terms.length; i += 20) {
+    const chunk = terms.slice(i, i + 20);
+    out.push(["in:inbox", oneLine(extra), `from:(${chunk.join(" OR ")})`].filter(Boolean).join(" "));
+  }
+  return out;
 }

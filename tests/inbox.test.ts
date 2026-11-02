@@ -187,3 +187,93 @@ test("inbox: download names are safe", () => {
   assert.match(cd, /^attachment; filename="R_sum_ _final__ x\.pdf"; filename\*=UTF-8''R%C3%A9sum%C3%A9%20_final_%3B%20x\.pdf$/);
   assert.ok(!/[\r\n]/.test(contentDisposition("a\r\nSet-Cookie: x")));
 });
+
+import {
+  groupSenders as gs,
+  isOneClick,
+  isPrivateIp,
+  parseListUnsubscribe,
+  parseMailto,
+  ruleQueries,
+  ruleSender,
+  safeUnsubUrl,
+  senderMatches,
+  senderTotals,
+  unsubscribePlan,
+} from "../inbox-app/core";
+
+test("inbox: List-Unsubscribe gives its https and mailto addresses", () => {
+  const h = "<mailto:leave@news.shop.com?subject=unsub>, <https://news.shop.com/u?id=1>,\r\n <http://plain.com/u>";
+  assert.deepEqual(parseListUnsubscribe(h), { https: ["https://news.shop.com/u?id=1"], mailto: ["mailto:leave@news.shop.com?subject=unsub"] });
+  assert.deepEqual(parseListUnsubscribe(undefined), { https: [], mailto: [] });
+  assert.ok(isOneClick("List-Unsubscribe=One-Click"));
+  assert.ok(!isOneClick("List-Unsubscribe=Other"));
+  assert.equal(unsubscribePlan(h, "List-Unsubscribe=One-Click")?.kind, "post");
+  assert.equal(unsubscribePlan(h, undefined)?.kind, "mailto");
+  assert.equal(unsubscribePlan("<https://news.shop.com/u>", undefined)?.kind, "link");
+  assert.equal(unsubscribePlan("<https://127.0.0.1/u>", "List-Unsubscribe=One-Click"), null);
+  assert.equal(unsubscribePlan("<http://news.shop.com/u>", "List-Unsubscribe=One-Click"), null);
+});
+
+test("inbox: mailto unsubscribe links become a safe email", () => {
+  assert.deepEqual(parseMailto("mailto:leave@x.com?subject=Unsubscribe%20me&body=please"), { to: "leave@x.com", subject: "Unsubscribe me", body: "please" });
+  assert.deepEqual(parseMailto("mailto:LEAVE@x.com"), { to: "leave@x.com", subject: "Unsubscribe", body: "Unsubscribe" });
+  assert.equal(parseMailto("mailto:?subject=x"), null);
+  assert.equal(parseMailto("https://x.com"), null);
+  const evil = parseMailto("mailto:a@x.com%0D%0ABcc:evil@y.com?subject=hi%0D%0ABcc:%20evil@y.com");
+  assert.equal(evil, null);
+  const inj = parseMailto("mailto:a@x.com?subject=hi%0D%0ABcc:%20evil@y.com");
+  assert.equal(inj?.subject, "hi Bcc: evil@y.com");
+  const raw = decode(buildReply({ from: "info@peremis.com", to: [inj!.to], cc: [], subject: inj!.subject, inReplyTo: null, references: null, body: inj!.body }));
+  assert.ok(!/^Bcc:/im.test(raw.split("\r\n\r\n")[0]));
+});
+
+test("inbox: senders are grouped per inbox, counted and sorted", () => {
+  const g = gs([
+    { inboxId: "1", from: '"Shop" <news@shop.com>', date: 10, listUnsubscribe: "<https://shop.com/u>", listUnsubscribePost: "List-Unsubscribe=One-Click" },
+    { inboxId: "1", from: "NEWS@shop.com", date: 30 },
+    { inboxId: "1", from: "ann@x.com", date: 20 },
+    { inboxId: "2", from: "news@shop.com", date: 5 },
+    { inboxId: "1", from: "info@peremis.com", date: 40, self: "info@peremis.com" },
+    { inboxId: "1", from: "not an address", date: 50 },
+  ]);
+  assert.deepEqual(g.map((x) => [x.inboxId, x.address, x.count, x.last, x.unsub, x.name]), [
+    ["1", "news@shop.com", 2, 30, "post", "Shop"],
+    ["1", "ann@x.com", 1, 20, null, ""],
+    ["2", "news@shop.com", 1, 5, null, ""],
+  ]);
+  assert.deepEqual(senderTotals(g), { total: 4, unsubscribable: 2 });
+});
+
+test("inbox: rules match an exact address or a whole domain", () => {
+  assert.equal(ruleSender(" News@Shop.com "), "news@shop.com");
+  assert.equal(ruleSender("@Shop.com"), "@shop.com");
+  assert.equal(ruleSender("shop.com"), null);
+  assert.equal(ruleSender("@shop"), null);
+  assert.equal(ruleSender("@-bad.com"), null);
+  assert.equal(ruleSender("a@b.com) OR (x"), null);
+  assert.ok(senderMatches("@shop.com", "a@shop.com"));
+  assert.ok(!senderMatches("@shop.com", "a@mail.shop.com"));
+  assert.ok(!senderMatches("@shop.com", "a@notshop.com"));
+  assert.ok(senderMatches("a@shop.com", "A@shop.com"));
+  assert.ok(!senderMatches("a@shop.com", "b@shop.com"));
+  assert.deepEqual(ruleQueries(["a@x.com", "@shop.com", "bad", "a@x.com"], "newer_than:2d"), ["in:inbox newer_than:2d from:(a@x.com OR shop.com)"]);
+  const many = ruleQueries(Array.from({ length: 45 }, (_, i) => `u${i}@x.com`));
+  assert.equal(many.length, 3);
+  assert.ok(many[0].startsWith("in:inbox from:(u0@x.com OR "));
+  assert.equal(mailQuery("inbox", false, "", true), "in:inbox category:primary");
+  assert.equal(mailQuery("sent", false, "", true), "in:sent");
+});
+
+test("inbox: the unsubscribe call never reaches private or internal hosts", () => {
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1",
+    "::1", "::", "fe80::1", "fc00::1", "fd12:3456::1", "::ffff:127.0.0.1", "::ffff:7f00:1", "64:ff9b::a9fe:a9fe", "2002:c0a8:0101::1", "nonsense"]) {
+    assert.ok(isPrivateIp(ip), ip);
+  }
+  for (const ip of ["8.8.8.8", "172.32.0.1", "142.250.80.46", "2607:f8b0:4004:800::200e"]) assert.ok(!isPrivateIp(ip), ip);
+  assert.equal(safeUnsubUrl("https://news.shop.com/u?x=1"), "https://news.shop.com/u?x=1");
+  for (const u of ["http://news.shop.com/u", "https://localhost/u", "https://127.0.0.1/u", "https://[::1]/u", "https://metadata.google.internal/x",
+    "https://printer.local/x", "https://intranet/x", "https://user:pw@shop.com/u", "https://shop.com:8443/u", "https://0x7f000001/u", "https://2130706433/u", "javascript:alert(1)"]) {
+    assert.equal(safeUnsubUrl(u), null, u);
+  }
+});
