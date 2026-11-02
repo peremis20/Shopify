@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressIn, buildReply, htmlOf, htmlToText, replyRecipients, replySubject, seal, sign, textOf, unseal, verify } from "../inbox-app/core";
+import { addressIn, buildReply, decodeEntities, htmlOf, htmlToText, replyRecipients, replySubject, seal, sign, textOf, unseal, verify } from "../inbox-app/core";
 
 const S = "x".repeat(40);
 const decode = (raw: string) => Buffer.from(raw, "base64url").toString("utf8");
@@ -84,4 +84,10 @@ test("inbox: the designed (HTML) part of an email is found for the sandboxed vie
   };
   assert.equal(htmlOf(payload), "<h1>Balance alert</h1><p>$42.10</p>");
   assert.equal(htmlOf({ mimeType: "text/plain", body: { data: b64("hi") } }), null);
+});
+
+test("inbox: character codes in previews and text are decoded", () => {
+  assert.equal(decodeEntities("It&#39;s Jimmy&#8217;s &amp; Co &#x2019;"), "It's Jimmy’s & Co ’");
+  assert.equal(decodeEntities("&bogus; &#0;"), "&bogus; &#0;");
+  assert.equal(htmlToText("<p>Tom&#8217;s&nbsp;order</p>"), "Tom’s order");
 });

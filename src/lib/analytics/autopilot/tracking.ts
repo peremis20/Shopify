@@ -206,6 +206,7 @@ export async function accountsDueForTracking(limit: number): Promise<string[]> {
     SELECT a.account_id FROM insights_account_autopilot a
     WHERE a.enabled AND (
       SELECT count(*) FROM insights_rank_daily r WHERE r.account_id = a.account_id AND r.checked_on = ${today}) < ${TRACK_PER_DAY}
-    LIMIT ${limit}`;
+      AND (a.upkeep_tried_at IS NULL OR a.upkeep_tried_at < now() - interval '3 hours')
+    ORDER BY a.upkeep_tried_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => r.account_id!);
 }

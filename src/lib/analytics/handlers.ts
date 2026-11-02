@@ -14,7 +14,7 @@ import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
-import { accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
+import { accountsDueForInspection, accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
 import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
@@ -1074,21 +1074,43 @@ export async function autopilotTick(): Promise<Response> {
     console.log("autopilot tick: Sabbath rest, nothing runs until Saturday sundown");
     return json({ results: ["Sabbath rest"] });
   }
+  // One run at a time: an overlapping run (a slow one still going) would double work and send alerts twice.
+  const [lock] = await sql`
+    INSERT INTO insights_settings (key, value) VALUES ('tick_lock', ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '50 minutes'
+    RETURNING key`.catch((e) => (console.error(`tick lock not taken: ${message(e)}`), [{ key: "tick_lock" }]));
+  if (!lock) {
+    console.log("autopilot tick: the previous run is still going, this one is skipped");
+    return json({ results: ["previous run still going"] });
+  }
   const beat = await heartbeatStart(false);
+  // A time budget: no new step starts once it is used, so a slow hour ends cleanly instead of being cut off.
+  const started = Date.now();
+  const budget = Number(process.env.TICK_BUDGET_MS ?? 8 * 60_000);
+  const late = () => Date.now() - started > budget;
   try {
     // Rank checks and health first: a drop found this morning can be defended in today's run.
     const upkeep = [
       ...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3)), ...(await accountsDueForKeywords(2))]),
     ].slice(0, 4);
     for (const accountId of upkeep) {
+      if (late()) break;
+      await sql`UPDATE insights_account_autopilot SET upkeep_tried_at = now() WHERE account_id = ${accountId}`;
       results.push(`account ${accountId} checks: ${await forSite(accountId, () => maintain(accountId)).catch((e) => message(e))}`);
     }
     for (const accountId of await accountsDueForRun(3)) {
+      if (late()) break;
       const r = await forSite(accountId, async () => runAutopilot(accountId, await getConnection(accountId), "schedule")).catch((e) => ({ message: message(e) }));
+      // Every attempt counts as this site's turn, so a site that can't run yet doesn't hold up the others; the reason is kept for the Inspector.
+      await sql`UPDATE insights_account_autopilot SET run_tried_at = now(), run_note = ${String(r.message ?? "").slice(0, 300)} WHERE account_id = ${accountId}`;
       results.push(`account ${accountId}: ${r.message}`);
     }
     // The Inspector checks on every agent's work for the accounts touched this hour, and repairs what it can.
-    for (const accountId of new Set(upkeep)) {
+    const toInspect = [...new Set([...upkeep, ...(await accountsDueForInspection(3))])];
+    for (const accountId of toInspect) {
+      if (late()) break;
+      await sql`UPDATE insights_account_autopilot SET inspected_at = now() WHERE account_id = ${accountId}`;
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? undefined);
@@ -1105,7 +1127,7 @@ export async function autopilotTick(): Promise<Response> {
       if (mailed) results.push(`account ${accountId} emailed ${mailed} urgent ${mailed === 1 ? "alert" : "alerts"}`);
     }
     // The pruning check: once a month per site, one site per hour.
-    for (const accountId of await accountsDueForPrune(1)) {
+    for (const accountId of late() ? [] : await accountsDueForPrune(1)) {
       const conn = await getConnection(accountId).catch(() => null);
       const site = conn ? await siteFor(accountId).catch(() => null) : null;
       const profile = await readProfile(accountId).catch(() => null);
@@ -1132,7 +1154,7 @@ export async function autopilotTick(): Promise<Response> {
       if (done) results.push(`account ${accountId} pruning: ${done}`);
     }
     // The Broken Link Agent: once a week per site, one site per hour.
-    for (const accountId of await accountsDueForBrokenLinks(1)) {
+    for (const accountId of late() ? [] : await accountsDueForBrokenLinks(1)) {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
@@ -1142,7 +1164,7 @@ export async function autopilotTick(): Promise<Response> {
       else await markBrokenLinksChecked(accountId, "the last check failed");
     }
     // The Authority Coach: once a week per site, one site per hour.
-    for (const accountId of await accountsDueForAuthorityCoach(1)) {
+    for (const accountId of late() ? [] : await accountsDueForAuthorityCoach(1)) {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
@@ -1151,12 +1173,12 @@ export async function autopilotTick(): Promise<Response> {
       else await markAuthorityTried(accountId, "no plan this week");
     }
     // The weekly report email, one site per hour.
-    for (const accountId of await accountsDueForWeeklyReport(1)) {
+    for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
       const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
       if (sent) results.push(`account ${accountId} weekly report emailed`);
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
-    for (const accountId of await accountsDueForStrategy(1)) {
+    for (const accountId of late() ? [] : await accountsDueForStrategy(1)) {
       const conn = await getConnection(accountId).catch(() => null);
       const profile = await readProfile(accountId).catch(() => null);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
@@ -1165,12 +1187,15 @@ export async function autopilotTick(): Promise<Response> {
       if (!plan) await markStrategyTried(accountId, failure ?? "No AI key, so no plan was made.");
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
     }
+    if (late()) results.push("time budget used, the rest waits for the next hour");
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
     await heartbeatEnd(beat, null);
+    await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
     return json({ results });
   } catch (err) {
     console.error(`autopilot tick failed: ${message(err)}`);
     await heartbeatEnd(beat, message(err));
+    await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
     return json({ error: message(err) }, 500);
   }
 }

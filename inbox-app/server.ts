@@ -20,6 +20,7 @@ import {
   sign,
   textOf,
   htmlOf,
+  decodeEntities,
   unseal,
   verify,
 } from "./core";
@@ -170,7 +171,10 @@ async function gmail<T>(account: Row, path: string, init?: { method?: string; bo
     body: init?.body ? JSON.stringify(init.body) : undefined,
   });
   const body = (await res.json().catch(() => ({}))) as T & { error?: { message?: string } };
-  if (res.status === 401) throw Object.assign(new Error("This inbox needs to be connected again."), { reconnect: true });
+  if (res.status === 401) {
+    accessCache.delete(account.id!);
+    throw Object.assign(new Error("This inbox needs to be connected again."), { reconnect: true });
+  }
   if (!res.ok) throw new Error(body.error?.message ?? `Gmail said ${res.status}`);
   return body;
 }
@@ -276,6 +280,8 @@ async function finishSignIn(req: Request): Promise<Response> {
   await sql`
     INSERT INTO inbox_accounts (member, address, refresh_sealed) VALUES (${me.email}, ${email}, ${seal(t.refresh_token, secret())})
     ON CONFLICT (member, address) DO UPDATE SET refresh_sealed = EXCLUDED.refresh_sealed`;
+  // A reconnect must take effect now, not when an old cached access token runs out.
+  accessCache.clear();
   return back(`Connected ${email}.`);
 }
 
@@ -288,23 +294,30 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
   const results = await pool(chosen, 3, async (a) => {
     try {
       // One row per conversation: the latest real message (no drafts) speaks for the thread.
-      const list = await gmail<{ threads?: { id: string }[] }>(a, `threads?maxResults=20&q=${encodeURIComponent(q)}`);
-      const threads = await pool(list.threads ?? [], 6, (t) =>
-        gmail<{ id: string; messages?: Msg[] }>(a, `threads/${t.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`)
-      );
+      const pageToken = only && url.searchParams.get("page") ? `&pageToken=${encodeURIComponent(url.searchParams.get("page")!)}` : "";
+      const list = await gmail<{ threads?: { id: string }[]; nextPageToken?: string }>(a, `threads?maxResults=25&q=${encodeURIComponent(q)}${pageToken}`);
+      // One thread that fails (deleted meanwhile) must not hide the whole inbox.
+      const threads = (
+        await pool(list.threads ?? [], 6, (t) =>
+          gmail<{ id: string; messages?: Msg[] }>(a, `threads/${t.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`).catch(() => null)
+        )
+      ).filter((t): t is { id: string; messages?: Msg[] } => t !== null);
+      const self = normEmail(a.address);
       return {
-        inbox: { id: a.id, address: a.address, error: null as string | null },
+        inbox: { id: a.id, address: a.address, error: null as string | null, next: list.nextPageToken ?? null },
         messages: threads.flatMap((t) => {
           const real = (t.messages ?? []).filter(isReal);
           const last = real[real.length - 1];
           if (!last) return [];
+          // The row names the other person: the latest message not sent by this inbox, when there is one.
+          const theirs = [...real].reverse().find((m) => addressIn(header(m.payload?.headers, "From")) !== self) ?? last;
           return [{
             inboxId: a.id,
             id: last.id,
             threadId: t.id,
-            from: header(last.payload?.headers, "From") ?? "",
+            from: header(theirs.payload?.headers, "From") ?? "",
             subject: header(real[0].payload?.headers, "Subject") || "(no subject)",
-            snippet: last.snippet ?? "",
+            snippet: decodeEntities(last.snippet ?? ""),
             date: Number(last.internalDate),
             unread: real.some((m) => (m.labelIds ?? []).includes("UNREAD")),
             count: real.length,
@@ -326,6 +339,17 @@ async function readThread(me: { email: string }, url: URL): Promise<Response> {
   const t = await gmail<{ messages?: Msg[] }>(a, `threads/${id}?format=full`);
   return json({
     inbox: { id: a.id, address: a.address },
+    threadId: id,
+    // Who a reply goes to, worked out the same way the send does (Reply-To first, never this inbox itself).
+    answer: (() => {
+      const real = (t.messages ?? []).filter(isReal);
+      const self = normEmail(a.address);
+      const m = [...real].reverse().find((x) => addressIn(header(x.payload?.headers, "From")) !== self) ?? real[real.length - 1];
+      if (!m) return null;
+      const h = m.payload?.headers;
+      const who = replyRecipients(a.address!, { from: header(h, "From"), replyTo: header(h, "Reply-To"), to: header(h, "To"), cc: header(h, "Cc") }, false);
+      return { id: m.id, to: who.to };
+    })(),
     messages: (t.messages ?? []).filter(isReal).map((m) => ({
       id: m.id,
       from: header(m.payload?.headers, "From") ?? "",

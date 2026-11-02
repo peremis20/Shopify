@@ -936,7 +936,19 @@ export async function accountsDueForRun(limit: number): Promise<string[]> {
     LEFT JOIN insights_account_profile p ON p.account_id = a.account_id
     WHERE a.enabled AND (a.shop_token_enc IS NOT NULL OR p.site_domain IS NOT NULL)
       AND (a.last_run_at IS NULL OR a.last_run_at < now() - interval '20 hours')
-    ORDER BY a.last_run_at NULLS FIRST LIMIT ${limit}`;
+      -- A site that has never run is retried every 2 hours, so fixing its setup gets it going soon.
+      AND (a.run_tried_at IS NULL OR a.run_tried_at < now() - CASE WHEN a.last_run_at IS NULL THEN interval '2 hours' ELSE interval '20 hours' END)
+    ORDER BY a.run_tried_at NULLS FIRST, a.last_run_at NULLS FIRST LIMIT ${limit}`;
+  return rows.map((r) => r.account_id!);
+}
+
+/** Enabled sites whose last inspection is oldest, so every site is inspected regularly, not only those worked this hour. */
+export async function accountsDueForInspection(limit: number): Promise<string[]> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT account_id FROM insights_account_autopilot
+    WHERE enabled AND (inspected_at IS NULL OR inspected_at < now() - interval '6 hours')
+    ORDER BY inspected_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => r.account_id!);
 }
 

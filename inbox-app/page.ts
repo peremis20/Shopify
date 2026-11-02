@@ -83,9 +83,9 @@ const appScript = `
 "use strict";
 var $=function(id){return document.getElementById(id)};
 function el(t,a,k){var n=document.createElement(t);if(a)for(var x in a){if(x==="text")n.textContent=a[x];else if(x==="class")n.className=a[x];else if(x.slice(0,2)==="on")n.addEventListener(x.slice(2),a[x]);else n.setAttribute(x,a[x]);}(k||[]).forEach(function(c){if(c)n.append(c)});return n}
-var S={me:null,inboxes:[],messages:[],filter:null,unread:false,open:null,thread:null,loading:false};
+var S={me:null,inboxes:[],messages:[],filter:null,unread:false,open:null,thread:null,threadError:null,loading:false,next:null,seq:0,openSeq:0};
 async function api(p,b){var r=await fetch(p,b?{method:"POST",headers:{"Content-Type":"application/json","X-Team-Inbox":"1"},body:JSON.stringify(b)}:{});var d=await r.json().catch(function(){return{}});if(!r.ok)throw Object.assign(new Error(d.error||"Something went wrong."),{status:r.status});return d}
-var when=function(ms){var d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):d.toLocaleDateString([], {month:"short",day:"numeric"})};
+var when=function(ms){var d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):d.toLocaleDateString([], d.getFullYear()===n.getFullYear()?{month:"short",day:"numeric"}:{month:"short",day:"numeric",year:"numeric"})};
 var nameOf=function(h){var m=String(h||"").match(/^\\s*"?([^"<]+?)"?\\s*</);return m?m[1]:String(h||"")};
 function notice(text,bad){var n=$("notice");if(!n)return;n.textContent=text||"";n.hidden=!text;n.className="notice"+(bad?" bad":"")}
 
@@ -105,16 +105,20 @@ function layout(){
   $("app").replaceChildren(
     el("div",{class:"top"},[el("h1",{text:"Team Inbox"}),el("div",{class:"row"},[el("span",{class:"meta",text:S.me.email}),
       S.me.owner?el("button",{type:"button",text:"Team",onclick:showTeam}):null,
-      el("button",{type:"button",text:"Sign out",onclick:async function(){await api("/api/auth/logout",{});location.href="/"}})])]),
+      el("button",{type:"button",text:"Sign out",onclick:async function(){try{await api("/api/auth/logout",{});location.href="/"}catch(e){notice(e.message,true)}}})])]),
     el("p",{id:"notice",class:"notice",hidden:""}),
     el("div",{class:"wrap"},[el("section",{class:"col",id:"left","aria-label":"Inboxes"}),el("section",{class:"col",id:"mid","aria-label":"Messages"}),el("section",{class:"col",id:"right","aria-label":"Open email"})]));
   renderLeft();renderMid();renderRight();
 }
 
-async function load(){
-  S.loading=true;renderMid();
-  try{var d=await api("/api/mail?"+new URLSearchParams(Object.assign({},S.unread?{unread:"1"}:{},S.filter?{inbox:S.filter}:{})));S.inboxes=d.inboxes;S.messages=d.messages}
-  catch(e){if(e.status===401){location.href="/";return}notice(e.message,true)}
+// Each load carries a number; an older answer that arrives late is dropped, so the list always matches the buttons.
+async function load(more){
+  var mine=++S.seq;if(!more){S.loading=true;S.next=null;renderLeft();renderMid()}
+  try{var d=await api("/api/mail?"+new URLSearchParams(Object.assign({},S.unread?{unread:"1"}:{},S.filter?{inbox:S.filter}:{},more&&S.next?{page:S.next}:{})));
+    if(mine!==S.seq)return;
+    S.inboxes=d.inboxes;S.messages=more?S.messages.concat(d.messages):d.messages;
+    var cur=S.filter&&d.inboxes.find(function(i){return i.id===S.filter});S.next=cur?cur.next:null}
+  catch(e){if(mine!==S.seq)return;if(e.status===401){location.href="/";return}notice(e.message,true)}
   S.loading=false;renderLeft();renderMid();
 }
 
@@ -122,7 +126,8 @@ function renderLeft(){
   var L=$("left");if(!L)return;
   var items=[el("li",null,[el("button",{type:"button","aria-pressed":String(!S.filter),onclick:function(){S.filter=null;load()}},[el("span",{class:"addr",text:"All inboxes"})])])];
   S.inboxes.forEach(function(i){items.push(el("li",null,[el("button",{type:"button","aria-pressed":String(S.filter===i.id),onclick:function(){S.filter=i.id;load()}},[
-    el("span",{class:"addr",text:i.address}),i.error?el("span",{class:"err",text:i.error}):null])]))});
+    el("span",{class:"addr",text:i.address}),i.error?el("span",{class:"err",text:i.error}):null]),
+    i.reconnect?el("a",{class:"btn",href:"/api/auth/connect?hint="+encodeURIComponent(i.address),text:"Connect "+i.address+" again",style:"margin:4px 0 0"}):null]))});
   var hint=el("input",{id:"hint",type:"email",placeholder:"info@yourdomain.com","aria-label":"Address to connect"});
   L.replaceChildren(el("h2",{text:"Inboxes"}),
     S.inboxes.length?null:el("p",{class:"empty",text:"No inbox connected yet. Add one below; you'll sign in to it with Google."}),
@@ -143,22 +148,29 @@ function renderMid(){
     return el("li",null,[el("button",{type:"button",class:"msg"+(m.unread?" unread":""),"aria-current":String(S.open&&S.open.id===m.id),onclick:function(){openMsg(m)}},[
       el("span",{class:"row spread"},[el("span",{class:"from",text:nameOf(m.from)}),el("span",{class:"meta",text:when(m.date)})]),
       el("span",{class:"subj",text:m.subject+(m.count>1?"  ("+m.count+")":"")}),el("span",{class:"snip",text:m.snippet}),
-      S.filter?null:el("span",null,[el("span",{class:"tag",text:addr[m.inboxId]||""})])])])})));
+      S.filter?null:el("span",null,[el("span",{class:"tag",text:addr[m.inboxId]||""})])])])})),
+    S.next?el("p",{style:"margin-top:10px"},[el("button",{type:"button",text:"Load more",onclick:function(e){e.currentTarget.disabled=true;load(true)}})]):(S.filter?null:el("p",{class:"meta",style:"margin-top:10px",text:"Pick one inbox to see older mail."})));
 }
 
 async function openMsg(m){
-  S.open=m;S.thread=null;renderMid();renderRight();
-  try{S.thread=await api("/api/thread?"+new URLSearchParams({inbox:m.inboxId,thread:m.threadId}));
-    if(m.unread){api("/api/modify",{inbox:m.inboxId,thread:m.threadId,action:"read"}).then(function(){m.unread=false;renderMid()}).catch(function(){})}}
-  catch(e){notice(e.message,true)}
+  var mine=++S.openSeq;S.open=m;S.thread=null;S.threadError=null;renderMid();renderRight();
+  // On a phone the email opens below the list: bring it into view.
+  if(window.matchMedia("(max-width: 900px)").matches){var R=$("right");if(R)R.scrollIntoView({behavior:"smooth",block:"start"})}
+  try{var t=await api("/api/thread?"+new URLSearchParams({inbox:m.inboxId,thread:m.threadId}));
+    if(mine!==S.openSeq)return;S.thread=t;
+    if(m.unread){api("/api/modify",{inbox:m.inboxId,thread:m.threadId,action:"read"}).then(function(){m.unread=false;renderMid()}).catch(function(e){notice("Couldn't mark it read in Gmail: "+e.message,true)})}}
+  catch(e){if(mine!==S.openSeq)return;S.threadError=e.message}
   renderRight();
 }
 
 function renderRight(){
   var R=$("right");if(!R)return;
   if(!S.open){R.replaceChildren(el("p",{class:"empty",text:"Pick an email to read and answer it."}));return}
+  if(S.threadError){R.replaceChildren(el("p",{class:"err",text:S.threadError}),el("button",{type:"button",text:"Try again",onclick:function(){openMsg(S.open)}}));return}
   if(!S.thread){R.replaceChildren(el("p",{class:"meta",text:"Opening…"}));return}
   var t=S.thread,last=t.messages[t.messages.length-1];
+  // Answer the other person: the latest message not sent by this inbox (a thread can end with your own forward).
+  var answer=t.answer||{id:last.id,to:[]};
   var box=el("textarea",{id:"reply","aria-label":"Your reply"});
   var all=el("input",{type:"checkbox",id:"all",style:"width:auto"});
   var send=el("button",{class:"primary",type:"button",text:"Send as "+t.inbox.address});
@@ -166,19 +178,19 @@ function renderRight(){
   send.onclick=async function(){
     if(!box.value.trim()){msg.textContent="Write your reply first.";return}
     send.disabled=true;msg.textContent="Sending…";
-    try{var r=await api("/api/reply",{inbox:t.inbox.id,thread:S.open.threadId,message:last.id,text:box.value,all:all.checked});
+    try{var r=await api("/api/reply",{inbox:t.inbox.id,thread:t.threadId,message:answer.id,text:box.value,all:all.checked});
       box.value="";msg.textContent="Sent from "+r.from+" to "+r.to.concat(r.cc).join(", ")+".";openMsg(S.open)}
     catch(e){msg.textContent=e.message;send.disabled=false}
   };
   R.replaceChildren(
     el("div",{class:"row spread"},[el("h2",{text:last.subject||"(no subject)"}),el("div",{class:"row"},[
-      el("button",{type:"button",text:"Archive",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:S.open.threadId,action:"archive"});S.messages=S.messages.filter(function(x){return x.threadId!==S.open.threadId});S.open=null;renderMid();renderRight()}catch(e){notice(e.message,true)}}}),
-      el("button",{type:"button",text:"Mark unread",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:S.open.threadId,action:"unread"});S.open.unread=true;renderMid()}catch(e){notice(e.message,true)}}})])]),
+      el("button",{type:"button",text:"Archive",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:t.threadId,action:"archive"});S.messages=S.messages.filter(function(x){return x.threadId!==t.threadId});S.open=null;renderMid();renderRight()}catch(e){notice(e.message,true)}}}),
+      el("button",{type:"button",text:"Mark unread",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:t.threadId,action:"unread"});S.open.unread=true;renderMid()}catch(e){notice(e.message,true)}}})])]),
     el("p",{class:"meta",text:"In "+t.inbox.address}),
     el("div",null,t.messages.map(function(m){return el("div",{class:"mail"},[
       el("div",{class:"row spread"},[el("span",{class:"from",text:m.from}),el("span",{class:"meta",text:new Date(m.date).toLocaleString()})]),
       el("div",{class:"meta",text:"To "+m.to+(m.cc?"  Cc "+m.cc:"")}),showBody(m)])})),
-    el("div",{class:"mail"},[el("h2",{text:"Reply"}),box,el("div",{class:"row",style:"margin-top:8px"},[send,el("label",{class:"row",style:"display:flex;color:var(--ink)"},[all,el("span",{text:"Reply to everyone"})]),msg])]));
+    el("div",{class:"mail"},[el("h2",{text:"Reply"}),el("p",{class:"meta",text:answer.to.length?"To "+answer.to.join(", ")+" (reply all adds the others on that message)":"There's no one to reply to on this conversation."}),box,el("div",{class:"row",style:"margin-top:8px"},[send,el("label",{class:"row",style:"display:flex;color:var(--ink)"},[all,el("span",{text:"Reply to everyone"})]),msg])]));
 }
 
 // An email's own design is shown in a sandboxed frame: nothing in it can run, submit forms or reach this page.
@@ -221,7 +233,7 @@ async function showTeam(){
   var render=function(d){var add=el("input",{type:"email",id:"newm",placeholder:"name@domain.com","aria-label":"Add a team member"});
     R.replaceChildren(el("h2",{text:"Team"}),el("p",{class:"meta",text:"Only people listed here can sign in. Each person sees only the inboxes they connect themselves."}),
       el("ul",{class:"list"},d.members.map(function(m){return el("li",{class:"row spread mail"},[el("span",{class:"addr",text:m.email+(m.owner?" (owner)":"")}),
-        m.owner?null:el("button",{type:"button",text:"Remove",onclick:async function(){render(await api("/api/team",{remove:m.email}))}})])})),
+        m.owner?null:el("button",{type:"button",text:"Remove",onclick:async function(){try{render(await api("/api/team",{remove:m.email}))}catch(e){notice(e.message,true)}}})])})),
       el("div",{class:"row",style:"margin-top:10px"},[add,el("button",{class:"primary",type:"button",text:"Add person",onclick:async function(){try{render(await api("/api/team",{add:add.value}))}catch(e){notice(e.message,true)}}})]))};
   try{render(await api("/api/team"))}catch(e){notice(e.message,true)}
 }

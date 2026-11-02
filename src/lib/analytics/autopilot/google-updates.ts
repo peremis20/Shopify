@@ -79,6 +79,9 @@ export async function rankingTurbulence(): Promise<string | null> {
 
 /** Only while an update is actively rolling out (not settling): the one time nothing is taken down. */
 export async function updateRollingOut(): Promise<string | null> {
-  const a = activeUpdate(await googleUpdates().catch(() => [] as GoogleUpdate[]));
+  // If Google's list can't be read, nothing is taken down: an unknown is not the same as calm.
+  const updates = await googleUpdates().catch((e) => (console.error(`google updates not read: ${(e as Error).message}`), null));
+  if (!updates) return "Google's update list couldn't be read, so pruning waits to be safe.";
+  const a = activeUpdate(updates);
   return a && !a.settling ? `Google is rolling out its ${a.update.name}.` : null;
 }

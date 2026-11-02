@@ -185,6 +185,11 @@ export function ensureSchema(): Promise<void> {
       last_run_at timestamptz
     )`;
     await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS articles_per_week integer NOT NULL DEFAULT 3`;
+    // Fair turns: when each site last got upkeep, a run attempt and an inspection, whether or not anything was done.
+    await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS upkeep_tried_at timestamptz`;
+    await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS run_tried_at timestamptz`;
+    await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS run_note text`;
+    await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS inspected_at timestamptz`;
     await sql`ALTER TABLE insights_keyword_lists ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_runs ADD COLUMN IF NOT EXISTS account_id bigint`;
     await sql`ALTER TABLE insights_autopilot_changes ADD COLUMN IF NOT EXISTS account_id bigint`;

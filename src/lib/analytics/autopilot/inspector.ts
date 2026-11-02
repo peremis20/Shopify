@@ -101,8 +101,29 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
 
   // 3. The autopilot itself: switched on but not running, or running without doing anything.
   if (auto.enabled && !isSabbath()) {
-    const [acct] = await sql`SELECT last_run_at FROM insights_account_autopilot WHERE account_id = ${accountId}`;
+    const [acct] = await sql`SELECT last_run_at, run_tried_at, run_note FROM insights_account_autopilot WHERE account_id = ${accountId}`;
     const lastRun = acct?.last_run_at ? Date.parse(String(acct.last_run_at)) : null;
+    // Switched on but never able to start (a missing connection stops it before it counts as a run).
+    if (!lastRun && acct?.run_tried_at && acct.run_note && !/isn't available yet/i.test(acct.run_note)) {
+      problems.push({
+        id: "autopilot:not-started",
+        text: `The autopilot is on but hasn't been able to start: ${acct.run_note}`,
+        fix: "Finish that step in Settings; the autopilot tries again within 2 hours.",
+        who: "owner",
+      });
+    }
+    // A run left "running" for over an hour was cut off (time limit or crash) and never reported back.
+    const [stuck] = await sql`SELECT count(*) AS n FROM insights_autopilot_runs
+      WHERE account_id = ${accountId} AND status = 'running' AND trigger <> 'preview' AND started_at < now() - interval '1 hour' AND started_at > now() - interval '3 days'
+        AND NOT EXISTS (SELECT 1 FROM insights_autopilot_runs f WHERE f.account_id = ${accountId} AND f.status <> 'running' AND f.trigger <> 'preview' AND f.started_at > insights_autopilot_runs.started_at)`;
+    if (Number(stuck?.n ?? 0) > 0) {
+      problems.push({
+        id: "autopilot:cut-off",
+        text: `${stuck.n} recent autopilot ${Number(stuck.n) === 1 ? "run was" : "runs were"} cut off before finishing.`,
+        fix: "It is retried on the next daily run. If it keeps happening, the run is taking too long and needs a look.",
+        who: "watching",
+      });
+    }
     // A run waits out the Sabbath, so allow for that day as well as the usual one.
     if (lastRun && Date.now() - lastRun > 50 * HOUR) {
       problems.push({

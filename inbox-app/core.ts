@@ -176,20 +176,26 @@ function decodePart(p: Part): string {
 }
 
 /** HTML turned into readable plain text. The page shows only text, so no sender's HTML ever runs. */
+/** Turns HTML character codes (&amp;, &#39;, &#8217;, &#x2019;) into the characters they stand for. */
+export function decodeEntities(s: string): string {
+  const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, code: string) => {
+    if (code[0] === "#") {
+      const n = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : parseInt(code.slice(1), 10);
+      return Number.isFinite(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+    }
+    return named[code.toLowerCase()] ?? m;
+  });
+}
+
 export function htmlToText(html: string): string {
-  return html
+  const stripped = html
     .replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
     .replace(/<[^>]+>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/\n{3,}/g, "\n\n");
+  return decodeEntities(stripped).replace(/\u00a0/g, " ").trim();
 }
 
 /** The message text: its plain text part, else its HTML part as text. */
