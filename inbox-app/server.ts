@@ -383,6 +383,8 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
             id: last.id,
             threadId: t.id,
             from: header(theirs.payload?.headers, "From") ?? "",
+            // The outside sender's bare address, for Unsubscribe and Block; null when only this inbox wrote.
+            sender: ((x) => (x && x !== self ? x : null))(addressIn(header(theirs.payload?.headers, "From"))),
             to: header(last.payload?.headers, "To") ?? "",
             subject: header(real[0].payload?.headers, "Subject") || "(no subject)",
             snippet: decodeEntities(last.snippet ?? ""),
@@ -468,6 +470,17 @@ async function readThread(me: { email: string }, url: URL): Promise<Response> {
       const h = m.payload?.headers;
       const who = replyRecipients(a.address!, { from: header(h, "From"), replyTo: header(h, "Reply-To"), to: header(h, "To"), cc: header(h, "Cc") }, false);
       return { id: m.id, to: who.to };
+    })(),
+    // The latest outside sender, for Unsubscribe and Block sender, and whether their mail says how to unsubscribe.
+    sender: (() => {
+      const self = normEmail(a.address);
+      const m = (t.messages ?? []).filter(isReal).reverse().find((x) => {
+        const f = addressIn(header(x.payload?.headers, "From"));
+        return f && f !== self;
+      });
+      if (!m) return null;
+      const h = m.payload?.headers;
+      return { address: addressIn(header(h, "From")), canUnsubscribe: Boolean(unsubscribePlan(header(h, "List-Unsubscribe"), header(h, "List-Unsubscribe-Post"))) };
     })(),
     messages,
   });

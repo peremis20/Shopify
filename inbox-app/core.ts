@@ -627,3 +627,67 @@ export function ruleQueries(senders: string[], extra = ""): string[] {
   }
   return out;
 }
+
+// ---------- Unsubscribe and Block for chosen mail (also run in the page, so each one stands alone) ----------
+
+/** The distinct senders behind the chosen rows: one per inbox and address, in the order shown. Rows with no outside sender are left out. */
+export function bulkTargets(rows: { inboxId?: string; sender?: string | null }[]): { inbox: string; sender: string }[] {
+  const seen: Record<string, boolean> = {};
+  const out: { inbox: string; sender: string }[] = [];
+  for (const r of rows || []) {
+    const inbox = String((r && r.inboxId) || "");
+    const sender = String((r && r.sender) || "").trim().toLowerCase();
+    if (!inbox || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)) continue;
+    const k = inbox + "\n" + sender;
+    if (seen[k]) continue;
+    seen[k] = true;
+    out.push({ inbox, sender });
+  }
+  return out;
+}
+
+/** What Unsubscribe did for each sender, as one plain line plus the pages the person still has to open (https only). */
+export function unsubReport(results: { sender: string; done?: string; url?: string; message?: string; error?: string }[]): {
+  text: string;
+  links: { sender: string; url: string }[];
+  bad: boolean;
+} {
+  const links: { sender: string; url: string }[] = [];
+  const errs: string[] = [];
+  let ok = 0;
+  let none = 0;
+  for (const r of results || []) {
+    if (r.error) errs.push(String(r.error || "").trim().replace(/\.+$/, ""));
+    else if (r.done === "posted" || r.done === "emailed") ok++;
+    else if (r.done === "link" && /^https:\/\//i.test(String(r.url || ""))) links.push({ sender: r.sender, url: String(r.url) });
+    else if (r.done === "link") errs.push(r.sender + " gave a page that isn't safe to open");
+    else none++;
+  }
+  const one = (results || []).length === 1 ? results[0] : null;
+  if (one && !one.error && one.message && (one.done !== "link" || links.length)) return { text: String(one.message), links, bad: false };
+  let text = "Unsubscribed from " + ok + ", " + links.length + (links.length === 1 ? " needs" : " need") + " you to open a page.";
+  if (none) text += " " + none + (none === 1 ? " sender gives" : " senders give") + " no way to unsubscribe.";
+  if (errs.length) text += " " + errs.length + " couldn't be done: " + errs.slice(0, 3).join("; ") + (errs.length > 3 ? "; and " + (errs.length - 3) + " more." : ".");
+  return { text, links, bad: errs.length > 0 };
+}
+
+/** What Block did: how many senders now always go to Trash, how much mail moved, and who was refused and why. */
+export function blockReport(results: { sender: string; swept?: number; error?: string; sweepError?: string | null }[]): { text: string; bad: boolean } {
+  const done = (results || []).filter((r) => !r.error);
+  const refused = (results || []).filter((r) => r.error);
+  const moved = done.reduce((n, r) => n + (Number(r.swept) || 0), 0);
+  const late = done.filter((r) => r.sweepError).length;
+  let text =
+    done.length === 1
+      ? "Blocked " + done[0].sender + "."
+      : "Blocked " + done.length + (done.length === 1 ? " sender." : " senders.");
+  if (done.length) text += " Their mail goes to Trash from now on.";
+  if (moved) text += " Moved " + moved + (moved === 1 ? " email" : " emails") + " to Trash now.";
+  if (late) text += " Older mail for " + late + (late === 1 ? " sender" : " senders") + " will be cleared on the next sweep.";
+  if (refused.length)
+    text +=
+      " Not blocked: " +
+      refused.slice(0, 5).map((r) => r.sender + " (" + String(r.error || "").trim().replace(/\.+$/, "") + ")").join("; ") +
+      (refused.length > 5 ? "; and " + (refused.length - 5) + " more." : ".");
+  return { text, bad: refused.length > 0 };
+}

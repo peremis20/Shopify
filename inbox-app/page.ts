@@ -1,3 +1,5 @@
+import { blockReport, bulkTargets, unsubReport } from "./core";
+
 /** The Team Inbox page and its one time setup page. All text is set with textContent; an email's own HTML is shown only in a sandboxed frame where nothing runs. */
 
 const fonts =
@@ -98,9 +100,13 @@ const appScript = `
 var $=function(id){return document.getElementById(id)};
 function el(t,a,k){var n=document.createElement(t);if(a)for(var x in a){if(x==="text")n.textContent=a[x];else if(x==="class")n.className=a[x];else if(x.slice(0,2)==="on")n.addEventListener(x.slice(2),a[x]);else n.setAttribute(x,a[x]);}(k||[]).forEach(function(c){if(c)n.append(c)});return n}
 var store={get:function(k){try{return localStorage.getItem(k)}catch(e){return null}},set:function(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
-var S={primary:store.get("ti_primary")!=="0",clean:{inbox:"",data:null,loading:false,error:null,rules:null,seq:0},me:null,inboxes:[],messages:[],filter:null,folder:"inbox",search:"",unread:false,open:null,thread:null,threadError:null,loading:false,next:null,seq:0,openSeq:0,sel:{},view:null,draft:null,fwd:null};
+var S={busy:false,headNote:null,primary:store.get("ti_primary")!=="0",clean:{inbox:"",data:null,loading:false,error:null,rules:null,seq:0},me:null,inboxes:[],messages:[],filter:null,folder:"inbox",search:"",unread:false,open:null,thread:null,threadError:null,loading:false,next:null,seq:0,openSeq:0,sel:{},view:null,draft:null,fwd:null};
 var FOLDERS=[["inbox","Inbox"],["starred","Starred"],["sent","Sent"],["trash","Trash"]];
 var keyOf=function(m){return m.inboxId+":"+m.threadId};
+// Shared with the server code and tested there; each one stands alone.
+var bulkTargets=${bulkTargets.toString()};
+var unsubReport=${unsubReport.toString()};
+var blockReport=${blockReport.toString()};
 async function api(p,b){var r=await fetch(p,b?{method:"POST",headers:{"Content-Type":"application/json","X-Team-Inbox":"1"},body:JSON.stringify(b)}:{});var d=await r.json().catch(function(){return{}});if(!r.ok)throw Object.assign(new Error(d.error||"Something went wrong."),{status:r.status});return d}
 var when=function(ms){var d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?d.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):d.toLocaleDateString([], d.getFullYear()===n.getFullYear()?{month:"short",day:"numeric"}:{month:"short",day:"numeric",year:"numeric"})};
 var nameOf=function(h){var m=String(h||"").match(/^\\s*"?([^"<]+?)"?\\s*</);return m?m[1]:String(h||"")};
@@ -193,6 +199,47 @@ async function threadAct(t,action){
   catch(e){notice(e.message,true)}
 }
 
+// ---------- Unsubscribe and Block for chosen mail or the open email ----------
+var SENDER_CAP=50;
+async function each(list,limit,fn){var out=new Array(list.length),i=0;
+  async function work(){while(i<list.length){var j=i++;out[j]=await fn(list[j])}}
+  var ws=[];for(var k=0;k<Math.min(limit,list.length);k++)ws.push(work());await Promise.all(ws);return out}
+// A result line, with the unsubscribe pages to open as buttons (new tab, nothing about this page passed on).
+function report(n,text,links,bad){if(!n)return;n.textContent=text||"";
+  (links||[]).forEach(function(l){n.append(" ",el("a",{class:"btn",href:l.url,target:"_blank",rel:"noopener noreferrer",text:"Open page for "+l.sender}))})}
+function senderNote(text,links,bad,head){
+  if(head&&S.open&&keyOf(S.open)===head){S.headNote={key:head,text:text,links:links||[],bad:bad};renderRight();return}
+  var n=$("notice");if(!n)return;n.hidden=!text;n.className="notice"+(bad?" bad":"");report(n,text,links,bad)}
+function senderButton(kind,targets){
+  var b=el("button",{type:"button",class:kind==="block"?"danger":"",text:kind==="block"?"Block":"Unsubscribe"});b.disabled=S.busy;
+  b.onclick=function(){
+    if(!targets.length){notice(kind==="block"?"None of these have a sender to block.":"None of these have a sender to unsubscribe from.",true);return}
+    if(targets.length>SENDER_CAP){notice("Pick "+SENDER_CAP+" senders or fewer at a time. These have "+targets.length+".",true);return}
+    if(targets.length>1&&b.dataset.armed!=="1"){b.dataset.armed="1";b.textContent=kind==="block"?"Click again to block "+targets.length+" senders":"Click again to unsubscribe from "+targets.length+" senders";return}
+    (kind==="block"?blockSenders:unsubSenders)(targets,b,null)};
+  return b;
+}
+async function unsubSenders(targets,btn,head){
+  if(S.busy)return;S.busy=true;if(btn)btn.disabled=true;
+  senderNote("Unsubscribing from "+targets.length+(targets.length===1?" sender…":" senders…"),[],false,head);
+  var res=await each(targets,3,async function(t){
+    try{var r=await api("/api/unsubscribe",{inbox:t.inbox,sender:t.sender});return{sender:t.sender,done:r.done,url:r.url,message:r.message}}
+    catch(e){return{sender:t.sender,error:e.message}}});
+  S.busy=false;var out=unsubReport(res);
+  if(!head)renderMid();senderNote(out.text,out.links,out.bad,head);
+}
+async function blockSenders(targets,btn,head){
+  if(S.busy)return;S.busy=true;if(btn)btn.disabled=true;
+  senderNote("Blocking "+targets.length+(targets.length===1?" sender…":" senders…"),[],false,head);
+  var res=await each(targets,2,async function(t){
+    try{var r=await api("/api/rules/add",{inbox:t.inbox,sender:t.sender,action:"trash"});return{sender:t.sender,swept:r.swept,sweepError:r.error}}
+    catch(e){return{sender:t.sender,error:e.message}}});
+  S.busy=false;var out=blockReport(res);
+  // The rules and the Clean up counts changed: read them again when shown.
+  S.clean.rules=null;S.clean.data=null;if(S.view==="clean"){loadSenders(false);loadRules()}
+  await load();senderNote(out.text,[],out.bad,head);
+}
+
 function renderMid(){
   var M=$("mid");if(!M)return;
   var fname=(FOLDERS.find(function(f){return f[0]===S.folder})||FOLDERS[0])[1];
@@ -219,6 +266,8 @@ function renderMid(){
       if(S.folder!=="sent")acts.push(el("button",{type:"button",text:"Archive",onclick:function(e){bulk("archive",e.currentTarget)}}));
     }
     acts.push(el("button",{type:"button",text:"Mark read",onclick:function(e){bulk("read",e.currentTarget)}}),el("button",{type:"button",text:"Mark unread",onclick:function(e){bulk("unread",e.currentTarget)}}));
+    if(S.folder!=="sent"&&S.folder!=="trash"){var targets=bulkTargets(S.messages.filter(function(m){return S.sel[keyOf(m)]}));
+      acts.push(senderButton("unsub",targets),senderButton("block",targets))}
   }
   var bar=el("div",{class:"row bulk"},[el("label",{class:"row",style:"display:flex;color:var(--ink);gap:6px"},[all,el("span",{text:n?n+" selected":"Select all"})])].concat(acts));
   put(M,head,search,bar,el("ul",{class:"list"},S.messages.map(function(m){
@@ -237,7 +286,7 @@ function renderMid(){
 }
 
 async function openMsg(m){
-  var mine=++S.openSeq;if(S.view==="clean"){S.view=null;renderLeft()}S.view=null;S.fwd=null;S.open=m;S.thread=null;S.threadError=null;renderMid();renderRight();
+  var mine=++S.openSeq;S.headNote=null;if(S.view==="clean"){S.view=null;renderLeft()}S.view=null;S.fwd=null;S.open=m;S.thread=null;S.threadError=null;renderMid();renderRight();
   // On a phone the email opens below the list: bring it into view.
   toRight();
   try{var t=await api("/api/thread?"+new URLSearchParams({inbox:m.inboxId,thread:m.threadId,folder:S.folder}));
@@ -316,9 +365,16 @@ function renderRight(){
     S.folder==="sent"?null:el("button",{type:"button",text:"Archive",onclick:function(){threadAct(t,"archive")}}),
     el("button",{type:"button",class:"danger",text:"Delete",onclick:function(){threadAct(t,"trash")}}),
     el("button",{type:"button",text:"Mark unread",onclick:async function(){try{await api("/api/modify",{inbox:t.inbox.id,thread:t.threadId,action:"unread"});S.open.unread=true;renderMid()}catch(e){notice(e.message,true)}}})];
+  var who=!trashed&&t.sender&&t.sender.address?t.sender.address:null,here=keyOf(S.open),tg=who?[{inbox:t.inbox.id,sender:who}]:[];
+  if(who){
+    if(t.sender.canUnsubscribe){var ub=el("button",{type:"button",text:"Unsubscribe",title:"Unsubscribe from "+who});ub.disabled=S.busy;ub.onclick=function(){unsubSenders(tg,ub,here)};acts.push(ub)}
+    var bb=el("button",{type:"button",class:"danger",text:"Block sender",title:"Always delete mail from "+who});bb.disabled=S.busy;bb.onclick=function(){blockSenders(tg,bb,here)};acts.push(bb);
+  }
+  var hn=S.headNote&&S.headNote.key===here?S.headNote:null,hline=null;
+  if(hn){hline=el("p",{class:hn.bad?"err":"meta",role:"status",id:"headnote"});report(hline,hn.text,hn.links,hn.bad)}
   put(R,
     el("div",{class:"row spread"},[el("h2",{text:last.subject||"(no subject)"}),el("div",{class:"row"},acts)]),
-    el("p",{class:"meta",text:"In "+t.inbox.address+(trashed?" (in Trash)":"")}),
+    el("p",{class:"meta",text:"In "+t.inbox.address+(trashed?" (in Trash)":"")}),hline,
     el("div",null,t.messages.map(function(m){return el("div",{class:"mail"},[
       el("div",{class:"row spread"},[el("span",{class:"from",text:m.from}),el("span",{class:"meta",text:new Date(m.date).toLocaleString()})]),
       el("div",{class:"row spread"},[el("div",{class:"meta",text:"To "+m.to+(m.cc?"  Cc "+m.cc:"")}),el("button",{type:"button",text:"Forward",onclick:function(){S.fwd=m.id;renderRight();var f=$("fto");if(f){f.focus();if(f.scrollIntoView)f.scrollIntoView({block:"center"})}}})]),

@@ -291,3 +291,64 @@ test("inbox: the unsubscribe call never reaches private or internal hosts", () =
     assert.equal(safeUnsubUrl(u), null, u);
   }
 });
+
+import { blockReport, bulkTargets, unsubReport } from "../inbox-app/core";
+
+test("inbox: chosen mail gives one sender per inbox and address", () => {
+  const t = bulkTargets([
+    { inboxId: "1", sender: "News@Shop.com" },
+    { inboxId: "1", sender: "news@shop.com" },
+    { inboxId: "2", sender: "news@shop.com" },
+    { inboxId: "1", sender: null },
+    { inboxId: "1", sender: "not an address" },
+    { inboxId: "", sender: "a@b.com" },
+    { inboxId: "1", sender: "ann@x.com" },
+  ]);
+  assert.deepEqual(t, [
+    { inbox: "1", sender: "news@shop.com" },
+    { inbox: "2", sender: "news@shop.com" },
+    { inbox: "1", sender: "ann@x.com" },
+  ]);
+  assert.deepEqual(bulkTargets([]), []);
+});
+
+test("inbox: the unsubscribe report counts, lists safe pages and names failures", () => {
+  const r = unsubReport([
+    { sender: "a@x.com", done: "posted", message: "Unsubscribed." },
+    { sender: "b@x.com", done: "emailed", message: "Sent." },
+    { sender: "c@x.com", done: "link", url: "https://c.com/u", message: "Finish on their page." },
+    { sender: "d@x.com", done: "link", url: "javascript:alert(1)" },
+    { sender: "e@x.com", done: "none", message: "No way." },
+    { sender: "f@x.com", error: "Not found." },
+  ]);
+  assert.deepEqual(r.links, [{ sender: "c@x.com", url: "https://c.com/u" }]);
+  assert.equal(r.text, "Unsubscribed from 2, 1 needs you to open a page. 1 sender gives no way to unsubscribe. 2 couldn't be done: d@x.com gave a page that isn't safe to open; Not found.");
+  assert.ok(r.bad);
+  assert.equal(unsubReport([{ sender: "a@x.com", done: "posted", message: "Unsubscribed info@p.com from a@x.com." }]).text, "Unsubscribed info@p.com from a@x.com.");
+  assert.equal(unsubReport([{ sender: "a@x.com", done: "posted" }, { sender: "b@x.com", done: "posted" }]).text, "Unsubscribed from 2, 0 need you to open a page.");
+  for (const x of [r.text]) assert.ok(!/[‐-―-]/.test(x));
+});
+
+test("inbox: the block report counts senders and moved mail and gives each refusal", () => {
+  const r = blockReport([
+    { sender: "a@x.com", swept: 3, error: undefined, sweepError: null },
+    { sender: "b@x.com", swept: 1 },
+    { sender: "me@team.com", error: "A rule can't remove your team's own mail." },
+  ]);
+  assert.equal(r.text, "Blocked 2 senders. Their mail goes to Trash from now on. Moved 4 emails to Trash now. Not blocked: me@team.com (A rule can't remove your team's own mail).");
+  assert.ok(r.bad);
+  const one = blockReport([{ sender: "a@x.com", swept: 0, sweepError: "Gmail is busy" }]);
+  assert.equal(one.text, "Blocked a@x.com. Their mail goes to Trash from now on. Older mail for 1 sender will be cleared on the next sweep.");
+  assert.ok(!one.bad);
+});
+
+test("inbox: the page's copies of the sender helpers stand alone", () => {
+  for (const f of [bulkTargets, unsubReport, blockReport]) {
+    const copy = new Function(`return (${f.toString()})`)();
+    assert.equal(typeof copy, "function");
+  }
+  const copy = new Function(`return (${bulkTargets.toString()})`)();
+  assert.deepEqual(copy([{ inboxId: "1", sender: "a@x.com" }, { inboxId: "1", sender: "A@x.com" }]), [{ inbox: "1", sender: "a@x.com" }]);
+  const u = new Function(`return (${unsubReport.toString()})`)();
+  assert.equal(u([{ sender: "a@x.com", done: "none" }, { sender: "b@x.com", done: "posted" }]).text, "Unsubscribed from 1, 0 need you to open a page. 1 sender gives no way to unsubscribe.");
+});
