@@ -67,11 +67,11 @@ import {
   type KeywordQuery,
 } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
-import { adminAppUrl, embeddedAccount, googleLinkTicket, readLinkTicket } from "./embedded";
+import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLinkTicket, useLinkTicket } from "./embedded";
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { bareDomain, readProfile, saveProfile, siteBrief } from "./profile";
+import { assertPublicUrl, bareDomain, readProfile, saveProfile, siteBrief } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
@@ -87,6 +87,19 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", ...headers } });
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/**
+ * What the browser is told about an unexpected failure. Plain errors the app
+ * throws on purpose carry a message written for the owner and are shown;
+ * anything else (a database or network error, a bug) is logged in full and
+ * the browser gets a plain sentence, so no internal detail leaks.
+ */
+export function publicError(err: unknown, where = "request"): string {
+  const plain = err instanceof Error && err.name === "Error" && !("code" in err) && err.constructor === Error;
+  if (plain) return err.message;
+  console.error(`${where} failed: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+  return "Something went wrong on our side. Please try again in a minute.";
+}
 
 /** The public address of the app. Set APP_URL when it sits behind a proxy. */
 export function appOrigin(req: Request): string {
@@ -124,14 +137,15 @@ async function withAccount(req: Request, run: (account: Account) => Promise<Resp
   try {
     account = await accountOf(req);
   } catch (err) {
-    return json({ error: message(err) }, 500);
+    console.error(`sign in check failed: ${message(err)}`);
+    return json({ error: "Something went wrong on our side. Please try again in a minute." }, 500);
   }
   if (!account) return signedOut();
   try {
     // What this request spends (AI, Google results) is counted for this site.
     return await forSite(account.id, () => run(account));
   } catch (err) {
-    return json({ error: message(err) }, 500);
+    return json({ error: publicError(err, new URL(req.url).pathname) }, 500);
   }
 }
 
@@ -216,8 +230,16 @@ export async function authCallback(req: Request): Promise<Response> {
       return back({ connected: "ads" });
     }
 
-    const link = state.startsWith("link~") ? readLinkTicket(state.slice(5, state.lastIndexOf("."))) : null;
+    const link = state.startsWith("link~") ? readLinkTicket(state.slice(5, state.lastIndexOf(".")), LINK_FINISH_MS) : null;
     if (state.startsWith("link~") && !link) throw new Error("The link from Shopify expired. Please try again from the app.");
+    if (link) {
+      // A ticket only attaches Google to the account it was made for, in a browser that isn't signed in to another account,
+      // and once: a link someone else sends can't capture this browser's Google connection for their account.
+      const here = await currentAccount(req).catch(() => null);
+      if (here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
+      if (link.session && !here) throw new Error("Please sign in again, then connect Google from the app.");
+      if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
+    }
     const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
     const previous = await getConnection(account.id).catch(() => null);
@@ -248,10 +270,20 @@ export async function disconnect(req: Request): Promise<Response> {
   });
 }
 
+async function anyAccounts(): Promise<boolean> {
+  await ensureSchema();
+  const [row] = await sql`SELECT 1 AS one FROM insights_accounts LIMIT 1`;
+  return Boolean(row);
+}
+
 /** Saves the platform's Google OAuth client: by the admin, or once at first setup. */
 export async function saveGoogleClient(req: Request): Promise<Response> {
   const account = await currentAccount(req).catch(() => null);
-  if (!account?.admin && (await getOAuthClient())) return json({ error: "Only the platform owner can do this." }, 403);
+  if (!account?.admin) {
+    // Without the owner signed in, only the very first setup: no client saved yet and no accounts at all.
+    const setUp = Boolean(await getOAuthClient()) || (await anyAccounts());
+    if (setUp) return json({ error: "Only the platform owner can do this." }, 403);
+  }
   const body = await req.json().catch(() => ({}));
   const id = typeof body.clientId === "string"
     ? body.clientId.match(/[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/)?.[0] ?? ""
@@ -273,10 +305,31 @@ export async function saveGoogleClient(req: Request): Promise<Response> {
 
 const WP_PENDING_COOKIE = "insights_wp_pending";
 
+const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** A signed "yes, connect this site" for one signed in account, one site and key, for 15 minutes. */
+const wpConfirmSig = (accountId: string, site: string, key: string, exp: number) =>
+  crypto.createHmac("sha256", process.env.SESSION_SECRET ?? "").update(`wp-connect|${accountId}|${site}|${key}|${exp}`).digest("base64url");
+
+export function wpConfirmToken(accountId: string, site: string, key: string, now = Date.now()): string {
+  const exp = now + 15 * 60_000;
+  return `${exp}.${wpConfirmSig(accountId, site, key, exp)}`;
+}
+
+export function wpConfirmValid(token: string | null, accountId: string, site: string, key: string, now = Date.now()): boolean {
+  const [expText, sig] = (token ?? "").split(".");
+  const exp = Number(expText);
+  if (!sig || !Number.isFinite(exp) || exp < now) return false;
+  const expected = wpConfirmSig(accountId, site, key, exp);
+  return sig.length === expected.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+}
+
 /**
  * "Connect to Insights" in the WordPress plugin lands here with the site, its
- * private key and where to go back to. Signs in first if needed, checks the
- * plugin answers with that key, saves the connection and returns to WordPress.
+ * private key and where to go back to. Signs in first if needed, then asks the
+ * owner to confirm (a signed token tied to their session, so a link from
+ * someone else can't connect a site on its own), checks the plugin answers
+ * with that key, saves the connection and returns to WordPress.
  */
 export async function wordpressConnect(req: Request): Promise<Response> {
   const params = new URL(req.url).searchParams;
@@ -286,15 +339,15 @@ export async function wordpressConnect(req: Request): Promise<Response> {
   const key = params.get("key") ?? fromCookie?.get("key") ?? "";
   const backTo = params.get("back") ?? fromCookie?.get("back") ?? "";
   const clear = tempCookie(req, WP_PENDING_COOKIE, "", 0);
+  const toApp = (text: string) => redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent(text)}`, clear);
   let origin: string;
   try {
-    origin = new URL(site).origin;
+    const u = new URL(site);
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new Error("not a web address");
+    origin = u.origin;
   } catch {
-    return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent("That WordPress link was incomplete. Click Connect to Insights again.")}`, clear);
+    return toApp("That WordPress link was incomplete. Click Connect to Insights again.");
   }
-  // Only ever send people back to their own site's admin.
-  const back = (p: Record<string, string>) =>
-    redirect(`${backTo.startsWith(origin) ? backTo : `${origin}/wp-admin/options-general.php?page=insights-connector`}&${new URLSearchParams(p)}`, clear);
 
   const account = await currentAccount(req).catch(() => null);
   if (!account) {
@@ -302,14 +355,48 @@ export async function wordpressConnect(req: Request): Promise<Response> {
     const keep = new URLSearchParams({ site, key, back: backTo }).toString();
     return redirect(`${appOrigin(req)}/api/auth/google/start`, tempCookie(req, WP_PENDING_COOKIE, encodeURIComponent(keep), 900));
   }
+
+  if (!wpConfirmValid(params.get("confirm"), account.id, site, key)) {
+    // The owner says yes to this exact site first.
+    const yes = `${appOrigin(req)}/api/wordpress/connect?${new URLSearchParams({ site, key, back: backTo, confirm: wpConfirmToken(account.id, site, key) })}`;
+    const host = escapeHtml(new URL(site).host);
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Connect WordPress</title>
+<style>body{margin:0;background:#F7F3EC;color:#2B2A27;font:16px/1.5 system-ui,sans-serif}main{max-width:480px;margin:12vh auto;padding:0 16px}a.b{display:inline-block;padding:10px 18px;border-radius:8px;background:#2B2A27;color:#fff;text-decoration:none;margin-right:12px}a{color:#2B2A27}</style></head>
+<body><main><h1>Connect ${host}?</h1><p>This lets the SEO autopilot improve titles, descriptions and content on <strong>${host}</strong> for your account ${escapeHtml(account.email)}. Every change is listed in the app and can be undone.</p>
+<p>Only continue if you just clicked Connect to Insights on your own WordPress site.</p>
+<p><a class="b" href="${escapeHtml(yes)}">Connect this site</a><a href="${escapeHtml(`${appOrigin(req)}/analytics`)}">Cancel</a></p></main></body></html>`;
+    const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
+    headers.append("Set-Cookie", clear);
+    return new Response(html, { headers });
+  }
+
+  // Back to the site's own admin only (the exact same site), or the plugin's settings page there.
+  const back = (p: Record<string, string>) => {
+    let to: URL;
+    try {
+      to = new URL(backTo);
+      if (to.origin !== origin) throw new Error("another site");
+    } catch {
+      to = new URL(`${origin}/wp-admin/options-general.php?page=insights-connector`);
+    }
+    for (const [k, v] of Object.entries(p)) to.searchParams.set(k, v);
+    return redirect(to.toString(), clear);
+  };
+  try {
+    await assertPublicUrl(site);
+  } catch (err) {
+    return toApp(message(err));
+  }
   try {
     const hello = await wpHello(site, key);
-    await saveWp(account.id, { site: hello.home || site, key, name: hello.name, seoPlugin: hello.seo_plugin });
-    await saveProfile(account.id, { siteDomain: new URL(hello.home || site).hostname, platform: "wordpress" });
+    // The address the plugin reports must be the same site and public too.
+    const home = hello.home && new URL(hello.home).origin === origin ? hello.home : site;
+    await saveWp(account.id, { site: home, key, name: hello.name, seoPlugin: hello.seo_plugin });
+    await saveProfile(account.id, { siteDomain: new URL(home).hostname, platform: "wordpress" });
     await autoMatch(account.id).catch(() => undefined);
     return back({ connected: "1" });
   } catch (err) {
-    return back({ insights_error: message(err) });
+    return back({ insights_error: publicError(err, "wordpress connect") });
   }
 }
 
@@ -436,7 +523,9 @@ export const googleLinkStart = (req: Request) =>
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
     const asked = new URL(req.url).searchParams.get("purpose");
     const purpose = asked === "setup" || asked === "recrawl" ? `&purpose=${asked}` : "";
-    return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back))}${purpose}` });
+    // Made from a signed in browser: only that browser's session can finish it.
+    const session = (await currentAccount(req).catch(() => null))?.id === account.id;
+    return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session))}${purpose}` });
   });
 
 /** "Set it up for me": creates Search Console and Analytics for a store that has neither. */
@@ -475,6 +564,11 @@ export const connectWebsite = (req: Request) =>
     const b = await req.json().catch(() => ({}));
     const domain = bareDomain(typeof b.domain === "string" ? b.domain : "");
     if (!domain) return json({ error: "Enter your website address, like example.com." }, 400);
+    try {
+      await assertPublicUrl(`https://${domain}/`);
+    } catch (err) {
+      return json({ error: message(err) }, 400);
+    }
     await saveProfile(account.id, { siteDomain: domain });
     const { platform } = await crawlSite(account.id, domain, 15);
     await saveProfile(account.id, { platform: platform ?? "custom" });
@@ -763,11 +857,21 @@ export const strategyReport = (req: Request) =>
       const conn = await getConnection(account.id);
       const profile = await readProfile(account.id);
       const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+      let made: Awaited<ReturnType<typeof runStrategist>>;
       try {
-        report = (await runStrategist(account.id, conn, domain)) ?? report;
+        made = await runStrategist(account.id, conn, domain);
       } catch (err) {
         return json({ report, error: message(err) }, 502);
       }
+      if (!made) {
+        // Say why, instead of nothing.
+        const why = !aiProvider(await readPlatformSettings())
+          ? "No plan yet: the platform needs an AI key first, in platform keys."
+          : "Not enough data yet for a plan; the first plan comes once Search Console has a few days of numbers.";
+        // Not a 200, so the page shows the reason next to Plan now.
+        return json({ report, error: why }, 409);
+      }
+      report = made;
     }
     return json({ report });
   });
@@ -933,7 +1037,8 @@ async function fixLinks(accountId: string, force: boolean): Promise<number> {
   const store = { accountId, shopDomain: acct.shopDomain };
   let fixed = 0;
   for (const f of await findLinkFixes(store)) {
-    if (!(await applyLinkFix(store, f).catch(() => false))) continue;
+    const applied = await applyLinkFix(store, f).catch((e) => (console.error(`link fix on ${f.url} failed: ${message(e)}`), false));
+    if (!applied) continue;
     await logChange({
       accountId, runId: null, pageUrl: f.url, resourceType: f.type, resourceId: f.id, query: "", field: "link_fix",
       before: f.before, after: f.after, reason: describeFix(f), status: "kept",
@@ -970,6 +1075,8 @@ async function readSite(accountId: string, force: boolean): Promise<number> {
   if (acct.shopDomain && acct.shopTokenEnc && conn?.gscSiteUrl) return 0;
   const profile = await readProfile(accountId);
   if (!profile.siteDomain) return 0;
+  // Only a public website is read (never a local or internal address).
+  await assertPublicUrl(`https://${profile.siteDomain}/`);
   const { read, platform } = await crawlSite(accountId, profile.siteDomain, force ? 25 : 60);
   if (platform && platform !== profile.platform) await saveProfile(accountId, { platform });
   return read;
@@ -1039,7 +1146,11 @@ export const previewAutopilot = (req: Request) =>
   withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "preview")));
 
 export const runAutopilotNow = (req: Request) =>
-  withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "manual")));
+  withAccount(req, async (account) => {
+    // Sabbath rest: no changes to live sites from Friday sundown to Saturday sundown.
+    if (isSabbath()) return json({ error: "The autopilot rests for the Sabbath and changes nothing until Saturday sundown. Run now works again after that." }, 409);
+    return json(await runAutopilot(account.id, await getConnection(account.id), "manual"));
+  });
 
 /** Fix list: the owner pasted a change in, or skipped it. */
 export const markFix = (req: Request) =>
@@ -1072,7 +1183,7 @@ export async function autopilotTick(): Promise<Response> {
   if (isSabbath()) {
     await heartbeatEnd(await heartbeatStart(true), null);
     console.log("autopilot tick: Sabbath rest, nothing runs until Saturday sundown");
-    return json({ results: ["Sabbath rest"] });
+    return json({ ok: true, count: 0 });
   }
   // One run at a time: an overlapping run (a slow one still going) would double work and send alerts twice.
   const [lock] = await sql`
@@ -1082,7 +1193,7 @@ export async function autopilotTick(): Promise<Response> {
     RETURNING key`.catch((e) => (console.error(`tick lock not taken: ${message(e)}`), [{ key: "tick_lock" }]));
   if (!lock) {
     console.log("autopilot tick: the previous run is still going, this one is skipped");
-    return json({ results: ["previous run still going"] });
+    return json({ ok: true, count: 0 });
   }
   const beat = await heartbeatStart(false);
   // A time budget: no new step starts once it is used, so a slow hour ends cleanly instead of being cut off.
@@ -1191,12 +1302,13 @@ export async function autopilotTick(): Promise<Response> {
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
     await heartbeatEnd(beat, null);
     await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
-    return json({ results });
+    // Only a count: the details stay in the logs, so the response tells a caller nothing about any site.
+    return json({ ok: true, count: results.length });
   } catch (err) {
     console.error(`autopilot tick failed: ${message(err)}`);
     await heartbeatEnd(beat, message(err));
     await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
-    return json({ error: message(err) }, 500);
+    return json({ ok: false }, 500);
   }
 }
 

@@ -85,13 +85,13 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
 
   // 1. What works for competitors: who mentions them but not us.
   const studied: AuthorityPlan["studied"] = [];
-  const rivals = (await latestRivals(accountId)).filter((r) => !isBig(r.domain)).slice(0, COMPETITORS);
+  // Other customers are never studied or named as competitors (clients.ts); with the list unreadable, none are.
+  const isOther = await otherClient(ours);
+  const rivals = (await latestRivals(accountId)).filter((r) => !isBig(r.domain) && !isOther(r.domain)).slice(0, COMPETITORS);
   if (platform.serperKey && rivals.length && (await clientListKnown())) {
-    const isOther = await otherClient(ours);
     const found: Prospect[] = [];
     for (const r of rivals) {
       if (found.length >= MAX_COMPETITOR_FINDS) break;
-      if (isOther(r.domain)) continue;
       const serp = await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(nullUnlessLimit);
       let n = 0;
       for (const x of serp?.organic ?? []) {

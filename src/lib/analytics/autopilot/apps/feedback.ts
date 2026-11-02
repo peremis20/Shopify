@@ -2,6 +2,7 @@ import { authorityOf, authorityReady, readAuthorityHistory, recordAuthority } fr
 import { readProspects } from "../backlinks";
 import { topicWords } from "../site-keywords";
 import { rankWatch, type RankWatchRow } from "../tracking";
+import { UNRANKED_POSITION } from "../writer";
 import type { Candidate, RankingApp } from "./types";
 
 /**
@@ -35,8 +36,9 @@ export const feedback: RankingApp = {
     const out: Candidate[] = [];
     for (const r of rows.filter(dropped)) {
       if (!r.url) continue;
+      // Not found in the range the rank check reads: a stand in position and no impressions, which the writer is told plainly.
       out.push({
-        op: { query: r.query, page: r.url.split("#")[0].split("?")[0], position: r.position ?? 25, impressions: 0, clicks: 0, ctr: 0, potentialClicks: 1 },
+        op: { query: r.query, page: r.url.split("#")[0].split("?")[0], position: r.position ?? UNRANKED_POSITION, impressions: 0, clicks: 0, ctr: 0, potentialClicks: 1 },
         mode: "defend",
         previousPosition: r.previous ?? undefined,
         weights: {},
@@ -86,7 +88,7 @@ export const feedback: RankingApp = {
     const dropped = (hub.shared.get("feedback.dropped") as Map<string, number> | undefined)?.has(c.op.query);
     if (dropped) {
       return {
-        text: `This search just fell off Google page one (it was #${c.previousPosition ?? "top 10"}). Compare the page with what ranks now and close the gap, without removing what already worked.`,
+        text: `This search just fell off Google page one (it was #${c.previousPosition ?? "top 10"})${c.op.position === UNRANKED_POSITION && c.op.impressions === 0 ? " and no longer ranks in the tracked range" : ""}. Compare the page with what ranks now and close the gap, without removing what already worked.`,
         summary: "Rescuing a search that fell off page 1",
       };
     }

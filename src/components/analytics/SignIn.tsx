@@ -13,13 +13,24 @@ const FEATURES = [
 /** What a visitor sees before signing in. */
 export function SignInScreen({ error }: { error?: string | null }) {
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [unreachable, setUnreachable] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    setUnreachable(false);
+    setAvailable(null);
     fetch("/api/session")
-      .then((r) => r.json())
-      .then((s) => setAvailable(Boolean(s.signInAvailable)))
-      .catch(() => setAvailable(false));
-  }, []);
+      .then(async (r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then((s) => {
+        // The owner setup form only shows when the server itself says sign in isn't set up.
+        if (typeof s?.signInAvailable !== "boolean") throw new Error("unexpected answer");
+        setAvailable(s.signInAvailable);
+      })
+      .catch(() => setUnreachable(true));
+  }, [attempt]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-dash-bg px-4 py-12 font-dash text-dash-ink">
@@ -37,13 +48,24 @@ export function SignInScreen({ error }: { error?: string | null }) {
 
         <div className="mx-auto max-w-md rounded-2xl border border-dash-line bg-dash-card p-6 text-center shadow-sm">
           {error && <p className="mb-4 rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
-          {available === null ? (
+          {unreachable ? (
+            <div className="space-y-3" role="alert">
+              <p className="text-sm text-dash-ink">Couldn&apos;t reach DashPatrol. Check your connection and try again.</p>
+              <button
+                onClick={() => setAttempt((n) => n + 1)}
+                className="rounded-xl bg-dash-green px-4 py-2 text-sm font-semibold text-white hover:bg-dash-deep"
+              >
+                Try again
+              </button>
+            </div>
+          ) : available === null ? (
             <div className="h-11" />
           ) : available ? (
             <>
               <ConnectButton label="Sign in with Google" />
               <p className="mt-4 text-xs text-dash-muted">
-                Read only access to Analytics and Search Console. We never post or change anything in your Google account.
+                DashPatrol reads your Analytics and Search Console. It only changes something in your Google account when you ask it
+                to, like Set it up for me (which adds your site and creates an Analytics property).
               </p>
             </>
           ) : (

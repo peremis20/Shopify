@@ -13,6 +13,9 @@ import type { StoreResource } from "./shopify";
 
 const MODEL = "claude-opus-5-5";
 
+/** The position a search gets when the daily rank check no longer finds it in the range it reads (not a measurement). */
+export const UNRANKED_POSITION = 25;
+
 /** Instructions for every request, fitted to the customer's business (see AiProvider.site). */
 function rulesFor(site: AiProvider["site"]): string {
   const who = site?.brand ? `"${site.brand}", a website` : "a website";
@@ -137,13 +140,18 @@ const LINK_SCHEMA = {
   additionalProperties: false,
 };
 
+const DAY = "(?:mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day|nesday|rsday|urday|sday)?|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const DAY_RANGE = new RegExp(`\\b(${DAY})\\.?(?:\\s*[\\u2013\\u2014\\u2015]\\s*|\\s+-\\s+)(${DAY})\\b`, "gi");
+
 /** Fixes mistakes writers copy from existing text: chemical forms, doubled brand suffixes, stray spaces. */
 export function polish(text: string): string {
   return (text ?? "")
     .replace(/\bHCI\b/g, "HCl") // hydrochloride salts (berberine HCl), often mistyped with a capital i
     .replace(/[\u2010\u2011]/g, "-") // unusual hyphen characters some models write, shown oddly by some fonts
     // No dashes in anything the site shows: a dash between words (em, en or a spaced hyphen) becomes a comma.
-    .replace(/(\d)(?:\s*[\u2013\u2014\u2015]\s*|\s+-\s+)(\d)/g, "$1 to $2") // a range: "2–3 weeks" reads "2 to 3 weeks"
+    .replace(/(\d(?:\s*[ap]\.?m\.?)?)(?:\s*[\u2013\u2014\u2015]\s*|\s+-\s+)(\d)/gi, "$1 to $2") // a range: "2–3 weeks" reads "2 to 3 weeks"
+    .replace(DAY_RANGE, "$1 to $2") // and so do days and months: "Mon–Fri" reads "Mon to Fri"
+    .replace(/\b([A-Z][A-Za-z]{0,3})[\u2013\u2014\u2015](\d)/g, "$1$2") // a letter and a number stay one name: "B–12" reads "B12"
     .replace(/(^|<(?:p|li|h2|h3)>)\s*[\u2013-\u2015]\s*/g, "$1") // a dash opening a block is dropped
     .replace(/\s*[\u2013-\u2015]\s*(?=<\/(?:p|li|h2|h3)>|$)/g, "") // and so is one closing it
     .replace(/\s*[\u2013-\u2015]\s*/g, ", ")
@@ -154,30 +162,87 @@ export function polish(text: string): string {
     .trim();
 }
 
-/** Numbers in a text, with thousands separators dropped ("1,500" and "1500" match) and decimal commas as points. */
-const numbersIn = (text: string) =>
-  new Set((text.match(/\d+(?:[.,]\d+)*/g) ?? []).map((n) => n.replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".")));
+/** Units a spelled out number is read with ("two weeks", "fifty percent"), so it counts as a number too. */
+const UNITS =
+  "percent|per cent|mg|milligrams?|grams?|g|kg|kilos?|mcg|micrograms?|iu|ml|milliliters?|millilitres?|liters?|litres?|ounces?|oz|pounds?|lbs?|calories|kcal|hours?|minutes?|seconds?|days?|weeks?|months?|years?|times|servings?|capsules?|tablets?|pills?|softgels?|gummies|scoops?|cups?|glasses|doses?|drops?|teaspoons?|tablespoons?|inches|cm|miles|km|steps|dollars|people|customers|users";
+const ONES: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
+  fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, dozen: 12, hundred: 100, thousand: 1000,
+};
+const TENS: Record<string, number> = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const SPELLED = new RegExp(
+  `\\b(?:(${Object.keys(TENS).join("|")})(?:[\\s-]+(${Object.keys(ONES).slice(0, 9).join("|")}))?|(${Object.keys(ONES).join("|")}))\\s+(${UNITS})\\b`,
+  "gi"
+);
+/** Words after a number that say nothing about what it counts ("50 of them", "2 to 3"): the number stands alone. */
+const NOT_A_UNIT = /^(?:of|and|or|to|the|a|an|in|on|at|for|with|by|is|are|was|were|from|per|than|out|more|less|over|under|about|it|its|this|that)$/;
 
-/** Removes the paragraphs and list items `drop` picks, then any list or question left with nothing under it. */
-export function dropBlocks(html: string, drop: (text: string, index: number) => boolean): string {
+/**
+ * Each number in a text with what it counts: "50%" is "50 %", "50 capsules" is "50 capsule", "two weeks" is "2 week".
+ * Thousands separators are dropped ("1,500" and "1500" match), decimal commas read as points, and a letter and number
+ * name stays whole ("B12", "omega-3"). A number followed by nothing it counts is "50 " alone.
+ */
+export function quantitiesIn(text: string): string[] {
+  const t = text
+    .toLowerCase()
+    .replace(SPELLED, (_m, tens?: string, ones?: string, one?: string, unit?: string) => `${tens ? TENS[tens] + (ones ? ONES[ones] : 0) : ONES[one!]} ${unit}`)
+    .replace(/\bper cent\b|\bpercent\b/g, "%");
+  const out: string[] = [];
+  for (const m of t.matchAll(/(\$\s*)?(?:([\p{L}]+-?)(?=\d))?(\d+(?:[.,]\d+)*)(?:\s*(%)|\s*([\p{L}]+))?/gu)) {
+    const n = m[3].replace(/,(?=\d{3}(?!\d))/g, "").replace(",", ".");
+    if (m[2]) {
+      out.push(`${m[2].replace(/-$/, "")}${n} `);
+      continue;
+    }
+    const word = m[5] && !NOT_A_UNIT.test(m[5]) ? m[5].replace(/(?<=\p{L}{3})s$/u, "") : "";
+    out.push(`${n} ${m[1] ? "$" : (m[4] ?? word)}`);
+  }
+  return out;
+}
+
+/** True when every number in `text` appears in `facts` with the same thing counted (a bare number anywhere in them). */
+export function numbersKnown(text: string, facts: string): boolean {
+  const known = quantitiesIn(plainText(facts));
+  const pairs = new Set(known);
+  const bare = new Set(known.map((q) => q.split(" ")[0]));
+  return quantitiesIn(plainText(text)).every((q) => (q.endsWith(" ") ? bare.has(q.trim()) : pairs.has(q)));
+}
+
+const BODY = /<(p|li)>([\s\S]*?)<\/\1>/g;
+const BODY_AND_HEADINGS = /<(h2|h3|p|li)>([\s\S]*?)<\/\1>/g;
+
+/**
+ * Removes the paragraphs and list items `drop` picks, then any list or question left with nothing under it. With
+ * `headings`, <h2> and <h3> are checked too, and a heading that is dropped takes its whole section with it.
+ */
+export function dropBlocks(html: string, drop: (text: string, index: number) => boolean, headings = false): string {
   let i = 0;
+  // The level of the dropped heading whose section is being removed, 0 for none.
+  let skipping = 0;
   return html
-    .replace(/<(p|li)>([\s\S]*?)<\/\1>/g, (block, _tag, inner: string) => (drop(plainText(inner), i++) ? "" : block))
+    .replace(new RegExp(headings ? BODY_AND_HEADINGS : BODY), (block, tag: string, inner: string) => {
+      const level = tag[0] === "h" ? Number(tag[1]) : 0;
+      if (level && skipping && level <= skipping) skipping = 0;
+      const index = i++;
+      if (skipping) return "";
+      if (!drop(plainText(inner), index)) return block;
+      if (level) skipping = level;
+      return "";
+    })
     .replace(/<(ul|ol)>\s*<\/\1>/g, "")
     .replace(/<h3>(?:(?!<\/h3>)[\s\S])*<\/h3>\s*(?=<h[23]>|$)/g, "")
     .trim();
 }
 
-export const blocksOf = (html: string) => [...html.matchAll(/<(p|li)>([\s\S]*?)<\/\1>/g)].map((m) => plainText(m[2]));
+/** The text of each paragraph and list item (with `headings`, each <h2> and <h3> too), numbered as dropBlocks counts them. */
+export const blocksOf = (html: string, headings = false) => [...html.matchAll(new RegExp(headings ? BODY_AND_HEADINGS : BODY))].map((m) => plainText(m[2]));
 
 /**
- * Drops paragraphs and list items from a new section that state a number
- * (a dose, a percentage, a study figure) the page itself doesn't have, so the
- * writer can't add health facts the store hasn't published. Headings stay.
+ * Drops paragraphs, list items and headings from a new section that state a number (a dose, a percentage, a study
+ * figure) the page itself doesn't have with the same unit, so the writer can't add health facts the site hasn't published.
  */
 export function onlyKnownNumbers(html: string, pageBody: string): string {
-  const known = numbersIn(plainText(pageBody));
-  return dropBlocks(html, (text) => ![...numbersIn(text)].every((n) => known.has(n)));
+  return dropBlocks(html, (text) => !numbersKnown(text, pageBody), true);
 }
 
 const CHECK_SCHEMA = {
@@ -198,7 +263,7 @@ const CHECK_SCHEMA = {
  * section against the page and removes the ones the page doesn't support.
  */
 async function factCheck(ai: AiProvider, html: string, pageBody: string): Promise<string> {
-  const blocks = blocksOf(html);
+  const blocks = blocksOf(html, true);
   if (!blocks.length) return html;
   const prompt = `You are fact checking a new section before it's added to a store's page.
 
@@ -210,7 +275,7 @@ ${plainText(pageBody).slice(0, 12000)}
 New section, numbered:
 ${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
 
-List the numbers of blocks to remove. Remove a block if it:
+List the numbers of blocks to remove (removing a heading removes its whole section). Remove a block if it:
 - states a health effect, benefit, timeline, dose, usage advice, safety advice or combination advice (for example with coffee or medication) that the page text doesn't state
 - claims what "many users", customers, studies or experts say or do, unless the page says it
 - names ingredients, species or products the page doesn't mention
@@ -218,7 +283,7 @@ List the numbers of blocks to remove. Remove a block if it:
 Keep blocks that only restate or reorganize what the page says. When unsure, remove it.`;
   const out = await askJson<{ unsupported: number[] }>(ai, prompt, CHECK_SCHEMA);
   const remove = new Set((out.unsupported ?? []).map(Number));
-  return dropBlocks(html, (_t, i) => remove.has(i));
+  return dropBlocks(html, (_t, i) => remove.has(i), true);
 }
 
 const EDIT_SCHEMA = {
@@ -238,9 +303,7 @@ const EDIT_SCHEMA = {
  * an AI tell is dropped.
  */
 async function humanEdit(ai: AiProvider, html: string, pageBody: string): Promise<string> {
-  const others = [ai, ...(ai.backups ?? [])];
-  const editor = others.find((o) => o.kind !== ai.kind) ?? ai;
-  const reviewer: AiProvider = { ...editor, site: ai.site, backups: others.filter((o) => o !== editor) };
+  const reviewer = reviewerOf(ai);
   const prompt = `You are a human copy editor. Another writer drafted this section for a website, and it must read as if a person who knows the subject wrote it. Readers and Google both notice AI writing.
 
 Section:
@@ -254,11 +317,23 @@ Rewrite only what sounds machine made:
 - cute asides, filler sentences, sentences that all have the same length and rhythm
 Keep every fact exactly as given and add no new facts, numbers, names or quotes. If it already reads naturally, return it unchanged.`;
   const out = await askJson<{ sectionHtml: string }>(reviewer, prompt, EDIT_SCHEMA);
-  const edited = onlyKnownNumbers(cleanHtml(polish(out.sectionHtml ?? "")), pageBody);
-  return dropBlocks(edited, (text) => hasAiTell(text));
+  const edited = cleanHtml(polish(out.sectionHtml ?? ""));
+  // The edit is checked again like the draft was: if it added a number the page doesn't have, a claim or an
+  // unsourced line, or emptied the section, the checked text from before the edit is kept instead.
+  const blocks = blocksOf(edited, true);
+  const failed =
+    !blocksOf(edited).length ||
+    blocksOf(onlyKnownNumbers(edited, pageBody), true).length !== blocks.length ||
+    blocks.some((text) => isRisky(text) || isUnsourced(text));
+  return dropBlocks(failed ? html : edited, (text) => hasAiTell(text), true);
 }
 
-const plainText = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+const plainText = (html: string) =>
+  html
+    .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 async function askClaude<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   const client = new Anthropic({ apiKey });
@@ -543,14 +618,16 @@ export async function writeImprovement(
   allowContent: boolean
 ): Promise<PageImprovement> {
   const editableBody = page.type === "article" || page.type === "page";
+  // A search the daily rank check no longer finds is passed on with a stand in position and no impressions; neither is real.
+  const unranked = target.mode === "defend" && target.position === UNRANKED_POSITION && target.impressions === 0;
   const goal =
     target.mode === "defend"
-      ? `This page held position ${target.previousPosition?.toFixed(1) ?? "near the top"} on Google for "${target.query}" and has slipped to ${target.position.toFixed(1)} over the last 7 days. Refresh it so it wins the spot back and keeps it.`
+      ? `This page held position ${target.previousPosition?.toFixed(1) ?? "near the top"} on Google for "${target.query}" and ${unranked ? "no longer ranks in the tracked range" : `has slipped to ${target.position.toFixed(1)} over the last 7 days`}. Refresh it so it wins the spot back and keeps it.`
       : target.mode === "top"
         ? `This page ranks around position ${target.position.toFixed(1)} on Google for "${target.query}". Improve it so it takes position 1.`
         : `Improve this page so it reaches the top 3 on Google for the search "${target.query}". It ranks around position ${target.position.toFixed(1)} now.`;
   const prompt = `${goal}
-It had ${target.impressions} impressions in the last ${target.mode === "defend" ? 7 : 28} days.
+${unranked ? "" : `It had ${target.impressions} impressions in the last ${target.mode === "defend" ? 7 : 28} days.`}
 
 ${briefs.filter(Boolean).join("\n\n")}
 
@@ -580,13 +657,15 @@ Keep the SEO title and description if they are already strong for this search; y
   // Nothing goes on the page unchecked: if the check itself fails, the section is left out.
   if (section) section = await factCheck(ai, section, page.body).catch(() => "");
   // A second AI edits it so it reads as a person wrote it; if that fails, blocks with AI tells are dropped.
-  if (section) section = await humanEdit(ai, section, page.body).catch(() => dropBlocks(section, (text) => hasAiTell(text)));
-  // Claim guard: no paragraph that reads as a disease claim or an unprovable promise.
-  if (section) section = dropBlocks(section, (text) => isRisky(text) || isUnsourced(text));
+  if (section) section = await humanEdit(ai, section, page.body).catch(() => dropBlocks(section, (text) => hasAiTell(text), true));
+  // Claim guard: no paragraph or heading that reads as a disease claim or an unprovable promise.
+  if (section) section = dropBlocks(section, (text) => isRisky(text) || isUnsourced(text) || hasAiTell(text), true);
   // A section reduced to headings alone isn't worth adding.
   if (!blocksOf(section).length) section = "";
-  // A risky title or description is never written; the current one stays.
-  const safe = (text: string, current: string | null) => (isRisky(text) ? (current ?? "") : text);
+  // A risky title or description, or one with a number the page doesn't state, is never written; the current one stays.
+  const facts = `${page.title}\n${page.body}`;
+  const sound = (text: string) => !isRisky(text) && !isUnsourced(text) && numbersKnown(text, facts);
+  const safe = (text: string, current: string | null) => (sound(text) ? text : (current ?? ""));
   let metaTitle = safe(trimWords(polish(out.metaTitle), 70), page.metaTitle);
   let metaDescription = safe(trimWords(polish(out.metaDescription), 170), page.metaDescription);
   // A second AI checks every part that would change; it can reject a part or offer a stronger title or description.
@@ -600,7 +679,7 @@ Keep the SEO title and description if they are already strong for this search; y
       metaDescription: descChanged ? metaDescription : "",
       contentSectionHtml: section,
     });
-    const better = (text: string, max: number) => (text && !isRisky(text) && !hasAiTell(text) ? trimWords(polish(text), max) : "");
+    const better = (text: string, max: number) => (text && sound(text) && !hasAiTell(text) ? trimWords(polish(text), max) : "");
     const keepOr = (kept: boolean, mine: string, current: string | null) => (kept ? mine : (current ?? ""));
     metaTitle = better(r.betterTitle, 70) || (titleChanged ? keepOr(r.keepTitle, metaTitle, page.metaTitle) : metaTitle);
     metaDescription = better(r.betterDescription, 170) || (descChanged ? keepOr(r.keepDescription, metaDescription, page.metaDescription) : metaDescription);
@@ -618,7 +697,7 @@ Keep the SEO title and description if they are already strong for this search; y
     metaDescription,
     contentSectionHtml: section,
     altTexts: (out.altTexts ?? [])
-      .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim() && !isRisky(a.alt))
+      .filter((a) => page.imagesMissingAlt.some((i) => i.id === a.imageId) && a.alt.trim() && sound(a.alt))
       .map((a) => ({ imageId: a.imageId, alt: trimWords(polish(a.alt), 140) })),
     reason: out.reason.trim(),
     intentMatch: out.intentMatch !== false,
@@ -646,8 +725,9 @@ ${plainText(source.body).slice(0, 6000)}
 If the link would feel forced in this article, return an empty string.`;
 
   const out = await askJson<{ sentenceHtml: string }>(ai, prompt, LINK_SCHEMA);
-  const html = cleanHtml(out.sentenceHtml, target.path);
-  if (!html || isRisky(html) || hasAiTell(plainText(html))) return "";
+  const html = cleanHtml(polish(out.sentenceHtml ?? ""), target.path);
+  const text = plainText(html);
+  if (!html || isRisky(text) || isUnsourced(text) || hasAiTell(text) || !numbersKnown(text, `${source.title}\n${source.body}\n${target.title}`)) return "";
   // A second AI checks the link fits; if it can't check, no link is added.
   return (await reviewLink(ai, source, target, html).catch((e) => {
     console.error(`internal link not added, the reviewing AI couldn't check it: ${(e as Error).message}`);
@@ -771,9 +851,10 @@ If this search isn't a fit for this website's business, return an empty string f
   let html = onlyKnownNumbers(cleanHtml(polish(out.html ?? "").replace(/<h1[\s\S]*?<\/h1>/gi, "")), "");
   if (!html) return null;
   // A second AI edits it so it reads as a person wrote it.
-  html = await humanEdit(ai, html, "").catch(() => dropBlocks(html, (text) => hasAiTell(text)));
-  html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text) || isUnsourced(text));
-  const safe = (text: string) => (isRisky(text) || hasAiTell(text) ? "" : text);
+  html = await humanEdit(ai, html, "").catch(() => dropBlocks(html, (text) => hasAiTell(text), true));
+  html = dropBlocks(html, (text) => isRisky(text) || hasAiTell(text) || isUnsourced(text), true);
+  // Titles and summaries follow the article's rules: no claims, and no number the search itself doesn't have.
+  const safe = (text: string) => (isRisky(text) || hasAiTell(text) || isUnsourced(text) || !numbersKnown(text, brief.keyword) ? "" : text);
   if (blocksOf(html).length < 8) return null;
 
   // A second AI checks it before it is published: it can stop it, drop weak blocks, or offer a stronger title.
@@ -786,7 +867,7 @@ If this search isn't a fit for this website's business, return an empty string f
   );
   if (!r.publish) return { rejected: r.reason || "The reviewing AI didn't think it was good enough to publish." };
   const drop = new Set(r.drop);
-  html = dropBlocks(html, (_t, i) => drop.has(i));
+  html = dropBlocks(html, (_t, i) => drop.has(i), true);
   // Too little left to stand as an article.
   if (blocksOf(html).length < 8 || plainText(html).split(/\s+/).length < 500) return null;
   if (r.betterTitle && safe(r.betterTitle)) out.metaTitle = r.betterTitle;
@@ -837,7 +918,7 @@ export async function writeOutreach(
       ? `Their page mentions ${p.ourBrand ?? p.ourSite}. Thank them, and ask kindly whether they would add a link to ${p.ourSite} where it is mentioned, so their readers can find it.`
       : p.kind === "resource"
         ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`
-        : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title), and say a link back to ${p.ourSite} would be appreciated.`;
+        : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only: never ask for a link in return for the article.`;
   const prompt = `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${ask}
@@ -973,10 +1054,8 @@ export async function challengeStrategy(
   plan: { moves: { kind: string; keyword: string | null; action: string; why: string; evidence?: string }[] },
   role = "strategist's weekly plan"
 ): Promise<{ keep: boolean[]; notes: string[] }> {
-  const others = [ai, ...(ai.backups ?? [])];
-  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
   const out = await askJson<{ verdicts: { keep: boolean; note: string }[] }>(
-    { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
+    reviewerOf(ai, false),
     `You are a skeptical senior SEO reviewing another ${role} for a website aiming at 20,000 Google visitors a month. Judge only by the data: is each move backed by the facts (its evidence must say what the move claims), is it the best use of a week, could it hurt the site, is the search real and on topic? Keep a move only if you would bet on it.
 
 Facts:
@@ -1003,10 +1082,8 @@ export async function reviewTakedown(
   ai: AiProvider,
   a: { title: string; url: string; text: string; into: string | null; siteSells: string }
 ): Promise<{ remove: boolean; why: string }> {
-  const others = [ai, ...(ai.backups ?? [])];
-  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
   const out = await askJson<{ remove: boolean; why: string }>(
-    { ...critic, site: undefined, backups: others.filter((o) => o !== critic) },
+    reviewerOf(ai, false),
     `You are a careful editor for a website that publishes ${a.siteSells}. Another agent wants to take this article down because Google has shown it to nobody in 90 days, even after it was rewritten.
 
 Article: "${a.title}" (${a.url})
@@ -1083,17 +1160,24 @@ export function backedByFacts(evidence: string | null | undefined, facts: string
       .replace(/\s+/g, " ")
       .trim()} `;
   const e = norm(evidence ?? "");
-  if (e.trim().length < 8) return false;
+  // A real fact, not a fragment like "searches tracked": a number, or at least four words.
+  if (e.trim().length < 8 || (!/\d/.test(e) && e.trim().split(" ").length < 4)) return false;
   return facts.split("\n").some((line) => norm(line).includes(e));
 }
 
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
 
-/** The reviewer: another provider when there is one, with the rest as backups. */
-function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
-  const others = [ai, ...(ai.backups ?? [])];
-  const critic = others.find((o) => o.kind !== ai.kind) ?? ai;
-  return { ...critic, site: keepSite ? ai.site : undefined, backups: others.filter((o) => o !== critic) };
+export const NO_SECOND_AI =
+  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq or GitHub Models) in Settings, and the work goes ahead on the next run.";
+
+/**
+ * The reviewer: another AI service, with the other services as backups. The writer's own service never checks its
+ * own work, so with no other service this throws and the work waits (the error is seen, never hidden).
+ */
+export function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
+  const others = (ai.backups ?? []).filter((o) => o.kind !== ai.kind);
+  if (!others.length) throw new Error(NO_SECOND_AI);
+  return { ...others[0], site: keepSite ? ai.site : undefined, backups: others.slice(1) };
 }
 
 /**
@@ -1159,7 +1243,7 @@ async function reviewArticle(
   pageOne: string[],
   article: { title: string; metaTitle: string; metaDescription: string; html: string }
 ): Promise<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string }> {
-  const blocks = blocksOf(article.html);
+  const blocks = blocksOf(article.html, true);
   const prompt = `You are a senior SEO editor checking another writer's new article before it is published on this website. Your job is to stop mistakes and help it reach Google page one for "${keyword}".
 
 What ranks on page one now: ${pageOne.join(" | ") || "(not available)"}
@@ -1171,7 +1255,7 @@ Article, numbered by block:
 ${blocks.map((b, i) => `[${i}] ${b}`).join("\n")}
 
 1. publish: true only if the article fits this website, answers what people searching "${keyword}" want at least as well as page one, and opens with a direct answer. Give the reason in one plain sentence.
-2. drop: the numbers of blocks to remove because they state something that is not well established general knowledge, give health, dose or safety advice, are off topic, or are filler.
+2. drop: the numbers of blocks to remove (removing a heading removes its whole section) because they state something that is not well established general knowledge, give health, dose or safety advice, are off topic, or are filler.
 3. betterTitle and betterMetaDescription: a clearly stronger title (under 60 characters) or description (under 155 characters) for this search, or an empty string. No hyphens or dashes.`;
   const out = await askJson<{ publish: boolean; reason: string; drop: number[]; betterTitle: string; betterMetaDescription: string }>(
     reviewerOf(ai),

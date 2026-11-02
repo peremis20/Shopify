@@ -10,7 +10,7 @@ import { PlatformConnect } from "./PlatformConnect";
 import { PlatformForm } from "./PlatformSettings";
 import { api, pathOf } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
-import { Card, CardHeader, Skeleton } from "./ui";
+import { Card, CardHeader, ConfirmButton, Skeleton } from "./ui";
 
 interface State {
   settings: AutopilotSettingsView;
@@ -28,6 +28,20 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   link_fix: "Link fix",
   schema: "Structured data",
   intent: "Content gap",
+  new_article: "New article",
+  prune: "Taken down (no Google views)",
+};
+
+/** The same changes in plain words, for the Simple view. */
+const FIELD_LABEL_SIMPLE: Record<ChangeField, string> = {
+  meta_title: "Title in Google",
+  meta_description: "Summary in Google",
+  content: "New section",
+  alt: "Image description",
+  internal_link: "Link between your pages",
+  link_fix: "Broken link fixed",
+  schema: "Page details for Google",
+  intent: "Missing topic",
   new_article: "New article",
   prune: "Taken down (no Google views)",
 };
@@ -55,7 +69,15 @@ const when = (iso: string) =>
 
 const textOf = (html: string | null) => (html ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 
-export function Autopilot({ connected, admin }: { connected: boolean; admin: boolean }) {
+export function Autopilot({ connected, admin, simple = false, autoPreview = false, onAutoPreviewDone }: {
+  connected: boolean;
+  admin: boolean;
+  /** Simple view: plain words instead of SEO terms. */
+  simple?: boolean;
+  /** Run a preview as soon as the autopilot is ready (from the last setup screen). */
+  autoPreview?: boolean;
+  onAutoPreviewDone?: () => void;
+}) {
   const [state, setState] = useState<State | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -92,6 +114,24 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
   const website = state?.settings.website ?? null;
   const ready = state?.settings.platformReady && (state?.settings.shopConnected || website);
   const fixes = state?.changes.filter((c) => c.status === "suggested") ?? [];
+  const labels = simple ? FIELD_LABEL_SIMPLE : FIELD_LABEL;
+
+  const runPreview = () =>
+    act("preview", async () => {
+      const r = await api<{ message: string; preview?: AutopilotPreview }>("/api/autopilot/preview", {});
+      setPreview(r.preview ?? null);
+      if (!r.preview) setNotice(r.message || "No preview yet. Please try again in a few minutes.");
+      load();
+    });
+
+  // Asked for from the last setup screen: show the first change as soon as the autopilot can make one.
+  useEffect(() => {
+    if (!autoPreview || !state) return;
+    onAutoPreviewDone?.();
+    if (ready) void runPreview();
+    // Only once per request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoPreview, state, ready]);
 
   return (
     <Card id="autopilot" className="mt-5">
@@ -123,7 +163,10 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
             }}
           />
         ) : (
-          <p className="text-sm text-dash-muted">The SEO Autopilot is almost ready. It will appear here soon.</p>
+          <p className="text-sm text-dash-muted">
+            The autopilot is still being set up on our side. There&apos;s nothing you need to do: it starts here on its own as soon
+            as it&apos;s ready.
+          </p>
         )
       ) : !state.settings.shopConnected && !website ? (
         <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} onWebsite={load} />
@@ -136,13 +179,23 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
               <b>fix list</b> below, ready to paste, with where to paste it. Mark it done and it&apos;s measured like any other change.
             </p>
           )}
-          <p className="max-w-3xl text-dash-muted">
-            Every day the autopilot works to win page one and keep it. It first defends any page that&apos;s slipping,
-            then pushes your #2 and #3 results for #1 and your page two results into the top 3. It studies the pages
-            ranking above you and rewrites your SEO title, description and content to beat them. It never touches
-            prices, product names or checkout. It changes at most {state.settings.maxPagesPerWeek} pages a week and
-            undoes any change that makes a page rank worse after 4 weeks.
-          </p>
+          {simple ? (
+            <p className="max-w-3xl text-dash-muted">
+              Every day the autopilot works to get your pages onto Google&apos;s first page and keep them there. It looks after
+              pages that are slipping first, then moves pages that are close to the top higher. It studies the pages Google
+              shows above yours and rewrites your page titles, the summary Google shows and your text to beat them. It never
+              touches prices, product names or checkout. It changes at most {state.settings.maxPagesPerWeek} pages a week and
+              undoes any change that makes a page do worse on Google after 4 weeks.
+            </p>
+          ) : (
+            <p className="max-w-3xl text-dash-muted">
+              Every day the autopilot works to win page one and keep it. It first defends any page that&apos;s slipping,
+              then pushes your #2 and #3 results for #1 and your page two results into the top 3. It studies the pages
+              ranking above you and rewrites your SEO title, meta description and content to beat them. It never touches
+              prices, product names or checkout. It changes at most {state.settings.maxPagesPerWeek} pages a week and
+              undoes any change that makes a page rank worse after 4 weeks.
+            </p>
+          )}
 
           {state.apps && state.apps.length > 0 && <ConnectedApps apps={state.apps} />}
 
@@ -202,14 +255,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
             </label>
             <div className="ml-auto flex flex-wrap gap-2">
               <button
-                onClick={() =>
-                  act("preview", async () => {
-                    const r = await api<{ message: string; preview?: AutopilotPreview }>("/api/autopilot/preview", {});
-                    setPreview(r.preview ?? null);
-                    if (!r.preview) setNotice(r.message);
-                    load();
-                  })
-                }
+                onClick={runPreview}
                 disabled={busy !== null}
                 className="rounded-xl border border-dash-line bg-white px-4 py-2.5 font-semibold text-dash-ink hover:border-dash-green/40 disabled:opacity-60"
               >
@@ -237,7 +283,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           </div>
 
           {notice && <p className="rounded-lg bg-[#FBF1E1] p-3 text-dash-ink" role="status">{notice}</p>}
-          {preview && <PreviewCard preview={preview} onClose={() => setPreview(null)} />}
+          {preview && <PreviewCard preview={preview} labels={labels} onClose={() => setPreview(null)} />}
 
           {website ? (
             <p className="text-dash-muted">
@@ -248,17 +294,18 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
                   {" · connected"}
                   {website.connection.detail ? ` (${website.connection.detail})` : ""}
                   {" · "}
-                  <button
-                    onClick={() =>
+                  <ConfirmButton
+                    label="Disconnect"
+                    confirmLabel="Click again to disconnect"
+                    disabled={busy !== null}
+                    onConfirm={() =>
                       act("disconnect", async () => {
                         const d = await api<{ settings: AutopilotSettingsView }>("/api/site/disconnect", { kind: website.connection!.kind });
                         setState((s) => (s ? { ...s, settings: d.settings } : s));
                       })
                     }
                     className="font-semibold text-dash-down hover:underline"
-                  >
-                    Disconnect
-                  </button>
+                  />
                 </>
               )}
             </p>
@@ -266,17 +313,18 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           <p className="text-dash-muted">
             Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
             {" · "}
-            <button
-              onClick={() =>
+            <ConfirmButton
+              label="Disconnect store"
+              confirmLabel="Click again to disconnect the store"
+              disabled={busy !== null}
+              onConfirm={() =>
                 act("disconnect", async () => {
                   const d = await api<{ settings: AutopilotSettingsView }>("/api/shopify/disconnect", {});
                   setState((s) => (s ? { ...s, settings: d.settings } : s));
                 })
               }
               className="font-semibold text-dash-down hover:underline"
-            >
-              Disconnect store
-            </button>
+            />
           </p>
           )}
 
@@ -300,6 +348,7 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
           {fixes.length > 0 && (
             <FixList
               fixes={fixes}
+              labels={labels}
               platform={website?.platform ?? (state.settings.shopConnected ? "shopify" : null)}
               busy={busy !== null}
               onMark={(id, done) =>
@@ -313,12 +362,13 @@ export function Autopilot({ connected, admin }: { connected: boolean; admin: boo
 
           <ChangeLog
             changes={state.changes.filter((c) => c.status !== "suggested")}
+            labels={labels}
             busy={busy !== null}
             onUndo={(id) =>
               act(`undo-${id}`, async () => {
                 const d = await api<Omit<State, "settings">>("/api/autopilot/revert", { id });
                 setState((s) => (s ? { ...s, ...d } : s));
-                setNotice("Change undone. The previous version is back on your store.");
+                setNotice("Change undone. The previous version is back on your site.");
               })
             }
           />
@@ -373,11 +423,13 @@ function WeekSummary({ changes }: { changes: AutopilotChange[] }) {
 /** Improvements for a site the app can't edit: each ready to paste, with where it goes on the owner's platform. */
 function FixList({
   fixes,
+  labels,
   platform,
   busy,
   onMark,
 }: {
   fixes: AutopilotChange[];
+  labels: Record<ChangeField, string>;
   platform: string | null;
   busy: boolean;
   onMark: (id: string, done: boolean) => void;
@@ -393,7 +445,7 @@ function FixList({
           <li key={f.id} className="rounded-xl border border-dash-line bg-white p-4">
             <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
               <p>
-                <span className="font-semibold">{FIELD_LABEL[f.field]}</span>
+                <span className="font-semibold">{labels[f.field]}</span>
                 <span className="text-dash-muted"> on </span>
                 <a href={f.field === "internal_link" && f.targetId ? f.targetId : f.pageUrl} target="_blank" rel="noreferrer" className="font-semibold text-dash-green hover:underline">
                   {pathOf(f.field === "internal_link" && f.targetId ? f.targetId : f.pageUrl)}
@@ -460,12 +512,12 @@ const MODE_LABEL: Record<AutopilotPreview["mode"], string> = {
   climb: "Climb into the top 3",
 };
 
-function PreviewCard({ preview, onClose }: { preview: AutopilotPreview; onClose: () => void }) {
+function PreviewCard({ preview, labels, onClose }: { preview: AutopilotPreview; labels: Record<ChangeField, string>; onClose: () => void }) {
   return (
     <div className="rounded-xl border border-dash-green/30 bg-dash-green/5 p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
-          <p className="font-semibold text-dash-ink">Preview of the next run. Nothing was changed on your store.</p>
+          <p className="font-semibold text-dash-ink">Preview of the next run. Nothing was changed on your site.</p>
           <p className="text-dash-muted">
             {MODE_LABEL[preview.mode]}: <span className="text-dash-ink">“{preview.query}”</span> on{" "}
             <span className="text-dash-ink">{pathOf(preview.page)}</span>, now position {preview.position.toFixed(1)}
@@ -486,7 +538,7 @@ function PreviewCard({ preview, onClose }: { preview: AutopilotPreview; onClose:
       <div className="mt-3 space-y-3">
         {preview.changes.map((c, i) => (
           <div key={i} className="rounded-lg border border-dash-line bg-white p-3">
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-dash-muted">{FIELD_LABEL[c.field]}</p>
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-dash-muted">{labels[c.field]}</p>
             {c.before !== null && <p className="text-dash-muted line-through">{textOf(c.before)}</p>}
             {c.field === "content" ? (
               <div className="prose-sm text-dash-ink [&_h2]:font-semibold [&_h3]:font-semibold" dangerouslySetInnerHTML={{ __html: c.after }} />
@@ -501,7 +553,7 @@ function PreviewCard({ preview, onClose }: { preview: AutopilotPreview; onClose:
   );
 }
 
-function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy: boolean; onUndo: (id: string) => void }) {
+function ChangeLog({ changes, labels, busy, onUndo }: { changes: AutopilotChange[]; labels: Record<ChangeField, string>; busy: boolean; onUndo: (id: string) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const { sorted, sort } = useSort(
     changes,
@@ -509,7 +561,7 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
       date: (c) => c.createdAt,
       page: (c) => pathOf(c.pageUrl),
       query: (c) => c.query,
-      field: (c) => FIELD_LABEL[c.field],
+      field: (c) => labels[c.field],
       status: (c) => STATUS_LABEL[c.status],
     },
     { key: "date", dir: "desc" }
@@ -546,10 +598,24 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
                   onClick={() => setOpen(open === c.id ? null : c.id)}
                   className="cursor-pointer border-b border-dash-line/70 hover:bg-dash-bg"
                 >
-                  <td className="whitespace-nowrap px-1 py-2 text-dash-muted">{when(c.createdAt)}</td>
+                  <td className="whitespace-nowrap px-1 py-2 text-dash-muted">
+                    <button
+                      type="button"
+                      aria-expanded={open === c.id}
+                      aria-controls={`change-${c.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpen(open === c.id ? null : c.id);
+                      }}
+                      className="text-left hover:text-dash-ink hover:underline"
+                    >
+                      <span className="sr-only">{open === c.id ? "Hide details for " : "Show details for "}</span>
+                      {when(c.createdAt)}
+                    </button>
+                  </td>
                   <td className="max-w-[200px] truncate px-1 py-2 text-dash-ink" title={c.pageUrl}>{pathOf(c.pageUrl)}</td>
                   <td className="hidden max-w-[180px] truncate px-1 py-2 md:table-cell" title={c.query}>{c.query}</td>
-                  <td className="whitespace-nowrap px-1 py-2">{FIELD_LABEL[c.field]}</td>
+                  <td className="whitespace-nowrap px-1 py-2">{labels[c.field]}</td>
                   <td className="px-1 py-2">
                     <span className={`whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLE[c.status]}`}>
                       {STATUS_LABEL[c.status]}
@@ -557,21 +623,18 @@ function ChangeLog({ changes, busy, onUndo }: { changes: AutopilotChange[]; busy
                   </td>
                   <td className="px-1 py-2 text-right">
                     {(c.status === "applied" || c.status === "kept") && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onUndo(c.id);
-                        }}
+                      <ConfirmButton
+                        label="Undo"
+                        confirmLabel="Click again to undo"
+                        onConfirm={() => onUndo(c.id)}
                         disabled={busy}
-                        className="rounded-full border border-dash-line px-2.5 py-0.5 text-xs font-semibold text-dash-down hover:border-dash-down/40 disabled:opacity-50"
-                      >
-                        Undo
-                      </button>
+                        className="whitespace-nowrap rounded-full border border-dash-line px-2.5 py-0.5 text-xs font-semibold text-dash-down hover:border-dash-down/40 disabled:opacity-50"
+                      />
                     )}
                   </td>
                 </tr>
                 {open === c.id && (
-                  <tr className="border-b border-dash-line/70 bg-dash-bg">
+                  <tr id={`change-${c.id}`} className="border-b border-dash-line/70 bg-dash-bg">
                     <td colSpan={6} className="space-y-2 px-3 py-3 text-sm">
                       {c.reason && <p><span className="font-semibold">Why: </span>{c.reason}</p>}
                       {c.before !== null && c.field !== "alt" && (

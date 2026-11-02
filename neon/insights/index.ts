@@ -152,7 +152,8 @@ export default {
       try {
         return await handler(req);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        // Full details go to the logs; the browser gets a plain sentence.
+        const message = api.publicError(err, `${req.method} ${path}`);
         return new Response(JSON.stringify({ error: message }), {
           status: 500,
           headers: { "Content-Type": "application/json" },

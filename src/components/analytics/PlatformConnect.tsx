@@ -18,9 +18,9 @@ export function PlatformConnect({ platform, domain, onConnected }: { platform: s
 
 /** Where the header code goes, per platform. */
 const WHERE: Record<string, string> = {
-  squarespace: "Squarespace: Settings, Advanced, Code Injection, Header. Paste, then Save. (Needs a Business plan or higher.)",
+  squarespace: "Squarespace: Settings, Developer tools (Advanced on older sites), Code Injection, Header. Paste, then Save. (Code Injection isn't on the cheapest Squarespace plan.)",
   framer: "Framer: Site Settings, General, Custom Code, Start of <head> tag. Paste, then Publish.",
-  godaddy: "GoDaddy: Website, Settings, Site-wide code. Paste, then Publish.",
+  godaddy: "GoDaddy: Website, Settings, then the code box that applies across the whole site (Site Wide Code). Paste, then Publish.",
   duda: "Duda: Settings, Head HTML. Paste, then Republish.",
   weebly: "Weebly: Settings, SEO, Header Code. Paste, then Publish.",
   ghost: "Ghost: Settings, Code injection, Site header. Paste, then Save.",
@@ -34,15 +34,33 @@ function SnippetConnect({ platform, onConnected }: { platform: string | null; on
   const [copied, setCopied] = useState(false);
   const { busy, error, run } = useConnect("/api/snippet/check", onConnected);
   const [checkError, setCheckError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
-    api<{ tag: string }>("/api/snippet").then((d) => setTag(d.tag), () => setTag(null));
-  }, []);
-  if (!tag) return null;
+    setLoadError(null);
+    api<{ tag: string }>("/api/snippet").then(
+      (d) => (d.tag ? setTag(d.tag) : setLoadError("Couldn't get your line of code.")),
+      (e: unknown) => {
+        setTag(null);
+        setLoadError(e instanceof Error ? e.message : "Couldn't get your line of code.");
+      }
+    );
+  }, [attempt]);
+  if (loadError)
+    return (
+      <div className={box} role="alert">
+        <p className="text-dash-down">{loadError}</p>
+        <button type="button" onClick={() => setAttempt((n) => n + 1)} className={button}>
+          Try again
+        </button>
+      </div>
+    );
+  if (!tag) return <p className="text-sm text-dash-muted">Getting your line of code…</p>;
   return (
     <div className={box}>
       <p>
-        <b>Let the autopilot change your site itself.</b> Add one line to your site&apos;s header, once. Then SEO titles,
-        descriptions, structured data and internal links update automatically, and undo removes them right away. Page text still
+        <b>Let the autopilot change your site itself.</b> Add one line to your site&apos;s header, once. Then page titles,
+        the summaries Google shows, page details for Google and links between your pages update automatically, and undo removes them right away. Page text still
         comes as a fix list.
       </p>
       <pre className="overflow-auto whitespace-pre-wrap rounded-lg border border-dash-line bg-white p-3 font-mono text-xs">{tag}</pre>
@@ -140,8 +158,8 @@ function WixConnect({ onConnected }: { onConnected: () => void }) {
       }}
     >
       <p>
-        <b>Your site runs on Wix.</b> Connect it and the autopilot updates your blog posts&apos; SEO titles, descriptions and
-        structured data itself. Wix doesn&apos;t allow apps to edit regular pages, so those stay on the fix list. About two minutes:
+        <b>Your site runs on Wix.</b> Connect it and the autopilot updates your blog posts&apos; titles, the summaries Google
+        shows and page details for Google itself. Wix doesn&apos;t allow apps to edit regular pages, so those stay on the fix list. About two minutes:
       </p>
       <ol className="list-decimal space-y-1 pl-5">
         <li>

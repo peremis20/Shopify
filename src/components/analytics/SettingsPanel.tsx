@@ -4,7 +4,7 @@ import { connectGoogleEmbedded, isEmbedded } from "./embedded-client";
 import { useEffect, useState } from "react";
 import type { ConnectionInfo, PropertyOptions } from "@/lib/analytics/types";
 import { CloseIcon } from "./Icons";
-import { GaLogo, GscLogo } from "./ui";
+import { ConfirmButton, GaLogo, GscLogo } from "./ui";
 
 export function SettingsPanel({ connection, account, onClose, onChanged }: {
   connection: ConnectionInfo | undefined;
@@ -140,9 +140,13 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
             {saveError && <p className="text-sm text-dash-down">{saveError}</p>}
 
             <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-              <button onClick={disconnect} disabled={saving} className="text-sm font-semibold text-dash-down hover:underline disabled:opacity-60">
-                Disconnect Google and sign out
-              </button>
+              <ConfirmButton
+                label="Disconnect Google and sign out"
+                confirmLabel="Click again to disconnect Google"
+                onConfirm={disconnect}
+                disabled={saving}
+                className="text-sm font-semibold text-dash-down hover:underline disabled:opacity-60"
+              />
               <button
                 onClick={save}
                 disabled={saving || !options}
@@ -179,7 +183,11 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
 
         {mode === "none" && (
           <div className="space-y-5 text-sm">
-            <p>Connect the Google account that has access to your Analytics and Search Console. The dashboard only reads data and never changes anything.</p>
+            <p>
+              Connect the Google account that has access to your Analytics and Search Console. DashPatrol reads them, and only changes
+              something in your Google account when you ask it to, like Set it up for me (which adds your site to Search Console and
+              creates an Analytics property).
+            </p>
             {connection?.oauthAvailable ? (
               <ConnectButton />
             ) : (

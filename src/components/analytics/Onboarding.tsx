@@ -49,7 +49,14 @@ const TITLES: Record<Screen, string> = {
   finish: "Turn on the autopilot",
 };
 
-export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () => void; onChanged: () => void }) {
+export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview }: {
+  /** Simple view: the autopilot lives on the Content page. */
+  simple?: boolean;
+  onOpenSettings: () => void;
+  onChanged: () => void;
+  /** Opens the autopilot and shows its first change. */
+  onPreview: () => void;
+}) {
   const [status, setStatus] = useState<Status | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -126,7 +133,8 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
     return (
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dash-up/30 bg-dash-up/5 p-4 text-sm">
         <span>
-          <b>You&apos;re all set.</b> The autopilot is working on your rankings; its changes show in the Autopilot card below.
+          <b>You&apos;re all set.</b> The autopilot is working on your rankings; its changes show{" "}
+          {simple ? "on the Content page" : "in the SEO Autopilot section below"}.
         </span>
         <button onClick={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} className="font-semibold text-dash-green hover:underline">
           Close
@@ -171,7 +179,10 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
         <div className="text-sm">
           {current === "google" && (
             <div className="space-y-3">
-              <p className="text-dash-muted">One Google sign in covers Search Console and Analytics. The app only reads them.</p>
+              <p className="text-dash-muted">
+                One Google sign in covers Search Console and Analytics. The app reads them, and only changes something in your Google
+                account when you ask it to (like Set it up for me).
+              </p>
               <ConnectButton />
             </div>
           )}
@@ -186,9 +197,15 @@ export function Onboarding({ onOpenSettings, onChanged }: { onOpenSettings: () =
           )}
           {current === "business" && <BusinessPicker status={status} busy={busy} act={act} />}
           {current === "data" && <DataScreen status={status} busy={busy} act={act} onOpenSettings={onOpenSettings} onSkip={() => skip("data")} />}
-          {current === "keywords" && <KeywordsScreen act={act} onSkip={() => skip("keywords")} />}
+          {current === "keywords" && <KeywordsScreen simple={simple} act={act} onSkip={() => skip("keywords")} />}
           {current === "finish" && (
-            <Finish status={status} busy={busy} act={act} onLater={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} />
+            <Finish
+              status={status}
+              busy={busy}
+              act={act}
+              onLater={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))}
+              onPreview={onPreview}
+            />
           )}
         </div>
         {previous && current !== "google" && (
@@ -277,7 +294,7 @@ function DataScreen({
 }
 
 /** The last screen: the first site check starts on its own; one button turns the autopilot on. */
-function Finish({ status, busy, act, onLater }: { status: Status; busy: string | null; act: Act; onLater: () => void }) {
+function Finish({ status, busy, act, onLater, onPreview }: { status: Status; busy: string | null; act: Act; onLater: () => void; onPreview: () => void }) {
   const checked = status.steps.find((x) => x.id === "first_check")?.done;
   useEffect(() => {
     if (!checked) api("/api/autopilot/check", {}).catch(() => undefined);
@@ -286,7 +303,7 @@ function Finish({ status, busy, act, onLater }: { status: Status; busy: string |
     <div className="space-y-4">
       <p className="text-dash-muted">Your first site check is running now. Once the autopilot is on, every week it:</p>
       <ul className="list-disc space-y-1 pl-5 text-dash-muted">
-        <li>Improves up to 4 pages for your searches, specific long tail ones first: titles, descriptions, a new section and links from your other articles</li>
+        <li>Improves up to 4 pages for your searches, the most specific ones first: titles, the summary Google shows, a new section and links from your other articles</li>
         <li>Writes up to 3 new articles for searches no page covers yet, planned from what ranks on Google page 1</li>
         <li>Checks where you stand on Google every day and undoes changes that don&apos;t help</li>
         {status.platform && status.platform !== "shopify" && status.platform !== "wordpress" && (
@@ -305,7 +322,7 @@ function Finish({ status, busy, act, onLater }: { status: Status; busy: string |
         <button
           onClick={() => {
             onLater();
-            scrollTo("autopilot");
+            onPreview();
           }}
           className="font-semibold text-dash-green hover:underline"
         >
@@ -343,10 +360,6 @@ type Act = (id: string, run: () => Promise<Status | void>, refreshDashboard?: bo
 
 const button = "rounded-xl bg-dash-green px-4 py-2 font-semibold text-white hover:bg-dash-deep disabled:opacity-60";
 const link = "font-semibold text-dash-green hover:underline";
-
-function scrollTo(id: string) {
-  document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
 
 /** Shopify connects in one click; any other website by its address (read from its sitemap, changes as a fix list). */
 function WebsiteConnect({ busy, act }: { busy: boolean; act: Act }) {
@@ -456,13 +469,13 @@ const PASTE_WHERE: Record<string, { verification: string; analytics: string; sep
     separate: true,
   },
   squarespace: {
-    verification: "In Squarespace, open Settings, Developer tools, Code Injection, Header. Paste the code below and Save.",
+    verification: "In Squarespace, open Settings, Developer tools (Advanced on older sites), Code Injection, Header. Paste the code below and Save. (Code Injection isn't on the cheapest Squarespace plan.)",
     analytics: "",
     separate: false,
   },
 };
 const HEADER_WHERE: Record<string, string> = {
-  godaddy: "In GoDaddy: Website, Settings, Site-wide code. Paste the code below, then Publish.",
+  godaddy: "In GoDaddy: Website, Settings, then the code box that applies across the whole site (Site Wide Code). Paste the code below, then Publish.",
   duda: "In Duda: Settings, Head HTML. Paste the code below, then Republish.",
   weebly: "In Weebly: Settings, SEO, Header Code. Paste the code below, then Publish.",
   ghost: "In Ghost: Settings, Code injection, Site header. Paste the code below, then Save.",
@@ -744,7 +757,7 @@ interface Suggestion {
  * when there's no data yet), the specific ones with room on page 1 first. The
  * best five come checked; one click hands them to the autopilot.
  */
-function KeywordsScreen({ act, onSkip }: { act: Act; onSkip: () => void }) {
+function KeywordsScreen({ simple, act, onSkip }: { simple: boolean; act: Act; onSkip: () => void }) {
   const [items, setItems] = useState<Suggestion[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<string | null>(null);
@@ -773,7 +786,8 @@ function KeywordsScreen({ act, onSkip }: { act: Act; onSkip: () => void }) {
     return (
       <div className="space-y-3">
         <p className="text-dash-muted">
-          Still finding searches for your pages. They&apos;ll show in SEO Tools, Opportunities, within the hour, each with a Rank for this button.
+          Still finding searches for your pages. They&apos;ll show {simple ? "on the Keywords page" : "in SEO Tools, Opportunities,"} within the
+          hour, each with a Rank for this button.
         </p>
         <button onClick={onSkip} className={button}>
           Continue
@@ -784,18 +798,33 @@ function KeywordsScreen({ act, onSkip }: { act: Act; onSkip: () => void }) {
   const go = () =>
     act("targets", async () => {
       const list = items.filter((o) => picked.has(o.query));
-      for (const [i, o] of list.entries()) {
-        setProgress(`Checking Google for "${o.query}" (${i + 1} of ${list.length})`);
-        await api("/api/seo/target", { keyword: o.query, monthlySearches: o.monthlySearches });
+      const failed: string[] = [];
+      try {
+        for (const [i, o] of list.entries()) {
+          setProgress(`Checking Google for "${o.query}" (${i + 1} of ${list.length})`);
+          // One search failing doesn't stop the others.
+          await api("/api/seo/target", { keyword: o.query, monthlySearches: o.monthlySearches }).catch(() => failed.push(o.query));
+        }
+      } finally {
+        setProgress(null);
       }
-      setProgress(null);
+      if (failed.length) {
+        // Only the ones that failed stay ticked, so clicking again tries just those.
+        setPicked(new Set(failed));
+        const names = failed.map((q) => `"${q}"`).join(", ");
+        throw new Error(
+          failed.length === list.length
+            ? `Couldn't add ${names}. Please try again.`
+            : `Added ${list.length - failed.length} of ${list.length}. Couldn't add ${names}. Click again to try ${failed.length === 1 ? "it" : "them"} again, or skip.`
+        );
+      }
     });
 
   return (
     <div className="space-y-3">
       <p className="text-dash-muted">
-        Specific searches rank first, so these are what the autopilot works on first. Green ones have smaller sites on page 1, so
-        there&apos;s room for you.
+        Specific searches rank first, so these are what the autopilot works on first. Ones marked <b>Room for you</b> have smaller
+        sites on page 1, so they&apos;re easier to win.
       </p>
       <ul className="space-y-1.5">
         {items.map((o) => (
@@ -813,7 +842,14 @@ function KeywordsScreen({ act, onSkip }: { act: Act; onSkip: () => void }) {
                 }}
               />
               <span className="min-w-0">
-                <span className="block font-semibold text-dash-ink">{o.query}</span>
+                <span className="block font-semibold text-dash-ink">
+                  {o.query}
+                  {o.winnable && (
+                    <span className="ml-2 whitespace-nowrap rounded-full bg-dash-up/10 px-2 py-0.5 align-middle text-[11px] font-semibold text-dash-up">
+                      Room for you
+                    </span>
+                  )}
+                </span>
                 <span className={`block text-xs ${o.winnable ? "text-dash-up" : "text-dash-muted"}`}>
                   {o.monthlySearches ? `${o.monthlySearches.toLocaleString()} searches a month` : ""}
                   {o.monthlySearches && o.why ? " · " : ""}

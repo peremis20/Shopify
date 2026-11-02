@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Delta } from "@/lib/analytics/types";
 import { ArrowDownIcon, ArrowUpIcon, ExternalIcon } from "./Icons";
 
@@ -96,5 +96,40 @@ export function GscLogo({ className = "h-6 w-6" }: { className?: string }) {
       <path d="m16 16 5 5" stroke="#34A853" strokeWidth="2.8" strokeLinecap="round" />
       <path d="M7 12.5v-2M10.5 12.5v-5M14 12.5v-3" stroke="#EA4335" strokeWidth="2" strokeLinecap="round" />
     </svg>
+  );
+}
+
+/**
+ * A button for something hard to take back (disconnect, undo): the first click
+ * asks, the second does it. It goes back to asking after a few seconds.
+ */
+export function ConfirmButton({ label, confirmLabel = "Click again to confirm", onConfirm, disabled, className = "" }: {
+  label: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    if (!asking) return;
+    const t = setTimeout(() => setAsking(false), 5000);
+    return () => clearTimeout(t);
+  }, [asking]);
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      aria-live="polite"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (!asking) return setAsking(true);
+        setAsking(false);
+        onConfirm();
+      }}
+      className={className}
+    >
+      {asking ? confirmLabel : label}
+    </button>
   );
 }

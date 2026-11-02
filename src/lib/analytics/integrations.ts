@@ -12,7 +12,8 @@ const CATALOG: Omit<IntegrationInfo, "status" | "detail">[] = [
   { id: "google-ads", name: "Google Ads", description: "Spend, conversions and ROAS" },
   { id: "meta", name: "Meta (Facebook / Instagram)", description: "Ad and social performance" },
   { id: "mailchimp", name: "Mailchimp", description: "Email opens, clicks and growth" },
-  { id: "shopify", name: "Shopify", description: "Orders, revenue and products" },
+  // Shopify isn't listed: it already works as a website connection (setup and the Content page show its real status),
+  // so a "Coming soon" here would be wrong for every store that is connected.
 ];
 
 const fromSource = (s: SourceStatus): IntegrationStatus => (s === "live" ? "connected" : s);

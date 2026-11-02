@@ -100,10 +100,26 @@ export async function wixResolve(w: WixAccess, url: string): Promise<StoreResour
   };
 }
 
-/** Edits a post's SEO tags on its draft and publishes it, which updates the live post. */
+/** Thrown when a post has unpublished edits by the owner: publishing would put them live, so the change is skipped. */
+export class WixUnpublishedDraft extends Error {
+  constructor() {
+    super("This post has edits in Wix that aren't published yet, so it was left alone rather than publish them. Publish or discard those edits in Wix and it can be changed next time.");
+    this.name = "UnpublishedDraft";
+  }
+}
+
+/**
+ * Edits a post's SEO tags on its draft and publishes it, which updates the live post. Wix has no way to change only
+ * the live post, so when the draft holds the owner's unpublished edits nothing is written (publishing would put them live).
+ */
 export async function wixSetTag(w: WixAccess, id: string, kind: "title" | "description" | "schema", value: string | null): Promise<void> {
   const postId = id.replace(/^post:/, "");
-  const { draftPost } = await wix<{ draftPost: { id: string; seoData?: { tags?: WixTag[] } } }>(w, "GET", `/blog/v3/draft-posts/${postId}?fieldsets=SEO`);
+  const { draftPost } = await wix<{ draftPost: { id: string; status?: string; hasUnpublishedChanges?: boolean; seoData?: { tags?: WixTag[] } } }>(
+    w,
+    "GET",
+    `/blog/v3/draft-posts/${postId}?fieldsets=SEO`
+  );
+  if (draftPost.hasUnpublishedChanges || (draftPost.status && draftPost.status !== "PUBLISHED")) throw new WixUnpublishedDraft();
   const seoData = { ...(draftPost.seoData ?? {}), tags: withTag(draftPost.seoData?.tags, kind, value) };
   await wix(w, "PATCH", `/blog/v3/draft-posts/${postId}`, { draftPost: { id: postId, seoData } });
   await wix(w, "POST", `/blog/v3/draft-posts/${postId}/publish`, {});

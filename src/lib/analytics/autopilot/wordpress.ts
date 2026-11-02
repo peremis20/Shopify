@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { ensureSchema, sql } from "../db";
 import { tokenSecret } from "../oauth-client";
+import { assertPublicUrl, publicFetch } from "../profile";
 import { decrypt, encrypt } from "../secrets";
 import type { ArticleSummary, StoreResource } from "./shopify";
 
@@ -49,9 +50,11 @@ export async function wpRequest<T>(wp: WpAccess, method: "GET" | "POST", path: s
   const base = wp.site.replace(/\/?$/, "/");
   const [route, query] = path.split("?");
   const urls = [`${base}wp-json/insights/v1${path}`, `${base}?rest_route=/insights/v1${route}${query ? `&${query}` : ""}`];
+  // Only an ordinary public website, never a local or internal address.
+  await assertPublicUrl(base);
   let last = "";
   for (const url of urls) {
-    const res = await fetch(url, {
+    const res = await publicFetch(url, {
       method,
       headers: { "X-Insights-Key": wp.key, "Content-Type": "application/json", Accept: "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),

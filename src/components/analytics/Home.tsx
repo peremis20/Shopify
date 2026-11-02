@@ -22,7 +22,11 @@ interface Authority { ready: boolean; authority: number | null; history?: { day:
  * The Simple view's home screen: three numbers, what the app did this week,
  * and the one thing worth doing next. Everything else is a click away.
  */
-export function Home({ data, loading, onGo }: { data: OverviewResponse | null; loading: boolean; onGo: (p: SimplePage) => void }) {
+export function Home({ data, loading, onGo }: {
+  data: OverviewResponse | null;
+  loading: boolean;
+  onGo: (p: SimplePage) => void;
+}) {
   const [changes, setChanges] = useState<AutopilotChange[] | null>(null);
   const [runs, setRuns] = useState<AutopilotRun[]>([]);
   const [settings, setSettings] = useState<AutopilotSettingsView | null>(null);
@@ -32,12 +36,19 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   const [strategy, setStrategy] = useState<StrategyReport | null>(null);
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [planNote, setPlanNote] = useState<string | null>(null);
   async function planNow() {
     setPlanning(true);
     setPlanError(null);
+    setPlanNote(null);
     try {
-      const d = await api<{ report: StrategyReport | null; error?: string }>("/api/strategy", { refresh: true });
+      const d = await api<{ report: StrategyReport | null; error?: string; message?: string }>("/api/strategy", { refresh: true });
       setStrategy(d.report);
+      // No plan back: say why (the server's own words when it gives them), never nothing.
+      if (!d.report) {
+        if (d.error) setPlanError(d.error);
+        else setPlanNote(d.message || "No plan yet. The Strategist needs a little more data from your site first. Please try again later.");
+      }
     } catch (e) {
       setPlanError(e instanceof Error ? e.message : "Couldn't plan right now");
     } finally {
@@ -69,6 +80,17 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
   // Only live numbers: a customer's own numbers are never made up.
   const gsc = data?.gsc?.status === "live" ? data.gsc.data : undefined;
+  const admin = data?.account?.admin ?? false;
+  // The goal is a month of visitors, so compare it with 28 days, not whatever range is picked.
+  const days = data?.gsc?.range ? Math.round((Date.parse(data.gsc.range.end) - Date.parse(data.gsc.range.start)) / 86_400_000) + 1 : null;
+  const monthly: { value: number; note: string } | null =
+    gsc && days === 28
+      ? { value: gsc.totals.clicks.value, note: "in the last 28 days" }
+      : strategy?.visitors != null
+        ? { value: strategy.visitors, note: "in the last 28 days" }
+        : gsc && days && days > 0
+          ? { value: Math.round((gsc.totals.clicks.value * 28) / days), note: `a month at the pace of the last ${days} days` }
+          : null;
   const pageOne = ranks?.filter((r) => r.position !== null && r.position <= 10) ?? [];
   const quoted = ranks?.filter((r) => r.quoted).length ?? 0;
   const pageOneBefore = ranks?.filter((r) => r.previous !== null && r.previous <= 10).length ?? 0;
@@ -103,8 +125,11 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
   if (dropped.length) warnings.push({ text: `${dropped.length === 1 ? `"${dropped[0].query}" dropped` : `${dropped.length} searches dropped`} off Google page 1 since the last check.`, page: "keywords" });
   const broken = health.filter((h) => h.issues.some((i) => i.level === "high"));
   if (broken.length) warnings.push({ text: `${broken.length} ${broken.length === 1 ? "page has" : "pages have"} a serious problem Google can see, like not being indexed.`, page: "content" });
-  if (settings && !settings.platformReady) warnings.push({ text: "The autopilot can't run: an AI key or the store connection is missing.", page: "settings" });
-  else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
+  // Only the platform owner can add the platform keys; customers are just told it's being set up.
+  if (settings && !settings.platformReady && admin) warnings.push({ text: "The autopilot can't run: a platform key (an AI key or the Shopify app keys) is missing. Add it on the Content page.", page: "content" });
+  else if (settings && !settings.platformReady) {
+    /* shown below as a calm note, not a warning: there's nothing the owner can do */
+  } else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
   // What the Inspector found that needs a person (repairs it made itself show under "What I did").
   for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
     warnings.push({
@@ -158,6 +183,13 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
         </div>
       )}
 
+      {settings && !settings.platformReady && !admin && (
+        <p className="rounded-xl border border-dash-line bg-white px-4 py-2.5 text-sm text-dash-muted" role="status">
+          The autopilot is still being set up on our side. There&apos;s nothing you need to do: it starts on its own as soon as it&apos;s
+          ready.
+        </p>
+      )}
+
       <div className="grid grid-cols-3 gap-3">
         <Jump label="Keywords" sub={ranks ? `${ranks.length} tracked, ${pageOne.length} on page 1` : "What to rank for"} onClick={() => onGo("keywords")} />
         <Jump label="Content" sub={fixes.length ? `${fixes.length} ${fixes.length === 1 ? "fix" : "fixes"} ready to paste` : `${pages + articles.length} updates this week`} onClick={() => onGo("content")} />
@@ -201,7 +233,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
                 {formatNumber(sales!.orders.value)} {sales!.orders.value === 1 ? "order" : "orders"} <DeltaBadge delta={sales!.revenue} />
               </span>
             ) : (
-              <span className="text-xs text-dash-muted">Needs GA purchase tracking</span>
+              <span className="text-xs text-dash-muted">Needs sales tracking in Google Analytics</span>
             )
           }
         />
@@ -209,7 +241,7 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <Plan strategy={strategy} visitors={gsc ? gsc.totals.clicks.value : null} currency={sales?.currency ?? null} planning={planning} error={planError} onPlan={planNow} />
+          <Plan strategy={strategy} monthly={monthly} currency={sales?.currency ?? null} planning={planning} error={planError} note={planNote} onPlan={planNow} />
         </div>
 
         <div className="space-y-4">
@@ -254,7 +286,12 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
                   <p key={p.id} className="mt-2 text-xs text-dash-muted">Fixed on its own: {p.text}</p>
                 ))}
                 {articles.length > 0 && <p className="mt-2 truncate text-xs text-dash-muted" title={articles[0].query}>Newest article: &ldquo;{articles[0].query}&rdquo;</p>}
-                {!activity.some((a) => a.n > 0) && <p className="mt-2 text-xs text-dash-muted">Nothing yet this week. Turn on the autopilot under Content.</p>}
+                {!activity.some((a) => a.n > 0) && (
+                  <p className="mt-2 text-xs text-dash-muted">
+                    Nothing yet this week.
+                    {settings?.platformReady && (settings.enabled ? " The autopilot is on; its changes show here as it makes them." : " Turn on the autopilot under Content.")}
+                  </p>
+                )}
               </>
             )}
           </Panel>
@@ -265,9 +302,22 @@ export function Home({ data, loading, onGo }: { data: OverviewResponse | null; l
 }
 
 function Stat({ label, hint, value, badge }: { label: string; hint: string; value: string | null; badge?: ReactNode }) {
+  const [open, setOpen] = useState(false);
   return (
     <div className="rounded-xl border border-dash-line bg-white px-4 py-3" title={hint}>
-      <p className="text-xs font-medium text-dash-muted">{label}</p>
+      <p className="flex items-center justify-between gap-2 text-xs font-medium text-dash-muted">
+        <span>{label}</span>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          aria-label={`What is ${label}?`}
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-dash-line text-[10px] leading-none hover:border-dash-green hover:text-dash-green"
+        >
+          ?
+        </button>
+      </p>
+      {open && <p className="mt-1 text-xs text-dash-muted">{hint}</p>}
       {value === null ? <Skeleton className="mt-2 h-7 w-20" /> : <p className="mt-1 font-serif text-2xl text-dash-ink tabular-nums">{value}</p>}
       <div className="mt-1 min-h-[1.25rem] text-sm">{badge}</div>
     </div>
@@ -307,17 +357,19 @@ function Change({ n }: { n: number }) {
 
 
 /** The Strategist's week: progress to the goal, the moves that survived review, and the ones that didn't. */
-function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
+function Plan({ strategy, monthly, currency, planning, error, note, onPlan }: {
   strategy: StrategyReport | null;
-  visitors: number | null;
+  /** Visitors from Google over 28 days (or scaled to 28 days, and labeled so). */
+  monthly: { value: number; note: string } | null;
   currency: string | null;
   planning: boolean;
   error: string | null;
+  note: string | null;
   onPlan: () => void;
 }) {
   const [showDropped, setShowDropped] = useState(false);
   const goal = strategy?.goal ?? 20_000;
-  const now = visitors ?? strategy?.visitors ?? null;
+  const now = monthly?.value ?? null;
   const pct = now !== null ? Math.min(100, (now / goal) * 100) : 0;
   const kept = strategy?.moves.filter((m) => m.kept) ?? [];
   const dropped = strategy?.moves.filter((m) => !m.kept) ?? [];
@@ -329,7 +381,9 @@ function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
       <div className="mb-3">
         <div className="mb-1 flex justify-between text-xs text-dash-muted">
           <span>Goal: {formatNumber(goal)} visitors a month from Google</span>
-          <span className="tabular-nums">{now !== null ? `${formatNumber(now)} now (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` : "not measured yet"}</span>
+          <span className="tabular-nums">
+            {now !== null ? `${formatNumber(now)} ${monthly!.note} (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` : "Not measured yet"}
+          </span>
         </div>
         {strategy?.revenue != null && strategy.revenue > 0 && (
           <p className="mb-1 text-xs text-dash-muted">Sales from Google, last 28 days:{" "}
@@ -339,7 +393,15 @@ function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
                 : formatNumber(Math.round(strategy.revenue))}
             </span></p>
         )}
-        <div className="h-2 overflow-hidden rounded-full bg-[#F1ECE3]">
+        <div
+          className="h-2 overflow-hidden rounded-full bg-[#F1ECE3]"
+          role="progressbar"
+          aria-label="Progress to the monthly visitor goal"
+          aria-valuemin={0}
+          aria-valuemax={goal}
+          aria-valuenow={now !== null ? Math.min(now, goal) : undefined}
+          aria-valuetext={now !== null ? `${formatNumber(now)} of ${formatNumber(goal)} visitors` : "Not measured yet"}
+        >
           <div className="h-full rounded-full bg-dash-green" style={{ width: `${Math.max(pct, now ? 1 : 0)}%` }} />
         </div>
       </div>
@@ -385,7 +447,8 @@ function Plan({ strategy, visitors, currency, planning, error, onPlan }: {
           )}
         </>
       )}
-      {error && <p className="mt-2 text-xs text-dash-down">{error}</p>}
+      {error && <p className="mt-2 text-xs text-dash-down" role="alert">{error}</p>}
+      {note && !error && <p className="mt-2 text-xs text-dash-muted" role="status">{note}</p>}
     </Panel>
   );
 }

@@ -27,6 +27,7 @@ const GREEN = "#1F4D36";
 const COPPER = "#B8693D";
 const RANGE_STORAGE_KEY = "insights.range";
 const MODE_STORAGE_KEY = "insights.view";
+const SEEN_STORAGE_KEY = "insights.seen";
 
 export function DashboardView() {
   const [range, setRange] = useState<RangeKey>("28d");
@@ -43,6 +44,10 @@ export function DashboardView() {
   const [notice, setNotice] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
+  // The last setup screen asked to see the autopilot's first change.
+  const [previewRequested, setPreviewRequested] = useState(false);
+  // "Welcome back!" only for people who have been here before.
+  const [returning, setReturning] = useState(false);
 
   // Show the result of a Google sign in, then tidy the address bar.
   useEffect(() => {
@@ -72,6 +77,8 @@ export function DashboardView() {
       const saved = localStorage.getItem(RANGE_STORAGE_KEY);
       if (saved && RANGE_OPTIONS.some((o) => o.key === saved)) setRange(saved as RangeKey);
       if (localStorage.getItem(MODE_STORAGE_KEY) === "advanced") setMode("advanced");
+      if (localStorage.getItem(SEEN_STORAGE_KEY)) setReturning(true);
+      else localStorage.setItem(SEEN_STORAGE_KEY, "1");
     } catch {
       /* storage unavailable, keep the default */
     }
@@ -131,6 +138,12 @@ export function DashboardView() {
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function showFirstChange() {
+    setPreviewRequested(true);
+    if (mode === "simple") go("content");
+    else setTimeout(() => navigate("autopilot"), 0);
+  }
+
   if (signedOut) return <SignInScreen error={signInError} />;
 
   const ga = data?.ga;
@@ -166,7 +179,7 @@ export function DashboardView() {
 
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" ? (page === "home" && usingDemo ? "Welcome!" : SIMPLE_TITLE[page]) : usingDemo ? "Welcome!" : "Welcome back!"}</h1>
+                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" && page !== "home" ? SIMPLE_TITLE[page] : usingDemo || !returning ? "Welcome!" : "Welcome back!"}</h1>
                 <p className="mt-1 text-dash-muted">
                   {mode === "simple" ? SIMPLE_SUB[page] : "Your website performance from Google Analytics and Search Console in one place."}
                 </p>
@@ -250,7 +263,12 @@ export function DashboardView() {
             </div>
           )}
 
-          <Onboarding onOpenSettings={() => setSettingsOpen(true)} onChanged={() => load(range, true)} />
+          <Onboarding
+            simple={mode === "simple"}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onChanged={() => load(range, true)}
+            onPreview={showFirstChange}
+          />
 
           {usingDemo && (
             <div className="mt-6 rounded-2xl border border-[#E7D3B4] bg-[#FBF1E1] p-4 text-sm">
@@ -293,7 +311,13 @@ export function DashboardView() {
               )}
               {page === "content" && (
                 <>
-                  <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
+                  <Autopilot
+                    simple
+                    connected={connection?.mode === "oauth"}
+                    admin={data?.account?.admin ?? false}
+                    autoPreview={previewRequested}
+                    onAutoPreviewDone={() => setPreviewRequested(false)}
+                  />
                   <RankHealth connected={connection?.mode === "oauth"} />
                   <ExpertReview />
                 </>
@@ -306,7 +330,11 @@ export function DashboardView() {
                 </Card>
               )}
               {page === "settings" && (
-                <ConnectedApps integrations={data?.integrations ?? []} onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))} />
+                <ConnectedApps
+                  integrations={data?.integrations ?? []}
+                  admin={data?.account?.admin ?? false}
+                  onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))}
+                />
               )}
               <p className="mt-8 text-center text-xs text-dash-muted">
                 Want every chart, table and score?{" "}
@@ -451,7 +479,12 @@ export function DashboardView() {
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
           </div>
 
-          <Autopilot connected={connection?.mode === "oauth"} admin={data?.account?.admin ?? false} />
+          <Autopilot
+            connected={connection?.mode === "oauth"}
+            admin={data?.account?.admin ?? false}
+            autoPreview={previewRequested}
+            onAutoPreviewDone={() => setPreviewRequested(false)}
+          />
 
           <RankHealth connected={connection?.mode === "oauth"} />
 
@@ -464,6 +497,7 @@ export function DashboardView() {
 
           <ConnectedApps
             integrations={data?.integrations ?? []}
+            admin={data?.account?.admin ?? false}
             onSetup={(id) => (id === "keywords" ? navigate("keywords") : setSettingsOpen(true))}
           />
           </>)}
@@ -516,7 +550,7 @@ function Kpi({ icon, label, value, badge, spark, loading }: {
       ) : (
         <div className="mt-3 flex items-end justify-between gap-3">
           <div className="min-w-0">
-            <p className="font-serif text-3xl text-dash-ink">{value ?? "—"}</p>
+            <p className="font-serif text-3xl text-dash-ink">{value ?? "Not yet"}</p>
             <div className="mt-1 flex items-center gap-2 whitespace-nowrap">
               {badge}
               <span className="hidden text-xs text-dash-muted 2xl:inline">vs. prior period</span>
@@ -658,10 +692,15 @@ const STATUS_STYLE: Record<IntegrationInfo["status"], string> = {
   setup: "bg-dash-copper",
 };
 
-function ConnectedApps({ integrations, onSetup }: {
+/** Apps only the platform owner sets up (customers can't, so they don't see a Set up button for them). */
+const PLATFORM_OWNER_APPS = new Set(["keywords"]);
+
+function ConnectedApps({ integrations, admin, onSetup }: {
   integrations: IntegrationInfo[];
+  admin: boolean;
   onSetup: (id: string) => void;
 }) {
+  const shown = integrations.filter((app) => admin || !PLATFORM_OWNER_APPS.has(app.id) || app.status === "connected");
   return (
     <section id="apps" className="mt-5 scroll-mt-6 rounded-2xl border border-dash-line bg-[#EFF2EA] p-5">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -671,7 +710,7 @@ function ConnectedApps({ integrations, onSetup }: {
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
-        {integrations.map((app) => (
+        {shown.map((app) => (
           <div key={app.id} className="flex flex-col justify-between gap-3 rounded-xl border border-dash-line bg-white p-4">
             <div className="flex items-start gap-3">
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#F6F2EA]">

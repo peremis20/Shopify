@@ -105,23 +105,52 @@ export async function embeddedAccount(req: Request): Promise<Account | null> {
 
 const linkKey = () => crypto.createHmac("sha256", process.env.SESSION_SECRET ?? "").update("google-link").digest();
 
-/** A short-lived signed ticket that lets a top-level Google sign in attach to this account. */
-export function googleLinkTicket(accountId: string, returnTo: string): string {
-  const payload = Buffer.from(JSON.stringify({ a: accountId, r: returnTo, e: Date.now() + 10 * 60_000 })).toString("base64url");
+/** How long a ticket can be opened after it is made (the app opens it at once), and how long Google consent may take after that. */
+const LINK_OPEN_MS = 3 * 60_000;
+export const LINK_FINISH_MS = 20 * 60_000;
+
+export interface LinkTicket {
+  accountId: string;
+  returnTo: string;
+  /** Made from a signed in browser (session cookie): the callback then needs that same session. */
+  session: boolean;
+  /** Single use: the callback records it once. */
+  nonce: string;
+}
+
+/**
+ * A short-lived signed ticket that lets a top-level Google sign in attach to this account.
+ * session: it was made with the session cookie, so only that signed in browser can finish it.
+ */
+export function googleLinkTicket(accountId: string, returnTo: string, session = false): string {
+  const n = crypto.randomBytes(12).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ a: accountId, r: returnTo, e: Date.now() + LINK_OPEN_MS, s: session ? 1 : 0, n })).toString("base64url");
   return `${payload}.${crypto.createHmac("sha256", linkKey()).update(payload).digest("base64url")}`;
 }
 
-export function readLinkTicket(ticket: string | null): { accountId: string; returnTo: string } | null {
+/** A valid ticket, or null. grace: extra time allowed after it can no longer be opened (for the Google callback). */
+export function readLinkTicket(ticket: string | null, grace = 0): LinkTicket | null {
   const [payload, sig] = (ticket ?? "").split(".");
   if (!payload || !sig) return null;
   const expected = crypto.createHmac("sha256", linkKey()).update(payload).digest("base64url");
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   try {
-    const { a, r, e } = b64json(payload);
-    return e > Date.now() && typeof a === "string" ? { accountId: a, returnTo: typeof r === "string" ? r : "" } : null;
+    const { a, r, e, s, n } = b64json(payload);
+    if (!(typeof e === "number" && e + grace > Date.now()) || typeof a !== "string" || typeof n !== "string") return null;
+    return { accountId: a, returnTo: typeof r === "string" ? r : "", session: s === 1, nonce: n };
   } catch {
     return null;
   }
+}
+
+/** Marks a ticket used. False when it was used before (a ticket attaches Google once). */
+export async function useLinkTicket(t: LinkTicket): Promise<boolean> {
+  await ensureSchema();
+  await sql`DELETE FROM insights_settings WHERE key LIKE 'linkused:%' AND updated_at < now() - interval '1 day'`.catch(() => undefined);
+  const rows = await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${`linkused:${t.nonce}`}, ${t.accountId})
+    ON CONFLICT (key) DO NOTHING RETURNING key`;
+  return rows.length > 0;
 }
 
 /** Where to send someone back into the app inside Shopify admin. */

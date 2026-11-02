@@ -34,7 +34,8 @@ async function reviewed(accountId: string, ourSite: string, finds: Prospect[]): 
  * Google each week, the honest way (no paid links, no link schemes):
  * - mentions: pages that already name the brand, often without a link
  * - resources: "resources" and "useful links" pages on the site's topics
- * - guest: sites on the topic that ask for guest articles ("write for us")
+ * - guest: kept for prospects found before; "write for us" pages are no longer sought, since articles traded for
+ *   links are a link scheme
  * - podcast: shows on the topic that invite guests (PR and Mentions Agent)
  * - roundup: expert roundups on the topic that collect answers (PR and Mentions Agent)
  * - broken: a page on the topic with a dead link the site can replace (Broken Link Agent, broken-links.ts)
@@ -120,7 +121,6 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
   for (const t of await topics(accountId)) {
     queries.push({ q: `"${t}" intitle:resources`, kind: "resource", topic: t });
     queries.push({ q: `"${t}" "useful links"`, kind: "resource", topic: t });
-    queries.push({ q: `"${t}" "write for us"`, kind: "guest", topic: t });
     // PR and Mentions Agent: shows and roundups that want people to speak on the topic.
     queries.push({ q: `"${t}" podcast "be a guest"`, kind: "podcast", topic: t });
     queries.push({ q: `"${t}" "expert roundup"`, kind: "roundup", topic: t });

@@ -299,3 +299,101 @@ test("heartbeat: quiet is expected during the Sabbath and just after it", () => 
   // Sunday afternoon: quiet is a problem again.
   assert.equal(judgeHeartbeat(null, new Date("2026-11-08T20:00:00Z")).ok, false);
 });
+
+import { OFF_PAGE_ONE, ownerChangedSeo } from "../src/lib/analytics/autopilot/engine";
+import { WixUnpublishedDraft } from "../src/lib/analytics/autopilot/wix";
+
+test("measuring: a search that wasn't ranked before is judged on clicks, never on position alone", () => {
+  // 25 is the "off page one" marker, not a real position: 32 isn't a fall from it.
+  assert.equal(measuredWorse(OFF_PAGE_ONE, { position: 32, clicks: 0 }, 0).worse, false);
+  assert.equal(measuredWorse(OFF_PAGE_ONE, { position: 32, clicks: null }, 3).worse, false);
+  assert.equal(measuredWorse(OFF_PAGE_ONE, { position: null, clicks: null }, 0).worse, false);
+  assert.equal(measuredWorse(null, { position: 40, clicks: 0 }, 0).worse, false);
+  // Clicks that really fell still count.
+  assert.equal(measuredWorse(OFF_PAGE_ONE, { position: 30, clicks: 1 }, 5).worse, true);
+  // A real baseline is still judged on position.
+  assert.equal(measuredWorse(20, { position: 24, clicks: 0 }, 0).worse, true);
+});
+
+test("undo: a title the owner changed since is left as the owner made it", () => {
+  assert.equal(ownerChangedSeo("Best Magnesium for Sleep | Shop", "Best Magnesium for Sleep | Shop"), false);
+  assert.equal(ownerChangedSeo("  Best Magnesium for Sleep  |  Shop ", "Best Magnesium for Sleep | Shop"), false);
+  assert.equal(ownerChangedSeo("Magnesium Guide by Our Team", "Best Magnesium for Sleep | Shop"), true);
+  assert.equal(ownerChangedSeo(null, "Best Magnesium for Sleep | Shop"), true);
+});
+
+test("wix: a post with the owner's unpublished edits is skipped, never published", () => {
+  const e = new WixUnpublishedDraft();
+  assert.equal(e.name, "UnpublishedDraft");
+  assert.ok(!/[-–—]/.test(e.message));
+});
+
+import { assertPublicUrl, bareDomain, privateIp, publicHost, publicUrlShape } from "../src/lib/analytics/profile";
+import { googleLinkTicket, LINK_FINISH_MS, readLinkTicket } from "../src/lib/analytics/embedded";
+import { publicError, wpConfirmToken, wpConfirmValid } from "../src/lib/analytics/handlers";
+
+test("public addresses only: local, private, metadata and raw IP addresses are never fetched", async () => {
+  for (const h of ["localhost", "127.0.0.1", "10.0.0.5", "169.254.169.254", "metadata.google.internal", "metadata.goog", "printer.local", "db.corp", "[::1]", "0x7f000001", "intranet"]) {
+    assert.equal(publicHost(h), false, h);
+  }
+  for (const h of ["shop.com", "www.my-store.co.uk", "metadata.io"]) assert.equal(publicHost(h), true, h);
+  assert.equal(privateIp("192.168.1.1"), true);
+  assert.equal(privateIp("::ffff:127.0.0.1"), true);
+  assert.equal(privateIp("8.8.8.8"), false);
+  assert.equal(bareDomain("http://127.0.0.1/admin"), null);
+  assert.equal(bareDomain("169.254.169.254"), null);
+  assert.equal(bareDomain("https://www.Shop.com/x"), "shop.com");
+  assert.equal(publicUrlShape("https://shop.com/"), true);
+  for (const u of ["file:///etc/passwd", "gopher://shop.com/", "http://shop.com:6379/", "http://user:pw@shop.com/", "http://10.1.2.3/", "not a url"]) {
+    assert.equal(publicUrlShape(u), false, u);
+  }
+  await assert.rejects(assertPublicUrl("http://169.254.169.254/latest/meta-data/"));
+  await assert.rejects(assertPublicUrl("http://localhost:3000/"));
+});
+
+test("Google link tickets: signed, short to open, and carry who made them", () => {
+  process.env.SESSION_SECRET ??= "test secret";
+  const t = googleLinkTicket("42", "https://app/x", true);
+  const read = readLinkTicket(t);
+  assert.equal(read?.accountId, "42");
+  assert.equal(read?.session, true);
+  assert.ok(read?.nonce);
+  assert.notEqual(readLinkTicket(googleLinkTicket("42", "")!)?.nonce, read?.nonce);
+  // Tampered: refused.
+  const [p, sig] = t.split(".");
+  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(p, "base64url").toString()), a: "7" })).toString("base64url");
+  assert.equal(readLinkTicket(`${forged}.${sig}`), null);
+  // Old: can't be opened any more, but the Google callback may still finish within the grace time.
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 10 * 60_000;
+    assert.equal(readLinkTicket(t), null);
+    assert.equal(readLinkTicket(t, LINK_FINISH_MS)?.accountId, "42");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("WordPress connect: the confirm token works only for the same account, site and key", () => {
+  process.env.SESSION_SECRET ??= "test secret";
+  const tok = wpConfirmToken("1", "https://a.com/", "k");
+  assert.equal(wpConfirmValid(tok, "1", "https://a.com/", "k"), true);
+  assert.equal(wpConfirmValid(tok, "2", "https://a.com/", "k"), false);
+  assert.equal(wpConfirmValid(tok, "1", "https://evil.com/", "k"), false);
+  assert.equal(wpConfirmValid(tok, "1", "https://a.com/", "other"), false);
+  assert.equal(wpConfirmValid(null, "1", "https://a.com/", "k"), false);
+  assert.equal(wpConfirmValid(tok, "1", "https://a.com/", "k", Date.now() + 16 * 60_000), false);
+});
+
+test("errors: database and system details never reach the browser", () => {
+  const db = Object.assign(new Error('relation "insights_accounts" does not exist'), { code: "42P01" });
+  const err = console.error;
+  console.error = () => undefined;
+  try {
+    assert.ok(!publicError(db).includes("insights_accounts"));
+    assert.ok(!publicError(new TypeError("fetch failed: ECONNREFUSED 10.0.0.1")).includes("10.0.0.1"));
+  } finally {
+    console.error = err;
+  }
+  assert.equal(publicError(new Error("Connect your website by its address first.")), "Connect your website by its address first.");
+});

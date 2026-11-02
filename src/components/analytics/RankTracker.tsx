@@ -167,7 +167,7 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
                   </td>
                   <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                     {r.change === null || r.change === 0 ? (
-                      <span className="text-dash-muted">—</span>
+                      <span className="text-dash-muted">{r.change === null ? "Not yet" : "No change"}</span>
                     ) : (
                       <span className={`inline-flex items-center gap-0.5 font-semibold ${r.change > 0 ? "text-dash-up" : "text-dash-down"}`}>
                         {r.change > 0 ? <ArrowUpIcon className="h-3.5 w-3.5" /> : <ArrowDownIcon className="h-3.5 w-3.5" />}
@@ -183,7 +183,7 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
                   </td>
                   <td className="hidden px-1 py-2 text-right tabular-nums sm:table-cell">{formatNumber(r.clicks)}</td>
                   <td className="hidden max-w-[200px] truncate px-1 py-2 text-dash-muted md:table-cell" title={r.topPage}>
-                    {r.topPage ? pathOf(r.topPage) : "—"}
+                    {r.topPage ? pathOf(r.topPage) : "None"}
                   </td>
                   <td className="px-1 py-2 text-right">
                     <button
@@ -270,7 +270,7 @@ function GoogleToday() {
                     </td>
                     <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                       {!change ? (
-                        <span className="text-dash-muted">—</span>
+                        <span className="text-dash-muted">{change === null ? "Not yet" : "No change"}</span>
                       ) : (
                         <span className={`inline-flex items-center gap-0.5 font-semibold ${change > 0 ? "text-dash-up" : "text-dash-down"}`}>
                           {change > 0 ? <ArrowUpIcon className="h-3.5 w-3.5" /> : <ArrowDownIcon className="h-3.5 w-3.5" />}
@@ -279,7 +279,7 @@ function GoogleToday() {
                       )}
                     </td>
                     <td className="hidden max-w-[200px] truncate px-1 py-2 text-dash-muted md:table-cell" title={r.url ?? ""}>
-                      {r.url ? pathOf(r.url) : "—"}
+                      {r.url ? pathOf(r.url) : "None"}
                     </td>
                     <td className="hidden whitespace-nowrap px-1 py-2 text-right text-dash-muted sm:table-cell">{r.checkedOn}</td>
                     <td className="px-1 py-2 text-right">{r.position !== 1 && <RankForThis keyword={r.query} />}</td>

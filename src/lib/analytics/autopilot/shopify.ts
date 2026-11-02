@@ -164,13 +164,14 @@ export async function resolveResource(s: StoreAccess, url: string): Promise<Stor
   if (parts[0] === "blogs" && parts.length === 3) {
     const d = await shopifyGql<{ articles: { nodes: {
       id: string; title: string; body: string; titleTag: { value: string } | null; descTag: { value: string } | null;
-      publishedAt: string | null; updatedAt: string | null; author: { name: string } | null; image: { url: string } | null;
+      publishedAt: string | null; updatedAt: string | null; author: { name: string } | null; image: { url: string } | null; blog: { handle: string } | null;
     }[] } }>(
       s,
-      `query($q: String!) { articles(first: 1, query: $q) { nodes { id title body publishedAt updatedAt author { name } image { url } ${SEO_FIELDS} } } }`,
+      `query($q: String!) { articles(first: 20, query: $q) { nodes { id title body publishedAt updatedAt author { name } image { url } blog { handle } ${SEO_FIELDS} } } }`,
       { q: `handle:${handle}` }
     );
-    const a = d.articles.nodes[0];
+    // The same handle can be used in two blogs: only the post in the blog the address names.
+    const a = d.articles.nodes.find((n) => n.blog?.handle === parts[1]) ?? null;
     return a && {
       type: "article", id: a.id, title: a.title, url, body: a.body ?? "", metaTitle: a.titleTag?.value ?? null, metaDescription: a.descTag?.value ?? null, imagesMissingAlt: [],
       article: { publishedAt: a.publishedAt, updatedAt: a.updatedAt, author: a.author?.name ?? null, image: a.image?.url ?? null },

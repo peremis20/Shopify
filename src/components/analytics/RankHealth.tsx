@@ -140,7 +140,7 @@ function RankTable({ rows }: { rows: RankWatchRow[] }) {
                 </td>
                 <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                   {!change ? (
-                    <span className="text-dash-muted">—</span>
+                    <span className="text-dash-muted">{change === null ? "Not yet" : "No change"}</span>
                   ) : (
                     <span className={`inline-flex items-center gap-0.5 font-semibold ${change > 0 ? "text-dash-up" : "text-dash-down"}`}>
                       {change > 0 ? <ArrowUpIcon className="h-3.5 w-3.5" /> : <ArrowDownIcon className="h-3.5 w-3.5" />}
@@ -149,7 +149,7 @@ function RankTable({ rows }: { rows: RankWatchRow[] }) {
                   )}
                 </td>
                 <td className="hidden whitespace-nowrap px-1 py-2 text-right tabular-nums sm:table-cell">
-                  {r.best7 === null ? "—" : `#${r.best7}`}
+                  {r.best7 === null ? "Not yet" : `#${r.best7}`}
                 </td>
                 <td className="hidden px-1 py-1 sm:table-cell">
                   {r.history.filter((h) => h.position !== null).length > 1 && (

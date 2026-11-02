@@ -8,9 +8,12 @@
  * own choices (Rank for this, saved keywords) are never filtered.
  */
 
-/** Local and "find a place" searches: won by map listings and directories, not articles. */
+/**
+ * Local and "find a place" searches: won by map listings and directories, not articles. Only wording that asks for a
+ * place, so "how many hours of sleep" or "email address format" stay.
+ */
 const LOCAL =
-  /\b(near me|nearby|near by|close to me|around me|open now|open today|hours|phone number|address|directions|locations?|in my area)\b/;
+  /\b(near me|nearby|near by|close to me|around me|open now|open today|opening hours|store hours|business hours|office hours|hours of operation|phone number|directions to|store locations?|store locator|in my area)\b/;
 
 /** Navigational and account searches: people looking for a login, an app or a company's own site. */
 const NAVIGATIONAL = /\b(login|log in|sign in|sign up|app download|customer service|contact number|\.com|\.org|\.net|www)\b/;
@@ -36,7 +39,8 @@ export function junkReason(keyword: string, opts: { faith?: boolean } = {}): str
   if (!k || k.length < 4) return "too short";
   if (words.length > 8) return "too long";
   if (stutters(words)) return "repeated words";
-  if (/[^a-z0-9\s'&+-]/.test(k)) return "odd characters";
+  // Letters of any language count ("café", "jalapeño"); symbols and emoji don't.
+  if (/[^\p{L}\p{M}\p{N}\s'&+-]/u.test(k)) return "odd characters";
   if (LOCAL.test(k)) return "local search";
   if (NAVIGATIONAL.test(k)) return "looking for a site or login";
   if (OFF_TOPIC.test(k)) return "off topic";

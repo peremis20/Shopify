@@ -140,9 +140,15 @@ const words = (s: string) =>
 
 // ---------- measuring ----------
 
-/** Today's position from the daily rank check, for sites without Search Console. */
-async function trackedPosition(accountId: string, query: string): Promise<{ position: number | null; clicks: number | null } | null> {
+/**
+ * Today's position from the daily rank check, for sites without Search Console. Only a reading taken after `since`
+ * (the day of the change, or of the control) counts: an older one would judge the change on how things were before it.
+ */
+async function trackedPosition(accountId: string, query: string, since: string | Date | null): Promise<{ position: number | null; clicks: number | null } | null> {
+  if (!since) return null;
+  const after = new Date(since).toISOString();
   const [row] = await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${query.toLowerCase()}
+    AND checked_on > ${after}::timestamptz::date
     ORDER BY checked_on DESC LIMIT 1`;
   if (!row) return null;
   // Not in the top 10 the check reads: recorded as exactly that (null), never as a made up position.
@@ -176,17 +182,24 @@ async function positionFor(conn: Connection, query: string, page: string) {
   return gscReading(body.rows?.[0]);
 }
 
+/** The baseline stored for a search that wasn't on page one before the change: a marker, not a real position. */
+export const OFF_PAGE_ONE = 25;
+
 /**
  * The verdict on one measured change. Worse means it fell more than WORSE_BY_POSITIONS places without gaining
  * clicks (unknown clicks count as no gain), or it left the top 10 the rank check reads after being in it.
- * No reading at all is never worse.
+ * No reading at all is never worse. A search that wasn't ranked before (the OFF_PAGE_ONE marker, or no baseline)
+ * has no position to fall from, so it's worse only when its clicks fell, never on position alone.
  */
 export function measuredWorse(
-  baseline: number,
+  baseline: number | null,
   now: { position: number | null; clicks: number | null } | null,
   baseClicks: number
 ): { worse: boolean; droppedOut: boolean } {
   if (!now) return { worse: false, droppedOut: false };
+  if (baseline === null || !Number.isFinite(baseline) || baseline === OFF_PAGE_ONE) {
+    return { worse: now.clicks !== null && now.clicks < baseClicks, droppedOut: now.position === null };
+  }
   if (now.position === null) return { worse: baseline <= 10, droppedOut: true };
   return { worse: now.position > baseline + WORSE_BY_POSITIONS && (now.clicks === null || now.clicks <= baseClicks), droppedOut: false };
 }
@@ -205,7 +218,7 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
         AND rtrim(regexp_replace(c.page_url, '^https?://[^/]+', ''), '/') = rtrim(regexp_replace(k.page_url, '^https?://[^/]+', ''), '/')
     )`;
   const due = await sql`
-    SELECT id, page_url, query, failures FROM insights_autopilot_controls
+    SELECT id, page_url, query, failures, created_at FROM insights_autopilot_controls
     WHERE account_id = ${ctx.accountId} AND evaluated_at IS NULL AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
     ORDER BY measure_tried_at NULLS FIRST, created_at LIMIT 5`;
   for (const d of due) {
@@ -224,7 +237,7 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
         WHERE id = ${d.id}`;
       continue;
     }
-    const now = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
+    const now = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!, d.created_at).catch(() => null));
     await sql`UPDATE insights_autopilot_controls SET evaluated_at = now(), result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null}
       WHERE id = ${d.id}`;
   }
@@ -235,14 +248,14 @@ async function measureControls(ctx: Ctx, conn: Connection): Promise<void> {
  * same weeks; null when there's no usable control. Measures the control now (and records it) so both readings match.
  */
 async function fellMoreThanControl(ctx: Ctx, conn: Connection, runId: string, baseline: number, nowPos: number | null): Promise<boolean | null> {
-  const [k] = await sql`SELECT id, page_url, query, baseline_position, evaluated_at, result_position FROM insights_autopilot_controls
+  const [k] = await sql`SELECT id, page_url, query, baseline_position, evaluated_at, result_position, created_at FROM insights_autopilot_controls
     WHERE account_id = ${ctx.accountId} AND run_id = ${runId} AND voided IS NULL AND baseline_position <> 25 LIMIT 1`;
   if (!k || nowPos === null) return null;
   // Already measured (the controls' own pass got to it first): its stored reading is used.
   if (k.evaluated_at) return k.result_position === null ? null : relativeFall(baseline, nowPos, Number(k.baseline_position), Number(k.result_position)) > WORSE_BY_POSITIONS;
   // A Search Console error is thrown, so this change waits and retries like any other.
   const fromGsc = conn.gscSiteUrl ? await positionFor(conn, k.query!, k.page_url!) : null;
-  const c = fromGsc ?? (await trackedPosition(ctx.accountId, k.query!));
+  const c = fromGsc ?? (await trackedPosition(ctx.accountId, k.query!, k.created_at));
   if (!c || c.position === null) return null;
   await sql`UPDATE insights_autopilot_controls SET evaluated_at = now(), result_position = ${c.position}, result_clicks = ${c.clicks ?? null} WHERE id = ${k.id}`;
   return relativeFall(baseline, nowPos, Number(k.baseline_position), c.position) > WORSE_BY_POSITIONS;
@@ -252,7 +265,7 @@ async function fellMoreThanControl(ctx: Ctx, conn: Connection, runId: string, ba
 export const relativeFall = (base: number, now: number, ctlBase: number, ctlNow: number) => now - base - (ctlNow - ctlBase);
 
 /** Looks at pages changed at least 4 weeks ago; keeps what helped and undoes what hurt. */
-async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]> {
+async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<{ notes: string[]; undoFailures: number }> {
   const due = await sql`
     SELECT run_id, page_url, query, min(baseline_position) AS baseline_position, min(baseline_clicks) AS baseline_clicks, min(created_at) AS made
     FROM insights_autopilot_changes
@@ -262,6 +275,7 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     ORDER BY max(measure_tried_at) NULLS FIRST, min(created_at)
     LIMIT 5`;
   const notes: string[] = [];
+  let undoFailures = 0;
   const updates = due.length ? await googleUpdates().catch(() => [] as GoogleUpdate[]) : [];
   for (const d of due) {
     // Nothing to compare with (a new article had no position before it existed): kept, never judged on a made up
@@ -291,7 +305,8 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
       notes.push(`Measuring “${d.query}” waits: Search Console didn't answer.`);
       continue;
     }
-    const now: { position: number | null; clicks: number | null } | null = fromGsc ?? (await trackedPosition(ctx.accountId, d.query!).catch(() => null));
+    const now: { position: number | null; clicks: number | null } | null =
+      fromGsc ?? (await trackedPosition(ctx.accountId, d.query!, d.made).catch(() => null));
     const baseline = Number(d.baseline_position);
     const baseClicks = Number(d.baseline_clicks ?? 0);
     const verdict = measuredWorse(baseline, now, baseClicks);
@@ -315,22 +330,42 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<string[]
     }
     const changes = await sql`
       SELECT * FROM insights_autopilot_changes
-      WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied' ORDER BY id DESC`;
+      WHERE run_id = ${d.run_id} AND page_url = ${d.page_url} AND status = 'applied'
+        -- Only changes that have had their four weeks: a fix done by hand later (dated when it was done) waits for its own.
+        AND created_at < now() - make_interval(days => ${MEASURE_AFTER_DAYS})
+      ORDER BY id DESC`;
+    const failed: string[] = [];
+    const unranked = baseline === OFF_PAGE_ONE;
     for (const c of changes) {
       if (worse) {
-        const note = await revertRow(ctx, c).catch((e) => `Undo failed: ${e.message}`);
-        await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
+        const note = await revertRow(ctx, c, { checkLive: true }).catch((e) => {
+          failed.push((e as Error).message);
+          return `Undo failed: ${(e as Error).message}`;
+        });
+        const why = unranked
+          ? `Clicks fell from ${baseClicks} to ${now!.clicks}.`
+          : droppedOut
+            ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked.`
+            : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}${across ? `, more than its untouched control during Google's ${across}` : ""}.`;
+        // A failed undo stays live and is tried again, behind the other changes waiting to be measured.
+        await sql`UPDATE insights_autopilot_changes SET evaluated_at = now(), measure_tried_at = now(), result_position = ${now!.position}, result_clicks = ${now!.clicks},
           across_update = ${across},
-          note = ${droppedOut ? `Dropped out: was ${baseline.toFixed(1)}, no longer in the top 10 checked. ${note}` : `Ranking dropped from ${baseline.toFixed(1)} to ${now!.position!.toFixed(1)}${across ? `, more than its untouched control during Google's ${across}` : ""}. ${note}`} WHERE id = ${c.id}`;
+          note = ${`${why} ${note}`} WHERE id = ${c.id}`;
       } else {
         await sql`UPDATE insights_autopilot_changes SET status = 'kept', evaluated_at = now(), across_update = ${across},
           result_position = ${now?.position ?? null}, result_clicks = ${now?.clicks ?? null},
-          note = ${across && verdict.worse ? `Fell, but measured across Google's ${across} and not more than its untouched control (or with no control), so it wasn't undone.` : now && now.position !== null ? `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}` : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
+          note = ${across && verdict.worse ? `Fell, but measured across Google's ${across} and not more than its untouched control (or with no control), so it wasn't undone.` : now && now.position !== null ? (unranked ? `Not on page one before; now ${now.position.toFixed(1)}` : `Position ${baseline.toFixed(1)} → ${now.position.toFixed(1)}`) : droppedOut ? "Not in the top 10 the rank check reads, and it wasn't there before either; kept." : "Not enough search data yet to compare; kept."} WHERE id = ${c.id}`;
       }
     }
-    notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”${across ? ` (measured across Google's ${across})` : ""}`);
+    const during = across ? ` (measured across Google's ${across})` : "";
+    if (failed.length) {
+      undoFailures += failed.length;
+      notes.push(`Couldn't undo ${failed.length} of ${changes.length} changes for “${d.query}”${during}: ${failed[0]} They stay live and are tried again next run.`);
+    } else {
+      notes.push(`${worse ? "Undid" : "Kept"} changes for “${d.query}”${during}`);
+    }
   }
-  return notes;
+  return { notes, undoFailures };
 }
 
 // ---------- improving ----------
@@ -630,7 +665,8 @@ async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]>
     } catch (err) {
       // Saved, but live only at the owner's next publish (Webflow with other unpublished work).
       const saved = (err as Error).name === "SavedNotLive";
-      const status = saved ? "applied" : err instanceof EditedMeanwhile ? "skipped" : "failed";
+      // The owner's own unpublished edits (Wix) are never published by the app: skipped like an edit made meanwhile.
+      const status = saved ? "applied" : err instanceof EditedMeanwhile || (err as Error).name === "UnpublishedDraft" ? "skipped" : "failed";
       await logChange({ ...base, field, before, after, status, targetId, note: (err as Error).message });
       if (saved) done.push(field);
     }
@@ -752,10 +788,15 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   };
   const preview = trigger === "preview";
 
+  // One run at a time per site, taken in a single statement so two runs starting together can't both go ahead
+  // (and write the same article twice). A lock left by a run that crashed lapses after 30 minutes.
+  const lock = `autopilot_running:${accountId}`;
   if (!preview) {
-    const running = await sql`SELECT id FROM insights_autopilot_runs
-      WHERE account_id = ${accountId} AND status = 'running' AND trigger <> 'preview' AND started_at > now() - interval '30 minutes'`;
-    if (running.length) return { run: null, message: "A run is already in progress." };
+    const got = await sql`INSERT INTO insights_settings (key, value) VALUES (${lock}, ${String(Date.now())})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+      WHERE insights_settings.updated_at < now() - interval '30 minutes'
+      RETURNING key`;
+    if (!got.length) return { run: null, message: "A run is already in progress." };
   }
 
   const [runRow] = await sql`INSERT INTO insights_autopilot_runs (account_id, trigger) VALUES (${accountId}, ${trigger}) RETURNING id`;
@@ -772,7 +813,12 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     const traffic = await trafficCheck(conn).catch(() => null);
     const hold = traffic?.sharp ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week, so changes aren't judged until that settles.` : null;
     if (hold && !preview) summary.push(`Measuring waits: ${hold}`);
-    if (!preview && !hold) summary.push(...(await measureOlderChanges(ctx, conn)));
+    if (!preview && !hold) {
+      const measured = await measureOlderChanges(ctx, conn);
+      summary.push(...measured.notes);
+      // A change that hurt and is still live is a failure the Inspector must see.
+      if (measured.undoFailures) status = "failed";
+    }
     if (!preview && !hold) await measureControls(ctx, conn).catch((e) => console.error(`controls not measured: ${(e as Error).message}`));
 
     const [{ pages }] = await sql`
@@ -796,7 +842,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         ourDomain: ctx.ourDomain,
         publish: acct.allowContent,
         perWeek: acct.articlesPerWeek,
-      }).catch((e) => (notes.push(`New article not written: ${(e as Error).message}`), null));
+      }).catch((e) => (summary.push(`New article not written: ${(e as Error).message}`), null));
       if (posted) {
         await logChange({
           accountId,
@@ -818,6 +864,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
             ? `${posted.live ? "Published" : "Drafted"} a new article for "${posted.keyword}": ${posted.url}`
             : `Wrote a new article for "${posted.keyword}" (on the fix list).`
         );
+        if (posted.problem) summary.push(posted.problem);
       }
     }
     if (capped && !preview && !urgentRoom) {
@@ -925,6 +972,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}
     WHERE id = ${runId} RETURNING *`;
+  if (!preview) await sql`DELETE FROM insights_settings WHERE key = ${lock}`.catch((e) => console.error(`run lock not released: ${(e as Error).message}`));
   return { run: toRun(run), message: summary.join(" "), preview: previewOut };
 }
 
@@ -954,7 +1002,17 @@ export async function accountsDueForInspection(limit: number): Promise<string[]>
 
 // ---------- undo ----------
 
-async function revertRow(ctx: Ctx, c: Row): Promise<string> {
+/** True when the live title or description is no longer what the autopilot wrote (the owner changed it since). */
+export function ownerChangedSeo(live: string | null | undefined, written: string | null): boolean {
+  const norm = (v: string | null | undefined) => (v ?? "").replace(/\s+/g, " ").trim();
+  return norm(live) !== norm(written);
+}
+
+/**
+ * Undoes one change. With `checkLive` (the autopilot's own undo), a title or description the owner has changed
+ * since is left as the owner made it, never overwritten. An undo by hand does what the owner asked.
+ */
+async function revertRow(ctx: Ctx, c: Row, opts: { checkLive?: boolean } = {}): Promise<string> {
   const field = c.field as ChangeField;
   const w = ctx.site?.writer;
   if (c.resource_type === "snippet") {
@@ -986,6 +1044,18 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
     return "Taken off the site (kept as a draft).";
   }
   if (field === "meta_title" || field === "meta_description") {
+    if (opts.checkLive) {
+      // A read that fails throws, so the undo waits for the next run rather than writing blind.
+      const live = await ctx.site.resolve(c.page_url!);
+      if (live && live.id === c.resource_id) {
+        const now = field === "meta_title" ? live.metaTitle : live.metaDescription;
+        if (ownerChangedSeo(now, c.after_value)) {
+          const note = `The ${field === "meta_title" ? "title" : "description"} was changed on the site after this change, so the owner's version was kept.`;
+          await sql`UPDATE insights_autopilot_changes SET status = 'kept', note = ${note} WHERE id = ${c.id}`;
+          return "Kept: the owner changed it since.";
+        }
+      }
+    }
     await w.setSeo(c.resource_id!, field === "meta_title" ? "title" : "description", c.before_value).catch((e) => {
       if ((e as Error).name !== "SavedNotLive") throw e;
     });
@@ -997,7 +1067,9 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
       return "Left as is.";
     }
   } else if (field === "schema" && w.setSchema) {
-    await w.setSchema(c.resource_type as "article" | "page", c.resource_id!, null);
+    // A new schema block replaced the one before it: undoing it puts that one back.
+    const prev = await previousSchema(c);
+    await w.setSchema(c.resource_type as "article" | "page", c.resource_id!, prev);
   } else {
     const type = field === "internal_link" ? "article" : (c.resource_type as "article" | "page");
     const id = field === "internal_link" ? c.target_id! : c.resource_id!;
@@ -1007,10 +1079,20 @@ async function revertRow(ctx: Ctx, c: Row): Promise<string> {
       await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'The added section was already removed or edited by hand.' WHERE id = ${c.id}`;
       return "Already removed.";
     }
-    await w.setBody(type, id, restored);
+    const prev = field === "schema" ? await previousSchema(c) : null;
+    await w.setBody(type, id, prev ? `${withoutAutopilotSchema(restored)}\n${prev}` : restored);
   }
   await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
   return "Restored the previous version.";
+}
+
+/** The schema block a newer one replaced on the same page (the last earlier one still live), or null. */
+async function previousSchema(c: Row): Promise<string | null> {
+  const [p] = await sql`SELECT after_value FROM insights_autopilot_changes
+    WHERE account_id = ${c.account_id} AND resource_type = ${c.resource_type} AND resource_id = ${c.resource_id} AND field = 'schema'
+      AND status IN ('applied', 'kept') AND id < ${c.id} AND after_value IS NOT NULL
+    ORDER BY id DESC LIMIT 1`;
+  return p?.after_value ?? null;
 }
 
 /** The owner pasted a fix list item in (it's measured from now on) or skipped it. */

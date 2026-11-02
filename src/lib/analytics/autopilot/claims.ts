@@ -30,16 +30,25 @@ const DISEASES = [
   "high cholesterol", "candida", "lupus", "psoriasis", "eczema", "acne", "gout", "fibromyalgia", "kidney stones?",
 ].join("|");
 
-const CURE_VERBS = "cures?|curing|treats?|treating|prevents?|preventing|heals?|healing|reverses?|reversing|eliminates?|eliminating|fights?|fighting|kills?|killing|stops?|remed(?:y|ies)";
+const CURE_VERBS =
+  "cures?|curing|treats?|treating|prevents?|preventing|heals?|healing|reverses?|reversing|eliminates?|eliminating|fights?|fighting|kills?|killing|stops?|remed(?:y|ies)|relieves?|relieving|eases?|easing|manages?|managing";
 /** The disease after the verb, for the "remedy for a disease" rule. */
 const CURE_NOUNS = "cure|remedy|relief|fighter|killer";
 
 /**
- * Sentences that talk about claims rather than make them: warnings ("do not
- * use in place of medical care"), myth busting ("anyone promising a cure is
- * overselling"), or advice to see a doctor. Claims in these are skipped.
+ * A true negation just before the claim ("does not cure", "no supplement can treat", "never stop taking your
+ * medication"): those sentences warn rather than claim, so they are skipped. Only the few words before the claim, in
+ * the same clause, count; a "no" or "doctor" elsewhere in the sentence ("prevents colds no matter the season",
+ * "doctor recommended") never excuses it.
  */
-const NOT_A_CLAIM = /\b(?:not|no|never|nor|cannot|can't|won't|doesn't|don't|isn't|aren't|without|claims?|allowed|promis\w*|overselling|overstated|myth|replacement for|in place of|instead of medical|alongside|talk to|consult|ask your|doctor|provider|physician|expecting)\b/i;
+const NEGATION =
+  /\b(?:not|no|never|nothing|cannot|can't|won't|doesn't|don't|didn't|isn't|aren't|wasn't|shouldn't|neither)\b(?!\s+(?:only|just|merely|doubt|wonder|matter|question)\b)/i;
+const NEGATION_WORDS = 4;
+
+function negated(text: string, start: number): boolean {
+  const clause = text.slice(sentenceStart(text, start), start).split(/[,;:]/).pop() ?? "";
+  return NEGATION.test(clause.trim().split(/\s+/).slice(-NEGATION_WORDS).join(" "));
+}
 
 interface Rule {
   re: RegExp;
@@ -72,7 +81,7 @@ const RULES: Rule[] = [
     fix: 'Use what is true, for example "made in an FDA registered facility" or "made in a GMP certified facility", if that applies.',
   },
   {
-    re: /\b(?:replaces?|instead of|substitute for|stop taking|no need for|alternative to)\s+(?:your\s+)?(?:medications?|medicines?|prescriptions?|drugs?|insulin|statins?|antidepressants?)\b/gi,
+    re: /\b(?:replaces?|instead of|substitute for|stop taking|no need for|alternatives? to)\s+(?:your\s+)?(?:medications?|medicines?|prescriptions?|drugs?|insulin|statins?|antidepressants?|antibiotics|painkillers|pain relievers|sleeping pills|blood thinners|steroids|opioids|ibuprofen|aspirin|acetaminophen|paracetamol|metformin|ozempic|semaglutide|adderall|xanax|prozac|zoloft|lexapro|ambien)\b/gi,
     level: "high",
     why: "Suggests replacing or stopping medication, which can harm people and is a drug claim.",
     fix: 'Remove it. If anything, say "talk to your doctor before starting any supplement, especially if you take medication".',
@@ -144,15 +153,14 @@ const plain = (html: string) =>
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
-    .replace(/&#39;|&rsquo;/g, "'")
+    .replace(/&#39;|&rsquo;|[\u2018\u2019]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
 
-/** The one sentence holding a position (headings run into sentences in plain text, so it is capped). */
-function sentenceOf(text: string, at: number): string {
-  const from = Math.max(...[". ", "? ", "! "].map((d) => text.lastIndexOf(d, at)), -2) + 2;
-  const ends = [". ", "? ", "! "].map((d) => text.indexOf(d, at)).filter((i) => i !== -1);
-  return text.slice(Math.max(from, at - 200), Math.min(ends.length ? Math.min(...ends) : text.length, at + 200));
+/** Where the sentence holding a position starts (headings run into sentences in plain text, so it is capped). */
+function sentenceStart(text: string, at: number): number {
+  const ends = [". ", "? ", "! "].map((d) => text.lastIndexOf(d, at - 1)).filter((i) => i !== -1);
+  return Math.max(ends.length ? Math.max(...ends) + 2 : 0, at - 200, 0);
 }
 
 function sentenceAround(text: string, start: number, end: number): string {
@@ -171,7 +179,7 @@ export function scanClaims(htmlOrText: string): ClaimFlag[] {
     for (const m of text.matchAll(rule.re)) {
       const start = m.index ?? 0;
       const excerpt = sentenceAround(text, start, start + m[0].length);
-      if (rule.negatable && NOT_A_CLAIM.test(sentenceOf(text, start))) continue;
+      if (rule.negatable && negated(text, start)) continue;
       const phrase = m[0].trim();
       const key = phrase.toLowerCase();
       if (seen.has(key)) continue;

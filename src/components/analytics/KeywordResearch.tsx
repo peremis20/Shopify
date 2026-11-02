@@ -598,7 +598,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                     <tr key={i.keyword} className="border-b border-dash-line/70 last:border-0">
                       <td className="max-w-[260px] truncate px-1 py-2 text-dash-ink" title={i.keyword}>{i.keyword}</td>
                       <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
-                        {i.avgMonthlySearches === null ? "—" : formatNumber(i.avgMonthlySearches)}
+                        {i.avgMonthlySearches === null ? "Not known" : formatNumber(i.avgMonthlySearches)}
                       </td>
                       <td className="hidden px-1 py-1 sm:table-cell">
                         {i.trend.length > 1 && <Sparkline values={i.trend.map((t) => t.searches)} />}
@@ -633,7 +633,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
                       </td>
                       <td className="hidden whitespace-nowrap px-1 py-2 text-right tabular-nums md:table-cell">
                         {i.lowBid === null && i.highBid === null
-                          ? "—"
+                          ? "None"
                           : `${i.lowBid?.toFixed(2) ?? "?"} to ${i.highBid?.toFixed(2) ?? "?"}`}
                       </td>
                       <td className="whitespace-nowrap px-1 py-2 text-right">

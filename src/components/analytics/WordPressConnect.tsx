@@ -12,9 +12,9 @@ export function WordPressConnect({ domain }: { domain: string }) {
       <ol className="list-decimal space-y-1 pl-5">
         <li>
           <a href="/api/wordpress/plugin" className="font-semibold text-dash-green hover:underline">
-            Download the Insights Connector plugin
+            Download the DashPatrol plugin
           </a>{" "}
-          (a .zip file; don&apos;t unzip it).
+          (a .zip file; don&apos;t unzip it). In WordPress it&apos;s listed as Insights Connector.
         </li>
         <li>
           In WordPress,{" "}
@@ -28,7 +28,7 @@ export function WordPressConnect({ domain }: { domain: string }) {
           <a href={`${admin}/options-general.php?page=insights-connector`} target="_blank" rel="noreferrer" className="font-semibold text-dash-green hover:underline">
             Settings, Insights
           </a>{" "}
-          and click <b>Connect to Insights</b>. You come straight back here.
+          (the DashPatrol plugin&apos;s page) and click <b>Connect to Insights</b>. You come straight back to DashPatrol.
         </li>
       </ol>
       <p className="text-dash-muted">Works with Yoast SEO, Rank Math, SEOPress, All in One SEO, or no SEO plugin.</p>

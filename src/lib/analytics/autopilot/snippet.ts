@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { ensureSchema, sql } from "../db";
+import { publicFetch } from "../profile";
 
 /**
  * The one-line snippet, for websites with no API the app can use (custom
@@ -43,7 +44,8 @@ export async function snippetInstalled(accountId: string): Promise<boolean> {
 /** Looks for the snippet on the live home page. */
 export async function checkSnippet(accountId: string, domain: string): Promise<boolean> {
   const siteKey = await snippetKey(accountId);
-  const html = await fetch(`https://${domain}/`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteReader/1.0)" }, signal: AbortSignal.timeout(12_000) })
+  // Only a public website (publicFetch checks the address and every redirect).
+  const html = await publicFetch(`https://${domain}/`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteReader/1.0)" }, signal: AbortSignal.timeout(12_000) })
     .then((r) => (r.ok ? r.text() : ""))
     .catch(() => "");
   const found = html.includes(`s.js?k=${siteKey}`);

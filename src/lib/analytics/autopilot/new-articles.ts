@@ -35,6 +35,8 @@ export interface PostedArticle {
   resourceId: string;
   live: boolean;
   note: string;
+  /** Something that went wrong after the article was made (it still exists and is recorded), said plainly for the run summary. */
+  problem?: string;
 }
 
 /** True when an article was tried in the last day, or the week's number is reached. */
@@ -168,8 +170,8 @@ export async function nextNewArticle(opts: {
       author: author || "Editorial team",
       publish: opts.publish,
     });
-    await setSeoField(site.store, made.id, "title_tag", article.metaTitle);
-    if (article.metaDescription) await setSeoField(site.store, made.id, "description_tag", article.metaDescription);
+    // The SEO title and description are set after the article is recorded (below), so a failure there
+    // never leaves a live article the app doesn't know about (and writes again tomorrow).
     posted = { keyword: target.keyword, article, url: `${origin}${made.path}`, resourceType: "article", resourceId: made.id, live: opts.publish, note: "" };
   } else {
     const wp = site.mode === "wordpress" ? await readWp(accountId).catch(() => null) : null;
@@ -182,7 +184,11 @@ export async function nextNewArticle(opts: {
           seoTitle: article.metaTitle,
           seoDescription: article.metaDescription,
           publish: opts.publish,
-        }).catch(() => null) // plugin older than 1.2: fix list instead
+        }).catch((e) => {
+          // Only a plugin older than 1.2 (no create route) goes to the fix list; any other error is reported.
+          if (/no route was found/i.test((e as Error).message)) return null;
+          throw e;
+        })
       : null;
     posted = made
       ? { keyword: target.keyword, article, url: made.url, resourceType: "article", resourceId: made.id, live: opts.publish, note: "" }
@@ -205,6 +211,15 @@ export async function nextNewArticle(opts: {
     page: posted.live ? posted.url : null,
     article: { url: posted.url, live: posted.live, note: posted.live ? "Published" : posted.url ? "Saved as a draft" : "On the fix list" },
   });
+  if (site.mode === "shopify" && site.store && posted.resourceType === "article") {
+    try {
+      await setSeoField(site.store, posted.resourceId, "title_tag", article.metaTitle);
+      if (article.metaDescription) await setSeoField(site.store, posted.resourceId, "description_tag", article.metaDescription);
+    } catch (e) {
+      posted.problem = `The article is on the store, but its SEO title and description couldn't be saved (${(e as Error).message}). Add them in Shopify.`;
+      posted.note = posted.problem;
+    }
+  }
   return posted;
 }
 
