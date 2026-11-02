@@ -91,3 +91,99 @@ test("inbox: character codes in previews and text are decoded", () => {
   assert.equal(decodeEntities("&bogus; &#0;"), "&bogus; &#0;");
   assert.equal(htmlToText("<p>Tom&#8217;s&nbsp;order</p>"), "Tom’s order");
 });
+
+import {
+  attachmentsOf,
+  buildMessage,
+  citedCids,
+  contentDisposition,
+  forwardBody,
+  forwardSubject,
+  inlineImages,
+  mailQuery,
+  parseAddressList,
+  partById,
+  quoteOriginal,
+  rewriteCids,
+  safeFilename,
+  threadAction,
+} from "../inbox-app/core";
+
+const bodyOf = (raw: string) => Buffer.from(decode(raw).split("\r\n\r\n")[1].replace(/\r\n/g, ""), "base64").toString("utf8");
+
+test("inbox: a new message keeps its subject, has no threading headers and can't inject headers", () => {
+  const raw = decode(buildMessage({ from: "info@peremis.com", to: ["ann@x.com", "bob@y.com"], cc: ["cat@z.com"], subject: "Hi\nBcc: evil@x.com", body: "Line 1\nLine 2" }));
+  const head = raw.split("\r\n\r\n")[0];
+  assert.match(head, /^Subject: Hi Bcc: evil@x\.com$/m);
+  assert.ok(!/^Bcc:/im.test(head));
+  assert.ok(!/^In-Reply-To:/im.test(head) && !/^References:/im.test(head));
+  assert.match(head, /^To: ann@x\.com, bob@y\.com$/m);
+  assert.match(head, /^Cc: cat@z\.com$/m);
+  assert.equal(bodyOf(buildMessage({ from: "a@b.com", to: ["c@d.com"], cc: [], subject: "x", body: "Line 1\nLine 2" })), "Line 1\r\nLine 2");
+});
+
+test("inbox: replies quote the original and forwards carry it", () => {
+  assert.equal(quoteOriginal("Hello\n\n> old\nBye\n", "Ann <ann@x.com>", "Mon, 2 Nov 2026"), "On Mon, 2 Nov 2026, Ann <ann@x.com> wrote:\n> Hello\n>\n>> old\n> Bye");
+  assert.equal(quoteOriginal("x", "A\r\nBcc: e@x.com", "d"), "On d, A Bcc: e@x.com wrote:\n> x");
+  assert.equal(forwardSubject("Hello"), "Fwd: Hello");
+  assert.equal(forwardSubject("FW: Hello"), "FW: Hello");
+  const f = forwardBody("See below", { from: "Ann <ann@x.com>", date: "d", subject: "Hi", to: "me@y.com", text: "Body" });
+  assert.match(f, /^See below\n\nBegin forwarded message:\n\nFrom: Ann <ann@x\.com>\nDate: d\nSubject: Hi\nTo: me@y\.com\n\nBody$/);
+  assert.ok(forwardBody("", { from: "a", date: "d", subject: "s", to: "t", text: "b" }).startsWith("Begin forwarded message:"));
+});
+
+test("inbox: typed addresses are checked and nothing else gets through", () => {
+  assert.deepEqual(parseAddressList("ann@x.com, Bob <BOB@y.com>; ann@x.com\ncat@z.com"), { ok: ["ann@x.com", "bob@y.com", "cat@z.com"], bad: [] });
+  assert.deepEqual(parseAddressList("ann@x.com, nope").bad, ["nope"]);
+  // Only bare addresses come out, so nothing typed can add a header line.
+  for (const e of parseAddressList("evil@x.com\r\nBcc: z@q.com").ok) assert.match(e, /^[^\s:]+@[^\s:]+$/);
+  assert.deepEqual(parseAddressList(""), { ok: [], bad: [] });
+});
+
+test("inbox: folders and search build one Gmail query", () => {
+  assert.equal(mailQuery("inbox", false, ""), "in:inbox");
+  assert.equal(mailQuery("trash", true, "invoice"), "in:trash is:unread (invoice)");
+  assert.equal(mailQuery("starred", false, "a\nb"), "is:starred (a b)");
+  assert.equal(mailQuery("constructor", false, ""), "in:inbox");
+  assert.equal(mailQuery("sent", false, "  "), "in:sent");
+  assert.deepEqual(threadAction("trash", "t1"), { path: "threads/t1/trash" });
+  assert.deepEqual(threadAction("untrash", "t1"), { path: "threads/t1/untrash" });
+  assert.deepEqual(threadAction("star", "t1"), { path: "threads/t1/modify", body: { addLabelIds: ["STARRED"] } });
+  assert.equal(threadAction("delete", "t1"), null);
+});
+
+test("inbox: inline cid images become data addresses and the rest is listed as attachments", () => {
+  const payload = {
+    partId: "",
+    mimeType: "multipart/related",
+    parts: [
+      { partId: "0", mimeType: "text/html", body: { data: "x" } },
+      { partId: "1", mimeType: "image/png", filename: "logo.png", headers: [{ name: "Content-ID", value: "<Logo@X>" }], body: { attachmentId: "att1", size: 10 } },
+      { partId: "2", mimeType: "application/octet-stream", filename: "pic.JPG", headers: [{ name: "Content-ID", value: "<pic@x>" }], body: { attachmentId: "att2", size: 20 } },
+      { partId: "3", mimeType: "application/pdf", filename: "../../Invoice\r\n.pdf", body: { attachmentId: "att3", size: 3000 } },
+      { partId: "4", mimeType: "text/html", headers: [{ name: "Content-ID", value: "<page@x>" }], body: { attachmentId: "att4" } },
+    ],
+  };
+  const imgs = inlineImages(payload);
+  assert.deepEqual(imgs.map((i) => [i.cid, i.type, i.attachmentId]), [["logo@x", "image/png", "att1"], ["pic@x", "image/jpeg", "att2"]]);
+  const html = `<img src="cid:logo@x"><img src='CID:Logo%40X'><div style="background:url(cid:pic@x)"></div><img src="cid:missing">`;
+  assert.deepEqual([...citedCids(html)], ["logo@x", "pic@x", "missing"]);
+  const out = rewriteCids(html, new Map([["logo@x", "data:image/png;base64,AAA="]]));
+  assert.equal(out, `<img src="data:image/png;base64,AAA="><img src='data:image/png;base64,AAA='><div style="background:url(cid:pic@x)"></div><img src="cid:missing">`);
+  assert.deepEqual(attachmentsOf(payload, new Set(["logo@x"])), [{ part: "2", name: "pic.JPG", size: 20 }, { part: "3", name: "_.._Invoice.pdf", size: 3000 }]);
+  assert.equal(partById(payload, "3")?.body?.attachmentId, "att3");
+  assert.equal(partById(payload, "9"), null);
+});
+
+test("inbox: download names are safe", () => {
+  assert.equal(safeFilename("../../etc/passwd"), "_.._etc_passwd");
+  assert.equal(safeFilename('a"b<c>.txt'), "a_b_c_.txt");
+  assert.equal(safeFilename("\u0000\n"), "attachment");
+  assert.equal(safeFilename(".htaccess"), "htaccess");
+  const long = safeFilename("x".repeat(300) + ".pdf");
+  assert.equal(long.length, 150);
+  assert.ok(long.endsWith(".pdf"));
+  const cd = contentDisposition('Résumé "final"; x.pdf');
+  assert.match(cd, /^attachment; filename="R_sum_ _final__ x\.pdf"; filename\*=UTF-8''R%C3%A9sum%C3%A9%20_final_%3B%20x\.pdf$/);
+  assert.ok(!/[\r\n]/.test(contentDisposition("a\r\nSet-Cookie: x")));
+});

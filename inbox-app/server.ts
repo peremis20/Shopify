@@ -9,7 +9,23 @@
 import crypto from "node:crypto";
 import {
   addressIn,
+  attachmentsOf,
+  buildMessage,
   buildReply,
+  citedCids,
+  contentDisposition,
+  folderOf,
+  forwardBody,
+  forwardSubject,
+  inlineImages,
+  mailQuery,
+  parseAddressList,
+  partById,
+  quoteOriginal,
+  rewriteCids,
+  safeFilename,
+  threadAction,
+  type Part,
   header,
   isEmail,
   normEmail,
@@ -213,6 +229,8 @@ interface Msg {
 }
 /** Drafts, trash and spam aren't part of the conversation shown or answered. */
 const isReal = (m: Msg) => !(m.labelIds ?? []).some((l) => l === "DRAFT" || l === "TRASH" || l === "SPAM");
+/** In the Trash folder the trashed messages are the ones shown. */
+const shownIn = (folder: string) => (folder === "trash" ? (m: Msg) => !(m.labelIds ?? []).some((l) => l === "DRAFT" || l === "SPAM") : isReal);
 
 async function myAccount(email: string, id: unknown): Promise<Row | null> {
   if (!/^\d{1,18}$/.test(String(id ?? ""))) return null;
@@ -220,6 +238,10 @@ async function myAccount(email: string, id: unknown): Promise<Row | null> {
   return a ?? null;
 }
 const gmailId = (v: unknown) => (/^[A-Za-z0-9_-]{1,64}$/.test(String(v ?? "")) ? String(v) : null);
+const attachmentId = (v: unknown) => (/^[A-Za-z0-9_-]{1,4096}$/.test(String(v ?? "")) ? String(v) : null);
+/** The date line of a message: its own Date header, else when Gmail received it. */
+const dateLine = (h: { name: string; value: string }[] | undefined, internalDate: string | undefined) =>
+  oneLine(header(h, "Date") ?? "").slice(0, 100) || new Date(Number(internalDate ?? 0)).toUTCString();
 
 // ---------- routes ----------
 
@@ -288,25 +310,37 @@ async function finishSignIn(req: Request): Promise<Response> {
 async function listMail(me: { email: string }, url: URL): Promise<Response> {
   const accounts = await sql`SELECT * FROM inbox_accounts WHERE member = ${me.email} ORDER BY address`;
   const only = url.searchParams.get("inbox");
-  const unread = url.searchParams.get("unread") === "1";
-  const chosen = accounts.filter((a) => !only || a.id === only);
-  const q = `in:inbox${unread ? " is:unread" : ""}`;
+  const folder = folderOf(url.searchParams.get("folder"));
+  const q = mailQuery(folder, url.searchParams.get("unread") === "1", url.searchParams.get("q"));
+  // Paging: the next page token of each inbox, so "Load more" works across all inboxes too.
+  let pages: Record<string, string> | null = null;
+  if (url.searchParams.get("pages")) {
+    try {
+      const p = JSON.parse(url.searchParams.get("pages")!) as Record<string, unknown>;
+      pages = {};
+      for (const [k, v] of Object.entries(p && typeof p === "object" ? p : {})) if (typeof v === "string" && /^[A-Za-z0-9_-]{1,512}$/.test(v)) pages[k] = v;
+    } catch {
+      pages = {};
+    }
+  }
+  const chosen = accounts.filter((a) => (!only || a.id === only) && (!pages || pages[a.id!]));
+  const keep = shownIn(folder);
   const results = await pool(chosen, 3, async (a) => {
     try {
       // One row per conversation: the latest real message (no drafts) speaks for the thread.
-      const pageToken = only && url.searchParams.get("page") ? `&pageToken=${encodeURIComponent(url.searchParams.get("page")!)}` : "";
+      const pageToken = pages?.[a.id!] ? `&pageToken=${encodeURIComponent(pages[a.id!])}` : "";
       const list = await gmail<{ threads?: { id: string }[]; nextPageToken?: string }>(a, `threads?maxResults=25&q=${encodeURIComponent(q)}${pageToken}`);
       // One thread that fails (deleted meanwhile) must not hide the whole inbox.
       const threads = (
         await pool(list.threads ?? [], 6, (t) =>
-          gmail<{ id: string; messages?: Msg[] }>(a, `threads/${t.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject`).catch(() => null)
+          gmail<{ id: string; messages?: Msg[] }>(a, `threads/${t.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject`).catch(() => null)
         )
       ).filter((t): t is { id: string; messages?: Msg[] } => t !== null);
       const self = normEmail(a.address);
       return {
         inbox: { id: a.id, address: a.address, error: null as string | null, next: list.nextPageToken ?? null },
         messages: threads.flatMap((t) => {
-          const real = (t.messages ?? []).filter(isReal);
+          const real = (t.messages ?? []).filter(keep);
           const last = real[real.length - 1];
           if (!last) return [];
           // The row names the other person: the latest message not sent by this inbox, when there is one.
@@ -316,10 +350,12 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
             id: last.id,
             threadId: t.id,
             from: header(theirs.payload?.headers, "From") ?? "",
+            to: header(last.payload?.headers, "To") ?? "",
             subject: header(real[0].payload?.headers, "Subject") || "(no subject)",
             snippet: decodeEntities(last.snippet ?? ""),
             date: Number(last.internalDate),
             unread: real.some((m) => (m.labelIds ?? []).includes("UNREAD")),
+            starred: real.some((m) => (m.labelIds ?? []).includes("STARRED")),
             count: real.length,
           }];
         }),
@@ -332,11 +368,61 @@ async function listMail(me: { email: string }, url: URL): Promise<Response> {
   return json({ inboxes: accounts.map((a) => results.find((r) => r.inbox.id === a.id)?.inbox ?? { id: a.id, address: a.address, error: null }), messages: all });
 }
 
+const CID_MESSAGE_BYTES = 5 * 1024 * 1024;
+const CID_THREAD_BYTES = 15 * 1024 * 1024;
+
+/**
+ * Inline images (cid:) are fetched and put into the HTML as data: addresses, up to 5 MB a message and 15 MB a
+ * thread, so they show inside the sandboxed frame without it reaching Gmail. Returns the cids that were shown.
+ */
+async function inlineCids(a: Row, m: Msg, html: string, budget: { left: number }): Promise<{ html: string; shown: Set<string> }> {
+  const cited = citedCids(html);
+  const images = new Map<string, string>();
+  if (!cited.size) return { html, shown: new Set() };
+  let used = 0;
+  for (const img of inlineImages(m.payload as Part)) {
+    if (!cited.has(img.cid) || images.has(img.cid)) continue;
+    if (used + img.size > CID_MESSAGE_BYTES || img.size > budget.left) continue;
+    try {
+      const id = img.data ? null : attachmentId(img.attachmentId);
+      const data = img.data ?? (id ? (await gmail<{ data?: string }>(a, `messages/${m.id}/attachments/${id}`)).data : undefined);
+      if (!data) continue;
+      const bytes = Buffer.from(data, "base64url");
+      if (used + bytes.length > CID_MESSAGE_BYTES || bytes.length > budget.left) continue;
+      used += bytes.length;
+      budget.left -= bytes.length;
+      images.set(img.cid, `data:${img.type};base64,${bytes.toString("base64")}`);
+    } catch {
+      // One image that can't be fetched leaves its place empty; the email still opens.
+    }
+  }
+  return { html: images.size ? rewriteCids(html, images) : html, shown: new Set(images.keys()) };
+}
+
 async function readThread(me: { email: string }, url: URL): Promise<Response> {
   const a = await myAccount(me.email, url.searchParams.get("inbox"));
   const id = gmailId(url.searchParams.get("thread"));
   if (!a || !id) return json({ error: "Not found." }, 404);
   const t = await gmail<{ messages?: Msg[] }>(a, `threads/${id}?format=full`);
+  const shown = (t.messages ?? []).filter(shownIn(folderOf(url.searchParams.get("folder"))));
+  const budget = { left: CID_THREAD_BYTES };
+  const messages = await pool(shown, 3, async (m) => {
+    const raw = (htmlOf(m.payload as never) ?? "").slice(0, 600_000) || null;
+    const inl = raw ? await inlineCids(a, m, raw, budget) : { html: null, shown: new Set<string>() };
+    return {
+      id: m.id,
+      from: header(m.payload?.headers, "From") ?? "",
+      to: header(m.payload?.headers, "To") ?? "",
+      cc: header(m.payload?.headers, "Cc") ?? "",
+      subject: header(m.payload?.headers, "Subject") ?? "",
+      date: Number(m.internalDate),
+      text: textOf(m.payload as never).slice(0, 100_000),
+      html: inl.html,
+      attachments: attachmentsOf(m.payload as Part, inl.shown).slice(0, 50),
+      starred: (m.labelIds ?? []).includes("STARRED"),
+      trashed: (m.labelIds ?? []).includes("TRASH"),
+    };
+  });
   return json({
     inbox: { id: a.id, address: a.address },
     threadId: id,
@@ -350,18 +436,34 @@ async function readThread(me: { email: string }, url: URL): Promise<Response> {
       const who = replyRecipients(a.address!, { from: header(h, "From"), replyTo: header(h, "Reply-To"), to: header(h, "To"), cc: header(h, "Cc") }, false);
       return { id: m.id, to: who.to };
     })(),
-    messages: (t.messages ?? []).filter(isReal).map((m) => ({
-      id: m.id,
-      from: header(m.payload?.headers, "From") ?? "",
-      to: header(m.payload?.headers, "To") ?? "",
-      cc: header(m.payload?.headers, "Cc") ?? "",
-      subject: header(m.payload?.headers, "Subject") ?? "",
-      date: Number(m.internalDate),
-      text: textOf(m.payload as never).slice(0, 100_000),
-      html: (htmlOf(m.payload as never) ?? "").slice(0, 600_000) || null,
-    })),
+    messages,
   });
 }
+
+/** Streams one attachment as a download, never shown in the page. The name comes from Gmail, made safe. */
+async function attachment(me: { email: string }, url: URL): Promise<Response> {
+  const a = await myAccount(me.email, url.searchParams.get("inbox"));
+  const id = gmailId(url.searchParams.get("message"));
+  const part = url.searchParams.get("part") ?? "";
+  if (!a || !id || !/^\d{1,6}(\.\d{1,6}){0,10}$/.test(part)) return json({ error: "Not found." }, 404);
+  const m = await gmail<Msg>(a, `messages/${id}?format=full`);
+  const p = partById(m.payload as Part, part);
+  const attId = attachmentId(p?.body?.attachmentId);
+  if (!p || (!attId && !p.body?.data)) return json({ error: "Not found." }, 404);
+  const data = p.body?.data ?? (await gmail<{ data?: string }>(a, `messages/${id}/attachments/${attId}`)).data ?? "";
+  return new Response(Buffer.from(data, "base64url"), {
+    headers: {
+      "Content-Type": "application/octet-stream",
+      "Content-Disposition": contentDisposition(safeFilename(p.filename)),
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Referrer-Policy": "no-referrer",
+    },
+  });
+}
+
+type FullMsg = { id: string; threadId: string; internalDate?: string; labelIds?: string[]; payload?: Part & { headers?: { name: string; value: string }[] } };
 
 async function reply(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
@@ -370,14 +472,13 @@ async function reply(me: { email: string }, body: Record<string, unknown>): Prom
   const text = typeof body.text === "string" ? body.text : "";
   if (!a || !threadId || !messageId) return json({ error: "Not found." }, 404);
   if (!text.trim() || text.length > 50_000) return json({ error: "Write a reply first (up to 50,000 characters)." }, 400);
-  const m = await gmail<{ threadId: string; labelIds?: string[]; payload?: { headers?: { name: string; value: string }[] } }>(
-    a,
-    `messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Reply-To&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Subject&metadataHeaders=Message-ID&metadataHeaders=References`
-  );
+  const m = await gmail<FullMsg>(a, `messages/${messageId}?format=full`);
   if (m.threadId !== threadId || !isReal({ id: messageId, internalDate: "0", labelIds: m.labelIds })) return json({ error: "Not found." }, 404);
   const h = m.payload?.headers;
   const who = replyRecipients(a.address!, { from: header(h, "From"), replyTo: header(h, "Reply-To"), to: header(h, "To"), cc: header(h, "Cc") }, body.all === true);
   if (!who.to.length) return json({ error: "There's no one to reply to on this message." }, 400);
+  // The original goes under the reply, unless the person turned it off.
+  const original = body.quote === false ? "" : textOf(m.payload).slice(0, 30_000);
   const raw = buildReply({
     from: a.address!,
     to: who.to,
@@ -385,22 +486,106 @@ async function reply(me: { email: string }, body: Record<string, unknown>): Prom
     subject: header(h, "Subject") ?? "",
     inReplyTo: header(h, "Message-ID") ?? null,
     references: header(h, "References") ?? null,
-    body: text,
+    body: original ? `${text.trimEnd()}\n\n${quoteOriginal(original, header(h, "From") ?? "", dateLine(h, m.internalDate))}` : text,
   });
   const sent = await gmail<{ id: string }>(a, "messages/send", { method: "POST", body: { raw, threadId } });
+  return json({ sent: sent.id, to: who.to, cc: who.cc, from: a.address });
+}
+
+/** To and Cc typed by a person: real addresses only, at least one To, at most 50 in all. */
+function recipients(body: Record<string, unknown>): { to: string[]; cc: string[] } | { error: string } {
+  const to = parseAddressList(body.to);
+  const cc = parseAddressList(body.cc);
+  const bad = [...to.bad, ...cc.bad];
+  if (bad.length) return { error: `This isn't an email address: ${oneLine(bad[0]).slice(0, 80)}` };
+  if (!to.ok.length) return { error: "Add who it goes to." };
+  if (to.ok.length + cc.ok.length > 50) return { error: "Send to at most 50 people at once." };
+  return { to: to.ok, cc: cc.ok.filter((e) => !to.ok.includes(e)) };
+}
+
+/** A new email from any inbox the member connected. */
+async function send(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const a = await myAccount(me.email, body.inbox);
+  if (!a) return json({ error: "Pick the inbox to send from." }, 404);
+  const who = recipients(body);
+  if ("error" in who) return json({ error: who.error }, 400);
+  const subject = typeof body.subject === "string" ? oneLine(body.subject).slice(0, 500) : "";
+  const text = typeof body.text === "string" ? body.text : "";
+  if (!text.trim() && !subject) return json({ error: "Write a subject or a message first." }, 400);
+  if (text.length > 50_000) return json({ error: "Keep the message under 50,000 characters." }, 400);
+  const raw = buildMessage({ from: a.address!, to: who.to, cc: who.cc, subject, body: text });
+  const sent = await gmail<{ id: string }>(a, "messages/send", { method: "POST", body: { raw } });
+  return json({ sent: sent.id, to: who.to, cc: who.cc, from: a.address });
+}
+
+/** Forwards one message as plain text (its attachments are not included), from the inbox it is in. */
+async function forward(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const a = await myAccount(me.email, body.inbox);
+  const threadId = gmailId(body.thread);
+  const messageId = gmailId(body.message);
+  if (!a || !threadId || !messageId) return json({ error: "Not found." }, 404);
+  const who = recipients(body);
+  if ("error" in who) return json({ error: who.error }, 400);
+  const note = typeof body.text === "string" ? body.text : "";
+  if (note.length > 50_000) return json({ error: "Keep the note under 50,000 characters." }, 400);
+  const m = await gmail<FullMsg>(a, `messages/${messageId}?format=full`);
+  if (m.threadId !== threadId || (m.labelIds ?? []).includes("DRAFT")) return json({ error: "Not found." }, 404);
+  const h = m.payload?.headers;
+  const raw = buildMessage({
+    from: a.address!,
+    to: who.to,
+    cc: who.cc,
+    subject: forwardSubject(header(h, "Subject") ?? ""),
+    body: forwardBody(note, {
+      from: header(h, "From") ?? "",
+      date: dateLine(h, m.internalDate),
+      subject: header(h, "Subject") ?? "",
+      to: header(h, "To") ?? "",
+      cc: header(h, "Cc") ?? "",
+      text: textOf(m.payload).slice(0, 100_000),
+    }),
+  });
+  const sent = await gmail<{ id: string }>(a, "messages/send", { method: "POST", body: { raw } });
   return json({ sent: sent.id, to: who.to, cc: who.cc, from: a.address });
 }
 
 async function modify(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
   const a = await myAccount(me.email, body.inbox);
   const id = gmailId(body.thread);
-  const action = body.action;
   if (!a || !id) return json({ error: "Not found." }, 404);
-  const change =
-    action === "read" ? { removeLabelIds: ["UNREAD"] } : action === "unread" ? { addLabelIds: ["UNREAD"] } : action === "archive" ? { removeLabelIds: ["INBOX"] } : null;
+  const change = threadAction(body.action, id);
   if (!change) return json({ error: "Unknown action." }, 400);
-  await gmail(a, `threads/${id}/modify`, { method: "POST", body: change });
+  await gmail(a, change.path, { method: "POST", body: change.body });
   return json({ ok: true });
+}
+
+const BULK_MAX = 100;
+/** One action on many conversations, each in its own inbox. Each inbox is looked up as this member's own. */
+async function bulk(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
+  const items = Array.isArray(body.items) ? (body.items as { inbox?: unknown; thread?: unknown }[]) : [];
+  if (!items.length) return json({ error: "Pick at least one email." }, 400);
+  if (items.length > BULK_MAX) return json({ error: `Pick up to ${BULK_MAX} at a time.` }, 400);
+  if (!threadAction(body.action, "x")) return json({ error: "Unknown action." }, 400);
+  const accounts = new Map<string, Row | null>();
+  for (const it of items) {
+    const k = String(it?.inbox ?? "");
+    if (!accounts.has(k)) accounts.set(k, await myAccount(me.email, k));
+  }
+  const results = await pool(items, 5, async (it) => {
+    const inbox = String(it?.inbox ?? "");
+    const a = accounts.get(inbox);
+    const id = gmailId(it?.thread);
+    if (!a || !id) return { inbox, thread: String(it?.thread ?? ""), ok: false, error: "Not found." };
+    try {
+      const change = threadAction(body.action, id)!;
+      await gmail(a, change.path, { method: "POST", body: change.body });
+      return { inbox, thread: id, ok: true, error: null as string | null };
+    } catch (e) {
+      return { inbox, thread: id, ok: false, error: (e as Error).message };
+    }
+  });
+  const failed = results.filter((r) => !r.ok);
+  return json({ done: results.filter((r) => r.ok).map((r) => ({ inbox: r.inbox, thread: r.thread })), failed: failed.length, error: failed[0]?.error ?? null });
 }
 
 async function removeInbox(me: { email: string }, body: Record<string, unknown>): Promise<Response> {
@@ -514,6 +699,7 @@ export default {
       if (req.method === "GET" && path === "/api/auth/connect") return startGoogle(req, "inbox", url.searchParams.get("hint") ?? undefined);
       if (req.method === "GET" && path === "/api/mail") return listMail(me, url);
       if (req.method === "GET" && path === "/api/thread") return readThread(me, url);
+      if (req.method === "GET" && path === "/api/attachment") return attachment(me, url);
       if (req.method === "GET" && path === "/api/team") return team(me, req);
       if (req.method === "POST") {
         if (!sameOrigin(req)) return json({ error: "Refused." }, 403);
@@ -521,6 +707,9 @@ export default {
         const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
         if (path === "/api/reply") return reply(me, body);
         if (path === "/api/modify") return modify(me, body);
+        if (path === "/api/bulk") return bulk(me, body);
+        if (path === "/api/send") return send(me, body);
+        if (path === "/api/forward") return forward(me, body);
         if (path === "/api/inbox/remove") return removeInbox(me, body);
       }
       return json({ error: "Not found." }, 404);

@@ -115,16 +115,18 @@ export interface ReplyInput {
 /** The subject of a reply: "Re: " once, never "Re: Re:". */
 export const replySubject = (s: string) => (/^\s*re\s*:/i.test(s) ? oneLine(s) : `Re: ${oneLine(s)}`);
 
-/** A plain text reply as an RFC 2822 message, base64url encoded for the Gmail API. */
-export function buildReply(r: ReplyInput): string {
-  const ids = (v: string | null) => (v ?? "").match(/<[^<>\s]+>/g) ?? [];
+export type MessageInput = Omit<ReplyInput, "inReplyTo" | "references"> & { inReplyTo?: string | null; references?: string | null };
+
+/** A plain text message as RFC 2822, base64url encoded for the Gmail API. Every header value is kept to one line. */
+export function buildMessage(r: MessageInput): string {
+  const ids = (v: string | null | undefined) => (v ?? "").match(/<[^<>\s]+>/g) ?? [];
   const inReply = ids(r.inReplyTo)[0] ?? null;
   const refs = [...ids(r.references), ...(inReply ? [inReply] : [])].filter((v, i, a) => a.indexOf(v) === i).slice(-20);
   const headers = [
     `From: ${oneLine(r.from)}`,
     `To: ${r.to.map(oneLine).join(", ")}`,
     ...(r.cc.length ? [`Cc: ${r.cc.map(oneLine).join(", ")}`] : []),
-    `Subject: ${encodeHeader(replySubject(r.subject))}`,
+    `Subject: ${encodeHeader(r.subject)}`,
     ...(inReply ? [`In-Reply-To: ${inReply}`] : []),
     ...(refs.length ? [`References: ${refs.join(" ")}`] : []),
     "MIME-Version: 1.0",
@@ -133,6 +135,76 @@ export function buildReply(r: ReplyInput): string {
   ];
   const body = Buffer.from(r.body.replace(/\r?\n/g, "\r\n"), "utf8").toString("base64").replace(/.{76}/g, "$&\r\n");
   return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${body}`, "utf8").toString("base64url");
+}
+
+/** A plain text reply as an RFC 2822 message, base64url encoded for the Gmail API. */
+export function buildReply(r: ReplyInput): string {
+  return buildMessage({ ...r, subject: replySubject(r.subject) });
+}
+
+/** The subject of a forward: "Fwd: " once. */
+export const forwardSubject = (s: string) => (/^\s*(fwd?|fw)\s*:/i.test(s) ? oneLine(s) : `Fwd: ${oneLine(s)}`);
+
+/** The original under a reply: "On <date>, <from> wrote:" and each line marked with "> ". */
+export function quoteOriginal(text: string, from: string, date: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").trimEnd().split("\n").map((l) => (l === "" ? ">" : l.startsWith(">") ? `>${l}` : `> ${l}`));
+  return `On ${oneLine(date)}, ${oneLine(from)} wrote:\n${lines.join("\n")}`;
+}
+
+/** The body of a forward: the sender's note, then the original's headers and text. */
+export function forwardBody(note: string, o: { from: string; date: string; subject: string; to: string; cc?: string; text: string }): string {
+  const head = [
+    "Begin forwarded message:",
+    "",
+    `From: ${oneLine(o.from)}`,
+    `Date: ${oneLine(o.date)}`,
+    `Subject: ${oneLine(o.subject)}`,
+    `To: ${oneLine(o.to)}`,
+    ...(o.cc ? [`Cc: ${oneLine(o.cc)}`] : []),
+  ];
+  return `${note.trimEnd()}${note.trim() ? "\n\n" : ""}${head.join("\n")}\n\n${o.text.replace(/\r\n?/g, "\n")}`;
+}
+
+/** Addresses typed by a person, split on commas, semicolons or lines. Anything not an address comes back in `bad`. */
+export function parseAddressList(input: unknown): { ok: string[]; bad: string[] } {
+  const ok: string[] = [];
+  const bad: string[] = [];
+  for (const piece of String(input ?? "").split(/[,;\n]+/)) {
+    const p = piece.trim();
+    if (!p) continue;
+    const e = addressIn(p);
+    if (e) {
+      if (!ok.includes(e)) ok.push(e);
+    } else bad.push(p);
+  }
+  return { ok, bad };
+}
+
+// ---------- folders and search ----------
+
+export const FOLDERS = { inbox: "in:inbox", starred: "is:starred", sent: "in:sent", trash: "in:trash" } as const;
+export type Folder = keyof typeof FOLDERS;
+export const folderOf = (v: unknown): Folder => (typeof v === "string" && Object.prototype.hasOwnProperty.call(FOLDERS, v) ? (v as Folder) : "inbox");
+
+/** The Gmail search for a folder, the unread filter and what the person typed (kept inside the folder). */
+export function mailQuery(folder: unknown, unread: boolean, search: unknown): string {
+  const s = oneLine(String(search ?? "")).slice(0, 300);
+  return [FOLDERS[folderOf(folder)], unread ? "is:unread" : "", s ? `(${s})` : ""].filter(Boolean).join(" ");
+}
+
+/** What a thread action does in Gmail: the path to post to and the label change, or null when unknown. */
+export function threadAction(action: unknown, id: string): { path: string; body?: Record<string, string[]> } | null {
+  const m = (body: Record<string, string[]>) => ({ path: `threads/${id}/modify`, body });
+  switch (action) {
+    case "read": return m({ removeLabelIds: ["UNREAD"] });
+    case "unread": return m({ addLabelIds: ["UNREAD"] });
+    case "archive": return m({ removeLabelIds: ["INBOX"] });
+    case "star": return m({ addLabelIds: ["STARRED"] });
+    case "unstar": return m({ removeLabelIds: ["STARRED"] });
+    case "trash": return { path: `threads/${id}/trash` };
+    case "untrash": return { path: `threads/${id}/untrash` };
+    default: return null;
+  }
 }
 
 /**
@@ -156,10 +228,12 @@ export function replyRecipients(
 
 // ---------- reading a message ----------
 
-interface Part {
+export interface Part {
+  partId?: string;
   mimeType?: string;
+  filename?: string;
   headers?: { name: string; value: string }[];
-  body?: { data?: string };
+  body?: { data?: string; attachmentId?: string; size?: number };
   parts?: Part[];
 }
 
@@ -231,3 +305,89 @@ export function htmlOf(payload: Part | undefined): string | null {
 
 export const header = (headers: { name: string; value: string }[] | undefined, name: string) =>
   headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value;
+
+// ---------- attachments and inline images ----------
+
+/** Every part of a message, depth first. */
+export function allParts(p: Part | undefined, out: Part[] = []): Part[] {
+  if (!p) return out;
+  out.push(p);
+  for (const c of p.parts ?? []) allParts(c, out);
+  return out;
+}
+
+export const partById = (payload: Part | undefined, partId: string) => allParts(payload).find((p) => p.partId === partId) ?? null;
+
+/** A Content-ID or cid: reference in one comparable form: no angle brackets, lower case. */
+export function cidKey(v: unknown): string {
+  let s = String(v ?? "").trim();
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    /* keep as typed */
+  }
+  return s.replace(/^<|>$/g, "").trim().toLowerCase();
+}
+
+const IMAGE_EXT: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", bmp: "image/bmp" };
+/** An image type safe for a data: address, from the part's type or else its file name; null when not an image. */
+export function imageType(mimeType: string | undefined, filename?: string): string | null {
+  const t = String(mimeType ?? "").toLowerCase().trim();
+  if (/^image\/[a-z0-9.+-]{1,40}$/.test(t)) return t;
+  const ext = String(filename ?? "").toLowerCase().match(/\.([a-z0-9]{1,5})$/)?.[1];
+  return ext && Object.prototype.hasOwnProperty.call(IMAGE_EXT, ext) ? IMAGE_EXT[ext] : null;
+}
+
+/** Image parts an email can show inline (they carry a Content-ID). */
+export function inlineImages(payload: Part | undefined): { cid: string; type: string; partId: string; attachmentId?: string; data?: string; size: number }[] {
+  return allParts(payload).flatMap((p) => {
+    const cid = cidKey(header(p.headers, "Content-ID") ?? header(p.headers, "X-Attachment-Id"));
+    const type = imageType(p.mimeType, p.filename);
+    if (!cid || !type || (!p.body?.attachmentId && !p.body?.data)) return [];
+    return [{ cid, type, partId: p.partId ?? "", attachmentId: p.body?.attachmentId, data: p.body?.data, size: Number(p.body?.size ?? 0) }];
+  });
+}
+
+/** The cid: references in an email's HTML. */
+export function citedCids(html: string): Set<string> {
+  return new Set([...html.matchAll(/cid:([^"'\s)>]+)/gi)].map((m) => cidKey(m[1])));
+}
+
+/** Points cid: references at the images given (data: addresses); unknown ones stay as they are. */
+export function rewriteCids(html: string, images: Map<string, string>): string {
+  return html.replace(/cid:([^"'\s)>]+)/gi, (m, id: string) => images.get(cidKey(id)) ?? m);
+}
+
+/** Files attached to a message, leaving out images already shown inline. */
+export function attachmentsOf(payload: Part | undefined, shown: Set<string> = new Set()): { part: string; name: string; size: number }[] {
+  return allParts(payload).flatMap((p) => {
+    const name = (p.filename ?? "").trim();
+    if (!name || !p.partId || (!p.body?.attachmentId && !p.body?.data)) return [];
+    const cid = cidKey(header(p.headers, "Content-ID") ?? "");
+    if (cid && shown.has(cid)) return [];
+    return [{ part: p.partId, name: safeFilename(name), size: Number(p.body?.size ?? 0) }];
+  });
+}
+
+/** A file name safe to save: no folders, control characters or reserved marks, at most 150 characters. */
+export function safeFilename(name: unknown): string {
+  let s = String(name ?? "")
+    .normalize("NFC")
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/^[.\s]+/, "")
+    .trim();
+  if (s.length > 150) {
+    const ext = s.match(/\.[^.]{1,10}$/)?.[0] ?? "";
+    s = s.slice(0, 150 - ext.length) + ext;
+  }
+  return s || "attachment";
+}
+
+/** Content-Disposition that always downloads, with a plain fallback name and the full name encoded. */
+export function contentDisposition(name: unknown): string {
+  const safe = safeFilename(name);
+  const plain = safe.replace(/[^\x20-\x7e]/g, "_").replace(/[%;\\"]/g, "_");
+  const encoded = encodeURIComponent(safe).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${plain}"; filename*=UTF-8''${encoded}`;
+}
