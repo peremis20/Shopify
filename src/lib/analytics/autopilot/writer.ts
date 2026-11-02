@@ -961,13 +961,21 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
 export function safeEmailText(raw: string, keep: string[], allowedUrls: string[] = []): { text: string; dropped: number; total: number } {
   const saved: { text: string; url: boolean }[] = [];
   const hide = (url: boolean) => (m: string) => `\u0000${saved.push({ text: m, url }) - 1}\u0000`;
-  let masked = raw.replace(/[\u2010-\u2015]/g, ",").replace(/https?:\/\/[^\s)]+/g, hide(true));
+  let masked = raw
+    .replace(/[\u2010-\u2015]/g, ",")
+    .replace(/\s+-\s+/g, ", ")
+    .replace(/https?:\/\/[^\s)]+/g, hide(true));
   // Only these exact names, as whole words: a brand like "Cure" must not hide that word inside a claim.
   for (const name of keep.sort((x, y) => y.length - x.length)) {
     const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     masked = masked.replace(new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu"), hide(false));
   }
+  // A bare address ("healthtips.com") is set aside like a link, so one that wasn't given can be caught.
+  masked = masked.replace(/(?<![\p{L}\p{N}@.\/-])(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(?![\p{L}\p{N}-])/giu, hide(true));
   const allowed = new Set(allowedUrls.filter(Boolean).map((u) => u.replace(/[.,;:!?]+$/, "")));
+  const hostOf = (u: string) => u.toLowerCase().replace(/^https?:\/\//, "").replace(/[/?#].*$/, "").replace(/^www\./, "");
+  const allowedHosts = new Set([...allowed].map(hostOf));
+  const bare = (t: string) => !/^https?:\/\//i.test(t);
   let dropped = 0;
   let total = 0;
   const text = masked
@@ -985,7 +993,11 @@ export function safeEmailText(raw: string, keep: string[], allowedUrls: string[]
           const plain = sentence.replace(/\u0000\d+\u0000/g, "");
           const real = sentence.replace(/\u0000(\d+)\u0000/g, (_, i) => (saved[Number(i)]?.url ? "link" : (saved[Number(i)]?.text ?? "")));
           // Only the addresses given to the writer may appear: a made up one drops its sentence.
-          const strayUrl = marks.some((m) => m?.url && allowed.size > 0 && !allowed.has(m.text.replace(/[.,;:!?]+$/, "")));
+          const strayUrl = marks.some(
+            (m) =>
+              m?.url &&
+              (bare(m.text) ? !allowedHosts.has(hostOf(m.text)) : allowed.size > 0 && !allowed.has(m.text.replace(/[.,;:!?]+$/, "")))
+          );
           // A line made only of names (the sign off) is always kept, even for a brand like "Cure"; not a line of addresses.
           const onlyNames = marks.length > 0 && marks.every((m) => m && !m.url) && !/[\p{L}\p{N}]/u.test(plain);
           const ok = onlyNames || (!strayUrl && !/\d/.test(plain) && !isRisky(real) && !isUnsourced(real) && !hasAiTell(real));

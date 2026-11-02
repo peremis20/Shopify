@@ -397,3 +397,84 @@ test("errors: database and system details never reach the browser", () => {
   }
   assert.equal(publicError(new Error("Connect your website by its address first.")), "Connect your website by its address first.");
 });
+
+// ---------- guardrail review fixes ----------
+import { blocksOf, dropBlocks, numbersKnown, onlyKnownNumbers, reviewerOf, NO_SECOND_AI } from "../src/lib/analytics/autopilot/writer";
+import { junkReason } from "../src/lib/analytics/autopilot/keyword-guard";
+
+test("headings: a failing heading is checked and takes its section with it", () => {
+  const html = "<h2>Cures cancer fast</h2><p>Bad part.</p><h3>Inner</h3><p>Also gone.</p><h2>Good</h2><p>Kept.</p>";
+  const out = dropBlocks(html, (t) => isRisky(t), true);
+  assert.equal(out, "<h2>Good</h2><p>Kept.</p>");
+  assert.deepEqual(blocksOf(html, true).length, 6);
+  assert.deepEqual(blocksOf(html).length, 3);
+  // Without headings, paragraphs only, as before.
+  assert.equal(dropBlocks("<h2>Cures cancer</h2><p>Fine.</p>", (t) => isRisky(t)), "<h2>Cures cancer</h2><p>Fine.</p>");
+  assert.equal(onlyKnownNumbers("<h2>Take 500 mg</h2><p>Plain.</p><h2>Other</h2><p>Kept.</p>", "<p>Each bottle has 60 capsules.</p>"), "<h2>Other</h2><p>Kept.</p>");
+});
+
+test("claims: only a real negation near the claim excuses it", () => {
+  assert.ok(isRisky("It cures anxiety disorders alongside a healthy diet."));
+  assert.ok(isRisky("It prevents colds no matter the season."));
+  assert.ok(isRisky("Doctor recommended formula."));
+  assert.ok(isRisky("Our tea is not a drug, it treats arthritis."));
+  assert.ok(isRisky("It not only treats colds but the flu."));
+  assert.equal(isRisky("This tea does not cure colds."), false);
+  assert.equal(isRisky("No product cures cancer."), false); // the first word of the text counts
+  assert.equal(isRisky("Never stop taking your medication."), false);
+});
+
+test("claims: relieves, eases, manages and drug alternatives are caught", () => {
+  assert.ok(isRisky("It relieves arthritis pain."));
+  assert.ok(isRisky("Eases migraines in minutes."));
+  assert.ok(isRisky("Helps you manage diabetes."));
+  assert.ok(isRisky("A natural alternative to ibuprofen."));
+});
+
+test("numbers: a number counts only with the same unit, spelled out ones too, scripts ignored", () => {
+  const page = "<p>Each bottle holds 50 capsules. Ships in 2 to 3 days.</p><script>var off = 30;</script>";
+  assert.equal(numbersKnown("Cuts stress by 50%.", page), false);
+  assert.ok(numbersKnown("A bottle of 50 capsules.", page));
+  assert.ok(numbersKnown("It ships in 3 days.", page));
+  assert.equal(numbersKnown("Save 30 today.", page), false);
+  assert.equal(numbersKnown("Take two capsules a day.", page), false);
+  assert.equal(numbersKnown("Results in fifty percent less time.", page), false);
+  assert.ok(numbersKnown("Lasts about fifty capsules.", page));
+  assert.ok(numbersKnown("Vitamin B12 helps.", "<p>With vitamin B12 for energy.</p>"));
+  assert.ok(numbersKnown("Top tips for one of the best routines.", ""));
+});
+
+test("evidence: a short fragment without a number fails", () => {
+  assert.equal(backedByFacts("searches tracked", "Searches tracked: 40."), false);
+  assert.ok(backedByFacts("Searches tracked: 40", "Searches tracked: 40."));
+});
+
+test("reviewers: never the writer's own service; with no other one the work waits", () => {
+  const claude = { kind: "claude" as const, key: "a" };
+  const gemini = { kind: "gemini" as const, key: "b" };
+  assert.throws(() => reviewerOf(claude), { message: NO_SECOND_AI });
+  const r = reviewerOf({ ...claude, backups: [gemini] });
+  assert.equal(r.kind, "gemini");
+  assert.ok(!(r.backups ?? []).some((b) => b.kind === "claude"));
+});
+
+test("keywords: niche neutral local and character rules", () => {
+  assert.equal(junkReason("how many hours of sleep"), null);
+  assert.equal(junkReason("café au lait recipe"), null);
+  assert.equal(junkReason("pharmacy opening hours"), "local search");
+  assert.equal(junkReason("best tea ☕"), "odd characters");
+});
+
+test("text: day and number ranges read with to, letter and number names stay joined", () => {
+  assert.equal(polish("Open Mon–Fri"), "Open Mon to Fri");
+  assert.equal(polish("Open Monday – Friday"), "Open Monday to Friday");
+  assert.equal(polish("Vitamin B–12"), "Vitamin B12");
+  assert.equal(polish("9am–5pm"), "9am to 5pm");
+});
+
+test("email filter: spaced hyphens become commas and made up bare domains drop their sentence", () => {
+  const out = safeEmailText("Hi there - I read your guide. See healthtips.com for more. Our page is at peremis.com/blogs too.", keep, urls);
+  assert.ok(!/\s-\s/.test(out.text), out.text);
+  assert.ok(!out.text.includes("healthtips.com"));
+  assert.equal(out.dropped, 1);
+});
