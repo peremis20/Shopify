@@ -270,13 +270,13 @@ details p{margin-top:10px;color:var(--muted)}
 .visual{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:44px}
 .serp{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px}
 .serp .tag{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
-.serp .old .tag{color:#B4523F}.serp .new .tag{color:var(--brand2)}
-.result{margin-top:10px;padding:14px;border-radius:14px;background:var(--bg)}
-.result cite{display:block;font-style:normal;font-size:12.5px;color:var(--muted)}
-.result b{display:block;color:#3B5BDB;font-weight:500;font-size:17px;margin:3px 0}
-.result p{font-size:13.5px;color:var(--muted)}
-.serp .new .result{outline:2px solid var(--brand2)}
-.arrow{text-align:center;color:var(--brand2);font-size:22px;margin:6px 0}
+.serp .tag{font-size:13px}.serp .old .tag{color:#E0674F}.serp .new .tag{color:var(--brand2)}
+.result{margin-top:10px;padding:16px;border-radius:14px;background:#FFFFFF;border:1px solid #E3E8E5;box-shadow:0 4px 14px rgba(0,0,0,.06)}
+.result cite{display:block;font-style:normal;font-size:13px;color:#4D5156}
+.result b{display:block;color:#1A0DAB;font-weight:500;font-size:18px;margin:4px 0}
+.result p{font-size:14.5px;line-height:1.5;color:#3C4043}
+.serp .new .result{outline:3px solid #3DCB5A;outline-offset:0}
+.arrow{text-align:center;color:var(--brand2);font-size:20px;font-weight:700;margin:10px 0}
 .ranks{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px}
 .rank{display:grid;grid-template-columns:1fr 150px 44px;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14.5px}
 .rank:last-child{border-bottom:none}
@@ -453,10 +453,10 @@ ${siteNav(appUrl, home)}
 <p>Here is the kind of work DashPatrol does on its own, shown on an example store.</p></div>
 <div class="visual">
 <div class="serp reveal">
-<div class="old"><span class="tag">Before</span><div class="result"><cite>yourstore.example &rsaquo; products</cite><b>Product 14 | Home</b><p>Welcome to our store. We sell many products. Click here to see more.</p></div></div>
+<div class="old"><span class="tag">Before</span><div class="result"><cite>yourstore.com &rsaquo; products</cite><b>Product 14 | Home</b><p>Welcome to our store. We sell many products. Click here to see more.</p></div></div>
 <div class="arrow">&#8595; DashPatrol rewrites it</div>
-<div class="new"><span class="tag">After</span><div class="result"><cite>yourstore.example &rsaquo; products</cite><b>Handmade Leather Wallet, Slim and Gift Ready</b><p>Full grain leather, holds 8 cards, free shipping over $50. See colors and sizes.</p></div></div>
-<p class="note2">Example. A clearer title and description gets more people to click, from the same spot on Google.</p>
+<div class="new"><span class="tag">After</span><div class="result"><cite>yourstore.com &rsaquo; products</cite><b>Handmade Leather Wallet, Slim and Gift Ready</b><p>Full grain leather, holds 8 cards, free shipping over $50. See colors and sizes.</p></div></div>
+<p class="note2">A clearer title and description gets more people to click, from the same spot on Google.</p>
 </div>
 <div class="ranks reveal" id="ranks">
 <span class="eyebrow">Positions on Google</span>
