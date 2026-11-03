@@ -1,3 +1,4 @@
+import { landingHtml } from "./landing";
 /**
  * The privacy policy and terms, served at /privacy and /terms. Plain words, describing only what the app really
  * does. The contact address comes from SUPPORT_EMAIL, or else the first platform owner in ADMIN_EMAILS.
@@ -88,31 +89,5 @@ export const termsHtml = () =>
 <h2>Contact</h2><p>Questions: ${contact()}.</p>`
   );
 
-/**
- * The public home page at the bare domain (dashpatrol.io): what DashPatrol does, how it uses Google data, and a way
- * into the app. Google's app reviewers read this page, so it stays plain HTML with links to the policy and terms.
- */
-export const homeHtml = (appUrl: string) =>
-  page(
-    "DashPatrol: grow your search traffic, automatically",
-    `<style>.go{display:inline-block;margin:8px 0 4px;padding:12px 22px;border-radius:12px;background:#16442B;color:#fff;text-decoration:none;font-weight:600}</style>
-<h1>DashPatrol</h1>
-<p style="font-size:20px">Grow your search traffic, automatically.</p>
-<p>DashPatrol helps your website rank on Google and turn that traffic into sales. Sign in with Google, connect your site (Shopify, WordPress, Webflow, Wix or any site through a small snippet), and DashPatrol plans each week from your real numbers, improves your pages, writes articles you allow, and measures every change so it keeps what works and undoes what doesn't.</p>
-<p><a class="go" href="${appUrl}">Open DashPatrol</a></p>
-<h2>What it does for you</h2>
-<ul>
-<li>Shows your Search Console and Analytics together: traffic, searches and top pages in one view.</li>
-<li>Finds the searches you almost rank for and tracks your positions every day.</li>
-<li>Improves your pages and adds internal links, with every change logged and undoable.</li>
-<li>Writes new articles, each checked by a second AI before it is published.</li>
-</ul>
-<h2>How DashPatrol uses your Google data</h2>
-<ul>
-<li>Google Search Console (read only): the searches your pages show up for, with clicks and positions, so it knows which pages to improve and can track results.</li>
-<li>Google Analytics (read only): visits and sales from search, to measure whether each change helped.</li>
-<li>Only when you click Set it up for me: it verifies your site, adds it and its sitemap to Search Console, and creates an Analytics property for it.</li>
-<li>Your data is used only to run DashPatrol for your own site. It is never sold, never shared with other customers and never used for ads.</li>
-</ul>
-<p><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a> · Contact: ${contact()}</p>`
-  );
+/** The public home page at the bare domain (dashpatrol.io): the landing page, with the Google data use and policy links. */
+export const homeHtml = (appUrl: string) => landingHtml(appUrl, contact());
