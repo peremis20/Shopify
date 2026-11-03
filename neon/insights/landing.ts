@@ -342,7 +342,7 @@ h1,h2,h3,.logo,.kpi strong,.quote,.calc .out div strong,.rank strong{font-family
 .mock{border:none;border-radius:24px;box-shadow:0 40px 80px rgba(0,0,0,.35),0 0 0 8px rgba(155,226,60,.25);color:#1F2A22;background:#fff}
 .mock .bar{border-color:#EEF2EF;color:#7A867E}
 .mock .bar b:nth-child(1){background:#FF6159}.mock .bar b:nth-child(2){background:#FFBD2E}.mock .bar b:nth-child(3){background:#28C941}
-.sample{background:#F7D14A}
+.sample{background:#EEF6F0;color:#17703A;font-weight:600;text-transform:none;letter-spacing:0;font-size:11.5px}
 .kpi{background:#fff;border:1px solid #E5EEE7;box-shadow:0 4px 12px rgba(0,0,0,.04)}
 .kpi .kic{font-size:16px}
 .kpi small{color:#6B7A70}.kpi strong{font-size:24px;color:#0E2A1A}
@@ -412,7 +412,7 @@ ${siteNav(appUrl, home)}
 <div class="mockwrap" role="figure" aria-label="Example of the DashPatrol dashboard with sample numbers">
 <div class="mock">
 <div class="bar"><b></b><b></b><b></b><span>app.dashpatrol.io</span></div>
-<span class="sample">Example</span>
+<span class="sample">Dashboard preview</span>
 <div class="body">
 <div class="kpis">
 <div class="kpi"><span class="kic">&#128269;</span><small>Visits from Google</small><strong data-count="4820">4,820</strong><em>&#9650; +32% this month</em></div>
