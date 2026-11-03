@@ -1,25 +1,43 @@
-import { landingHtml } from "./landing";
+import { CHROME_CSS, homeOf, landingHtml, siteFooter, siteNav } from "./landing";
 /**
  * The privacy policy and terms, served at /privacy and /terms. Plain words, describing only what the app really
  * does. The contact address comes from SUPPORT_EMAIL, or else the first platform owner in ADMIN_EMAILS.
  */
-const page = (title: string, body: string) => `<!doctype html>
+const page = (title: string, body: string) => {
+  const app = (process.env.APP_URL ?? "").replace(/\/+$/, "");
+  const home = homeOf(app);
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600;700&display=swap">
 <style>
-:root{--ink:#2B2A27;--muted:#6B665C;--bg:#F7F3EC;--line:#E4DDCF}
-@media (prefers-color-scheme: dark){:root{--ink:#EDE8DE;--muted:#B5AEA2;--bg:#1C1B19;--line:#3A3833}}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,sans-serif}
-main{max-width:720px;margin:0 auto;padding:32px 16px 64px}
-h1{font-size:28px;margin:0 0 4px}h2{font-size:18px;margin:28px 0 6px}
-p,li{color:var(--ink)}small{color:var(--muted)}a{color:inherit}
+:root{--ink:#0E2A1A;--muted:#5C6660;--bg:#F5FAF6;--card:#FFFFFF;--line:#DDE9E0;--accent:#17703A}
+@media (prefers-color-scheme: dark){:root{--ink:#E8F2EA;--muted:#A7B8AC;--bg:#0F1712;--card:#16211A;--line:#24352A;--accent:#5BB884}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 Inter,system-ui,sans-serif}
+.hero{background:linear-gradient(160deg,#0A3520,#0F5A32);color:#fff;padding:56px 0 64px}
+.hero .in{max-width:820px;margin:0 auto;padding:0 20px}
+.hero h1{font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:clamp(32px,5vw,48px);margin:0;letter-spacing:-.02em}
+.hero small{color:#C6F432;font-weight:600}
+main{max-width:820px;margin:-32px auto 64px;padding:32px 28px;background:var(--card);border:1px solid var(--line);border-radius:22px;position:relative}
+main h2{font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:20px;margin:28px 0 6px}
+main h2:first-child{margin-top:0}
+main p,main li{color:var(--ink)}main a{color:var(--accent)}
+@media (max-width:860px){main{margin:-32px 16px 48px;padding:24px 18px}}
+${CHROME_CSS}
 </style>
 </head>
-<body><main>${body}</main></body>
+<body>
+${siteNav(app || "/", home)}
+${body}
+${siteFooter(app || "/", home, contact())}
+</body>
 </html>`;
+};
 
 const contact = () => {
   // A plain address only, so a typo can't break the page.
@@ -31,7 +49,8 @@ const contact = () => {
 export const privacyHtml = () =>
   page(
     "DashPatrol privacy policy",
-    `<h1>Privacy policy</h1><small>Last updated November 2, 2026.</small>
+    `<section class="hero"><div class="in"><h1>Privacy policy</h1><small>Last updated November 2, 2026.</small></div></section>
+<main>
 <h2>What DashPatrol does</h2>
 <p>DashPatrol helps your website rank on Google. It reads your site and its Google data, improves pages, writes articles you allow, and measures what worked. This policy covers the DashPatrol app at app.dashpatrol.io.</p>
 <h2>What we read</h2>
@@ -67,13 +86,14 @@ export const privacyHtml = () =>
 <li>To have your data deleted, including stored Google sign in tokens, contact ${contact()}.</li>
 <li>You can remove DashPatrol's access to your Google account at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>.</li>
 </ul>
-<h2>Contact</h2><p>Questions: ${contact()}.</p>`
+<h2>Contact</h2><p>Questions: ${contact()}.</p></main>`
   );
 
 export const termsHtml = () =>
   page(
     "DashPatrol terms",
-    `<h1>Terms of use</h1><small>Last updated November 2, 2026.</small>
+    `<section class="hero"><div class="in"><h1>Terms of use</h1><small>Last updated November 2, 2026.</small></div></section>
+<main>
 <h2>The service</h2>
 <p>DashPatrol is free during early access and is offered as it is. It may change, and features can have mistakes. If paid plans start, you will be told before anything is charged.</p>
 <h2>Your site</h2>
@@ -86,7 +106,7 @@ export const termsHtml = () =>
 <p>Google decides rankings. DashPatrol can't promise any position, traffic or sales.</p>
 <h2>Fair use</h2>
 <p>No paid links, link schemes or spam. Outreach emails are drafts; you decide whether to send them.</p>
-<h2>Contact</h2><p>Questions: ${contact()}.</p>`
+<h2>Contact</h2><p>Questions: ${contact()}.</p></main>`
   );
 
 /** The public home page at the bare domain (dashpatrol.io): the landing page, with the Google data use and policy links. */

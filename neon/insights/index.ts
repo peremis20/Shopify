@@ -96,17 +96,14 @@ const routes: Record<string, Handler> = {
  * Plain HTML shown before the app loads (and to anyone without JavaScript, like Google's app reviewers): what
  * DashPatrol is, what it does with Google data, and links to the privacy policy and terms. React replaces it.
  */
-const HOME_TEXT = `<main style="max-width:720px;margin:0 auto;padding:48px 16px;font:16px/1.6 system-ui,sans-serif">
-<h1>DashPatrol</h1>
-<p>DashPatrol helps your website rank on Google and turn that traffic into sales. Sign in with Google, connect your site (Shopify, WordPress, Webflow, Wix or any site through a small snippet), and DashPatrol plans each week from your real numbers, improves your pages, writes articles you allow, and measures every change so it keeps what works and undoes what doesn't.</p>
-<h2>How DashPatrol uses your Google data</h2>
-<ul>
-<li>Google Search Console (read only): the searches your pages show up for, with clicks and positions, so it knows which pages to improve and can track results.</li>
-<li>Google Analytics (read only): visits and sales from search, to measure whether each change helped.</li>
-<li>Only when you click Set it up for me: it verifies your site, adds it and its sitemap to Search Console, and creates an Analytics property for it.</li>
-<li>Your data is used only to run DashPatrol for your own site. It is never sold, never shared with other customers and never used for ads.</li>
-</ul>
-<p><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a></p>
+const HOME_TEXT = `<main style="min-height:100vh;margin:0;background:linear-gradient(160deg,#0A3520,#0F5A32);color:#fff;font:16px/1.6 Inter,system-ui,sans-serif;display:flex;align-items:center;justify-content:center;padding:32px 16px;box-sizing:border-box">
+<div style="max-width:620px;text-align:center">
+<p style="margin:0 0 18px;font:800 26px 'Plus Jakarta Sans',Inter,sans-serif;display:inline-flex;align-items:center;gap:10px"><span style="display:inline-flex;width:34px;height:34px;border-radius:9px;background:#3DCB5A;color:#0B3B22;align-items:center;justify-content:center">D</span>DashPatrol</p>
+<h1 style="margin:0;font:800 clamp(30px,5vw,44px)/1.1 'Plus Jakarta Sans',Inter,sans-serif">Grow your business on <span style="color:#C6F432">autopilot.</span></h1>
+<p style="color:rgba(255,255,255,.85)">DashPatrol helps your website rank on Google and turn that traffic into sales. It reads your Search Console (read only) and Analytics (read only) to choose which pages to improve and to measure every change. Only when you click Set it up for me does it verify your site, add it and its sitemap to Search Console and create an Analytics property. Your data is used only for your own site, never sold, shared or used for ads.</p>
+<p style="color:rgba(255,255,255,.7);font-size:14px">Loading DashPatrol&hellip;</p>
+<p style="font-size:14px"><a href="/privacy" style="color:#C6F432">Privacy policy</a> &middot; <a href="/terms" style="color:#C6F432">Terms of use</a></p>
+</div>
 </main>`;
 
 /**
@@ -128,7 +125,7 @@ async function page(req: Request): Promise<Response> {
 ${embedded ? '<meta name="robots" content="noindex">\n' : ""}<meta name="description" content="DashPatrol helps your website rank on Google: it reads your Search Console and Analytics, improves your pages, writes articles you allow and measures what worked.">
 ${bridge}<title>${api.APP_NAME}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Inter:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="${assets}/app.css">
 <style>:root{--font-serif:"Fraunces",Georgia,serif;--font-dash:"Inter",system-ui,sans-serif}body{margin:0;background:#F7F3EC;color:#2B2A27}</style>
 </head>

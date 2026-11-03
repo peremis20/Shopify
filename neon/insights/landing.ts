@@ -5,6 +5,75 @@
  */
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
+/** The public site's address (dashpatrol.io) worked out from the app's (app.dashpatrol.io). Empty when there is none. */
+export const homeOf = (appUrl: string) => (/^https:\/\/app\./i.test(appUrl) ? appUrl.replace(/^https:\/\/app\./i, "https://") : "");
+
+/** Header, menu and footer shared by every public page, so the home page, privacy and terms all look and link the same. */
+export const CHROME_CSS = `
+[id]{scroll-margin-top:76px}
+.sitenav{position:sticky;top:0;z-index:20;background:#0B3B22;color:#fff}
+.sitenav .wrap{display:flex;align-items:center;justify-content:space-between;height:64px;max-width:1120px;margin:0 auto;padding:0 20px}
+.sitenav .logo{font-family:"Plus Jakarta Sans",Inter,system-ui,sans-serif;font-weight:800;font-size:22px;color:#fff;text-decoration:none;display:flex;align-items:center;gap:8px}
+.sitenav .logo i{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;background:#3DCB5A;color:#0B3B22;font-style:normal;font-weight:800;font-size:18px}
+.sitenav .links{display:flex;gap:22px;align-items:center;font:500 15px Inter,system-ui,sans-serif}
+.sitenav .links a{color:rgba(255,255,255,.85);text-decoration:none}
+.sitenav .links a:hover{color:#fff}
+.sitenav .cta{display:inline-flex;align-items:center;padding:10px 18px;border-radius:12px;font-weight:700;text-decoration:none}
+.sitenav .cta.signin{border:1.5px solid rgba(255,255,255,.7);color:#fff}
+.sitenav .cta.start{background:#9BE23C;color:#0B2E18 !important}
+.sitenav .menu{display:none;position:relative;background:none;border:none;padding:0;border-radius:0}
+.sitenav .menu summary::after{content:none !important}
+.sitenav .menu summary{list-style:none;cursor:pointer;width:44px;height:44px;border-radius:12px;border:1.5px solid rgba(255,255,255,.5);display:flex;align-items:center;justify-content:center}
+.sitenav .menu summary::-webkit-details-marker{display:none}
+.sitenav .menu summary span,.sitenav .menu summary span::before,.sitenav .menu summary span::after{display:block;width:18px;height:2px;background:#fff;border-radius:2px;position:relative}
+.sitenav .menu summary span::before,.sitenav .menu summary span::after{content:"";position:absolute;left:0}
+.sitenav .menu summary span::before{top:-6px}.sitenav .menu summary span::after{top:6px}
+.sitenav .menu[open] summary span{background:transparent}
+.sitenav .menu[open] summary span::before{top:0;transform:rotate(45deg)}
+.sitenav .menu[open] summary span::after{top:0;transform:rotate(-45deg)}
+.sitenav .menu nav{position:absolute;right:0;top:54px;width:240px;background:#0B3B22;border:1px solid rgba(255,255,255,.15);border-radius:16px;padding:10px;display:grid;gap:2px;box-shadow:0 20px 40px rgba(0,0,0,.3)}
+.sitenav .menu nav a{color:#fff;text-decoration:none;padding:11px 12px;border-radius:10px;font:500 16px Inter,system-ui,sans-serif}
+.sitenav .menu nav a:hover{background:rgba(255,255,255,.08)}
+.sitenav .menu nav a.start{background:#9BE23C;color:#0B2E18;text-align:center;font-weight:700;margin-top:6px}
+.sitefoot{background:#0A3520;color:rgba(255,255,255,.8);font:15px/1.6 Inter,system-ui,sans-serif;padding:48px 0 28px;margin-top:0}
+.sitefoot .wrap{max-width:1120px;margin:0 auto;padding:0 20px}
+.sitefoot .cols{display:grid;grid-template-columns:1.4fr 1fr 1fr 1fr;gap:28px}
+.sitefoot .logo{font-family:"Plus Jakarta Sans",Inter,system-ui,sans-serif;font-weight:800;font-size:22px;color:#fff;text-decoration:none;display:inline-flex;align-items:center;gap:8px}
+.sitefoot .logo i{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;background:#3DCB5A;color:#0B3B22;font-style:normal;font-weight:800;font-size:16px}
+.sitefoot h4{color:#C6F432;font-size:13px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 10px}
+.sitefoot p,.sitefoot li{color:inherit}
+.sitefoot a{color:rgba(255,255,255,.85);text-decoration:none}
+.sitefoot a:hover{color:#fff;text-decoration:underline}
+.sitefoot ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.sitefoot .base{border-top:1px solid rgba(255,255,255,.15);margin-top:32px;padding-top:18px;font-size:13.5px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+@media (max-width:900px){.sitenav .links{display:none}.sitenav .menu{display:block}.sitefoot .cols{grid-template-columns:1fr 1fr}}
+@media (max-width:520px){.sitefoot .cols{grid-template-columns:1fr}}
+`;
+
+export function siteNav(appUrl: string, home: string): string {
+  const a = esc(appUrl), h = esc(home);
+  const links = !home ? "" : `<a href="${h}/#benefits">Benefits</a><a href="${h}/#see">Features</a><a href="${h}/#how">How It Works</a><a href="${h}/#calc">Savings</a><a href="${h}/#faq">FAQ</a>`;
+  return `<header class="sitenav"><div class="wrap">
+<a class="logo" href="${h}/"><i>D</i>DashPatrol</a>
+<div class="links">${links}<a class="cta signin" href="${a}">Sign In</a><a class="cta start" href="${a}">Start Free</a></div>
+<details class="menu"><summary aria-label="Menu"><span></span></summary><nav>${links}<a href="${a}">Sign In</a><a class="start" href="${a}">Start Free</a></nav></details>
+<script>(function(){var d=document.currentScript.previousElementSibling;d.addEventListener("click",function(e){if(e.target.closest&&e.target.closest("nav a"))d.removeAttribute("open");});document.addEventListener("click",function(e){if(!d.contains(e.target))d.removeAttribute("open");});})();</script>
+</div></header>`;
+}
+
+export function siteFooter(appUrl: string, home: string, contactHtml: string): string {
+  const a = esc(appUrl), h = esc(home);
+  return `<footer class="sitefoot"><div class="wrap">
+<div class="cols">
+<div><a class="logo" href="${h}/"><i>D</i>DashPatrol</a><p style="margin:12px 0 0;max-width:300px">Your SEO team in one app. Grow your business on Google, on autopilot.</p></div>
+<div><h4>Product</h4><ul><li><a href="${h}/#benefits">Benefits</a></li><li><a href="${h}/#see">Features</a></li><li><a href="${h}/#how">How It Works</a></li><li><a href="${h}/#calc">Savings</a></li><li><a href="${h}/#faq">FAQ</a></li></ul></div>
+<div><h4>Get started</h4><ul><li><a href="${a}">Start Free</a></li><li><a href="${a}">Sign In</a></li><li><a href="${h}/#google">How we use Google data</a></li></ul></div>
+<div><h4>Company</h4><ul><li><a href="${h}/privacy">Privacy policy</a></li><li><a href="${h}/terms">Terms of use</a></li><li>Contact: ${contactHtml}</li></ul></div>
+</div>
+<div class="base"><span>&copy; ${new Date().getUTCFullYear()} DashPatrol</span><span>Free during early access</span></div>
+</div></footer>`;
+}
+
 const icon = (d: string) =>
   `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const I = {
@@ -79,6 +148,7 @@ const cell = (v: boolean | string) =>
 
 export function landingHtml(appUrl: string, contactHtml: string): string {
   const app = esc(appUrl);
+  const home = homeOf(appUrl);
   const cta = (label: string, cls = "btn") => `<a class="${cls}" href="${app}">${label}</a>`;
   return `<!doctype html>
 <html lang="en">
@@ -111,15 +181,9 @@ p{margin:0}
 .btn:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(22,68,43,.32)}
 .btn.ghost{background:transparent;color:var(--ink);box-shadow:none;border:1.5px solid var(--line)}
 .btn.ghost:hover{border-color:var(--brand2)}
-nav{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
-nav .wrap{display:flex;align-items:center;justify-content:space-between;height:64px}
 .logo{font-family:Fraunces,Georgia,serif;font-weight:600;font-size:22px;text-decoration:none;display:flex;align-items:center;gap:8px}
 .logo i{display:inline-block;width:26px;height:26px;border-radius:8px;background:var(--brand);position:relative}
 .logo i::after{content:"";position:absolute;inset:7px;border:2.5px solid var(--accent);border-radius:50%}
-nav .links{display:flex;gap:24px;align-items:center;font-size:15px}
-nav .links a{text-decoration:none;color:var(--muted)}
-nav .links a:hover{color:var(--ink)}
-nav .btn{padding:10px 18px;font-size:15px}
 .hero{padding:80px 0 64px;text-align:center}
 .hero p.lead{font-size:clamp(18px,2.2vw,22px);max-width:720px;margin:22px auto 0;color:var(--muted)}
 .hero .ctas{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;margin-top:34px}
@@ -170,8 +234,6 @@ details p{margin-top:10px;color:var(--muted)}
 .google{font-size:15px}
 .google ul{margin:12px 0 0;padding-left:20px;color:var(--muted)}
 .google li{margin-top:6px}
-footer{padding:36px 0 48px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}
-footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .hero{text-align:left;padding:64px 0 56px}
 .hero .grid2{display:grid;grid-template-columns:1.05fr 1fr;gap:48px;align-items:center}
 .hero p.lead{margin:22px 0 0}
@@ -245,7 +307,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 @media (max-width:900px){.hero .grid2,.visual,.calc{grid-template-columns:1fr}.week{grid-template-columns:repeat(4,1fr)}.f1{left:8px}.f2{right:8px}}
 @media (max-width:640px){.week{grid-template-columns:1fr 1fr}.kpi strong{font-size:18px}.rank{grid-template-columns:1fr 90px 36px}}
 @media (max-width:900px){.grid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.split{grid-template-columns:1fr;gap:32px}}
-@media (max-width:640px){.wrap{padding:0 16px}.grid,.steps{grid-template-columns:1fr}nav .links a:not(.btn){display:none}.hero{padding:56px 0 40px}section{padding:56px 0}.final{padding:48px 20px}}
+@media (max-width:640px){.wrap{padding:0 16px}.grid,.steps{grid-template-columns:1fr}.hero{padding:56px 0 40px}section{padding:56px 0}.final{padding:48px 20px}}
 /* v3 look */
 :root{--brand:#0F5A32;--accent:#C6F432;--soft:#E7F6EA;--bg:#F5FAF6;--line:#DDE9E0;--ink:#0E2A1A}
 :root:not([data-theme="dark"]){--brand2:#17703A}
@@ -255,9 +317,6 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 :root[data-theme="dark"]{--bg:#0F1712;--card:#16211A;--line:#24352A;--soft:#1A2E21;--ink:#E8F2EA;--muted:#A7B8AC}
 h1,h2,h3,.logo,.kpi strong,.quote,.calc .out div strong,.rank strong{font-family:"Plus Jakarta Sans",Inter,system-ui,sans-serif;font-weight:800;letter-spacing:-.02em}
 .eyebrow{color:var(--brand2);font-weight:800}
-nav{background:#0B3B22;border-bottom:none}
-nav .links a{color:rgba(255,255,255,.85)}
-nav .links a:hover{color:#fff}
 .logo{color:#fff}
 .logo i{background:#3DCB5A;color:#0B3B22;font-style:normal;font-weight:800;display:inline-flex;align-items:center;justify-content:center;font-size:18px;width:30px;height:30px}
 .logo i::after{display:none}
@@ -326,16 +385,14 @@ th.us{color:var(--brand2)}
 .final2 .btn.big{background:#0F5A32;color:#fff}
 .laptop svg{width:100%;height:auto}
 .final2 .ctas{display:flex;gap:14px;flex-wrap:wrap}
-@media (max-width:900px){nav .links .signin,nav .links a:not(.btn){display:none}.statgrid{grid-template-columns:1fr 1fr;row-gap:22px}.statgrid>div:nth-child(3){border-left:none}.final2{grid-template-columns:1fr}.mockwrap{transform:none}.hero{padding-bottom:110px}}
+@media (max-width:900px){.statgrid{grid-template-columns:1fr 1fr;row-gap:22px}.statgrid>div:nth-child(3){border-left:none}.final2{grid-template-columns:1fr}.mockwrap{transform:none}.hero{padding-bottom:110px}}
 @media (max-width:640px){.statgrid{grid-template-columns:1fr}.statgrid>div{border-left:none}.bcard .pic{width:72px;height:72px}.hero .note{gap:8px 14px;font-size:13px}.spark{display:none}}
 @media (prefers-reduced-motion:reduce){.bcard{transition:none}}
+${CHROME_CSS}
 </style>
 </head>
 <body>
-<nav><div class="wrap">
-<a class="logo" href="/"><i>D</i>DashPatrol</a>
-<div class="links"><a href="#benefits">Benefits</a><a href="#see">Features</a><a href="#how">How It Works</a><a href="#calc">Savings</a><a href="#faq">FAQ</a>${cta("Sign In","btn signin")}${cta("Start Free","btn lime")}</div>
-</div></nav>
+${siteNav(appUrl, home)}
 
 <header class="hero"><div class="wrap grid2">
 <div>
@@ -498,10 +555,7 @@ th.us{color:var(--brand2)}
 </ul>
 </div></section>
 
-<footer><div class="wrap">
-<span>&copy; ${new Date().getUTCFullYear()} DashPatrol</span>
-<span><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a> · Contact: ${contactHtml}</span>
-</div></footer>
+${siteFooter(appUrl, home, contactHtml)}
 <script>
 (function(){
 var feed=document.getElementById("feed"),items=[["&#9998;","Rewrote the title on your best seller","just now"],["&#128279;","Added 3 internal links to a guide","2 min ago"],["&#128221;","Drafted a new article, checked by a second AI","8 min ago"],["&#128200;","Moved up 6 spots for a search","today"],["&#128295;","Fixed a broken link","today"],["&#9993;","Weekly report ready","this week"]],k=3;
