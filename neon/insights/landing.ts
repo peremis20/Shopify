@@ -162,6 +162,78 @@ details p{margin-top:10px;color:var(--muted)}
 .google li{margin-top:6px}
 footer{padding:36px 0 48px;color:var(--muted);font-size:14px;border-top:1px solid var(--line)}
 footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.hero{text-align:left;padding:64px 0 56px}
+.hero .grid2{display:grid;grid-template-columns:1.05fr 1fr;gap:48px;align-items:center}
+.hero p.lead{margin:22px 0 0}
+.hero .ctas,.hero .pills{justify-content:flex-start}
+.mock{background:var(--card);border:1px solid var(--line);border-radius:22px;box-shadow:0 30px 60px rgba(22,68,43,.16);overflow:hidden;position:relative}
+.mock .bar{display:flex;align-items:center;gap:6px;padding:12px 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+.mock .bar b{width:10px;height:10px;border-radius:50%;background:var(--line);display:inline-block}
+.mock .bar span{margin-left:8px}
+.mock .body{padding:18px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.kpi{background:var(--soft);border-radius:14px;padding:12px}
+.kpi small{display:block;font-size:11.5px;color:var(--muted)}
+.kpi strong{display:block;font-size:22px;font-family:Fraunces,Georgia,serif;margin-top:2px}
+.kpi em{font-style:normal;font-size:12px;color:var(--brand2);font-weight:600}
+.chart{margin-top:14px;background:var(--bg);border-radius:14px;padding:12px 12px 4px}
+.chart small{font-size:12px;color:var(--muted)}
+.chart svg{display:block;width:100%;height:auto}
+.draw{stroke-dasharray:1200;stroke-dashoffset:1200;animation:draw 2.6s ease-out .3s forwards}
+.fillin{opacity:0;animation:fade 1.2s ease-out 1.6s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fade{to{opacity:1}}
+.feed{margin-top:14px;display:grid;gap:8px;min-height:132px}
+.feed div{display:flex;gap:10px;align-items:center;font-size:13.5px;background:var(--bg);border-radius:12px;padding:9px 12px;animation:slide .5s ease-out both}
+.feed i{flex:none;width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:13px;background:var(--soft);color:var(--brand2)}
+.feed span{flex:1}
+.feed time{font-size:11.5px;color:var(--muted)}
+@keyframes slide{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.sample{position:absolute;top:12px;right:14px;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;background:var(--accent);color:#1F2A22;padding:3px 8px;border-radius:999px;font-weight:700}
+.float{position:absolute;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:10px 14px;box-shadow:0 12px 30px rgba(0,0,0,.12);font-size:13px;display:flex;gap:8px;align-items:center;animation:bob 4s ease-in-out infinite}
+.float .yes{display:flex}
+@keyframes bob{50%{transform:translateY(-8px)}}
+.mockwrap{position:relative;padding:18px 0}
+.f1{left:-12px;bottom:4px}.f2{right:-18px;top:-6px;animation-delay:1.5s}
+.visual{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:44px}
+.serp{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px}
+.serp .tag{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
+.serp .old .tag{color:#B4523F}.serp .new .tag{color:var(--brand2)}
+.result{margin-top:10px;padding:14px;border-radius:14px;background:var(--bg)}
+.result cite{display:block;font-style:normal;font-size:12.5px;color:var(--muted)}
+.result b{display:block;color:#3B5BDB;font-weight:500;font-size:17px;margin:3px 0}
+.result p{font-size:13.5px;color:var(--muted)}
+.serp .new .result{outline:2px solid var(--brand2)}
+.arrow{text-align:center;color:var(--brand2);font-size:22px;margin:6px 0}
+.ranks{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:24px}
+.rank{display:grid;grid-template-columns:1fr 150px 44px;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:14.5px}
+.rank:last-child{border-bottom:none}
+.track{height:10px;border-radius:999px;background:var(--bg);overflow:hidden}
+.track i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--brand2),var(--accent));width:var(--w);transition:width 1.6s cubic-bezier(.2,.8,.2,1)}
+.js #ranks:not(.in) .track i{width:0}
+.rank strong{text-align:right;font-family:Fraunces,Georgia,serif;font-size:18px}
+.rank small{display:block;color:var(--muted);font-size:12px}
+.note2{font-size:12.5px;color:var(--muted);margin-top:14px}
+.week{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-top:44px}
+.day{background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:18px 14px;min-height:150px}
+.day h4{margin:0 0 10px;font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.day p{font-size:14px;color:rgba(255,255,255,.85);margin-top:6px;display:flex;gap:6px}
+.day.rest{background:transparent;border-style:dashed}
+.calc{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:40px;align-items:stretch}
+.calc .in{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px;display:grid;gap:22px}
+.calc label{display:block;font-weight:600;font-size:15px}
+.calc label output{float:right;color:var(--brand2);font-family:Fraunces,Georgia,serif;font-size:20px}
+.calc input[type=range]{width:100%;margin-top:10px;accent-color:var(--brand2)}
+.calc .out{background:linear-gradient(135deg,#16442B,#1F6B43);color:#fff;border-radius:20px;padding:28px;display:grid;gap:18px;align-content:center}
+.calc .out div small{display:block;color:rgba(255,255,255,.75);font-size:14px}
+.calc .out div strong{display:block;font-family:Fraunces,Georgia,serif;font-size:clamp(34px,5vw,48px);line-height:1.1}
+.calc .out p{font-size:13px;color:rgba(255,255,255,.7)}
+.reveal{opacity:1}
+.js .reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}
+.js .reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}.feed div{animation:none}.track i{transition:none}.draw{animation:none;stroke-dashoffset:0}.fillin{animation:none;opacity:1}.float{animation:none}.js .reveal{opacity:1;transform:none;transition:none}}
+@media (max-width:900px){.hero .grid2,.visual,.calc{grid-template-columns:1fr}.week{grid-template-columns:repeat(4,1fr)}.f1{left:8px}.f2{right:8px}}
+@media (max-width:640px){.week{grid-template-columns:1fr 1fr}.kpi strong{font-size:18px}.rank{grid-template-columns:1fr 90px 36px}}
 @media (max-width:900px){.grid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.split{grid-template-columns:1fr;gap:32px}}
 @media (max-width:640px){.wrap{padding:0 16px}.grid,.steps{grid-template-columns:1fr}nav .links a:not(.btn){display:none}.hero{padding:56px 0 40px}section{padding:56px 0}.final{padding:48px 20px}}
 </style>
@@ -169,10 +241,11 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <body>
 <nav><div class="wrap">
 <a class="logo" href="/"><i></i>DashPatrol</a>
-<div class="links"><a href="#benefits">Benefits</a><a href="#how">How it works</a><a href="#faq">Questions</a>${cta("Start free")}</div>
+<div class="links"><a href="#benefits">Benefits</a><a href="#see">See it work</a><a href="#calc">Savings</a><a href="#how">How it works</a><a href="#faq">Questions</a>${cta("Start free")}</div>
 </div></nav>
 
-<header class="hero"><div class="wrap">
+<header class="hero"><div class="wrap grid2">
+<div>
 <span class="eyebrow">Your SEO team, in one app</span>
 <h1 style="margin-top:14px">Grow your business on autopilot.</h1>
 <p class="lead">DashPatrol brings you customers from Google while you run your business. It finds what people search for, improves your pages, writes your articles and measures every result, so you save hours every week without paying an agency.</p>
@@ -185,6 +258,31 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <span class="pill"><span class="yes">${I.check}</span>Wix</span>
 <span class="pill"><span class="yes">${I.check}</span>Any website</span>
 </div>
+</div>
+<div class="mockwrap" role="figure" aria-label="Example of the DashPatrol dashboard with sample numbers">
+<div class="mock">
+<div class="bar"><b></b><b></b><b></b><span>app.dashpatrol.io</span></div>
+<span class="sample">Example</span>
+<div class="body">
+<div class="kpis">
+<div class="kpi"><small>Visits from Google</small><strong data-count="4820">4,820</strong><em>&#9650; this month</em></div>
+<div class="kpi"><small>Searches you show up in</small><strong data-count="1260">1,260</strong><em>&#9650; growing</em></div>
+<div class="kpi"><small>Changes made</small><strong data-count="38">38</strong><em>all undoable</em></div>
+</div>
+<div class="chart"><small>Visits from Google, last 6 months</small>
+<svg viewBox="0 0 400 140" role="img" aria-label="Sample chart: visits rising month after month">
+<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F6B43" stop-opacity=".35"/><stop offset="1" stop-color="#1F6B43" stop-opacity="0"/></linearGradient></defs>
+<g stroke="currentColor" opacity=".08"><path d="M0 35H400M0 70H400M0 105H400"/></g>
+<path class="fillin" d="M0 120 C40 118 60 112 90 108 S150 100 180 90 S240 78 270 60 S340 30 400 16 L400 140 L0 140Z" fill="url(#g)"/>
+<path class="draw" d="M0 120 C40 118 60 112 90 108 S150 100 180 90 S240 78 270 60 S340 30 400 16" fill="none" stroke="#1F6B43" stroke-width="3.5" stroke-linecap="round"/>
+<circle class="fillin" cx="400" cy="16" r="6" fill="#E8B04B"/>
+</svg></div>
+<div class="feed" id="feed" aria-hidden="true"><div><i>&#128221;</i><span>Drafted a new article, checked by a second AI</span><time>8 min ago</time></div><div><i>&#128279;</i><span>Added 3 internal links to a guide</span><time>2 min ago</time></div><div><i>&#9998;</i><span>Rewrote the title on your best seller</span><time>just now</time></div></div>
+</div>
+</div>
+<div class="float f1"><span class="yes">${I.check}</span>New article published</div>
+<div class="float f2">&#9650; Moved to page one</div>
+</div>
 </div></header>
 
 <section id="benefits"><div class="wrap">
@@ -193,10 +291,42 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <div class="grid">${benefits.map(([ic, t, d]) => `<div class="card"><div class="ic">${ic}</div><h3>${t}</h3><p>${d}</p></div>`).join("")}</div>
 </div></section>
 
+<section id="see" style="padding-top:0"><div class="wrap">
+<div class="center reveal"><span class="eyebrow">See it in action</span><h2 style="margin-top:10px">Small changes. Big difference.</h2>
+<p>Here is the kind of work DashPatrol does on its own, shown on an example store.</p></div>
+<div class="visual">
+<div class="serp reveal">
+<div class="old"><span class="tag">Before</span><div class="result"><cite>yourstore.example &rsaquo; products</cite><b>Product 14 | Home</b><p>Welcome to our store. We sell many products. Click here to see more.</p></div></div>
+<div class="arrow">&#8595; DashPatrol rewrites it</div>
+<div class="new"><span class="tag">After</span><div class="result"><cite>yourstore.example &rsaquo; products</cite><b>Handmade Leather Wallet, Slim and Gift Ready</b><p>Full grain leather, holds 8 cards, free shipping over $50. See colors and sizes.</p></div></div>
+<p class="note2">Example. A clearer title and description gets more people to click, from the same spot on Google.</p>
+</div>
+<div class="ranks reveal" id="ranks">
+<span class="eyebrow">Positions on Google</span>
+<h3 style="margin:8px 0 6px">Easy wins first, then the bigger searches</h3>
+<div class="rank"><div>leather wallet for men<small>was 18</small></div><div class="track"><i style="--w:88%"></i></div><strong>4</strong></div>
+<div class="rank"><div>slim card wallet<small>was 26</small></div><div class="track"><i style="--w:80%"></i></div><strong>7</strong></div>
+<div class="rank"><div>gift for dad under 50<small>was 41</small></div><div class="track"><i style="--w:66%"></i></div><strong>12</strong></div>
+<div class="rank"><div>best minimalist wallet<small>was 57</small></div><div class="track"><i style="--w:50%"></i></div><strong>19</strong></div>
+<p class="note2">Example data. Your own positions show in your dashboard, checked through the week.</p>
+</div>
+</div>
+</div></section>
+
 <section class="band" id="how"><div class="wrap">
 <div class="center"><span class="eyebrow">How it works</span><h2 style="margin-top:10px">Set it up once. It keeps working.</h2>
 <p>A few clicks to start. After that, DashPatrol runs every week on its own.</p></div>
 <div class="steps">${steps.map(([t, d]) => `<div class="step"><h3>${t}</h3><p>${d}</p></div>`).join("")}</div>
+<div class="week reveal">
+<div class="day"><h4>Mon</h4><p>&#10003; Plans the week from your numbers</p><p>&#10003; A second AI checks the plan</p></div>
+<div class="day"><h4>Tue</h4><p>&#10003; Rewrites pages close to page one</p></div>
+<div class="day"><h4>Wed</h4><p>&#10003; Writes a new article</p><p>&#10003; Adds internal links</p></div>
+<div class="day"><h4>Thu</h4><p>&#10003; Finds backlink chances</p><p>&#10003; Fixes broken links</p></div>
+<div class="day"><h4>Fri</h4><p>&#10003; Measures what worked</p><p>&#10003; Gets your weekly report ready</p></div>
+<div class="day rest"><h4>Sat</h4><p>Day of rest. You earned it too.</p></div>
+<div class="day"><h4>Sun</h4><p>&#10003; Keeps watch on your positions</p></div>
+</div>
+<p style="text-align:center;margin-top:14px;color:rgba(255,255,255,.7);font-size:14px">An example week. The work runs every day except the Sabbath, in the order your site needs most.</p>
 <div style="text-align:center;margin-top:40px">${cta("Start free now", "btn")}</div>
 </div></section>
 
@@ -208,6 +338,23 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <p class="quote" style="margin-top:28px">You run the business. <em>DashPatrol grows it.</em></p>
 </div>
 <ul class="list">${weekly.map((w) => `<li><span class="yes">${I.check}</span>${w}</li>`).join("")}</ul>
+</div></section>
+
+<section id="calc"><div class="wrap">
+<div class="center reveal"><span class="eyebrow">Your numbers, your math</span><h2 style="margin-top:10px">What is your time worth?</h2>
+<p>Move the sliders to see what handing SEO to DashPatrol gives back to you each year.</p></div>
+<div class="calc reveal">
+<div class="in">
+<label>Hours a week you spend (or would spend) on SEO <output id="oh">5</output><input type="range" id="h" min="1" max="20" value="5"></label>
+<label>What an hour of your time is worth <output id="or">$50</output><input type="range" id="r" min="15" max="250" step="5" value="50"></label>
+<label>What you pay others for SEO each month <output id="oa">$0</output><input type="range" id="a" min="0" max="5000" step="100" value="0"></label>
+</div>
+<div class="out">
+<div><small>Hours back each year</small><strong id="th">260</strong></div>
+<div><small>Value back each year</small><strong id="tv">$13,000</strong></div>
+<p>Based only on the numbers you enter. DashPatrol is free during early access.</p>
+</div>
+</div>
 </div></section>
 
 <section style="padding-top:0"><div class="wrap">
@@ -252,6 +399,22 @@ ${cta("Start growing free &rarr;")}
 <span>&copy; ${new Date().getUTCFullYear()} DashPatrol</span>
 <span><a href="/privacy">Privacy policy</a> · <a href="/terms">Terms of use</a> · Contact: ${contactHtml}</span>
 </div></footer>
+<script>
+(function(){
+var feed=document.getElementById("feed"),items=[["&#9998;","Rewrote the title on your best seller","just now"],["&#128279;","Added 3 internal links to a guide","2 min ago"],["&#128221;","Drafted a new article, checked by a second AI","8 min ago"],["&#128200;","Moved up 6 spots for a search","today"],["&#128295;","Fixed a broken link","today"],["&#9993;","Weekly report ready","this week"]],k=3;
+function push(){if(!feed)return;var it=items[k++%items.length],d=document.createElement("div");d.innerHTML="<i>"+it[0]+"</i><span>"+it[1]+"</span><time>"+it[2]+"</time>";feed.insertBefore(d,feed.firstChild);while(feed.children.length>3)feed.removeChild(feed.lastChild);}
+var still=window.matchMedia&&matchMedia("(prefers-reduced-motion: reduce)").matches;
+var paused=false;if(feed){feed.addEventListener("mouseenter",function(){paused=true});feed.addEventListener("mouseleave",function(){paused=false});}
+if(!still)setInterval(function(){if(!paused)push();},2600);
+document.querySelectorAll("[data-count]").forEach(function(el){var n=+el.getAttribute("data-count"),t0=null;if(still)return;el.textContent="0";function f(t){if(!t0)t0=t;var p=Math.min((t-t0)/1800,1),e=1-Math.pow(1-p,3);el.textContent=Math.round(n*e).toLocaleString("en-US");if(p<1)requestAnimationFrame(f);}requestAnimationFrame(f);});
+var io="IntersectionObserver" in window?new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add("in");io.unobserve(e.target);}});},{threshold:.15}):null;
+if(io){document.documentElement.classList.add("js");document.querySelectorAll(".reveal").forEach(function(el){io.observe(el);});}
+var h=document.getElementById("h"),r=document.getElementById("r"),a=document.getElementById("a");
+function money(v){return "$"+Math.round(v).toLocaleString("en-US");}
+function calc(){var hv=+h.value,rv=+r.value,av=+a.value;document.getElementById("oh").textContent=hv;document.getElementById("or").textContent=money(rv);document.getElementById("oa").textContent=money(av);document.getElementById("th").textContent=(hv*52).toLocaleString("en-US");document.getElementById("tv").textContent=money(hv*52*rv+av*12);}
+if(h){[h,r,a].forEach(function(x){x.addEventListener("input",calc);});calc();}
+})();
+</script>
 </body>
 </html>`;
 }
