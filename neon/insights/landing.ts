@@ -18,13 +18,23 @@ const I = {
   x: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>',
 };
 
-const benefits: [string, string, string][] = [
-  [I.clock, "Get your hours back", "No more guessing which keywords to chase, rewriting product pages at midnight or learning another SEO tool. DashPatrol does the research, the writing and the checking for you, every week."],
-  [I.coin, "Keep more of your money", "No agency retainer, no freelancer to manage, no pile of subscriptions. One app does the weekly SEO work for you, and it is free while we are in early access."],
-  [I.bolt, "Growth on autopilot", "Connect your site once. From then on DashPatrol plans, improves pages, publishes the articles you allow, adds internal links and checks your rankings through the week, with little of your time."],
-  [I.chart, "Real growth, measured", "Every change is tracked against your real Search Console and Analytics numbers. What helps is kept. What doesn't is undone. Your traffic grows on facts, not hunches."],
-  [I.gem, "Value you can see", "Plain weekly reports show what was done, what moved and what it brought in: visits, searches and sales from Google, in words anyone can read."],
-  [I.shield, "Safe by design", "A second AI double checks every article and every plan before it counts. Every change the app makes to your pages can be undone in one click, and your data is only ever used for your own site."],
+
+const art = {
+  cal: `<svg viewBox="0 0 96 96" aria-hidden="true"><rect x="12" y="18" width="70" height="64" rx="10" fill="#fff" stroke="#1E7A3E" stroke-width="3"/><rect x="12" y="18" width="70" height="18" rx="9" fill="#2FA84F"/><rect x="26" y="10" width="6" height="16" rx="3" fill="#145C2E"/><rect x="62" y="10" width="6" height="16" rx="3" fill="#145C2E"/><path d="M24 50l5 5 9-10M24 68l5 5 9-10M52 50l5 5 9-10" fill="none" stroke="#2FA84F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><rect x="52" y="64" width="16" height="8" rx="3" fill="#CFEFD6"/></svg>`,
+  coins: `<svg viewBox="0 0 96 96" aria-hidden="true"><g fill="#F5B700" stroke="#C98A00" stroke-width="2.5"><ellipse cx="38" cy="72" rx="22" ry="8"/><path d="M16 64v8c0 4.4 9.8 8 22 8s22-3.6 22-8v-8"/><ellipse cx="38" cy="58" rx="22" ry="8"/><path d="M16 50v8c0 4.4 9.8 8 22 8s22-3.6 22-8v-8"/><ellipse cx="38" cy="44" rx="22" ry="8"/><path d="M16 36v8c0 4.4 9.8 8 22 8s22-3.6 22-8v-8"/><ellipse cx="38" cy="30" rx="22" ry="8"/></g><circle cx="68" cy="62" r="20" fill="#FFCA28" stroke="#C98A00" stroke-width="3"/><text x="68" y="70" text-anchor="middle" font-size="22" font-weight="800" fill="#B07400" font-family="Arial">$</text></svg>`,
+  rocket: `<svg viewBox="0 0 96 96" aria-hidden="true"><path d="M62 14c10 0 18 2 20 4 2 2 4 10 4 20-6 16-20 30-30 36l-16-16c6-10 20-24 22-44z" fill="#E9F7EC" stroke="#1E7A3E" stroke-width="3"/><circle cx="64" cy="34" r="8" fill="#2FA84F" stroke="#145C2E" stroke-width="3"/><path d="M40 58l-14 2-8 12 18-4zM56 74l-2 14-12 8 4-18z" fill="#2FA84F" stroke="#145C2E" stroke-width="2.5" stroke-linejoin="round"/><path d="M34 66c-6 2-12 8-14 20 12-2 18-8 20-14z" fill="#FFB300" stroke="#E65100" stroke-width="2"/></svg>`,
+  bars: `<svg viewBox="0 0 96 96" aria-hidden="true"><rect x="14" y="58" width="14" height="26" rx="3" fill="#2FA84F"/><rect x="34" y="46" width="14" height="38" rx="3" fill="#25913F"/><rect x="54" y="34" width="14" height="50" rx="3" fill="#1E7A3E"/><rect x="74" y="22" width="14" height="62" rx="3" fill="#145C2E"/><path d="M12 44l22-14 14 8 28-24" fill="none" stroke="#2FA84F" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M66 12h12v12" fill="none" stroke="#2FA84F" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  report: `<svg viewBox="0 0 96 96" aria-hidden="true"><rect x="22" y="10" width="58" height="76" rx="8" fill="#F1F6FF" stroke="#9DB4D8" stroke-width="2.5"/><rect x="12" y="20" width="58" height="70" rx="8" fill="#fff" stroke="#9DB4D8" stroke-width="2.5"/><circle cx="34" cy="44" r="12" fill="#4C8DF6"/><path d="M34 32a12 12 0 0 1 12 12H34z" fill="#2FA84F"/><path d="M34 44l-8.5 8.5A12 12 0 0 1 22 44z" fill="#F5B700"/><rect x="50" y="36" width="14" height="4" rx="2" fill="#9DB4D8"/><rect x="50" y="46" width="10" height="4" rx="2" fill="#9DB4D8"/><rect x="22" y="64" width="40" height="4" rx="2" fill="#9DB4D8"/><rect x="22" y="74" width="30" height="4" rx="2" fill="#9DB4D8"/></svg>`,
+  shield: `<svg viewBox="0 0 96 96" aria-hidden="true"><path d="M48 8l32 12v24c0 20-14 36-32 42C30 80 16 64 16 44V20z" fill="#2FA84F" stroke="#145C2E" stroke-width="3"/><path d="M48 18l22 8v18c0 14-9 26-22 31-13-5-22-17-22-31V26z" fill="#57C46F"/><path d="M36 46l9 9 16-18" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
+const benefits: [string, string, string, string][] = [
+  [I.clock, art.cal, "Get Your Hours Back", "No more guessing which keywords to chase, rewriting product pages at midnight or learning another SEO tool. DashPatrol does the research, the writing and the checking for you, every week."],
+  [I.coin, art.coins, "Keep More of Your Money", "No agency retainer, no freelancer to manage, no pile of subscriptions. One app does the weekly SEO work for you, and it is free while we are in early access."],
+  [I.bolt, art.rocket, "Growth on Autopilot", "Connect your site once. From then on DashPatrol plans, improves pages, publishes the articles you allow, adds internal links and checks your rankings through the week, with little of your time."],
+  [I.chart, art.bars, "Real Growth, Measured", "Every change is tracked against your real Search Console and Analytics numbers. What helps is kept. What doesn't is undone. Your traffic grows on facts, not hunches."],
+  [I.gem, art.report, "Value You Can See", "Plain weekly reports show what was done, what moved and what it brought in: visits, searches and sales from Google, in words anyone can read."],
+  [I.shield, art.shield, "Safe by Design", "A second AI double checks every article and every plan before it counts. Every change the app makes to your pages can be undone in one click, and your data is only ever used for your own site."],
 ];
 
 const steps: [string, string][] = [
@@ -80,7 +90,7 @@ export function landingHtml(appUrl: string, contactHtml: string): string {
 <meta property="og:title" content="DashPatrol: grow your business on autopilot">
 <meta property="og:description" content="Your SEO team in one app. Save time, save money, and let your site grow from Google while you run your business.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,500;0,700;0,800;1,800&family=Inter:wght@400;500;600;700&display=swap">
 <style>
 :root{--ink:#1F2A22;--muted:#5C6660;--bg:#F7F3EC;--card:#FFFFFF;--line:#E4DDCF;--brand:#16442B;--brand2:#1F6B43;--accent:#E8B04B;--soft:#EAF2EC;--on:#FFFFFF}
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--ink:#ECE8DF;--muted:#AEB5AF;--bg:#141815;--card:#1C221E;--line:#2E3631;--brand:#3E9C68;--brand2:#5BB884;--accent:#E8B04B;--soft:#1F2C24;--on:#0D140F}}
@@ -222,7 +232,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 .calc{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:40px;align-items:stretch}
 .calc .in{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px;display:grid;gap:22px}
 .calc label{display:block;font-weight:600;font-size:15px}
-.calc label output{float:right;color:var(--brand2);font-family:Fraunces,Georgia,serif;font-size:20px}
+.calc label output{float:right;color:var(--brand2);font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:20px}
 .calc input[type=range]{width:100%;margin-top:10px;accent-color:var(--brand2)}
 .calc .out{background:linear-gradient(135deg,#16442B,#1F6B43);color:#fff;border-radius:20px;padding:28px;display:grid;gap:18px;align-content:center}
 .calc .out div small{display:block;color:rgba(255,255,255,.75);font-size:14px}
@@ -236,27 +246,106 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 @media (max-width:640px){.week{grid-template-columns:1fr 1fr}.kpi strong{font-size:18px}.rank{grid-template-columns:1fr 90px 36px}}
 @media (max-width:900px){.grid{grid-template-columns:1fr 1fr}.steps{grid-template-columns:1fr 1fr}.split{grid-template-columns:1fr;gap:32px}}
 @media (max-width:640px){.wrap{padding:0 16px}.grid,.steps{grid-template-columns:1fr}nav .links a:not(.btn){display:none}.hero{padding:56px 0 40px}section{padding:56px 0}.final{padding:48px 20px}}
+/* v3 look */
+:root{--brand:#0F5A32;--brand2:#1E8A45;--accent:#C6F432;--soft:#E7F6EA;--bg:#F5FAF6;--line:#DDE9E0;--ink:#0E2A1A}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#0F1712;--card:#16211A;--line:#24352A;--soft:#1A2E21;--ink:#E8F2EA;--muted:#A7B8AC}}
+:root[data-theme="dark"]{--bg:#0F1712;--card:#16211A;--line:#24352A;--soft:#1A2E21;--ink:#E8F2EA;--muted:#A7B8AC}
+h1,h2,h3,.logo,.kpi strong,.quote,.calc .out div strong,.rank strong{font-family:"Plus Jakarta Sans",Inter,system-ui,sans-serif;font-weight:800;letter-spacing:-.02em}
+.eyebrow{color:#1E8A45;font-weight:800}
+nav{background:#0B3B22;border-bottom:none}
+nav .links a{color:rgba(255,255,255,.85)}
+nav .links a:hover{color:#fff}
+.logo{color:#fff}
+.logo i{background:#3DCB5A;color:#0B3B22;font-style:normal;font-weight:800;display:inline-flex;align-items:center;justify-content:center;font-size:18px;width:30px;height:30px}
+.logo i::after{display:none}
+.btn.lime{background:#9BE23C;color:#0B2E18;box-shadow:0 8px 24px rgba(155,226,60,.35)}
+.btn.lime:hover{box-shadow:0 12px 30px rgba(155,226,60,.5)}
+.btn.signin{background:transparent;border:1.5px solid rgba(255,255,255,.7);color:#fff;box-shadow:none}
+.btn.big{padding:17px 30px;font-size:18px}
+.btn.outline{background:transparent;border:1.5px solid rgba(255,255,255,.75);color:#fff;box-shadow:none}
+.btn.outline.dark{border-color:var(--line);color:var(--ink)}
+.play{display:inline-flex;width:22px;height:22px;border:1.5px solid currentColor;border-radius:50%;align-items:center;justify-content:center;font-size:9px}
+.hero{background:radial-gradient(1200px 600px at 80% 10%,#16803F 0%,transparent 60%),linear-gradient(160deg,#0A3520 0%,#0E4A2A 55%,#12602F 100%);color:#fff;position:relative;padding:72px 0 140px;overflow:hidden}
+.hero p.lead{color:rgba(255,255,255,.9)}
+.center{max-width:900px}
+.hero h1{font-size:clamp(40px,6vw,72px);line-height:1.04}
+.hl{color:#C6F432;font-style:italic;position:relative;display:inline-block}
+.hl::after{content:"";position:absolute;left:4%;right:6%;bottom:-6px;height:8px;border-radius:8px;background:#9BE23C;transform:rotate(-2deg)}
+.chip{display:inline-block;background:#1E8A45;color:#E9FFD9;font-size:13px;font-weight:700;letter-spacing:.06em;padding:8px 16px;border-radius:999px}
+.hero .note{display:flex;gap:18px;flex-wrap:wrap;color:rgba(255,255,255,.8)}
+.hero .note span{white-space:nowrap}
+.pill{background:#fff;color:#1F2A22;border:none;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.12)}
+.pill b{display:inline-flex;width:20px;height:20px;border-radius:6px;color:#fff;font-size:11px;align-items:center;justify-content:center}
+.mockwrap{transform:perspective(1400px) rotateY(-6deg) rotateX(3deg)}
+.mock{border:none;border-radius:24px;box-shadow:0 40px 80px rgba(0,0,0,.35),0 0 0 8px rgba(155,226,60,.25);color:#1F2A22;background:#fff}
+.mock .bar{border-color:#EEF2EF;color:#7A867E}
+.mock .bar b:nth-child(1){background:#FF6159}.mock .bar b:nth-child(2){background:#FFBD2E}.mock .bar b:nth-child(3){background:#28C941}
+.sample{background:#F7D14A}
+.kpi{background:#fff;border:1px solid #E5EEE7;box-shadow:0 4px 12px rgba(0,0,0,.04)}
+.kpi .kic{font-size:16px}
+.kpi small{color:#6B7A70}.kpi strong{font-size:24px;color:#0E2A1A}
+.kpi em{color:#1E8A45}
+.chart{background:#fff;border:1px solid #E5EEE7;position:relative}
+.chart small{color:#334}
+.up{position:absolute;top:12px;right:14px;background:#0F5A32;color:#fff;border-radius:12px;padding:6px 12px;font-weight:800;font-size:15px;box-shadow:0 0 0 4px rgba(155,226,60,.35);line-height:1.1}
+.up small{display:block;font-size:11px;color:#C6F432;font-weight:600}
+.feed div{background:#F6F9F7;color:#1F2A22}
+.feed time{color:#7A867E}
+.spark{position:absolute;left:-26px;top:-10px;width:44px;height:44px;background:conic-gradient(from 0deg,transparent 0 20deg,#F7D14A 20deg 32deg,transparent 32deg 80deg,#F7D14A 80deg 92deg,transparent 92deg 140deg,#F7D14A 140deg 152deg,transparent 152deg);border-radius:50%;-webkit-mask:radial-gradient(circle,transparent 9px,#000 10px);mask:radial-gradient(circle,transparent 9px,#000 10px)}
+.wave{position:absolute;left:0;right:0;bottom:-1px;width:100%;height:120px}
+#benefits{padding-top:40px}
+.uline{position:relative;display:inline-block}
+.uline::after{content:"";position:absolute;left:0;right:0;bottom:-4px;height:6px;border-radius:6px;background:#3DCB5A;transform:rotate(-1.5deg)}
+.bcard{display:flex;gap:12px;align-items:center;justify-content:space-between;background:linear-gradient(135deg,var(--card) 55%,var(--soft));transition:transform .2s,box-shadow .2s}
+.bcard:hover{transform:translateY(-4px);box-shadow:0 18px 40px rgba(15,90,50,.12)}
+.bcard .ic2{color:#1E8A45;margin-bottom:10px}
+.bcard .pic{flex:none;width:78px;height:78px;align-self:flex-start;margin-top:6px}
+.bcard p{font-size:15px}
+.bcard .pic svg{width:100%;height:100%}
+.stats{background:linear-gradient(120deg,#0A3520,#0F5A32);color:#fff;position:relative;padding:88px 0 64px}
+.stats .wave.top{position:absolute;top:-1px;left:0;width:100%;height:50px;transform:rotate(180deg)}
+.statgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:0}
+.statgrid>div{display:flex;gap:14px;align-items:center;padding:8px 22px;border-left:1px solid rgba(255,255,255,.18)}
+.statgrid>div:first-child{border-left:none}
+.sic{font-size:34px;filter:saturate(1.2)}
+.statgrid p{color:rgba(255,255,255,.85);font-size:14.5px;line-height:1.35}
+.statgrid strong{display:block;font-family:"Plus Jakarta Sans",Inter,sans-serif;font-weight:800;font-size:30px;color:#fff}
+#see{padding-top:72px}
+.band{background:linear-gradient(160deg,#0A3520,#0F5A32)}
+.band .eyebrow{color:#C6F432}
+.step::before{background:#9BE23C}
+.day h4{color:#C6F432}
+.calc .out{background:linear-gradient(135deg,#0A3520,#1E8A45)}
+th.us{color:#1E8A45}
+.final2{display:grid;grid-template-columns:.9fr 1.1fr;gap:40px;align-items:center;background:linear-gradient(135deg,var(--card),var(--soft));border:1px solid var(--line);border-radius:28px;padding:40px}
+.final2 h2{font-size:clamp(30px,4vw,44px)}
+.final2 p{color:var(--muted);font-size:18px;margin:14px 0 26px}
+.final2 .btn.big{background:#0F5A32;color:#fff}
+.laptop svg{width:100%;height:auto}
+@media (max-width:900px){.statgrid{grid-template-columns:1fr 1fr;row-gap:22px}.statgrid>div:nth-child(3){border-left:none}.final2{grid-template-columns:1fr}.mockwrap{transform:none}.hero{padding-bottom:110px}}
+@media (max-width:640px){nav .links .signin{display:none}.statgrid{grid-template-columns:1fr}.statgrid>div{border-left:none}.bcard .pic{width:72px;height:72px}.hero .note{gap:8px 14px;font-size:13px}.spark{display:none}}
+@media (prefers-reduced-motion:reduce){.bcard{transition:none}}
 </style>
 </head>
 <body>
 <nav><div class="wrap">
-<a class="logo" href="/"><i></i>DashPatrol</a>
-<div class="links"><a href="#benefits">Benefits</a><a href="#see">See it work</a><a href="#calc">Savings</a><a href="#how">How it works</a><a href="#faq">Questions</a>${cta("Start free")}</div>
+<a class="logo" href="/"><i>D</i>DashPatrol</a>
+<div class="links"><a href="#benefits">Benefits</a><a href="#see">Features</a><a href="#how">How It Works</a><a href="#calc">Savings</a><a href="#faq">FAQ</a>${cta("Sign In","btn signin")}${cta("Start Free","btn lime")}</div>
 </div></nav>
 
 <header class="hero"><div class="wrap grid2">
 <div>
-<span class="eyebrow">Your SEO team, in one app</span>
-<h1 style="margin-top:14px">Grow your business on autopilot.</h1>
+<span class="chip">YOUR SEO TEAM, IN ONE APP</span>
+<h1 style="margin-top:18px">Grow Your Business on <span class="hl">Autopilot.</span></h1>
 <p class="lead">DashPatrol brings you customers from Google while you run your business. It finds what people search for, improves your pages, writes your articles and measures every result, so you save hours every week without paying an agency.</p>
-<div class="ctas">${cta("Start growing free &rarr;")}<a class="btn ghost" href="#how">See how it works</a></div>
-<p class="note">Free during early access. Sign in with Google. No card needed.</p>
+<div class="ctas">${cta("Start Growing Free &rarr;","btn lime big")}<a class="btn outline" href="#how"><span class="play">&#9654;</span> See How It Works</a></div>
+<p class="note"><span>&#10003; No credit card required</span><span>&#10003; Quick setup</span><span>&#10003; Works with your website</span></p>
 <div class="pills">
-<span class="pill"><span class="yes">${I.check}</span>Shopify</span>
-<span class="pill"><span class="yes">${I.check}</span>WordPress</span>
-<span class="pill"><span class="yes">${I.check}</span>Webflow</span>
-<span class="pill"><span class="yes">${I.check}</span>Wix</span>
-<span class="pill"><span class="yes">${I.check}</span>Any website</span>
+<span class="pill"><b style="background:#95BF47">S</b>Shopify</span>
+<span class="pill"><b style="background:#21759B">W</b>WordPress</span>
+<span class="pill"><b style="background:#4353FF">W</b>Webflow</span>
+<span class="pill"><b style="background:#111">W</b>Wix</span>
+<span class="pill"><b style="background:#2FA84F">&#127760;</b>Any website</span>
 </div>
 </div>
 <div class="mockwrap" role="figure" aria-label="Example of the DashPatrol dashboard with sample numbers">
@@ -265,33 +354,40 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <span class="sample">Example</span>
 <div class="body">
 <div class="kpis">
-<div class="kpi"><small>Visits from Google</small><strong data-count="4820">4,820</strong><em>&#9650; this month</em></div>
-<div class="kpi"><small>Searches you show up in</small><strong data-count="1260">1,260</strong><em>&#9650; growing</em></div>
-<div class="kpi"><small>Changes made</small><strong data-count="38">38</strong><em>all undoable</em></div>
+<div class="kpi"><span class="kic">&#128269;</span><small>Visits from Google</small><strong data-count="4820">4,820</strong><em>&#9650; +32% this month</em></div>
+<div class="kpi"><span class="kic">&#128270;</span><small>Searches you show up in</small><strong data-count="1260">1,260</strong><em>&#9650; +28% growing</em></div>
+<div class="kpi"><span class="kic">&#128200;</span><small>Changes made</small><strong data-count="38">38</strong><em>All undoable</em></div>
 </div>
 <div class="chart"><small>Visits from Google, last 6 months</small>
-<svg viewBox="0 0 400 140" role="img" aria-label="Sample chart: visits rising month after month">
-<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1F6B43" stop-opacity=".35"/><stop offset="1" stop-color="#1F6B43" stop-opacity="0"/></linearGradient></defs>
-<g stroke="currentColor" opacity=".08"><path d="M0 35H400M0 70H400M0 105H400"/></g>
-<path class="fillin" d="M0 120 C40 118 60 112 90 108 S150 100 180 90 S240 78 270 60 S340 30 400 16 L400 140 L0 140Z" fill="url(#g)"/>
-<path class="draw" d="M0 120 C40 118 60 112 90 108 S150 100 180 90 S240 78 270 60 S340 30 400 16" fill="none" stroke="#1F6B43" stroke-width="3.5" stroke-linecap="round"/>
-<circle class="fillin" cx="400" cy="16" r="6" fill="#E8B04B"/>
-</svg></div>
+<svg viewBox="0 0 420 170" role="img" aria-label="Sample chart: visits rising from January to June">
+<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3DCB5A" stop-opacity=".35"/><stop offset="1" stop-color="#3DCB5A" stop-opacity="0"/></linearGradient></defs>
+<g font-size="10" fill="#6B7A70" font-family="Inter,Arial"><text x="0" y="14">6,000</text><text x="0" y="38">5,000</text><text x="0" y="62">4,000</text><text x="0" y="86">3,000</text><text x="0" y="110">2,000</text><text x="0" y="134">1,000</text><text x="70" y="164">Jan</text><text x="132" y="164">Feb</text><text x="194" y="164">Mar</text><text x="256" y="164">Apr</text><text x="318" y="164">May</text><text x="380" y="164">Jun</text></g>
+<g stroke="#000" opacity=".06"><path d="M40 10H420M40 34H420M40 58H420M40 82H420M40 106H420M40 130H420"/></g>
+<path class="fillin" d="M76 136 L138 126 L200 116 L262 102 L324 84 L400 66 L400 146 L76 146Z" fill="url(#g)"/>
+<path class="draw" d="M76 136 L138 126 L200 116 L262 102 L324 84 L400 66" fill="none" stroke="#2FBF4F" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+<g class="fillin" fill="#2FBF4F"><circle cx="76" cy="136" r="4.5"/><circle cx="138" cy="126" r="4.5"/><circle cx="200" cy="116" r="4.5"/><circle cx="262" cy="102" r="4.5"/><circle cx="324" cy="84" r="4.5"/><circle cx="400" cy="66" r="6" fill="#C6F432" stroke="#2FBF4F" stroke-width="2"/></g>
+</svg><div class="up fillin">&#8593; +167%<small>more visits</small></div></div>
 <div class="feed" id="feed" aria-hidden="true"><div><i>&#128221;</i><span>Drafted a new article, checked by a second AI</span><time>8 min ago</time></div><div><i>&#128279;</i><span>Added 3 internal links to a guide</span><time>2 min ago</time></div><div><i>&#9998;</i><span>Rewrote the title on your best seller</span><time>just now</time></div></div>
 </div>
 </div>
-<div class="float f1"><span class="yes">${I.check}</span>New article published</div>
-<div class="float f2">&#9650; Moved to page one</div>
+<span class="spark" aria-hidden="true"></span>
 </div>
-</div></header>
+</div><svg class="wave" viewBox="0 0 1440 120" preserveAspectRatio="none" aria-hidden="true"><path d="M0 70 C240 130 480 10 760 50 S1200 110 1440 30 L1440 120 L0 120Z" fill="#8BE04E" opacity=".55"/><path d="M0 90 C260 140 520 30 800 70 S1220 120 1440 60 L1440 120 L0 120Z" fill="var(--bg)"/></svg></header>
 
 <section id="benefits"><div class="wrap">
-<div class="center"><span class="eyebrow">What you get</span><h2 style="margin-top:10px">More customers. Less work. Lower cost.</h2>
+<div class="center"><span class="eyebrow">What you get</span><h2 style="margin-top:10px">More Customers. Less Work. <span class="uline">Lower Cost.</span></h2>
 <p>Customers from Google cost nothing per click, but earning them takes hours every week. DashPatrol takes most of the job off your plate.</p></div>
-<div class="grid">${benefits.map(([ic, t, d]) => `<div class="card"><div class="ic">${ic}</div><h3>${t}</h3><p>${d}</p></div>`).join("")}</div>
+<div class="grid">${benefits.map(([ic, pic, t, d]) => `<div class="card bcard"><div><div class="ic2">${ic}</div><h3>${t}</h3><p>${d}</p></div><div class="pic">${pic}</div></div>`).join("")}</div>
 </div></section>
 
-<section id="see" style="padding-top:0"><div class="wrap">
+<section class="stats"><svg class="wave top" viewBox="0 0 1440 60" preserveAspectRatio="none" aria-hidden="true"><path d="M0 60 C360 0 1080 0 1440 60Z" fill="var(--bg)"/></svg><div class="wrap statgrid">
+<div><span class="sic">&#129302;</span><p><strong>2 AIs</strong>check every plan and article</p></div>
+<div><span class="sic">&#128279;</span><p><strong>5 ways</strong>to connect: Shopify, WordPress, Webflow, Wix or any site</p></div>
+<div><span class="sic">&#9201;</span><p><strong>Hourly</strong>health checks, with automatic repairs</p></div>
+<div><span class="sic">&#128737;</span><p><strong>100%</strong>of page changes undoable</p></div>
+</div></section>
+
+<section id="see"><div class="wrap">
 <div class="center reveal"><span class="eyebrow">See it in action</span><h2 style="margin-top:10px">Small changes. Big difference.</h2>
 <p>Here is the kind of work DashPatrol does on its own, shown on an example store.</p></div>
 <div class="visual">
@@ -327,7 +423,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 <div class="day"><h4>Sun</h4><p>&#10003; Keeps watch on your positions</p></div>
 </div>
 <p style="text-align:center;margin-top:14px;color:rgba(255,255,255,.7);font-size:14px">An example week. The work runs every day except the Sabbath, in the order your site needs most.</p>
-<div style="text-align:center;margin-top:40px">${cta("Start free now", "btn")}</div>
+<div style="text-align:center;margin-top:40px">${cta("Start Free Now &rarr;", "btn lime big")}</div>
 </div></section>
 
 <section><div class="wrap split">
@@ -378,10 +474,13 @@ footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
 </div></section>
 
 <section style="padding-top:0"><div class="wrap">
-<div class="final">
-<h2>Your next customers are searching right now.</h2>
-<p>Let DashPatrol make sure they find you. Start free today and put your growth on autopilot.</p>
-${cta("Start growing free &rarr;")}
+<div class="final2">
+<div class="laptop" aria-hidden="true"><svg viewBox="0 0 360 240"><ellipse cx="190" cy="226" rx="160" ry="10" fill="#000" opacity=".08"/><path d="M40 60c-14-30 4-52 20-56-2 20 6 30 2 50M56 70c-4-30 22-46 38-44-8 18-6 34-18 48M30 92c-20-14-22-38-10-50 6 18 18 24 20 40" fill="#2FA84F"/><path d="M22 120h56l-6 100H28z" fill="#F4EDE2" stroke="#D8CBB6" stroke-width="2"/><rect x="100" y="40" width="210" height="140" rx="12" fill="#1F2A22"/><rect x="110" y="50" width="190" height="120" rx="6" fill="#fff"/><rect x="124" y="120" width="18" height="38" rx="3" fill="#57C46F"/><rect x="150" y="104" width="18" height="54" rx="3" fill="#2FA84F"/><rect x="176" y="88" width="18" height="70" rx="3" fill="#1E7A3E"/><rect x="202" y="70" width="18" height="88" rx="3" fill="#145C2E"/><rect x="232" y="62" width="58" height="66" rx="10" fill="#F4F7F5" stroke="#DDE6DF"/><circle cx="261" cy="86" r="14" fill="none" stroke="#2FA84F" stroke-width="5"/><path d="M271 96l8 8" stroke="#2FA84F" stroke-width="5" stroke-linecap="round"/><rect x="242" y="110" width="38" height="5" rx="2.5" fill="#C9D6CC"/><path d="M80 180h260l-20 24H100z" fill="#C9D3CC"/></svg></div>
+<div class="ftext">
+<h2>Ready to Grow Your Business on Google?</h2>
+<p>Get more customers, higher rankings and a site that keeps improving, automatically.</p>
+<div class="ctas">${cta("Start Growing Free &rarr;","btn big")}<a class="btn outline dark" href="#how"><span class="play">&#9654;</span> See How It Works</a></div>
+</div>
 </div>
 </div></section>
 
