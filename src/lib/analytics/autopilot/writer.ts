@@ -427,10 +427,12 @@ async function askGemini<T>(apiKey: string, system: string, prompt: string, sche
   });
   let lastError = "";
   for (const model of await pickGeminiModels(apiKey)) {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt) await pause(2000);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Overload usually clears in seconds: wait a little longer each time before trying again.
+      if (attempt) await pause(attempt === 1 ? 3000 : 8000);
       const res = await fetch(`${GEMINI_API}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
+        signal: AbortSignal.timeout(90_000),
         headers: { "Content-Type": "application/json" },
         body: payload,
       });
@@ -440,8 +442,10 @@ async function askGemini<T>(apiKey: string, system: string, prompt: string, sche
         if (!text) throw new Error("Gemini declined to write this change.");
         return JSON.parse(text) as T;
       }
-      lastError = body?.error?.message ?? String(res.status);
+      lastError = `${model}: ${body?.error?.message ?? res.status}`;
       if (!aiBusy(res.status)) throw new Error(`Gemini request failed: ${lastError}`);
+      // Out of quota isn't a passing rush: waiting won't help, so try the next model at once.
+      if (res.status === 429 && /quota|per day|RESOURCE_EXHAUSTED/i.test(lastError)) break;
     }
   }
   throw new Error(`Gemini is busy right now. (${lastError})`);
@@ -497,7 +501,8 @@ function extractJson(text: string): Record<string, unknown> | null {
 
 const GITHUB_API = "https://models.github.ai";
 /** Preferred GitHub Models, best first; only ones in the catalog are used. */
-const GITHUB_PREFERRED = ["openai/gpt-4.1", "openai/gpt-4.1-mini", "openai/gpt-4o-mini", "meta/llama-3.3-70b-instruct"];
+// Models from more than one maker, so one maker's content filter (often strict on health topics) can't block them all.
+const GITHUB_PREFERRED = ["openai/gpt-4.1", "meta/llama-3.3-70b-instruct", "openai/gpt-4.1-mini", "mistral-ai/mistral-medium-2505", "openai/gpt-4o-mini"];
 const githubHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
   Accept: "application/vnd.github+json",
@@ -511,7 +516,7 @@ async function pickGithubModels(token: string): Promise<string[]> {
   const res = await fetch(`${GITHUB_API}/catalog/models`, { headers: githubHeaders(token) }).catch(() => null);
   const ids = res?.ok ? (((await res.json().catch(() => [])) as { id: string }[]).map((m) => m.id.toLowerCase())) : [];
   // If the catalog can't be read, try the preferred models anyway.
-  githubModels = ids.length ? GITHUB_PREFERRED.filter((n) => ids.includes(n)).slice(0, 3) : GITHUB_PREFERRED.slice(0, 3);
+  githubModels = ids.length ? GITHUB_PREFERRED.filter((n) => ids.includes(n)).slice(0, 4) : GITHUB_PREFERRED.slice(0, 4);
   return githubModels;
 }
 
@@ -561,12 +566,16 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
     Boolean(out) && required.every((k) => k in out!);
 
   let lastError = "";
+  const tried: string[] = [];
   for (const model of await svc.models(apiKey)) {
-    for (const jsonMode of [true, false]) {
+    if (lastError) tried.push(lastError);
+    lastError = "";
+    modes: for (const jsonMode of [true, false]) {
       for (let attempt = 0; attempt < 2; attempt++) {
         if (attempt) await pause(2000);
         const res = await fetch(svc.url, {
           method: "POST",
+          signal: AbortSignal.timeout(90_000),
           headers: { ...svc.headers(apiKey), "Content-Type": "application/json" },
           body: JSON.stringify({
             model,
@@ -579,24 +588,30 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
         const body = await res.json().catch(() => ({}));
         if (res.ok) {
           const text: string = body.choices?.[0]?.message?.content ?? "";
+          const finish: string = body.choices?.[0]?.finish_reason ?? "";
           const out = extractJson(text);
           if (valid(out)) return out as T;
-          lastError = text ? "the answer wasn't complete JSON" : "the answer was empty";
+          lastError = `${model}: ${text ? "the answer wasn't complete JSON" : "the answer was empty"}${finish && finish !== "stop" ? ` (${finish})` : ""}`;
+          // A content filter answers the same in plain mode: go straight to the next model.
+          if (finish === "content_filter") break modes;
           break; // try plain mode, or the next model
         }
-        lastError = body?.error?.message ?? String(res.status);
+        lastError = `${model}: ${body?.error?.message ?? res.status}`;
         if (res.status === 401 || res.status === 403) throw new Error(`${svc.name} didn't accept the key: ${lastError}`);
         if (res.status === 400 || res.status === 404 || res.status === 422) {
           // Rejected JSON (often fine apart from a stray character or a cut off end), or a model this key can't use.
           const salvaged = extractJson(String(body?.error?.failed_generation ?? ""));
           if (valid(salvaged)) return salvaged as T;
+          // A filtered prompt is filtered again in plain mode: go straight to the next model.
+          if (body?.error?.code === "content_filter" || /content.?filter/i.test(String(body?.error?.message ?? ""))) break modes;
           break;
         }
         if (!aiBusy(res.status)) throw new Error(`${svc.name} request failed: ${lastError}`);
       }
     }
   }
-  throw new Error(`${svc.name} couldn't write this change right now. (${lastError})`);
+  if (lastError) tried.push(lastError);
+  throw new Error(`${svc.name} couldn't write this change right now. (${tried.join("; ")})`);
 }
 
 function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {

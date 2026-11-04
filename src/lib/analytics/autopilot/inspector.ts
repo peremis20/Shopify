@@ -48,12 +48,20 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
   },
   ai: {
     name: "The writing AI",
-    fix: () => "Every AI key failed. Check the keys and their billing in Platform keys.",
+    fix: (d) =>
+      !/accept the key|401|403|billing|quota|payment/i.test(d) && /busy|demand|empty|fetch failed/i.test(d)
+        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude or Groq) in Platform keys gives it another backup."
+        : "Every AI key failed. Check the keys and their billing in Platform keys.",
     workaround: "No new changes or articles are written until one works.",
   },
   email: {
     name: "Owner emails (resend.com)",
-    fix: (d) => (/domain|verify|403/i.test(d) ? "Verify the sending domain in Resend, or change the email sender in Platform keys." : "Check the email key in Platform keys."),
+    fix: (d) =>
+      /not set up/i.test(d)
+        ? "Add a Resend key and a from address in Platform keys, so weekly reports and alerts reach your inbox."
+        : /domain|verify|403/i.test(d)
+          ? "Verify the sending domain in Resend, or change the email sender in Platform keys."
+          : "Check the email key in Platform keys.",
     workaround: "Reports and alerts still show on the dashboard.",
   },
   "ai-review": {

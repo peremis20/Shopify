@@ -20,7 +20,11 @@ async function ownerEmail(accountId: string): Promise<string | null> {
 
 export async function sendEmail(to: string, subject: string, text: string): Promise<boolean> {
   const p = await readPlatformSettings();
-  if (!p.resendKey || !p.alertsFrom) return false;
+  if (!p.resendKey || !p.alertsFrom) {
+    // Not quiet: the Inspector shows the owner that emails can't go out until this is set up.
+    await report("email", false, `Emails are not set up: add ${!p.resendKey ? "a Resend key" : ""}${!p.resendKey && !p.alertsFrom ? " and " : ""}${!p.alertsFrom ? "a from address" : ""} in Platform keys.`);
+    return false;
+  }
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${p.resendKey}`, "Content-Type": "application/json" },

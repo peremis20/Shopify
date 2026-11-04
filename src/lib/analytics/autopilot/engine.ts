@@ -868,7 +868,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       }
     }
     if (capped && !preview && !urgentRoom) {
-      summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages).`);
+      summary.push(`Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes).`);
     } else if (brake && !preview) {
       summary.push(brake);
     } else {
@@ -897,7 +897,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
       if (!plan && ctx.urgentOnly) {
         // Say why, so the Inspector (and the owner) can see an urgent fix that keeps getting stuck.
         const why = notes.filter((x) => /^(Urgent check|Skipped “|Left )/.test(x)).join(" ");
-        summary.push(`Weekly limit reached (${pages} of ${ctx.maxPagesPerWeek} pages), and no urgent fix could be made.${why ? ` ${why}` : ""}`);
+        summary.push(`Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes), and no urgent fix could be made.${why ? ` ${why}` : ""}`);
       } else if (!plan) {
         summary.push(gaps.length ? `No change made. ${gaps.join(" ")}` : "No new opportunities to work on right now.");
       } else if (preview) {
@@ -982,10 +982,12 @@ export async function accountsDueForRun(limit: number): Promise<string[]> {
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_account_profile p ON p.account_id = a.account_id
+    LEFT JOIN LATERAL (SELECT r.status, r.summary FROM insights_autopilot_runs r WHERE r.account_id = a.account_id AND r.trigger <> 'preview' ORDER BY r.started_at DESC LIMIT 1) lr ON true
     WHERE a.enabled AND (a.shop_token_enc IS NOT NULL OR p.site_domain IS NOT NULL)
-      AND (a.last_run_at IS NULL OR a.last_run_at < now() - interval '20 hours')
+      AND (a.last_run_at IS NULL OR a.last_run_at < now() - interval '20 hours' OR ((lr.status = 'failed' AND lr.summary ~* 'busy|high demand|answer was empty|overloaded|fetch failed' AND lr.summary !~* 'limit for the month|accept the key') AND a.last_run_at < now() - interval '3 hours'))
       -- A site that has never run is retried every 2 hours, so fixing its setup gets it going soon.
-      AND (a.run_tried_at IS NULL OR a.run_tried_at < now() - CASE WHEN a.last_run_at IS NULL THEN interval '2 hours' ELSE interval '20 hours' END)
+      -- A run that failed only because an AI service was busy is tried again after 3 hours instead of the next day.
+      AND (a.run_tried_at IS NULL OR a.run_tried_at < now() - CASE WHEN a.last_run_at IS NULL THEN interval '2 hours' WHEN (lr.status = 'failed' AND lr.summary ~* 'busy|high demand|answer was empty|overloaded|fetch failed' AND lr.summary !~* 'limit for the month|accept the key') THEN interval '3 hours' ELSE interval '20 hours' END)
     ORDER BY a.run_tried_at NULLS FIRST, a.last_run_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => r.account_id!);
 }
