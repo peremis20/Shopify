@@ -432,7 +432,7 @@ async function askGemini<T>(apiKey: string, system: string, prompt: string, sche
       if (attempt) await pause(attempt === 1 ? 3000 : 8000);
       const res = await fetch(`${GEMINI_API}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
         method: "POST",
-        signal: AbortSignal.timeout(90_000),
+        signal: AbortSignal.timeout(180_000),
         headers: { "Content-Type": "application/json" },
         body: payload,
       });
@@ -591,7 +591,10 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
           const finish: string = body.choices?.[0]?.finish_reason ?? "";
           const out = extractJson(text);
           if (valid(out)) return out as T;
-          lastError = `${model}: ${text ? "the answer wasn't complete JSON" : "the answer was empty"}${finish && finish !== "stop" ? ` (${finish})` : ""}`;
+          // Enough detail to tell a refusal, a filter or a cut off answer apart the next time this happens.
+          const refusal: string = body.choices?.[0]?.message?.refusal ?? "";
+          const used = body.usage ? ` ${body.usage.prompt_tokens ?? "?"} in, ${body.usage.completion_tokens ?? "?"} out` : "";
+          lastError = `${model}: ${text ? "the answer wasn't complete JSON" : "the answer was empty"} (${finish || (body.choices?.length ? "no reason" : `no choices, got ${Object.keys(body).slice(0, 5).join(" ") || "nothing"}`)}${used}${refusal ? `, refused: ${refusal.slice(0, 80)}` : ""})`;
           // A content filter answers the same in plain mode: go straight to the next model.
           if (finish === "content_filter") break modes;
           break; // try plain mode, or the next model
