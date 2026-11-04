@@ -29,6 +29,30 @@ About 20,000 visitors a month from Google, and revenue from them. Every feature 
 - Simple view first for owners, Advanced for data people. Plain, short wording, no hyphens or dashes in user facing text.
 - Sabbath: nothing runs from Friday sundown to Saturday sundown, except church projects.
 
+## Product direction (from the owner)
+
+One repeatable loop, not every marketing channel at once:
+
+Analyze the website → find traffic opportunities → create content and improvements → get approval and publish → measure visitors, leads and sales → improve the next campaign.
+
+- **Same system, different strategy per business.** "Any website" means a reusable system, not the same strategy for everyone. Each customer gives their audience, offer, location, goals and account permissions (the site profile); plans come from that plus their own data.
+- **Five capabilities:**
+  - *Website analysis:* read the pages; find the business, products, audience and missing information.
+  - *Opportunity discovery:* existing search queries, underperforming pages, useful topics.
+  - *Content creation:* page improvements, articles, social posts and short video scripts.
+  - *Distribution:* send approved content to connected publishing channels, linking back to the relevant pages.
+  - *Measurement:* which channels and pages bring visitors, leads and purchases.
+- **Data sources are complementary, not interchangeable.** Search Console gives queries, impressions, clicks, CTR, position and URL inspection; Analytics (Data API) gives what visitors do after arriving and conversions. Both need the customer's authorized access; a URL alone never unlocks private data.
+- **Small stack.** One AI for writing plus a second from another provider for checking, scheduled jobs (the hourly tick), Search Console API, Analytics Data API, one publishing integration done well before the next, and the database for sites, tasks, content, approvals and results. MCP is optional plumbing, not the strategy.
+- **First product: the weekly traffic assistant.** Each week, for a connected site: pick three promising existing pages (example rule: impressions but few clicks, then match the query, title and content to what the searcher needs), draft their improvements and one supporting article, repurpose the article into social posts and a short video script, ask the owner to approve, then track the clicks, visits and conversions that follow. Ads, influencer outreach and full video production come after this works and is measured.
+- **Limits around the automation:**
+  - Approval before publishing, sending outreach or spending money. Publishing on its own is allowed only where the owner turned it on in Autopilot settings, and every change stays undoable.
+  - Spending caps and a pause button.
+  - Source checks for factual claims, strictest on health content.
+  - No fabricated reviews, fake traffic or mass unsolicited messages.
+  - Report qualified leads and sales, not just visitor counts.
+  - Compare results against a recorded baseline (and control groups). A rise after a change is evidence, not proof the AI caused it; say so in reports.
+
 ## Releasing
 
 `npm run build:neon` (it runs `npm test` first; a failing test stops the release), commit and push, then point the `release` row in `insights_settings` at the new commit (url, sha256 of `neon/insights/release/server.mjs`, assets). The function picks it up within a minute.
