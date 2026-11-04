@@ -45,8 +45,8 @@ function ShareCard({ item, onPosted }: { item: ShareItem; onPosted: (posted: boo
   return (
     <div className="rounded-xl border border-dash-line p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <a href={item.url} target="_blank" rel="noreferrer" className="font-semibold text-dash-ink hover:underline">{item.title}</a>
+        <div className="min-w-0">
+          <a href={item.url} target="_blank" rel="noreferrer" className="break-words font-semibold text-dash-ink hover:underline">{item.title}</a>
           <p className="text-xs text-dash-muted">Made {new Date(item.at).toLocaleDateString()} · checked by a second AI</p>
         </div>
         <button
@@ -69,7 +69,7 @@ function ShareCard({ item, onPosted }: { item: ShareItem; onPosted: (posted: boo
           </button>
         ))}
       </div>
-      <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-dash-bg p-3 font-dash text-sm text-dash-ink">{text}</pre>
+      <pre className="mt-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere] rounded-lg bg-dash-bg p-3 font-dash text-sm text-dash-ink">{text}</pre>
       <div className="mt-2 flex justify-end">
         <CopyButton text={text} />
       </div>
@@ -81,6 +81,7 @@ function ShareCard({ item, onPosted }: { item: ShareItem; onPosted: (posted: boo
 export function ShareKits() {
   const [items, setItems] = useState<ShareItem[] | null>(null);
   const [showPosted, setShowPosted] = useState(false);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     api<{ items: ShareItem[] }>("/api/autopilot/share").then((d) => setItems(d.items)).catch(() => setItems([]));
   }, []);
@@ -88,13 +89,16 @@ export function ShareKits() {
   const todo = items.filter((i) => !i.postedAt);
   const posted = items.filter((i) => i.postedAt);
   const mark = (changeId: string, p: boolean) =>
-    api<{ items: ShareItem[] }>("/api/autopilot/share", { changeId, posted: p }).then((d) => setItems(d.items)).catch(() => undefined);
+    api<{ items: ShareItem[] }>("/api/autopilot/share", { changeId, posted: p })
+      .then((d) => (setItems(d.items), setFailed(false)))
+      .catch(() => setFailed(true));
   return (
     <Card className="mt-6">
       <CardHeader title="Share this week" />
       <p className="mb-3 text-xs text-dash-muted">
         Posts and a short video script for each new article, written from the article and checked by a second AI. Copy, post, then mark it posted.
       </p>
+      {failed && <p className="mb-3 text-sm text-dash-down">Couldn&apos;t save that. Check your connection and try again.</p>}
       {todo.length ? (
         <div className="space-y-3">{todo.map((i) => <ShareCard key={i.changeId} item={i} onPosted={(p) => mark(i.changeId, p)} />)}</div>
       ) : (

@@ -1023,8 +1023,10 @@ Write:
 "instagram": 40 to 80 words plus 3 to 5 relevant hashtags at the end; say "link in bio" instead of the link.
 "x": under 240 characters including the link.
 "video": a 30 to 45 second vertical video: "hook" (the first spoken line, under 12 words), "script" (what to say, short lines, about 90 words, ending with where to read more) and "caption" (under 25 words).
+Use this exact link everywhere a link goes: ${p.url}
 Use only what the article says. Sound like a real person: no hype, no clickbait, no exclamation marks, no emojis, no hyphens or dashes.
-Health topics: only general, well established knowledge from the article. No numbers, doses, studies, statistics, cures or promises.`;
+Use no digits or numbers anywhere, not even in the title or hashtags: write the idea in words.
+Health topics: only general, well established knowledge from the article. No doses, studies, statistics, cures or promises.`;
   const schema = {
     type: "object",
     properties: {
@@ -1052,7 +1054,12 @@ Health topics: only general, well established knowledge from the article. No num
       script: out.video?.script,
       caption: out.video?.caption,
     };
-    const checked = Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, safeEmailText(String(v ?? ""), keep, [p.url])])) as Record<
+    // A link written slightly differently (www, a trailing slash) is put back to the exact one before checking.
+    const u = new URL(p.url);
+    const variant = new RegExp(`https?://(www\\.)?${u.hostname.replace(/^www\./, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}${u.pathname.replace(/\/$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`, "g");
+    const checked = Object.fromEntries(
+      Object.entries(parts).map(([k, v]) => [k, safeEmailText(String(v ?? "").replace(variant, p.url), keep, [p.url])])
+    ) as Record<
       keyof typeof parts,
       ReturnType<typeof safeEmailText>
     >;

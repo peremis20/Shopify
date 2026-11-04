@@ -69,6 +69,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: () => "Add a key from a second AI provider in Platform keys, so every change can be checked by a different AI.",
     workaround: "Page changes and new articles wait until it is added; plans are shown but not acted on.",
   },
+  "share-kit": {
+    name: "Social posts for new articles",
+    fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
+    workaround: "Articles still publish; their posts can be written by hand.",
+  },
   "keyword-planner": {
     name: "Google Keyword Planner",
     fix: () => "Reconnect Google Ads under Keyword ideas.",
