@@ -74,6 +74,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
     workaround: "Articles still publish; their posts can be written by hand.",
   },
+  "idea-finder": {
+    name: "The Idea finder (new searches from Google)",
+    fix: (d) => (/keyword planner/i.test(d) ? "Reconnect Google Ads under Keyword ideas, so new searches can be measured." : "It tries again in 6 hours by itself. Nothing to do unless it keeps happening."),
+    workaround: "The Strategist plans from the searches already known.",
+  },
   "keyword-planner": {
     name: "Google Keyword Planner",
     fix: () => "Reconnect Google Ads under Keyword ideas.",

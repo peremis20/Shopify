@@ -1,5 +1,6 @@
 import { accountsDueForAuthorityCoach, markAuthorityTried, readAuthorityPlan, runAuthorityCoach } from "./autopilot/authority-coach";
 import { markSharePosted, readShareKits } from "./autopilot/share-kit";
+import { accountsDueForIdeas, markIdeasTried, runIdeaFinder } from "./autopilot/idea-finder";
 import { accountsDueForBrokenLinks, markBrokenLinksChecked, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
@@ -1301,6 +1302,17 @@ export async function autopilotTick(): Promise<Response> {
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
       const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
       if (sent) results.push(`account ${accountId} weekly report emailed`);
+    }
+    // The Idea finder: new searches from Google's related searches, People also ask and competitor pages, once a week
+    // per site, one site per hour, ahead of the Strategist so its plan can use them.
+    for (const accountId of late() ? [] : await accountsDueForIdeas(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
+      let failure: unknown = null;
+      const r = await forSite(accountId, () => runIdeaFinder(accountId, domain)).catch((e) => ((failure = e), console.error(`idea finder failed: ${message(e)}`), null));
+      if (r) results.push(`account ${accountId} ideas: ${r.note}`);
+      else await markIdeasTried(accountId, failure).catch(() => undefined);
     }
     // The Strategist plans each site's week (one site per hour, so AI use stays small).
     for (const accountId of late() ? [] : await accountsDueForStrategy(1)) {

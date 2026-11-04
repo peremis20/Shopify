@@ -1,5 +1,6 @@
 import { ensureSchema, sql } from "../db";
 import { readAuthorityPlan } from "./authority-coach";
+import { readIdeas } from "./idea-finder";
 import { readProspects } from "./backlinks";
 import { readStrategy } from "./strategist";
 import { controlComparison } from "./results";
@@ -119,6 +120,8 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     const kept = strategy.moves.filter((m) => m.kept).length;
     out.push({ agent: "Strategist", did: `${strategy.moves.length} moves planned (${strategy.at.slice(0, 10)})`, result: `${kept} kept after the checks, ${strategy.moves.length - kept} dropped.` });
   }
+  const ideas = await readIdeas(accountId).catch(() => null);
+  if (ideas) out.push({ agent: "Idea finder", did: `${ideas.ideas.length} new searches found (${ideas.at.slice(0, 10)})`, result: ideas.note });
   const plan = await readAuthorityPlan(accountId).catch(() => null);
   if (plan) {
     const kept = plan.moves.filter((m) => m.kept).length;

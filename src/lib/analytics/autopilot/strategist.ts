@@ -1,4 +1,5 @@
 import { readAuthorityPlan } from "./authority-coach";
+import { readIdeas } from "./idea-finder";
 import { measuredResults } from "./results";
 import { readScorecard } from "./scorecard";
 import { rankingTurbulence } from "./google-updates";
@@ -82,6 +83,18 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
     lines.push("Searches already targeted: " + targets.slice(0, 15).map((t) => `"${t.keyword}" (${t.monthlySearches}/mo${t.difficulty !== undefined ? `, difficulty ${t.difficulty}` : ""}${t.page ? "" : ", no page yet"})`).join("; "));
     targets.forEach((t) => known.add(t.keyword));
   }
+  // New searches from the Idea finder (Google related searches, People also ask, competitor pages), with real volumes.
+  const found = await readIdeas(accountId).catch(() => null);
+  const fresh = (found?.ideas ?? []).filter((i) => i.monthlySearches !== null && !known.has(i.keyword) && !targets.some((t) => t.keyword === i.keyword)).slice(0, 15);
+  if (fresh.length) {
+    const label = { related: "related search", question: "people also ask", competitor: "a competitor page ranks for it" } as const;
+    lines.push(
+      `New search ideas found ${found!.at.slice(0, 10)} (Idea finder): ` +
+        fresh.map((i) => `"${i.keyword}" (${i.monthlySearches === null ? "searches unknown" : `${i.monthlySearches}/mo`}, ${label[i.source]})`).join("; ")
+    );
+    fresh.forEach((i) => known.add(i.keyword));
+  }
+  if (found?.questions.length) lines.push(`Questions people ask on Google about these topics: ${found.questions.slice(0, 8).join(" | ")}`);
   const ideas = kws.filter((k) => k.role !== "support" && !targets.some((t) => t.keyword === k.keyword)).slice(0, 15);
   if (ideas.length) {
     lines.push("Keyword ideas not targeted yet: " + ideas.map((k) => `"${k.keyword}" (${k.monthlySearches}/mo${k.difficulty !== undefined ? `, difficulty ${k.difficulty}` : ""}${k.winnable === false ? ", page 1 crowded" : ""})`).join("; "));

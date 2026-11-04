@@ -502,3 +502,10 @@ test("share kit: reads the article title and text from the logged change, withou
   assert.ok(!a.text.includes("SEO title"));
   assert.ok(a.text.includes("A form of magnesium."));
 });
+
+import { asSearch } from "../src/lib/analytics/autopilot/idea-finder";
+
+test("idea finder: a People also ask question becomes a plain search", () => {
+  assert.equal(asSearch("What is magnesium threonate good for?"), "what is magnesium threonate good for");
+  assert.equal(asSearch("  Best  sleep aids (natural)! "), "best sleep aids natural");
+});
