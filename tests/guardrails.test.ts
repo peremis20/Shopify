@@ -492,3 +492,13 @@ test("email filter: spaced hyphens become commas and made up bare domains drop t
   assert.ok(!out.text.includes("healthtips.com"));
   assert.equal(out.dropped, 1);
 });
+
+import { articleFromLog } from "../src/lib/analytics/autopilot/share-kit";
+
+test("share kit: reads the article title and text from the logged change, without the SEO line", () => {
+  const logged = `<h1>Magnesium threonate benefits</h1>\n<p><strong>SEO title:</strong> Magnesium Threonate | Peremis<br><strong>Meta description:</strong> What it is.</p>\n<h2>What it is</h2><p>A form of magnesium.</p>`;
+  const a = articleFromLog(logged);
+  assert.equal(a.title, "Magnesium threonate benefits");
+  assert.ok(!a.text.includes("SEO title"));
+  assert.ok(a.text.includes("A form of magnesium."));
+});

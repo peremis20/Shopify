@@ -17,6 +17,7 @@ import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { Backlinks } from "./Backlinks";
 import { Scorecard } from "./Scorecard";
+import { ShareKits } from "./ShareKits";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -318,6 +319,7 @@ export function DashboardView() {
                     autoPreview={previewRequested}
                     onAutoPreviewDone={() => setPreviewRequested(false)}
                   />
+                  <ShareKits />
                   <RankHealth connected={connection?.mode === "oauth"} />
                   <ExpertReview />
                 </>

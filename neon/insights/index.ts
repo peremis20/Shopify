@@ -58,6 +58,8 @@ const routes: Record<string, Handler> = {
   "GET /api/inspector": api.inspectorReport,
   "GET /api/seo/authority-plan": api.authorityPlanReport,
   "GET /api/autopilot/scorecard": api.agentScorecard,
+  "GET /api/autopilot/share": api.shareKits,
+  "POST /api/autopilot/share": api.shareKits,
   "GET /api/content/review": api.expertReview,
   "POST /api/content/review": api.expertReview,
   "GET /api/strategy": api.strategyReport,

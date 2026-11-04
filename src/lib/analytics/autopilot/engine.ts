@@ -7,6 +7,7 @@ import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
 import { readProfile, siteBrief } from "../profile";
+import { makeNextShareKit } from "./share-kit";
 import type { Opportunity } from "../seo-types";
 import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from "./apps";
 import { keyOf } from "./apps/types";
@@ -968,6 +969,11 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     await expireReviews(accountId).catch((e) => console.error(`reviews not checked: ${(e as Error).message}`));
     const said = await askGoogleToRecrawl(conn).catch(() => null);
     if (said) summary.push(said);
+  }
+  // Each new article gets social posts and a short video script for the owner to share (one per run, checked by a second AI).
+  if (!preview && status !== "failed") {
+    const shared = await makeNextShareKit(accountId, ai, brand, ctx.ourDomain).catch((e) => `Social posts not written yet: ${(e as Error).message}`);
+    if (shared) summary.push(shared);
   }
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}

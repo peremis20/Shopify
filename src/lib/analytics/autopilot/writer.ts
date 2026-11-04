@@ -992,6 +992,105 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
   throw new Error("Couldn't write a safe email for this one. Try again, or write a short note of your own.");
 }
 
+/** Social posts and a short video script made from one published article. The owner posts them. */
+export interface ShareKit {
+  linkedin: string;
+  facebook: string;
+  instagram: string;
+  x: string;
+  video: { hook: string; script: string; caption: string };
+}
+
+/**
+ * Turns one article into posts for each channel and a short video script, each pointing back to the article. Every
+ * line goes through the same checks as an outreach email (no numbers, health claims, unsourced claims or AI tells),
+ * and a second AI from another service checks the whole kit. When the checks remove too much, it is written once more.
+ */
+export async function writeShareKit(
+  ai: AiProvider,
+  p: { title: string; url: string; summary: string; text: string; brand: string | null; site: string }
+): Promise<ShareKit> {
+  const prompt = `Turn this article from ${p.brand ?? p.site} into social posts and a short video script that bring readers to it.
+Article: "${p.title}" (${p.url})
+Summary: ${p.summary}
+Article text (start):
+"""
+${p.text.slice(0, 5000)}
+"""
+Write:
+"linkedin": 60 to 120 words, practical and calm, ending with the link.
+"facebook": 40 to 80 words, friendly, ending with the link.
+"instagram": 40 to 80 words plus 3 to 5 relevant hashtags at the end; say "link in bio" instead of the link.
+"x": under 240 characters including the link.
+"video": a 30 to 45 second vertical video: "hook" (the first spoken line, under 12 words), "script" (what to say, short lines, about 90 words, ending with where to read more) and "caption" (under 25 words).
+Use only what the article says. Sound like a real person: no hype, no clickbait, no exclamation marks, no emojis, no hyphens or dashes.
+Health topics: only general, well established knowledge from the article. No numbers, doses, studies, statistics, cures or promises.`;
+  const schema = {
+    type: "object",
+    properties: {
+      linkedin: { type: "string" },
+      facebook: { type: "string" },
+      instagram: { type: "string" },
+      x: { type: "string" },
+      video: {
+        type: "object",
+        properties: { hook: { type: "string" }, script: { type: "string" }, caption: { type: "string" } },
+        required: ["hook", "script", "caption"],
+      },
+    },
+    required: ["linkedin", "facebook", "instagram", "x", "video"],
+  };
+  const keep = [p.brand, p.site].filter((x): x is string => Boolean(x && x.trim()));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const out = await askJson<ShareKit>(ai, prompt, schema);
+    const parts = {
+      linkedin: out.linkedin,
+      facebook: out.facebook,
+      instagram: out.instagram,
+      x: out.x,
+      hook: out.video?.hook,
+      script: out.video?.script,
+      caption: out.video?.caption,
+    };
+    const checked = Object.fromEntries(Object.entries(parts).map(([k, v]) => [k, safeEmailText(String(v ?? ""), keep, [p.url])])) as Record<
+      keyof typeof parts,
+      ReturnType<typeof safeEmailText>
+    >;
+    // Too much dropped anywhere means the piece no longer says what it should: write it again.
+    if (Object.values(checked).some((c) => !c.text || c.dropped > c.total / 3)) continue;
+    const kit: ShareKit = {
+      linkedin: checked.linkedin.text,
+      facebook: checked.facebook.text,
+      instagram: checked.instagram.text,
+      x: checked.x.text,
+      video: { hook: checked.hook.text, script: checked.script.text, caption: checked.caption.text },
+    };
+    // Every post but Instagram must still send people to the article.
+    for (const k of ["linkedin", "facebook", "x"] as const) if (!kit[k].includes(p.url)) kit[k] = `${kit[k]}\n${p.url}`;
+    if (await reviewShareKit(ai, p, kit)) return kit;
+  }
+  throw new Error("Couldn't write safe social posts for this article yet. The next run will try again.");
+}
+
+/** A second AI checks the kit: true to the article, nothing invented, nothing that would embarrass the owner. */
+async function reviewShareKit(ai: AiProvider, p: { title: string; text: string }, kit: ShareKit): Promise<boolean> {
+  const out = await askJson<{ ok: boolean }>(
+    reviewerOf(ai),
+    `You check social posts before a business owner publishes them. They promote the article "${p.title}".
+Article text (start):
+"""
+${p.text.slice(0, 4000)}
+"""
+Posts and video script:
+"""
+${JSON.stringify(kit, null, 1)}
+"""
+ok: false if anything claims more than the article says, invents a fact, number or result, makes a health promise, reads as spam or clickbait, or would embarrass the owner. When unsure, false.`,
+    { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+  );
+  return out.ok === true;
+}
+
 /**
  * The article checks for an email: a sentence with a number, a health claim, an unsourced claim or an AI tell is
  * dropped. Web addresses and the names in `keep` (the brand and site addresses, which may contain digits) are set aside

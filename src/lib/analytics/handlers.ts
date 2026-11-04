@@ -1,4 +1,5 @@
 import { accountsDueForAuthorityCoach, markAuthorityTried, readAuthorityPlan, runAuthorityCoach } from "./autopilot/authority-coach";
+import { markSharePosted, readShareKits } from "./autopilot/share-kit";
 import { accountsDueForBrokenLinks, markBrokenLinksChecked, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
@@ -892,6 +893,17 @@ export const expertReview = (req: Request) =>
   });
 
 /** Each agent's record on this site (Advanced view). */
+/** Social posts and video scripts waiting to be shared; POST marks one posted (or back to do). */
+export const shareKits = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const body = (await req.json().catch(() => ({}))) as { changeId?: string; posted?: boolean };
+      if (!body.changeId) return json({ error: "Missing changeId." }, 400);
+      return json({ items: await markSharePosted(account.id, String(body.changeId), body.posted !== false) });
+    }
+    return json({ items: await readShareKits(account.id) });
+  });
+
 export const agentScorecard = (req: Request) => withAccount(req, async (account) => json({ scores: await readScorecard(account.id) }));
 
 export const authorityPlanReport = (req: Request) => withAccount(req, async (account) => json({ plan: await readAuthorityPlan(account.id) }));
