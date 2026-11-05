@@ -12,7 +12,7 @@ const KIND: Record<Prospect["kind"], { label: string; hint: string }> = {
   guest: { label: "Guest article", hint: "Takes articles from other sites. Offer one with a link back." },
   podcast: { label: "Podcast", hint: "A show on your topic that invites guests. Offer to be on it." },
   roundup: { label: "Expert roundup", hint: "Collects expert answers on your topic. Offer one." },
-  competitor: { label: "Mentions a competitor", hint: "Mentions a site that beats you on Google. Offer your page as another good resource." },
+  competitor: { label: "Links to a competitor", hint: "Links to or mentions a site that beats you on Google. Offer your page as another good resource." },
   broken: { label: "Broken link", hint: "Has a dead link you can replace with your page. A helpful favor, and a strong way to earn a link." },
 };
 
