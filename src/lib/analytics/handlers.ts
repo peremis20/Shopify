@@ -9,7 +9,7 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
-import { readStatus } from "./autopilot/status";
+import { readStatus, report } from "./autopilot/status";
 import { accountsDueForWeeklyReport, lastEmailError, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
@@ -1039,30 +1039,47 @@ export const savePlatform = (req: Request) =>
     forgetOprKey();
     const p = await readPlatformSettings();
     let claude: string | undefined;
+    const note = (e: unknown) => (claude = [claude, message(e)].filter(Boolean).join(" "));
+    // Every key is tried the moment it's saved, and so is any saved key whose part shows as failing: a key that works
+    // clears its warning now (the Inspector reads the status board live), not at the next hourly check.
+    const board = await readStatus().catch(() => ({}) as Awaited<ReturnType<typeof readStatus>>);
+    const failing = (part: keyof typeof board) => board[part]?.ok === false;
     const ai = aiProvider(p);
     const NAMES = { claude: "Claude", groq: "Groq", github: "GitHub Models", gemini: "Gemini" } as const;
     if (ai) {
       const problems: string[] = [];
+      const working = new Set<string>();
       for (const one of [ai, ...(ai.backups ?? [])]) {
-        await checkAiKey(one).catch((e) => problems.push(`${NAMES[one.kind]}: ${message(e)}`));
+        await checkAiKey(one).then(
+          () => void working.add(one.kind),
+          (e) => problems.push(`${NAMES[one.kind]}: ${message(e)}`),
+        );
       }
       if (problems.length) claude = problems.join(" ");
+      if (working.size >= 1) {
+        await report("ai", true);
+        await clearPlatformProblem("service:ai");
+      }
+      // The checking AI must come from another provider than the writer.
+      if (working.size >= 2) {
+        await report("ai-review", true);
+        await clearPlatformProblem("service:ai-review");
+      }
     }
-    if (str("serperKey")?.trim() && p.serperKey) {
-      await checkSerpKey(p.serperKey).catch((e) => (claude = [claude, message(e)].filter(Boolean).join(" ")));
+    if (p.serperKey && (str("serperKey")?.trim() || failing("serper"))) {
+      const ok = await checkSerpKey(p.serperKey).then(() => true, (e) => (note(e), false));
+      if (ok) {
+        await report("serper", true);
+        await clearPlatformProblem("service:serper");
+      }
     }
-    // A new Open PageRank key is tried at once; when it works, the warning about it goes away now, not next hour.
-    if (str("oprKey")?.trim() && p.oprKey) {
-      const ok = await checkOprKey(p.oprKey).then(
-        () => true,
-        (e) => ((claude = [claude, message(e)].filter(Boolean).join(" ")), false),
-      );
+    if (p.oprKey && (str("oprKey")?.trim() || failing("openpagerank"))) {
+      const ok = await checkOprKey(p.oprKey).then(() => true, (e) => (note(e), false));
       if (ok && !process.env.OPR_API_KEY) await clearPlatformProblem("service:openpagerank");
     }
     // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
-    // Also when both were saved earlier but emails still show as not working (a save made before this check existed).
-    const emailFailing = (await readStatus().catch(() => ({}) as Awaited<ReturnType<typeof readStatus>>)).email?.ok === false;
-    if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || (p.resendKey && p.alertsFrom && emailFailing)) {
+    // Also when both were saved earlier but emails still show as not working.
+    if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || (p.resendKey && p.alertsFrom && failing("email"))) {
       const sent = await sendEmail(
         account.email,
         "DashPatrol emails are working",
