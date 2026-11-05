@@ -161,6 +161,13 @@ export async function retestEmail(): Promise<void> {
   const p = await readPlatformSettings();
   const to = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => e.trim()).find(Boolean);
   if (!to || (!p.resendKey && !p.alertsFrom)) return;
+  // One try per window, even with several tabs open at once: whoever claims the slot sends.
+  const [claimed] = await sql`
+    INSERT INTO insights_settings (key, value) VALUES ('email_retest', ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '50 minutes'
+    RETURNING key`;
+  if (!claimed) return;
   // With one of the two missing, sendEmail records which one, so the warning names exactly what to add.
   await sendEmail(to, "DashPatrol emails are working", "This is a test from DashPatrol. Weekly reports and urgent alerts will reach this inbox.");
 }

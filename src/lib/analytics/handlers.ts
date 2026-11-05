@@ -917,6 +917,9 @@ export const inspectorReport = (req: Request) =>
     const conn = await getConnection(account.id);
     const profile = await readProfile(account.id);
     const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? undefined);
+    // The platform owner opening the app retests emails that still show as broken (at most once an hour), so a
+    // fix made earlier shows without waiting for the hourly run.
+    if (account.admin) await retestEmail().catch((e) => console.warn(`email retest failed: ${message(e)}`));
     const problems = await inspect(account.id, conn, { repair: false, ourDomain: domain });
     // Platform keys are the platform owner's job; customers only see their own site's problems.
     return json({ problems: problems.filter((p) => !p.platform || account.admin) });
