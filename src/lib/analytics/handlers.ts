@@ -9,7 +9,7 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
-import { accountsDueForWeeklyReport, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
+import { accountsDueForWeeklyReport, lastEmailError, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
@@ -1005,6 +1005,16 @@ export const saveAutopilot = (req: Request) =>
     return json({ settings: await autopilotView(account.id, account.admin) });
   });
 
+/** A platform problem the owner just fixed leaves every site's warnings now, not at the next hourly check. */
+async function clearPlatformProblem(id: string): Promise<void> {
+  await sql`
+    UPDATE insights_settings SET value = jsonb_set(value::jsonb, '{problems}', coalesce(
+      (SELECT jsonb_agg(x) FROM jsonb_array_elements(value::jsonb->'problems') x WHERE x->>'id' <> ${id}), '[]'::jsonb))::text
+    WHERE key LIKE 'inspect:%' AND CASE WHEN key LIKE 'inspect:%' THEN jsonb_typeof(value::jsonb->'problems') = 'array' ELSE false END`.catch((e) =>
+    console.warn(`clearing the ${id} warning failed: ${message(e)}`),
+  );
+}
+
 /** The platform owner's keys: Claude, and the public Shopify app. */
 export const savePlatform = (req: Request) =>
   withAdmin(req, async (account) => {
@@ -1046,12 +1056,17 @@ export const savePlatform = (req: Request) =>
         () => true,
         (e) => ((claude = [claude, message(e)].filter(Boolean).join(" ")), false),
       );
-      if (ok && !process.env.OPR_API_KEY) {
-        await sql`
-          UPDATE insights_settings SET value = jsonb_set(value::jsonb, '{problems}', coalesce(
-            (SELECT jsonb_agg(x) FROM jsonb_array_elements(value::jsonb->'problems') x WHERE x->>'id' <> 'service:openpagerank'), '[]'::jsonb))::text
-          WHERE key LIKE 'inspect:%' AND CASE WHEN key LIKE 'inspect:%' THEN jsonb_typeof(value::jsonb->'problems') = 'array' ELSE false END`.catch((e) => console.warn(`clearing the Open PageRank warning failed: ${message(e)}`));
-      }
+      if (ok && !process.env.OPR_API_KEY) await clearPlatformProblem("service:openpagerank");
+    }
+    // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
+    if (str("resendKey")?.trim() || str("alertsFrom")?.trim()) {
+      const sent = await sendEmail(
+        account.email,
+        "DashPatrol emails are working",
+        "This is a test from DashPatrol. Weekly reports and urgent alerts will reach this inbox.",
+      ).catch(() => false);
+      if (sent) await clearPlatformProblem("service:email");
+      else claude = [claude, lastEmailError ?? "The test email couldn't be sent."].filter(Boolean).join(" ");
     }
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
   });

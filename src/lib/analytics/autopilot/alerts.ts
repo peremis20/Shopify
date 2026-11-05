@@ -18,11 +18,16 @@ async function ownerEmail(accountId: string): Promise<string | null> {
   return row?.email ?? null;
 }
 
+/** Why the last email didn't go out, in Resend's words (shown when the owner saves the keys). */
+export let lastEmailError: string | null = null;
+
 export async function sendEmail(to: string, subject: string, text: string): Promise<boolean> {
   const p = await readPlatformSettings();
+  lastEmailError = null;
   if (!p.resendKey || !p.alertsFrom) {
     // Not quiet: the Inspector shows the owner that emails can't go out until this is set up.
-    await report("email", false, `Emails are not set up: add ${!p.resendKey ? "a Resend key" : ""}${!p.resendKey && !p.alertsFrom ? " and " : ""}${!p.alertsFrom ? "a from address" : ""} in Platform keys.`);
+    lastEmailError = `Emails are not set up: add ${!p.resendKey ? "a Resend key" : ""}${!p.resendKey && !p.alertsFrom ? " and " : ""}${!p.alertsFrom ? "a from address" : ""} in Platform keys.`;
+    await report("email", false, lastEmailError);
     return false;
   }
   const res = await fetch("https://api.resend.com/emails", {
@@ -33,6 +38,7 @@ export async function sendEmail(to: string, subject: string, text: string): Prom
   }).catch((e) => (console.error(`email not sent: ${(e as Error).message}`), null));
   if (!res?.ok) {
     const why = res ? `${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}` : "no answer";
+    lastEmailError = `Resend didn't send the email (${why}).`;
     await report("email", false, why);
     return false;
   }
