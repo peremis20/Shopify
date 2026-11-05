@@ -1078,8 +1078,8 @@ export const savePlatform = (req: Request) =>
       if (ok && !process.env.OPR_API_KEY) await clearPlatformProblem("service:openpagerank");
     }
     // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
-    // Also when both were saved earlier but emails still show as not working.
-    if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || (p.resendKey && p.alertsFrom && failing("email"))) {
+    // Also when either was saved earlier but emails still show as not working.
+    if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || ((p.resendKey || p.alertsFrom) && failing("email"))) {
       const sent = await sendEmail(
         account.email,
         "DashPatrol emails are working",

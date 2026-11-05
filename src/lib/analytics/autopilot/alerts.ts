@@ -152,7 +152,7 @@ export async function sendWeeklyReport(accountId: string): Promise<boolean> {
 }
 
 /**
- * Each hour: when emails show as not working but a key and a from address are now saved, a test goes to the platform
+ * Each hour: when emails show as not working and a key or a from address is saved, a test goes to the platform
  * owner, so a fix clears by itself without saving again. At most once an hour, and only while it keeps failing.
  */
 export async function retestEmail(): Promise<void> {
@@ -160,6 +160,7 @@ export async function retestEmail(): Promise<void> {
   if (st?.ok !== false || (st.at && Date.now() - Date.parse(st.at) < 50 * 60_000)) return;
   const p = await readPlatformSettings();
   const to = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => e.trim()).find(Boolean);
-  if (!p.resendKey || !p.alertsFrom || !to) return;
+  if (!to || (!p.resendKey && !p.alertsFrom)) return;
+  // With one of the two missing, sendEmail records which one, so the warning names exactly what to add.
   await sendEmail(to, "DashPatrol emails are working", "This is a test from DashPatrol. Weekly reports and urgent alerts will reach this inbox.");
 }

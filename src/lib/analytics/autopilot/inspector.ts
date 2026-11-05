@@ -58,7 +58,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     name: "Owner emails (resend.com)",
     fix: (d) =>
       /not set up/i.test(d)
-        ? "Add a Resend key and a from address in Platform keys, so weekly reports and alerts reach your inbox."
+        ? /add a from address/i.test(d) && !/resend key/i.test(d)
+          ? "The Resend key is saved. Add a from address (like reports@yourdomain.com) in Platform keys, so weekly reports and alerts reach your inbox."
+          : /resend key/i.test(d) && !/from address/i.test(d)
+            ? "The from address is saved. Add a Resend key in Platform keys, so weekly reports and alerts reach your inbox."
+            : "Add a Resend key and a from address in Platform keys, so weekly reports and alerts reach your inbox."
         : /domain|verify|403/i.test(d)
           ? "Verify the sending domain in Resend, or change the email sender in Platform keys."
           : "Check the email key in Platform keys.",
