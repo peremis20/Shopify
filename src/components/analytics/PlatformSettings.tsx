@@ -20,6 +20,8 @@ export function PlatformForm({ settings, onSaved }: {
   const [githubKey, setGithubKey] = useState("");
   const [pagespeedKey, setPagespeedKey] = useState("");
   const [oprKey, setOprKey] = useState("");
+  const [keKey, setKeKey] = useState("");
+  const [keCredits, setKeCredits] = useState("");
   const [resendKey, setResendKey] = useState("");
   const [alertsFrom, setAlertsFrom] = useState("");
   const [aiLimit, setAiLimit] = useState("");
@@ -45,6 +47,8 @@ export function PlatformForm({ settings, onSaved }: {
         githubModelsKey: githubKey,
         pagespeedKey,
         oprKey,
+        keKey,
+        keMonthlyCredits: keCredits,
         resendKey,
         alertsFrom,
         aiMonthlyLimit: aiLimit,
@@ -59,6 +63,8 @@ export function PlatformForm({ settings, onSaved }: {
       setGithubKey("");
       setPagespeedKey("");
       setOprKey("");
+      setKeKey("");
+      setKeCredits("");
       setResendKey("");
       setAlertsFrom("");
       setAiLimit("");
@@ -126,6 +132,7 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-opr", "Open PageRank key (site authority on page one)", oprKey, setOprKey, has?.hasOpr)}
+        {input("pf-ke", "Keywords Everywhere API key (what rivals rank for and who links to them)", keKey, setKeKey, has?.hasKe)}
         {input("pf-resend", "Email key (resend.com) for owner reports and alerts", resendKey, setResendKey, has?.hasEmail)}
         {input("pf-from", "Email sender, e.g. DashPatrol <alerts@dashpatrol.com>", alertsFrom, setAlertsFrom, has?.hasEmail, false)}
         <div className="grid gap-3 sm:grid-cols-2">
@@ -133,6 +140,7 @@ export function PlatformForm({ settings, onSaved }: {
             [
               ["pf-ai-limit", "AI requests per site each month", aiLimit, setAiLimit, has?.aiLimit ?? 3000],
               ["pf-search-limit", "Google results lookups per site each month", searchLimit, setSearchLimit, has?.searchLimit ?? 1500],
+              ["pf-ke-credits", "Keywords Everywhere credits each month (all sites)", keCredits, setKeCredits, has?.keCredits ?? 3000],
             ] as const
           ).map(([id, label, value, set, now]) => (
             <label key={id} className="block">

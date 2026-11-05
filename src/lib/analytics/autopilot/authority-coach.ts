@@ -6,6 +6,7 @@ import { readAuthorityHistory, type Rival } from "./authority";
 import { NOT_PROSPECTS, readProspects, upsertProspects, type Prospect } from "./backlinks";
 import { clientListKnown, otherClient } from "./clients";
 import { fetchSerp } from "./serp";
+import { keReady, rivalBacklinks } from "./keywords-everywhere";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
 import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, type AuthorityMove } from "./writer";
@@ -88,13 +89,20 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   // Other customers are never studied or named as competitors (clients.ts); with the list unreadable, none are.
   const isOther = await otherClient(ours);
   const rivals = (await latestRivals(accountId)).filter((r) => !isBig(r.domain) && !isOther(r.domain)).slice(0, COMPETITORS);
-  if (platform.serperKey && rivals.length && (await clientListKnown())) {
+  const realLinks = await keReady();
+  if ((platform.serperKey || realLinks) && rivals.length && (await clientListKnown())) {
     const found: Prospect[] = [];
     for (const r of rivals) {
       if (found.length >= MAX_COMPETITOR_FINDS) break;
-      const serp = await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(nullUnlessLimit);
+      // The sites that really link to the rival (Keywords Everywhere) beat a search for pages that mention it.
+      const links = realLinks ? await rivalBacklinks(r.domain, 15).catch(() => []) : [];
+      const results = links.length
+        ? links.map((l) => ({ link: l.sourceUrl, domain: l.sourceDomain, title: l.sourceDomain, snippet: l.anchor ? `Links to ${r.domain} with "${l.anchor}".` : `Links to ${r.domain}.` }))
+        : platform.serperKey
+          ? ((await fetchSerp(platform.serperKey, `"${r.domain}" -site:${r.domain} -site:${ours}`).catch(nullUnlessLimit))?.organic ?? [])
+          : [];
       let n = 0;
-      for (const x of serp?.organic ?? []) {
+      for (const x of results) {
         const d = x.domain.toLowerCase().replace(/^www\./, "");
         if (found.length >= MAX_COMPETITOR_FINDS) break;
         if (d === ours || d.endsWith(`.${ours}`) || d === r.domain || NOT_PROSPECTS.test(d) || isBig(d) || isOther(d) || found.some((f) => f.domain === d)) continue;

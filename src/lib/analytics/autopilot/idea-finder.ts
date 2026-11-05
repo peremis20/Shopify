@@ -7,6 +7,7 @@ import { cachedSerp, fetchSerp } from "./serp";
 import { faithAllowed, isBig, readSiteKeywords, topicWords } from "./site-keywords";
 import { readTargets } from "./targets";
 import { report } from "./status";
+import { domainKeywords } from "./keywords-everywhere";
 import { nullUnlessLimit, SpendingLimitReached } from "./usage";
 
 /**
@@ -146,7 +147,17 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
       competitorPages.push({ url: rival.link, from: rival.domain });
   }
 
-  // Real monthly searches for every related search and question, in one call.
+  // What the rivals actually rank for (Keywords Everywhere), when its key is set: the clearest competitor gap.
+  for (const page of competitorPages) {
+    const brands = [page.from.replace(/^www\./, "").split(".")[0], ours.split(".")[0]].filter((b) => b.length > 3);
+    for (const r of (await domainKeywords(page.from, 30).catch(() => [])).slice(0, 30)) {
+      const k = asSearch(r.keyword);
+      if (brands.some((b) => k.replace(/\s+/g, "").includes(b))) continue;
+      if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "competitor", from: page.from });
+    }
+  }
+
+  // Real monthly searches for every related search, question and rival search, in one call.
   let plannerOk = true;
   const volumes = found.size ? await keywordVolumes({ ...TARGETING, keywords: [...found.keys()] }).catch(() => ((plannerOk = false), [])) : [];
   for (const v of volumes) {

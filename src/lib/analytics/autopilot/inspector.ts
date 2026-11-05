@@ -41,6 +41,16 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
         : "Check the Open PageRank key in Platform keys.",
     workaround: "Until then, difficulty scores judge page 1 by the list of big publishers instead.",
   },
+  "keywords-everywhere": {
+    name: "Keywords Everywhere (rival searches and links)",
+    fix: (d) =>
+      /credit limit/i.test(d)
+        ? "This month's Keywords Everywhere credit limit is used. Raise it in Platform keys, or it starts again next month."
+        : /no credits|402/i.test(d)
+          ? "The Keywords Everywhere account is out of credits. Add credits in your Keywords Everywhere account."
+          : "Check the Keywords Everywhere API key in Platform keys.",
+    workaround: "Until then, rivals are studied from Google results and Keyword Planner only.",
+  },
   serper: {
     name: "Google page 1 lookups (serper.dev)",
     fix: (d) => (/credit|quota|limit|402|429/i.test(d) ? "The serper.dev credits ran out. Top up or upgrade at serper.dev." : "Check the serper.dev key in Platform keys."),

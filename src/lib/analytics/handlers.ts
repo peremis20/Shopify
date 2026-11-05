@@ -10,6 +10,7 @@ import { findProspects, prospectsDue, readProspects, setProspectStatus, type Pro
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
+import { checkKeKey } from "./autopilot/keywords-everywhere";
 import { accountsDueForWeeklyReport, lastEmailError, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
@@ -1032,6 +1033,8 @@ export const savePlatform = (req: Request) =>
       serperKey: str("serperKey"),
       pagespeedKey: str("pagespeedKey"),
       oprKey: str("oprKey"),
+      keKey: str("keKey"),
+      keMonthlyCredits: Number(b.keMonthlyCredits) > 0 ? Number(b.keMonthlyCredits) : undefined,
       resendKey: str("resendKey"),
       alertsFrom: str("alertsFrom"),
       aiMonthlyLimit: Number(b.aiMonthlyLimit) > 0 ? Number(b.aiMonthlyLimit) : undefined,
@@ -1079,6 +1082,10 @@ export const savePlatform = (req: Request) =>
     if (p.oprKey && (str("oprKey")?.trim() || failing("openpagerank"))) {
       const ok = await checkOprKey(p.oprKey).then(() => true, (e) => (note(e), false));
       if (ok && !process.env.OPR_API_KEY) await clearPlatformProblem("service:openpagerank");
+    }
+    if (p.keKey && (str("keKey")?.trim() || failing("keywords-everywhere"))) {
+      const ok = await checkKeKey(p.keKey).then(() => true, (e) => (note(e), false));
+      if (ok) await clearPlatformProblem("service:keywords-everywhere");
     }
     // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
     // Also when either was saved earlier but emails still show as not working.

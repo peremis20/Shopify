@@ -28,6 +28,10 @@ export interface PlatformSettings {
   pagespeedKey?: string;
   /** Open PageRank (free), for the authority of the sites on Google page one. */
   oprKey?: string;
+  /** Keywords Everywhere, for the searches rivals rank for and the sites that link to them. */
+  keKey?: string;
+  /** Keywords Everywhere credits the platform may spend a month (default in keywords-everywhere.ts). */
+  keMonthlyCredits?: number;
   shopifyClientId?: string;
   shopifyClientSecret?: string;
   /** resend.com, for owner emails (weekly report, urgent alerts). */
@@ -64,7 +68,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -90,6 +94,8 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
     oprKey: process.env.OPR_API_KEY || stored.oprKey,
+    keKey: process.env.KE_API_KEY || stored.keKey,
+    keMonthlyCredits: Number(process.env.KE_MONTHLY_CREDITS) || stored.keMonthlyCredits,
     resendKey: process.env.RESEND_API_KEY || stored.resendKey,
     alertsFrom: process.env.ALERTS_FROM || stored.alertsFrom,
     aiMonthlyLimit: Number(process.env.AI_MONTHLY_LIMIT) || stored.aiMonthlyLimit,
@@ -103,7 +109,7 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
   const next = { ...(await readPlatformSettings()) };
   const store = next as Record<string, unknown>;
   for (const [k, v] of Object.entries(patch) as [keyof PlatformSettings, unknown][]) {
-    if (k === "aiMonthlyLimit" || k === "searchMonthlyLimit") {
+    if (k === "aiMonthlyLimit" || k === "searchMonthlyLimit" || k === "keMonthlyCredits") {
       const n = Number(v);
       if (Number.isFinite(n) && n > 0) store[k] = Math.round(n); // blank or zero keeps what's saved
     } else if (typeof v === "string" && v.trim()) store[k] = v.trim(); // blank means keep what's saved
@@ -211,7 +217,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }
