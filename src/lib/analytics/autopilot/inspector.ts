@@ -168,7 +168,9 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     // next run has room, so the warning goes away now instead of after four more runs.
     const usedThisWeek = Number(/(\d+) pages changed this week/i.exec(String(runs[0]?.summary ?? ""))?.[1] ?? NaN);
     const roomNow = Number.isFinite(usedThisWeek) && auto.maxPagesPerWeek > usedThisWeek;
-    if (runs.length >= 4 && runs.every((r) => Number(r.made) === 0) && !roomNow) {
+    // The weekly limit is the owner's chosen pace and urgent fixes go past it, so hitting it isn't a problem to report.
+    const paced = /weekly limit/i.test(String(runs[0]?.summary ?? "")) && !/no urgent fix could be made/i.test(String(runs[0]?.summary ?? ""));
+    if (runs.length >= 4 && runs.every((r) => Number(r.made) === 0) && !roomNow && !paced) {
       const why = runs[0]?.summary ?? "";
       problems.push({
         id: "autopilot:idle",

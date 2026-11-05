@@ -56,6 +56,8 @@ const WORSE_BY_POSITIONS = 3;
 /** Everything a run needs for one customer. */
 /** Urgent fixes allowed over the weekly page limit. */
 const URGENT_EXTRA = 2;
+/** Beyond that, pages Google left out of its index still get fixed: being in Google comes before a steady pace. */
+const INDEX_EXTRA = 3;
 
 interface Ctx {
   accountId: string;
@@ -70,6 +72,8 @@ interface Ctx {
   maxPagesPerWeek: number;
   /** Over the weekly limit: only urgent work (a search that fell, a page Google left out) may go ahead. */
   urgentOnly?: boolean;
+  /** Past the urgent room too: only getting a page Google left out into its index may go ahead. */
+  indexOnly?: boolean;
   /** The site's pages, loaded once per run for the duplicate guards. */
   index?: Promise<SiteItem[]>;
   /** A preview run: nothing is changed or recorded. */
@@ -496,7 +500,8 @@ async function planNextChange(
   const apps = await readyApps(hub);
   const all = await gatherCandidates(hub, apps, notes);
   // Urgent: winning back a slipping search, or getting a page Google left out into its index.
-  const cands = ctx.urgentOnly ? all.filter((c) => c.mode === "defend" || (c.weights["site-health"] ?? 0) >= 4) : all;
+  const unindexed = (c: Candidate) => (c.weights["site-health"] ?? 0) >= 4;
+  const cands = ctx.indexOnly ? all.filter(unindexed) : ctx.urgentOnly ? all.filter((c) => c.mode === "defend" || unindexed(c)) : all;
   if (ctx.urgentOnly) notes.push(`Urgent check: ${cands.length} urgent of ${all.length} candidates${cands.length ? ` (${cands.slice(0, 3).map((c) => `“${c.op.query}” on ${new URL(c.op.page).pathname}`).join(", ")})` : ""}.`);
 
   const changedSince = async (days: number) =>
@@ -829,6 +834,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
     // The weekly limit keeps the site steady, but it shouldn't block a rescue: a couple of urgent fixes may go over it.
     const urgentRoom = capped && Number(pages) < ctx.maxPagesPerWeek + URGENT_EXTRA;
+    const indexRoom = capped && !urgentRoom && Number(pages) < ctx.maxPagesPerWeek + URGENT_EXTRA + INDEX_EXTRA;
     // Emergency brake: when Google clicks suddenly fall, change nothing new until it's clear why.
     const brake = traffic?.sharp
       ? `Google clicks fell ${Math.round(traffic.drop * 100)}% last week (${traffic.recentWeek} against a usual ${traffic.usualWeek}). New changes are on hold until that settles; check Search Console for a Google update or a site problem.`
@@ -868,8 +874,8 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         if (posted.problem) summary.push(posted.problem);
       }
     }
-    if (capped && !preview && !urgentRoom) {
-      summary.push(`Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes).`);
+    if (capped && !preview && !urgentRoom && !indexRoom) {
+      summary.push(`Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes and ${INDEX_EXTRA} for pages missing from Google).`);
     } else if (brake && !preview) {
       summary.push(brake);
     } else {
@@ -892,13 +898,19 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
               status: "skipped",
               op: cand.op,
             }).then(() => undefined);
-      if (capped && !preview) ctx.urgentOnly = true;
+      if (capped && !preview) {
+        ctx.urgentOnly = true;
+        ctx.indexOnly = !urgentRoom;
+      }
       const plan = await planNextChange(ctx, conn, notes, recordGap);
       const gaps = notes.filter((n) => n.startsWith("Skipped “"));
       if (!plan && ctx.urgentOnly) {
         // Say why, so the Inspector (and the owner) can see an urgent fix that keeps getting stuck.
         const why = notes.filter((x) => /^(Urgent check|Skipped “|Left )/.test(x)).join(" ");
-        summary.push(`Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes), and no urgent fix could be made.${why ? ` ${why}` : ""}`);
+        const none = notes.some((x) => /^Urgent check: 0 urgent/.test(x));
+        const cap = `Weekly limit reached: ${pages} pages changed this week (limit ${ctx.maxPagesPerWeek}, plus up to ${URGENT_EXTRA} urgent fixes and ${INDEX_EXTRA} for pages missing from Google)`;
+        // Nothing urgent to do is a normal paced week; an urgent fix that couldn't be made is worth the Inspector's eye.
+        summary.push(none ? `${cap}. Nothing urgent to fix.` : `${cap}, and no urgent fix could be made.${why ? ` ${why}` : ""}`);
       } else if (!plan) {
         summary.push(gaps.length ? `No change made. ${gaps.join(" ")}` : "No new opportunities to work on right now.");
       } else if (preview) {
