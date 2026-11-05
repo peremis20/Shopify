@@ -10,7 +10,7 @@ import { findProspects, prospectsDue, readProspects, setProspectStatus, type Pro
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus } from "./autopilot/status";
-import { accountsDueForWeeklyReport, lastEmailError, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
+import { accountsDueForWeeklyReport, lastEmailError, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
@@ -1247,6 +1247,8 @@ export async function autopilotTick(): Promise<Response> {
   const budget = Number(process.env.TICK_BUDGET_MS ?? 8 * 60_000);
   const late = () => Date.now() - started > budget;
   try {
+    // Emails fixed since the last try show as working again before the Inspector looks.
+    await retestEmail().catch((e) => console.warn(`email retest failed: ${message(e)}`));
     // Rank checks and health first: a drop found this morning can be defended in today's run.
     const upkeep = [
       ...new Set([...(await accountsDueForTracking(3)), ...(await accountsDueForHealth(3)), ...(await accountsDueForKeywords(2))]),

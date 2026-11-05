@@ -154,7 +154,7 @@ export function PlatformForm({ settings, onSaved }: {
         {note && <p className="text-dash-ink">{note}</p>}
         <button
           type="submit"
-          disabled={busy || (!anthropicKey && !groqKey && !githubKey && !geminiKey && !serperKey && !pagespeedKey && !oprKey && !resendKey && !alertsFrom && !aiLimit && !searchLimit && !clientId && !clientSecret)}
+          disabled={busy}
           className="rounded-xl bg-dash-green px-5 py-2.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60"
         >
           {busy ? "Saving…" : "Save platform keys"}
