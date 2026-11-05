@@ -9,6 +9,7 @@ import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { readStatus } from "./autopilot/status";
 import { accountsDueForWeeklyReport, lastEmailError, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
@@ -1059,7 +1060,9 @@ export const savePlatform = (req: Request) =>
       if (ok && !process.env.OPR_API_KEY) await clearPlatformProblem("service:openpagerank");
     }
     // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
-    if (str("resendKey")?.trim() || str("alertsFrom")?.trim()) {
+    // Also when both were saved earlier but emails still show as not working (a save made before this check existed).
+    const emailFailing = (await readStatus().catch(() => ({}) as Awaited<ReturnType<typeof readStatus>>)).email?.ok === false;
+    if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || (p.resendKey && p.alertsFrom && emailFailing)) {
       const sent = await sendEmail(
         account.email,
         "DashPatrol emails are working",
