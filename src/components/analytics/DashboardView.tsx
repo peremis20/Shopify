@@ -161,6 +161,7 @@ export function DashboardView() {
         integrations={data?.integrations ?? []}
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
+        email={data?.account?.email}
       />
 
       <main className="lg:pl-64">

@@ -2,6 +2,7 @@
 
 import type { ComponentType, SVGProps } from "react";
 import type { IntegrationInfo } from "@/lib/analytics/types";
+import { isEmbedded } from "./embedded-client";
 import { BarsIcon, BoltIcon, CloseIcon, FileIcon, HomeIcon, KeyIcon, ListIcon, PlugIcon, SearchIcon } from "./Icons";
 
 export type NavItem = { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> };
@@ -27,8 +28,10 @@ export const NAV_SIMPLE: NavItem[] = [
   { id: "settings", label: "Settings", icon: BoltIcon },
 ];
 
-export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations, open, onClose }: {
+export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations, open, onClose, email }: {
   items?: NavItem[];
+  /** Who is signed in; with it the menu shows the account and a Sign out button. */
+  email?: string | null;
   active: string;
   onNavigate: (id: string) => void;
   integrations: IntegrationInfo[];
@@ -81,6 +84,23 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
             </div>
           )}
         </nav>
+
+        {/* Inside Shopify admin the sign in comes from Shopify itself, so there's nothing to sign out of here. */}
+        {email && !isEmbedded() && (
+          <div className="border-t border-white/10 px-6 py-4">
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/45">Signed in as</p>
+            <p className="truncate text-sm text-white" title={email}>{email}</p>
+            <button
+              onClick={async () => {
+                await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+                window.location.href = "/analytics";
+              }}
+              className="mt-2 text-sm font-semibold text-[#C6F432] hover:underline"
+            >
+              Sign out
+            </button>
+          </div>
+        )}
       </aside>
     </>
   );
