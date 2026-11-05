@@ -77,7 +77,11 @@ export async function checkKeKey(key: string): Promise<number> {
     headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
     signal: AbortSignal.timeout(15000),
   }).catch(() => null);
-  if (!res) throw new Error("Keywords Everywhere couldn't be reached to test the key. It will be tried again on the next check.");
+  if (!res) {
+    const why = "Keywords Everywhere couldn't be reached to test the key. It will be tried again on the next save or check.";
+    await report("keywords-everywhere", false, why);
+    throw new Error(why);
+  }
   if (!res.ok) {
     const why = await failure(res);
     await report("keywords-everywhere", false, why);
