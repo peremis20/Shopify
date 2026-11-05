@@ -76,6 +76,11 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${PLATFORM_KEY}`;
     const json = row?.value ? decrypt(row.value, await tokenSecret()) : null;
     if (json) stored = JSON.parse(json);
+    // The sender address isn't a secret, so it may also be set as a plain row (used when it's set up for the owner).
+    if (!stored.alertsFrom) {
+      const [from] = await sql`SELECT value FROM insights_settings WHERE key = 'alerts_from'`.catch(() => []);
+      if (from?.value && /^[^\s@<>]+@[^\s@<>]+\.[a-z]{2,}$/i.test(String(from.value).trim())) stored.alertsFrom = String(from.value).trim();
+    }
   }
   return {
     anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
