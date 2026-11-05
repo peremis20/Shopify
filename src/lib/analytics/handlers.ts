@@ -8,7 +8,7 @@ import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist 
 import { inspect } from "./autopilot/inspector";
 import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
-import { authorityOf, authorityReady, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
+import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { accountsDueForWeeklyReport, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
@@ -1039,6 +1039,19 @@ export const savePlatform = (req: Request) =>
     }
     if (str("serperKey")?.trim() && p.serperKey) {
       await checkSerpKey(p.serperKey).catch((e) => (claude = [claude, message(e)].filter(Boolean).join(" ")));
+    }
+    // A new Open PageRank key is tried at once; when it works, the warning about it goes away now, not next hour.
+    if (str("oprKey")?.trim() && p.oprKey) {
+      const ok = await checkOprKey(p.oprKey).then(
+        () => true,
+        (e) => ((claude = [claude, message(e)].filter(Boolean).join(" ")), false),
+      );
+      if (ok && !process.env.OPR_API_KEY) {
+        await sql`
+          UPDATE insights_settings SET value = jsonb_set(value::jsonb, '{problems}', coalesce(
+            (SELECT jsonb_agg(x) FROM jsonb_array_elements(value::jsonb->'problems') x WHERE x->>'id' <> 'service:openpagerank'), '[]'::jsonb))::text
+          WHERE key LIKE 'inspect:%' AND CASE WHEN key LIKE 'inspect:%' THEN jsonb_typeof(value::jsonb->'problems') = 'array' ELSE false END`.catch((e) => console.warn(`clearing the Open PageRank warning failed: ${message(e)}`));
+      }
     }
     return json({ settings: await autopilotView(account.id, true), claudeError: claude });
   });

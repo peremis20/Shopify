@@ -40,6 +40,28 @@ export const forgetOprKey = () => {
 
 export const authorityReady = async () => Boolean(await oprKey().catch(() => null));
 
+/**
+ * Tries a key right away (when the owner saves it), so a wrong key is caught at once instead of at the next hourly
+ * check. Reports the result to the status board and throws a plain sentence when the key doesn't work.
+ */
+export async function checkOprKey(key: string): Promise<void> {
+  const res = await fetch(`${OPR_HOSTS[0]}/api/v1.0/getPageRank?domains[]=google.com`, {
+    headers: { "API-OPR": key },
+    signal: AbortSignal.timeout(15000),
+  }).catch(() => null);
+  if (!res) throw new Error("Open PageRank couldn't be reached to test the key. It will be tried again on the next check.");
+  if (res.status === 401 || res.status === 403) {
+    const msg = "Open PageRank didn't accept this key. Use the Open PageRank key you create on openpagerank.keywordseverywhere.com after signing in, not your Keywords Everywhere key.";
+    await report("openpagerank", false, `${res.status}: key rejected when saved`);
+    throw new Error(msg);
+  }
+  const body = (await res.json().catch(() => ({}))) as { response?: { status_code: number }[] };
+  if (!res.ok || !(body.response ?? []).some((r) => r.status_code === 200)) {
+    throw new Error(`Open PageRank answered ${res.status} when the key was tested. It will be tried again on the next check.`);
+  }
+  await report("openpagerank", true);
+}
+
 /** Authority (0 to 10) per domain; domains Open PageRank doesn't know are left out. */
 export async function authorityOf(domains: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
