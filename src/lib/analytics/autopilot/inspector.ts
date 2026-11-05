@@ -164,7 +164,11 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       SELECT r.summary, r.status, (SELECT count(*) FROM insights_autopilot_changes c WHERE c.run_id = r.id AND c.status IN ('applied','suggested','kept')) AS made
       FROM insights_autopilot_runs r WHERE r.account_id = ${accountId} AND r.finished_at IS NOT NULL AND r.trigger <> 'preview'
       ORDER BY r.started_at DESC LIMIT 4`;
-    if (runs.length >= 4 && runs.every((r) => Number(r.made) === 0)) {
+    // Pages changed this week, as the last run counted them: once the owner raises the weekly limit above it, the
+    // next run has room, so the warning goes away now instead of after four more runs.
+    const usedThisWeek = Number(/(\d+) pages changed this week/i.exec(String(runs[0]?.summary ?? ""))?.[1] ?? NaN);
+    const roomNow = Number.isFinite(usedThisWeek) && auto.maxPagesPerWeek > usedThisWeek;
+    if (runs.length >= 4 && runs.every((r) => Number(r.made) === 0) && !roomNow) {
       const why = runs[0]?.summary ?? "";
       problems.push({
         id: "autopilot:idle",
