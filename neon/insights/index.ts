@@ -223,6 +223,11 @@ export default {
     if (pubHost.startsWith("app.") && hostOf(req, url) === pubHost.slice(4)) {
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Not found", { status: 404 });
       // The website itself (neon/insights/public/site, served from the same CDN copy as the app's assets).
+      // The old policy addresses (registered with Google) open the website's own policy pages.
+      if (path === "/privacy" || path === "/terms") {
+        const to = path === "/privacy" ? "/privacy-policy.html" : "/terms-of-service.html";
+        if (await sitePage(to)) return new Response(null, { status: 301, headers: { Location: to } });
+      }
       const site = path === "/privacy" || path === "/terms" ? null : await sitePage(path);
       if (site) return site;
       const html = path === "/" ? () => homeHtml(pub) : path === "/privacy" ? privacyHtml : path === "/terms" ? termsHtml : null;
