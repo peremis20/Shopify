@@ -197,6 +197,73 @@ async function backlinkLines(accountId: string, r: WeekResults | null): Promise<
   return lines;
 }
 
+export interface WeeklyReportData {
+  week: { changes: number; articles: number; links: number; suggested: number };
+  /** From the Strategist's latest plan (within 8 days). */
+  visitors: { value: number; goal: number; at: string } | null;
+  focus: string | null;
+  plan: string[];
+  /** "none": Google Analytics isn't connected; "error": it couldn't be read (left out, never guessed). */
+  traffic: "none" | "error" | { name: string; now: ChannelResult; before: ChannelResult }[];
+  /** Every channel added up (the chart shows the top six). */
+  totals: { visits: number; leads: number; revenue: number } | null;
+  backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | null;
+  agents: { agent: string; did: string; result: string | null }[];
+}
+
+/** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
+export async function weeklyReportData(accountId: string): Promise<WeeklyReportData> {
+  const [strategy, scores, conn, list] = await Promise.all([
+    readStrategy(accountId).catch(() => null),
+    readScorecard(accountId).catch(() => []),
+    getConnection(accountId).catch(() => null),
+    readProspects(accountId).catch(() => null),
+  ]);
+  const [week] = await sql`
+    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
+      count(*) FILTER (WHERE status = 'suggested') AS suggested,
+      count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'new_article') AS articles,
+      count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'internal_link') AS links
+    FROM insights_autopilot_changes WHERE account_id = ${accountId} AND created_at > now() - interval '7 days'`;
+  const fresh = strategy && Date.now() - Date.parse(strategy.at) < 8 * 864e5 ? strategy : null;
+  const results = conn?.gaPropertyId ? await weekResults(conn).catch((e) => (console.error(`weekly results failed: ${(e as Error).message}`), undefined)) : null;
+  const recent = (at?: string) => Boolean(at && Date.now() - Date.parse(at) < WEEK_MS);
+  const won = (list?.prospects ?? []).filter((p) => p.status === "won");
+  const fromLinks = results
+    ? won
+        .map((p) => {
+          const d = p.domain.toLowerCase().replace(/^www\./, "");
+          let visits = 0;
+          let keyEvents = 0;
+          for (const [src, v] of results.sources) if (src === d || src.endsWith(`.${d}`)) ((visits += v.sessions), (keyEvents += v.keyEvents));
+          return { domain: d, visits, keyEvents };
+        })
+        .filter((x) => x.visits > 0)
+    : [];
+  return {
+    week: { changes: Number(week.changes), articles: Number(week.articles), links: Number(week.links), suggested: Number(week.suggested) },
+    visitors: fresh && fresh.visitors != null ? { value: Number(fresh.visitors), goal: Number(fresh.goal), at: fresh.at } : null,
+    // One sentence only, the biggest opportunity when the Strategist named one: the page shows numbers, not paragraphs.
+    focus: fresh?.assessment ? polish(((ss) => ss.find((x) => /opportunit/i.test(x)) ?? ss[0])(fresh.assessment.split(/(?<=\.)\s+/))) : null,
+    plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map((m) => polish(m.action)) : [],
+    traffic: results === null ? "none" : !results ? "error" : results.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 6).map((c) => ({ ...c, name: c.name.replace(/\s*[-–—]\s*/g, " ") })),
+    totals: results
+      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })
+      : null,
+    backlinks: list?.prospects.length
+      ? {
+          found: list.prospects.length,
+          ready: list.prospects.filter((p) => p.status === "new" && p.draft).length,
+          emailed: list.prospects.filter((p) => p.status === "contacted" || p.status === "won").length,
+          wonWeek: won.filter((p) => recent(p.statusAt)).length,
+          wonAll: won.length,
+          fromLinks,
+        }
+      : null,
+    agents: scores.map((x) => ({ agent: x.agent, did: x.did, result: x.result })),
+  };
+}
+
 /** Sites with emails on whose weekly report is due. */
 export async function accountsDueForWeeklyReport(limit: number): Promise<string[]> {
   await ensureSchema();
