@@ -155,7 +155,10 @@ async function pagesToCheck(accountId: string, conn: Connection): Promise<string
   ).catch(() => ({ rows: [] }));
   const top = (body.rows ?? []).sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions).map((r) => r.keys[0]);
   const changed = (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes WHERE account_id = ${accountId}`).map((r) => r.page_url!);
-  return [...new Set([...changed, ...top])].filter((u) => !u.includes("#")).slice(0, 40);
+  // Pages with a serious problem come first, the longest unchecked first, so a fix shows (or a warning clears) soon.
+  const serious = (await sql`SELECT url FROM insights_page_health WHERE account_id = ${accountId}
+    AND issues @> '[{"level":"high"}]'::jsonb ORDER BY checked_at`.catch(() => [])).map((r) => r.url!);
+  return [...new Set([...serious, ...changed, ...top])].filter((u) => !u.includes("#")).slice(0, 40);
 }
 
 /** Checks the few pages whose last check is oldest (or missing). Returns how many were checked. */
