@@ -132,6 +132,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
         text: `Rankings hadn't been checked since ${new Date(last).toLocaleDateString()}.`,
         fix: checked ? `The rank tracker was told to run again and checked ${checked} searches.` : "The rank tracker will be asked to run again on the next hourly check.",
         who: checked ? "repaired" : "watching",
+        platform: true,
       });
     }
   }
@@ -159,6 +160,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
         text: `${stuck.n} recent autopilot ${Number(stuck.n) === 1 ? "run was" : "runs were"} cut off before finishing.`,
         fix: "It is retried on the next daily run. If it keeps happening, the run is taking too long and needs a look.",
         who: "watching",
+        platform: true,
       });
     }
     // A run waits out the Sabbath, so allow for that day as well as the usual one.
@@ -168,6 +170,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
         text: `The autopilot hasn't run in ${Math.round((Date.now() - lastRun) / HOUR)} hours.`,
         fix: "It is queued for the next hourly check. If this stays, the website or store connection likely needs reconnecting in Settings.",
         who: "watching",
+        platform: true,
       });
     }
     const runs = await sql`
@@ -195,13 +198,13 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
     const failed = runs.find((r) => /fail|error/i.test(String(r.status)));
     if (failed && runs[0] === failed) {
-      problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching" });
+      problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching", platform: true });
     }
   }
 
   // 4. Rankings swinging for reasons that aren't the agents' work: changes wait to be judged, the owner is told why.
   const turbulence = await rankingTurbulence().catch(() => null);
-  if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and the untouched control pages show what the changes did.", who: "watching" });
+  if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and the untouched control pages show what the changes did.", who: "watching", platform: true });
   const traffic = conn?.gscSiteUrl ? await trafficCheck(conn).catch(() => null) : null;
   if (traffic?.sharp) {
     problems.push({
@@ -219,7 +222,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       const share = used[kind] / used.limits[kind];
       const name = kind === "ai" ? "AI" : "Google results";
       if (share >= 1) problems.push({ id: `limit:${kind}`, text: `This site used its ${name} limit for the month (${used.limits[kind]}).`, fix: "What needs it pauses until next month, or the platform owner raises the limit.", who: "owner", platform: true });
-      else if (share >= 0.8) problems.push({ id: `limit:${kind}`, text: `This site has used ${Math.round(share * 100)}% of its ${name} limit for the month.`, fix: "Work carries on; at the limit, what needs it pauses until next month.", who: "watching" });
+      else if (share >= 0.8) problems.push({ id: `limit:${kind}`, text: `This site has used ${Math.round(share * 100)}% of its ${name} limit for the month.`, fix: "Work carries on; at the limit, what needs it pauses until next month.", who: "watching", platform: true });
     }
   }
 
@@ -256,6 +259,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
         text: `Found data that belongs to another site (${[crossed.length && `${crossed.length} customer sites in the backlink list`, leaks && `${leaks} saved rankings in a shared cache`].filter(Boolean).join(", ")}).`,
         fix: opts.repair ? "Removed it, so this site only uses its own data." : "It will be removed on the next hourly check.",
         who: opts.repair ? "repaired" : "watching",
+        platform: true,
       });
     }
   }

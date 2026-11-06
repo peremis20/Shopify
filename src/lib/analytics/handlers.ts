@@ -996,7 +996,15 @@ export const autopilotStatus = (req: Request) =>
     const apps = conn
       ? await appStatuses({ accountId: account.id, conn, platform, ourDomain: "", shared: new Map() }).catch(() => [])
       : [];
-    return json({ settings: await autopilotView(account.id, account.admin), apps, ...(await autopilotHistory(account.id)) });
+    const history = await autopilotHistory(account.id);
+    // A failed run's reason is about the app's services (AI busy, a key): the platform owner sees it, a customer
+    // sees only that it will try again, since there is nothing on their website to fix.
+    if (!account.admin) {
+      history.runs = history.runs.map((r) =>
+        r.status === "failed" ? { ...r, summary: "This run couldn't finish. DashPatrol tries again by itself." } : r
+      );
+    }
+    return json({ settings: await autopilotView(account.id, account.admin), apps, ...history });
   });
 
 /** The customer's own choices: on/off, pages per week, content sections. */
