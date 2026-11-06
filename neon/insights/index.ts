@@ -146,6 +146,54 @@ ${bridge}<title>${api.APP_NAME}</title>
   });
 }
 
+/** The marketing website's files, by the address a visitor asks for; anything else is left to the app. */
+const SITE_TYPES: Record<string, string> = {
+  html: "text/html; charset=utf-8",
+  css: "text/css; charset=utf-8",
+  js: "text/javascript; charset=utf-8",
+  svg: "image/svg+xml",
+  png: "image/png",
+  ico: "image/x-icon",
+  woff2: "font/woff2",
+  txt: "text/plain; charset=utf-8",
+  xml: "application/xml; charset=utf-8",
+};
+const siteCache = new Map<string, { at: number; body: ArrayBuffer; type: string }>();
+
+function siteFile(path: string): string | null {
+  if (path === "/") return "index.html";
+  const clean = path.replace(/^\/+/, "");
+  if (!/^[a-z0-9][a-z0-9._/-]*$/i.test(clean) || clean.includes("..")) return null;
+  if (/^(assets|fonts)\/[a-z0-9._-]+$/i.test(clean)) return clean;
+  if (/^(favicon\.ico|favicon\.svg|apple-touch-icon\.png|robots\.txt|sitemap\.xml)$/i.test(clean)) return clean;
+  if (/^[a-z0-9-]+\.html$/i.test(clean)) return clean;
+  if (/^[a-z0-9-]+$/i.test(clean)) return `${clean}.html`;
+  return null;
+}
+
+async function sitePage(path: string): Promise<Response | null> {
+  const file = siteFile(path);
+  const base = (process.env.ASSET_BASE_URL ?? "").replace(/\/$/, "");
+  if (!file || !base) return null;
+  const key = `${base}/site/${file}`;
+  let hit = siteCache.get(key);
+  if (!hit || Date.now() - hit.at > 10 * 60_000) {
+    const res = await fetch(key, { signal: AbortSignal.timeout(8000) }).catch(() => null);
+    if (!res?.ok) return null;
+    hit = { at: Date.now(), body: await res.arrayBuffer(), type: SITE_TYPES[file.split(".").pop()!.toLowerCase()] ?? "application/octet-stream" };
+    siteCache.set(key, hit);
+  }
+  const page = hit.type.startsWith("text/html");
+  return new Response(hit.body, {
+    headers: {
+      "Content-Type": hit.type,
+      "Cache-Control": page ? "no-cache" : "public, max-age=86400",
+      "X-Content-Type-Options": "nosniff",
+      ...(page ? { "Content-Security-Policy": "frame-ancestors 'none'" } : {}),
+    },
+  });
+}
+
 export default {
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -163,6 +211,9 @@ export default {
     const pubHost = pub.replace(/^https:\/\//, "").toLowerCase();
     if (pubHost.startsWith("app.") && hostOf(req, url) === pubHost.slice(4)) {
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Not found", { status: 404 });
+      // The website itself (neon/insights/public/site, served from the same CDN copy as the app's assets).
+      const site = await sitePage(path);
+      if (site) return site;
       const html = path === "/" ? () => homeHtml(pub) : path === "/privacy" ? privacyHtml : path === "/terms" ? termsHtml : null;
       if (html) return new Response(html(), { headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "frame-ancestors 'none'" } });
       return new Response(null, { status: 301, headers: { Location: `${pub}${url.pathname}${url.search}` } });
