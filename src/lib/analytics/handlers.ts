@@ -994,7 +994,7 @@ export const rankings = (req: Request) =>
 const APP_RETRY = "This run couldn't finish. DashPatrol tries again by itself.";
 /** A failure the customer can fix (their store or Google connection), or one that still did real work: shown as is. */
 const customerCanFix = (summary: string | null | undefined) =>
-  /reconnect|permission|access|token|sign in|connect your|store|search console|analytics|undone|improved|published/i.test(String(summary ?? ""));
+  /\breconnect\b|Connect Google first|Connect your website first|\bdisconnected\b|^(Improved|Published|Drafted) |\bundone\b/i.test(String(summary ?? ""));
 
 /** App errors stay with the platform owner; a customer sees only what concerns their own website. */
 function forCustomer<T extends { runs: { status: string; summary: string | null }[] }>(history: T, admin: boolean): T {

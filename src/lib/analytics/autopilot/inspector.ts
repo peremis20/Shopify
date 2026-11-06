@@ -165,7 +165,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
     // A run waits out the Sabbath, so allow for that day as well as the usual one.
     // Stalled because of something on the owner's side (a store or Google connection that broke): they can fix it.
-    if (lastRun && Date.now() - lastRun > 50 * HOUR && acct?.run_note && /connect|store|google|permission|access/i.test(String(acct.run_note))) {
+    if (lastRun && Date.now() - lastRun > 50 * HOUR && acct?.run_note && /^Connect (Google|your website) first\.?$|\breconnect\b|\bdisconnected\b/i.test(String(acct.run_note).trim())) {
       problems.push({
         id: "autopilot:blocked",
         text: `The autopilot can't run: ${acct.run_note}`,
