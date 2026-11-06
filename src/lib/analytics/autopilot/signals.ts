@@ -124,3 +124,73 @@ export function valueWeight(v: PageValue | undefined): number {
   if (!v || v.sessions < 5) return 1;
   return 1 + Math.min(1, (v.keyEvents / v.sessions) * 10);
 }
+
+export interface ChannelResult {
+  sessions: number;
+  /** Key events set up in Google Analytics: leads, sign ups or sales. */
+  keyEvents: number;
+  purchases: number;
+  revenue: number;
+}
+
+export interface WeekResults {
+  /** By Google Analytics channel (Organic Search, Referral, Direct, ...), last 7 full days and the 7 before. */
+  channels: { name: string; now: ChannelResult; before: ChannelResult }[];
+  /** Visits from each referring site, last 7 full days. */
+  sources: Map<string, ChannelResult>;
+}
+
+const emptyResult = (): ChannelResult => ({ sessions: 0, keyEvents: 0, purchases: 0, revenue: 0 });
+
+/** What visitors did after arriving, by channel and by referring site, from the site's own Google Analytics. */
+export async function weekResults(conn: Connection): Promise<WeekResults | null> {
+  if (!conn.gaPropertyId) return null;
+  const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
+  type Rows = { rows?: { dimensionValues: { value: string }[]; metricValues: { value: string }[] }[] };
+  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${conn.gaPropertyId}:runReport`;
+  const metrics = [{ name: "sessions" }, { name: "keyEvents" }, { name: "ecommercePurchases" }, { name: "purchaseRevenue" }];
+  // Channels and referring sites are asked separately, so a long list of sites never cuts the channel totals short.
+  const [byChannel, bySource] = await Promise.all([
+    googleRequest<Rows>(auth, url, {
+      dateRanges: [
+        { startDate: "7daysAgo", endDate: "yesterday", name: "now" },
+        { startDate: "14daysAgo", endDate: "8daysAgo", name: "before" },
+      ],
+      dimensions: [{ name: "sessionDefaultChannelGroup" }],
+      metrics,
+      limit: 100,
+    }),
+    googleRequest<Rows>(auth, url, {
+      dateRanges: [{ startDate: "7daysAgo", endDate: "yesterday" }],
+      dimensions: [{ name: "sessionSource" }],
+      metrics,
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 1000,
+    }),
+  ]);
+  const channels = new Map<string, { now: ChannelResult; before: ChannelResult }>();
+  const sources = new Map<string, ChannelResult>();
+  const add = (into: ChannelResult, m: { value: string }[]) => {
+    into.sessions += Number(m[0]?.value ?? 0) || 0;
+    into.keyEvents += Number(m[1]?.value ?? 0) || 0;
+    into.purchases += Number(m[2]?.value ?? 0) || 0;
+    into.revenue += Number(m[3]?.value ?? 0) || 0;
+  };
+  for (const r of byChannel.rows ?? []) {
+    // With two date ranges, Analytics adds the range's name as the last dimension.
+    const [channel, range] = r.dimensionValues.map((d) => d.value);
+    const c = channels.get(channel) ?? { now: emptyResult(), before: emptyResult() };
+    channels.set(channel, c);
+    add(range === "before" ? c.before : c.now, r.metricValues);
+  }
+  for (const r of bySource.rows ?? []) {
+    const key = r.dimensionValues[0].value.toLowerCase().replace(/^www\./, "");
+    const s = sources.get(key) ?? emptyResult();
+    sources.set(key, s);
+    add(s, r.metricValues);
+  }
+  return {
+    channels: [...channels.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.now.sessions - a.now.sessions),
+    sources,
+  };
+}

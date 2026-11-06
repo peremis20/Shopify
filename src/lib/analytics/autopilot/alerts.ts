@@ -6,6 +6,9 @@ import { readStatus, report } from "./status";
 import { readStrategy } from "./strategist";
 import { trimWords } from "./guards";
 import { polish } from "./writer";
+import { readProspects } from "./backlinks";
+import { weekResults, type ChannelResult, type WeekResults } from "./signals";
+import { getConnection } from "../connection";
 
 /**
  * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
@@ -125,9 +128,71 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
     if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${polish(m.action)}`));
   }
+  // Read once for both sections: the site's own Google Analytics, never another site's.
+  const conn = await getConnection(accountId).catch(() => null);
+  const results = conn?.gaPropertyId ? await weekResults(conn).catch((e) => (console.error(`weekly results failed: ${(e as Error).message}`), undefined)) : null;
+  lines.push(...resultsLines(results));
+  lines.push(...(await backlinkLines(accountId, results ?? null)));
   if (scores.length) lines.push("", "What each agent did:", ...scores.map((s) => `${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`));
   lines.push("", "You can turn these emails off in Autopilot settings.");
   return lines.join("\n");
+}
+
+const WEEK_MS = 7 * 864e5;
+const money = (n: number) => Math.round(n).toLocaleString("en-US");
+const change = (now: number, before: number) =>
+  before > 0 ? ` (${now >= before ? "up" : "down"} ${Math.abs(Math.round(((now - before) / before) * 100))}% from the week before)` : before === 0 && now > 0 ? " (none the week before)" : "";
+const resultText = (r: ChannelResult) =>
+  `${r.sessions} visits, ${r.keyEvents} key events (leads, sign ups or sales)` + (r.purchases > 0 ? `, of them ${r.purchases} purchases` : "") + (r.revenue > 0 ? `, ${money(r.revenue)} in sales` : "");
+
+/**
+ * Visitors, leads and sales by channel from the site's own Google Analytics, compared with the week before.
+ * Leads and sales are the key events the site set up in Analytics; nothing is estimated.
+ */
+/** `r` is null without Google Analytics connected, undefined when it couldn't be read. */
+function resultsLines(r: WeekResults | null | undefined): string[] {
+  if (r === null) return ["", "Visits, leads and sales: connect Google Analytics in Settings to see them here."];
+  if (!r) return ["", "Visits, leads and sales: Google Analytics couldn't be read this week, so they are left out rather than guessed."];
+  const shown = r.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 5);
+  if (!shown.length) return ["", "Visits, leads and sales, last 7 days: no visits recorded in Google Analytics."];
+  const total = r.channels.reduce((n, c) => n + c.now.keyEvents, 0);
+  return [
+    "",
+    "Visits, leads and sales, last 7 days (Google Analytics):",
+    ...shown.map((c) => `${c.name.replace(/\s*[-–—]\s*/g, " ")}: ${resultText(c.now)}${change(c.now.sessions, c.before.sessions)}.`),
+    ...(total === 0 ? ["No leads or sales were recorded. If your site takes sign ups or orders, mark them as key events in Google Analytics so they count here."] : []),
+    "A rise after a change is a good sign, not proof the change caused it.",
+  ];
+}
+
+/** Backlink outreach this week: emails ready, sent, links won, and what the linking sites sent. */
+async function backlinkLines(accountId: string, r: WeekResults | null): Promise<string[]> {
+  const list = await readProspects(accountId).catch(() => null);
+  if (!list?.prospects.length) return [];
+  const recent = (at?: string) => Boolean(at && Date.now() - Date.parse(at) < WEEK_MS);
+  const ready = list.prospects.filter((p) => p.status === "new" && p.draft).length;
+  const emailed = list.prospects.filter((p) => p.status === "contacted" && recent(p.statusAt)).length;
+  const wonAll = list.prospects.filter((p) => p.status === "won");
+  const wonWeek = wonAll.filter((p) => recent(p.statusAt)).length;
+  const lines = [
+    "",
+    `Backlinks: ${ready} ${ready === 1 ? "email" : "emails"} ready for you to send, ${emailed} sent this week, ${wonWeek} ${wonWeek === 1 ? "link" : "links"} won this week (${wonAll.length} in total).`,
+  ];
+  if (wonAll.length) {
+    if (r) {
+      const from = wonAll
+        .map((p) => {
+          const d = p.domain.toLowerCase().replace(/^www\./, "");
+          let sum: ChannelResult = { sessions: 0, keyEvents: 0, purchases: 0, revenue: 0 };
+          for (const [src, v] of r.sources)
+            if (src === d || src.endsWith(`.${d}`)) sum = { sessions: sum.sessions + v.sessions, keyEvents: sum.keyEvents + v.keyEvents, purchases: sum.purchases + v.purchases, revenue: sum.revenue + v.revenue };
+          return { d, sum };
+        })
+        .filter((x) => x.sum.sessions > 0);
+      lines.push(from.length ? `Visits from sites that link to you: ${from.map((x) => `${x.d} (${resultText(x.sum)})`).join("; ")}.` : "No visits from the sites that link to you yet this week.");
+    }
+  }
+  return lines;
 }
 
 /** Sites with emails on whose weekly report is due. */
