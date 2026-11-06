@@ -159,6 +159,7 @@ const SITE_TYPES: Record<string, string> = {
   xml: "application/xml; charset=utf-8",
 };
 const siteCache = new Map<string, { at: number; body: ArrayBuffer; type: string }>();
+const siteMissing = new Map<string, number>();
 
 function siteFile(path: string): string | null {
   if (path === "/") return "index.html";
@@ -177,17 +178,27 @@ async function sitePage(path: string): Promise<Response | null> {
   if (!file || !base) return null;
   const key = `${base}/site/${file}`;
   let hit = siteCache.get(key);
+  if (siteMissing.has(key) && Date.now() - siteMissing.get(key)! < 10 * 60_000) return null;
   if (!hit || Date.now() - hit.at > 10 * 60_000) {
     const res = await fetch(key, { signal: AbortSignal.timeout(8000) }).catch(() => null);
-    if (!res?.ok) return null;
-    hit = { at: Date.now(), body: await res.arrayBuffer(), type: SITE_TYPES[file.split(".").pop()!.toLowerCase()] ?? "application/octet-stream" };
-    siteCache.set(key, hit);
+    if (res?.status === 404) {
+      // Not a website page (an app address, say): remembered so the next visit doesn't wait on the CDN again.
+      siteMissing.set(key, Date.now());
+      return null;
+    }
+    if (res?.ok) {
+      hit = { at: Date.now(), body: await res.arrayBuffer(), type: SITE_TYPES[file.split(".").pop()!.toLowerCase()] ?? "application/octet-stream" };
+      siteCache.set(key, hit);
+    } else if (!hit) {
+      return null;
+    }
+    // A CDN hiccup with a copy in hand: the slightly older copy is served rather than nothing.
   }
   const page = hit.type.startsWith("text/html");
   return new Response(hit.body, {
     headers: {
       "Content-Type": hit.type,
-      "Cache-Control": page ? "no-cache" : "public, max-age=86400",
+      "Cache-Control": page ? "no-cache" : "public, max-age=600",
       "X-Content-Type-Options": "nosniff",
       ...(page ? { "Content-Security-Policy": "frame-ancestors 'none'" } : {}),
     },
@@ -212,7 +223,7 @@ export default {
     if (pubHost.startsWith("app.") && hostOf(req, url) === pubHost.slice(4)) {
       if (req.method !== "GET" && req.method !== "HEAD") return new Response("Not found", { status: 404 });
       // The website itself (neon/insights/public/site, served from the same CDN copy as the app's assets).
-      const site = await sitePage(path);
+      const site = path === "/privacy" || path === "/terms" ? null : await sitePage(path);
       if (site) return site;
       const html = path === "/" ? () => homeHtml(pub) : path === "/privacy" ? privacyHtml : path === "/terms" ? termsHtml : null;
       if (html) return new Response(html(), { headers: { "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": "frame-ancestors 'none'" } });
