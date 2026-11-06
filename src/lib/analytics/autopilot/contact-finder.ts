@@ -20,19 +20,28 @@ export async function findContactEmail(pageUrl: string, domain: string): Promise
   }
   const found = new Map<string, number>();
   const urls = [pageUrl, ...PAGES.map((p) => `https://${d}${p}`)];
+  // One overall deadline, so a slow site can't hold up writing the email.
+  const deadline = Date.now() + 12_000;
+  let loaded = 0;
   for (const href of urls) {
-    const res = await safeFetch(href, "GET", 7000).catch(() => null);
+    const left = deadline - Date.now();
+    if (left < 1500) break;
+    const res = await safeFetch(href, "GET", Math.min(5000, left)).catch(() => null);
     if (!res || res === "unresolved" || !res.ok || !/html/i.test(res.headers.get("content-type") ?? "")) continue;
+    loaded++;
     const html = (await readCapped(res, 400_000).catch(() => "")).replace(/&#64;|&#x40;|\s*(\[at\]|\(at\))\s*/gi, "@");
     for (const m of html.matchAll(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi)) {
       const e = m[0].toLowerCase().replace(/\.$/, "");
       if (NOT_PEOPLE.test(e) || NOT_EMAILS.test(e)) continue;
-      const own = e.endsWith(`@${d}`) || e.endsWith(`.${d}`);
+      const root = d.split(".").slice(-2).join(".");
+      const own = e.endsWith(`@${d}`) || e.endsWith(`.${d}`) || e.endsWith(`@${root}`);
       found.set(e, (found.get(e) ?? 0) + (own ? 10 : 1) + (/mailto:/i.test(html.slice(Math.max(0, m.index! - 8), m.index)) ? 5 : 0));
     }
     if ([...found.keys()].some((e) => e.endsWith(`@${d}`))) break;
   }
   const email = [...found.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  // "No email on the site" is remembered only when pages were really read, not when the site couldn't be reached.
+  if (!email && !loaded) return null;
   await sql`
     INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${key}, ${JSON.stringify({ email })}::jsonb, now())
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
