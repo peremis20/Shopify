@@ -52,7 +52,7 @@ export const CHROME_CSS = `
 
 export function siteNav(appUrl: string, home: string): string {
   const a = esc(appUrl), h = esc(home);
-  const links = !home ? "" : `<a href="${h}/#benefits">Benefits</a><a href="${h}/#see">Features</a><a href="${h}/#how">How It Works</a><a href="${h}/#calc">Savings</a><a href="${h}/#faq">FAQ</a>`;
+  const links = !home ? "" : `<a href="${h}/#benefits">Benefits</a><a href="${h}/#see">Features</a><a href="${h}/#how">How It Works</a><a href="${h}/#pricing">Pricing</a><a href="${h}/#faq">FAQ</a>`;
   return `<header class="sitenav"><div class="wrap">
 <a class="logo" href="${h}/"><i>D</i>DashPatrol</a>
 <div class="links">${links}<a class="cta signin" href="${a}">Sign In</a><a class="cta start" href="${a}">Start Free</a></div>
@@ -66,7 +66,7 @@ export function siteFooter(appUrl: string, home: string, contactHtml: string): s
   return `<footer class="sitefoot"><div class="wrap">
 <div class="cols">
 <div><a class="logo" href="${h}/"><i>D</i>DashPatrol</a><p style="margin:12px 0 0;max-width:300px">Your SEO team in one app. Grow your business on Google, on autopilot.</p></div>
-<div><h4>Product</h4><ul><li><a href="${h}/#benefits">Benefits</a></li><li><a href="${h}/#see">Features</a></li><li><a href="${h}/#how">How It Works</a></li><li><a href="${h}/#calc">Savings</a></li><li><a href="${h}/#faq">FAQ</a></li></ul></div>
+<div><h4>Product</h4><ul><li><a href="${h}/#benefits">Benefits</a></li><li><a href="${h}/#see">Features</a></li><li><a href="${h}/#how">How It Works</a></li><li><a href="${h}/#calc">Savings</a></li><li><a href="${h}/#pricing">Pricing</a></li><li><a href="${h}/#faq">FAQ</a></li></ul></div>
 <div><h4>Get started</h4><ul><li><a href="${a}">Start Free</a></li><li><a href="${a}">Sign In</a></li><li><a href="${h}/#google">How we use Google data</a></li></ul></div>
 <div><h4>Company</h4><ul><li><a href="${h}/privacy">Privacy policy</a></li><li><a href="${h}/terms">Terms of use</a></li><li>Contact: ${contactHtml}</li></ul></div>
 </div>
@@ -520,6 +520,17 @@ ${siteNav(appUrl, home)}
 <thead><tr><th></th><th>Doing it yourself</th><th>SEO agency</th><th class="us">DashPatrol</th></tr></thead>
 <tbody>${compare.map(([l, a, b, c]) => `<tr><td>${esc(l)}</td><td>${cell(a)}</td><td>${cell(b)}</td><td class="us">${cell(c)}</td></tr>`).join("")}</tbody>
 </table></div>
+</div></section>
+
+<section id="pricing" style="padding-top:0"><div class="wrap">
+<div class="center reveal"><span class="eyebrow">Pricing</span><h2 style="margin-top:10px">Free during early access</h2>
+<p>Every feature, no credit card. If paid plans start later, you will be told before anything is charged.</p></div>
+<div class="card reveal" style="max-width:560px;margin:28px auto 0;text-align:center">
+<h3>Early access</h3>
+<p style="font:800 44px/1 'Plus Jakarta Sans',Inter,sans-serif;margin:10px 0">$0</p>
+<p>Weekly plans from your own data, page improvements, new articles checked by a second AI, internal links, backlink finds, rank checks and plain weekly reports.</p>
+<div style="display:flex;justify-content:center;margin-top:22px">${cta("Start Growing Free &rarr;","btn big")}</div>
+</div>
 </div></section>
 
 <section style="padding-top:0"><div class="wrap">
