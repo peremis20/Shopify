@@ -124,7 +124,7 @@ export function Home({ data, loading, onGo }: {
   const dropped = (ranks ?? []).filter((r) => r.previous !== null && r.previous <= 10 && (r.position === null || r.position > 10));
   if (dropped.length) warnings.push({ text: `${dropped.length === 1 ? `"${dropped[0].query}" dropped` : `${dropped.length} searches dropped`} off Google page 1 since the last check.`, page: "keywords" });
   const broken = health.filter((h) => h.issues.some((i) => i.level === "high"));
-  if (broken.length) warnings.push({ text: `${broken.length} ${broken.length === 1 ? "page has" : "pages have"} a serious problem Google can see, like not being indexed.`, page: "content" });
+  if (broken.length) warnings.push({ text: `${broken.length} ${broken.length === 1 ? "page has" : "pages have"} a serious problem Google can see, like not being indexed.`, page: "keywords" });
   // Only the platform owner can add the platform keys; customers are just told it's being set up.
   if (settings && !settings.platformReady && admin) warnings.push({ text: "The autopilot can't run: a platform key (an AI key or the Shopify app keys) is missing. Add it on the Content page.", page: "content" });
   else if (settings && !settings.platformReady) {
@@ -134,7 +134,7 @@ export function Home({ data, loading, onGo }: {
   for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
     warnings.push({
       text: `${p.text} ${p.fix}`,
-      page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") ? "keywords" : "content",
+      page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") || p.id === "google:recrawl" ? "keywords" : "content",
       allowGoogle: p.id === "google:recrawl",
     });
   }

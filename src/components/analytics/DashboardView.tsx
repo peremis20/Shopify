@@ -306,12 +306,16 @@ export function DashboardView() {
             <>
               {page === "home" && <Home data={data} loading={loading} onGo={go} />}
               {page === "keywords" && (
+                <>
+                {/* The searches Home counts ("tracked, on page 1"), with their daily Google positions, first. */}
+                <RankHealth connected={connection?.mode === "oauth"} />
                 <KeywordResearch
                   connection={connection}
                   searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
                   range={range}
                   onChanged={() => load(range, true)}
                 />
+                </>
               )}
               {page === "content" && (
                 <>
@@ -323,7 +327,6 @@ export function DashboardView() {
                     onAutoPreviewDone={() => setPreviewRequested(false)}
                   />
                   <ShareKits />
-                  <RankHealth connected={connection?.mode === "oauth"} />
                   <ExpertReview />
                 </>
               )}
