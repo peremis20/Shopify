@@ -594,17 +594,17 @@ export async function overview(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
     const params = new URL(req.url).searchParams;
     const range = params.get("range");
+    const profile = await readProfile(account.id, account.email);
     const data = await getOverview(
       account.id,
       isRangeKey(range) ? range : "28d",
       await getConnection(account.id),
       redirectUri(req),
       params.get("refresh") === "1",
-      (await readProfile(account.id, account.email)).gaExcludeHosts
+      profile.gaExcludeHosts
     );
     // The business the owner set up (its brand, else its site), shown instead of the sign in email.
-    const profile = await readProfile(account.id, account.email).catch(() => null);
-    const company = profile?.brandName?.trim() || profile?.siteDomain || null;
+    const company = profile.brandName?.trim() || profile.siteDomain || null;
     return json({ ...data, account: { email: account.email, admin: account.admin, company } });
   });
 }
