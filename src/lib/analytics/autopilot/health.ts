@@ -157,7 +157,7 @@ async function pagesToCheck(accountId: string, conn: Connection): Promise<string
   const changed = (await sql`SELECT DISTINCT page_url FROM insights_autopilot_changes WHERE account_id = ${accountId}`).map((r) => r.page_url!);
   // Pages with a serious problem come first, the longest unchecked first, so a fix shows (or a warning clears) soon.
   const serious = (await sql`SELECT url FROM insights_page_health WHERE account_id = ${accountId}
-    AND issues @> '[{"level":"high"}]'::jsonb ORDER BY checked_at`.catch(() => [])).map((r) => r.url!);
+    AND issues @> '[{"level":"high"}]'::jsonb ORDER BY checked_at LIMIT 15`.catch(() => [])).map((r) => r.url!);
   return [...new Set([...serious, ...changed, ...top])].filter((u) => !u.includes("#")).slice(0, 40);
 }
 
