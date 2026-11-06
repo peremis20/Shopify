@@ -40,6 +40,10 @@ export function DashboardView() {
   // Simple (the default): a home screen and five places. Advanced: every section on one page.
   const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const [page, setPage] = useState<SimplePage>("home");
+  // Pages stay mounted once opened, so going back to one shows it right away with its data, no reload.
+  const [opened, setOpened] = useState<Set<SimplePage>>(() => new Set(["home"]));
+  useEffect(() => setOpened((cur) => (cur.has(page) ? cur : new Set(cur).add(page))), [page]);
+  const keep = (p: SimplePage) => opened.has(p) || page === p;
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -304,21 +308,25 @@ export function DashboardView() {
 
           {mode === "simple" && (
             <>
-              {page === "home" && <Home data={data} loading={loading} onGo={go} />}
-              {page === "keywords" && (
-                <>
-                {/* The searches Home counts ("tracked, on page 1"), with their daily Google positions, first. */}
-                <RankHealth connected={connection?.mode === "oauth"} />
-                <KeywordResearch
-                  connection={connection}
-                  searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
-                  range={range}
-                  onChanged={() => load(range, true)}
-                />
-                </>
+              {keep("home") && (
+                <div hidden={page !== "home"}>
+                  <Home data={data} loading={loading} onGo={go} />
+                </div>
               )}
-              {page === "content" && (
-                <>
+              {keep("keywords") && (
+                <div hidden={page !== "keywords"}>
+                  {/* The searches Home counts ("tracked, on page 1"), with their daily Google positions, first. */}
+                  <RankHealth connected={connection?.mode === "oauth"} />
+                  <KeywordResearch
+                    connection={connection}
+                    searchQueries={gsc?.data?.topQueries.map((q) => q.query) ?? []}
+                    range={range}
+                    onChanged={() => load(range, true)}
+                  />
+                </div>
+              )}
+              {keep("content") && (
+                <div hidden={page !== "content"}>
                   <Autopilot
                     simple
                     connected={connection?.mode === "oauth"}
@@ -328,21 +336,25 @@ export function DashboardView() {
                   />
                   <ShareKits />
                   <ExpertReview />
-                </>
+                </div>
               )}
-              {page === "backlinks" && (
-                <Card className="mt-5">
-                  <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
-                  <SiteAuthority />
-                  <Backlinks />
-                </Card>
+              {keep("backlinks") && (
+                <div hidden={page !== "backlinks"}>
+                  <Card className="mt-5">
+                    <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
+                    <SiteAuthority />
+                    <Backlinks />
+                  </Card>
+                </div>
               )}
-              {page === "settings" && (
-                <ConnectedApps
-                  integrations={data?.integrations ?? []}
-                  admin={data?.account?.admin ?? false}
-                  onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))}
-                />
+              {keep("settings") && (
+                <div hidden={page !== "settings"}>
+                  <ConnectedApps
+                    integrations={data?.integrations ?? []}
+                    admin={data?.account?.admin ?? false}
+                    onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))}
+                  />
+                </div>
               )}
               <WeeklyReport />
               <p className="mt-8 text-center text-xs text-dash-muted">
