@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
 
 /** A live preview of this week's report email, made from the site's own data when opened. */
-export function WeeklyReport() {
+export function WeeklyReport({ auto = false }: { auto?: boolean }) {
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -20,6 +20,11 @@ export function WeeklyReport() {
       setBusy(false);
     }
   }
+  // On its own page the report is made as soon as it opens.
+  useEffect(() => {
+    if (auto) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auto]);
   return (
     <Card className="mt-6">
       <CardHeader title="This week's report" />
@@ -28,7 +33,7 @@ export function WeeklyReport() {
         <pre className="whitespace-pre-wrap break-words font-sans text-sm text-dash-ink">{text}</pre>
       ) : (
         <button onClick={load} disabled={busy} className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white disabled:opacity-50">
-          {busy ? "Making the report..." : "See this week's report"}
+          {busy ? "Making the report, about half a minute..." : "See this week's report"}
         </button>
       )}
       {text && (

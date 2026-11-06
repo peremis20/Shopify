@@ -14,7 +14,7 @@ import { formatNumber } from "./format";
 import { api } from "./seo-ui";
 import { DeltaBadge, Skeleton } from "./ui";
 
-export type SimplePage = "home" | "keywords" | "content" | "backlinks" | "settings";
+export type SimplePage = "home" | "keywords" | "content" | "backlinks" | "report" | "settings";
 
 interface Authority { ready: boolean; authority: number | null; history?: { day: string; score: number }[] }
 

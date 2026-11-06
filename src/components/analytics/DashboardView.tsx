@@ -37,7 +37,7 @@ export function DashboardView() {
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState<string | null>(null);
   const [active, setActive] = useState("overview");
-  // Simple (the default): a home screen and five places. Advanced: every section on one page.
+  // Simple (the default): a home screen and six places. Advanced: every section on one page.
   const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const [page, setPage] = useState<SimplePage>("home");
   // Pages stay mounted once opened, so going back to one shows it right away with its data, no reload.
@@ -356,7 +356,11 @@ export function DashboardView() {
                   />
                 </div>
               )}
-              <WeeklyReport />
+              {keep("report") && (
+                <div hidden={page !== "report"}>
+                  <WeeklyReport auto />
+                </div>
+              )}
               <p className="mt-8 text-center text-xs text-dash-muted">
                 Want every chart, table and score?{" "}
                 <button onClick={() => changeMode("advanced")} className="font-semibold text-dash-green hover:underline">Switch to Advanced</button>
@@ -543,6 +547,7 @@ const SIMPLE_TITLE: Record<SimplePage, string> = {
   keywords: "Keywords",
   content: "Content",
   backlinks: "Backlinks",
+  report: "Report",
   settings: "Settings",
 };
 const SIMPLE_SUB: Record<SimplePage, string> = {
@@ -550,6 +555,7 @@ const SIMPLE_SUB: Record<SimplePage, string> = {
   keywords: "What people search for, how hard each one is, and where you rank.",
   content: "Every change the autopilot made, new articles, and your site's health.",
   backlinks: "Websites that could link to you, with the email written for each one.",
+  report: "This week's results: visits, leads and sales, backlinks and what each agent did.",
   settings: "Your connected accounts and apps.",
 };
 

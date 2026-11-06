@@ -102,6 +102,8 @@ export async function sendUrgentAlerts(accountId: string, problems: Problem[]): 
   return fresh.length;
 }
 
+const plural = (n: unknown, word: string) => `${Number(n)} ${word}${Number(n) === 1 ? "" : "s"}`;
+
 /** The weekly report: this site's numbers and each agent's record, plain and short. */
 export async function weeklyReportText(accountId: string): Promise<string> {
   const strategy = await readStrategy(accountId).catch(() => null);
@@ -115,15 +117,15 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const lines = ["Hello,", "", "Here is your DashPatrol week."];
   lines.push(
     "",
-    `This week: ${week.changes} page changes made, ${week.articles} new articles, ${week.links} links between your pages` +
-      (Number(week.suggested) ? `, ${week.suggested} changes on your fix list` : "") +
+    `This week: ${plural(week.changes, "page change")} made, ${plural(week.articles, "new article")}, ${plural(week.links, "link")} between your pages` +
+      (Number(week.suggested) ? `, ${plural(week.suggested, "change")} on your fix list` : "") +
       "."
   );
   // From the Strategist's latest plan, dated, and only when it's recent; only moves a second AI checked.
   const fresh = strategy && Date.now() - Date.parse(strategy.at) < 8 * 864e5 ? strategy : null;
   if (fresh) {
     const made = new Date(fresh.at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
-    if (fresh.visitors != null) lines.push(`Visitors from Google, the 28 days before ${made}: ${fresh.visitors} (goal ${fresh.goal} a month).`);
+    if (fresh.visitors != null) lines.push(`Visitors from Google, the 28 days before ${made}: ${fresh.visitors} (goal ${Number(fresh.goal).toLocaleString("en-US")} a month).`);
     if (fresh.assessment) lines.push("", `Where things stood on ${made}: ${polish(fresh.assessment)}`);
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
     if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${polish(m.action)}`));
