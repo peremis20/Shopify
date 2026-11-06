@@ -8,29 +8,83 @@ import type { TargetResult } from "@/lib/analytics/autopilot/targets";
 /** Recent GET answers, shared by every part of the page that asks the same thing (Home and Keywords both read ranks). */
 const recent = new Map<string, { at: number; p: Promise<unknown> }>();
 const FRESH_MS = 60_000;
+/**
+ * The last answers are kept for this tab for a few minutes. When a new answer is slow, the kept one shows at once
+ * instead of a blank box; the new one is ready for the next look. Anything the owner changes clears them.
+ */
+const KEPT_MS = 5 * 60_000;
+const WAIT_MS = 400;
+const PREFIX = "dp:get:";
 
-export async function api<T>(url: string, body?: unknown): Promise<T> {
+function kept<T>(url: string): T | undefined {
+  // Only answers for the account this tab last loaded (set by the dashboard once it knows who is signed in).
+  if (!keptOwner()) return undefined;
+  try {
+    const raw = sessionStorage.getItem(PREFIX + url);
+    if (!raw) return undefined;
+    const v = JSON.parse(raw) as { at: number; data: T };
+    return Date.now() - v.at < KEPT_MS ? v.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function keep(url: string, data: unknown) {
+  try {
+    sessionStorage.setItem(PREFIX + url, JSON.stringify({ at: Date.now(), data }));
+  } catch {
+    /* storage full or blocked: the page still works, just without the head start */
+  }
+}
+
+/** Who the kept answers belong to in this tab; a different account forgets them all. */
+export function keptOwner(): string | null {
+  try {
+    return sessionStorage.getItem("dp:owner");
+  } catch {
+    return null;
+  }
+}
+export function setKeptOwner(email: string | null) {
+  try {
+    if (email) sessionStorage.setItem("dp:owner", email);
+  } catch {
+    /* blocked storage */
+  }
+}
+
+export async function api<T>(url: string, body?: unknown, fresh = false): Promise<T> {
   if (body === undefined) {
     const hit = recent.get(url);
-    if (hit && Date.now() - hit.at < FRESH_MS) return hit.p as Promise<T>;
-    const p = request<T>(url);
+    if (hit && !fresh && Date.now() - hit.at < FRESH_MS) return hit.p as Promise<T>;
+    const p = request<T>(url).then((d) => (keep(url, d), d));
     recent.set(url, { at: Date.now(), p });
     // A failed answer is never reused.
     p.catch(() => recent.delete(url));
-    return p;
+    const before = fresh ? undefined : kept<T>(url);
+    if (before === undefined) return p;
+    // A quick new answer wins (an error too, so it is seen); a slow one doesn't keep the page blank.
+    return Promise.race([p, new Promise<T>((done) => setTimeout(() => done(before), WAIT_MS))]);
   }
   // Anything sent can change what the pages show, so the next read asks again.
-  recent.clear();
+  clearApiCache();
   return request<T>(url, body);
 }
 
-/** Forget every shared answer (after a change made outside api()). */
-export const clearApiCache = () => recent.clear();
+/** Forget every shared answer (after a change, and on sign out). */
+export function clearApiCache() {
+  recent.clear();
+  try {
+    for (const k of Object.keys(sessionStorage)) if (k.startsWith("dp:")) sessionStorage.removeItem(k);
+  } catch {
+    /* blocked storage: nothing kept */
+  }
+}
 
 /** A GET that always asks again (an Update button). */
 export function apiFresh<T>(url: string): Promise<T> {
   recent.delete(url);
-  return api<T>(url);
+  return api<T>(url, undefined, true);
 }
 
 async function request<T>(url: string, body?: unknown): Promise<T> {

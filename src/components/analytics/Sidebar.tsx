@@ -3,6 +3,7 @@
 import type { ComponentType, SVGProps } from "react";
 import type { IntegrationInfo } from "@/lib/analytics/types";
 import { isEmbedded } from "./embedded-client";
+import { clearApiCache } from "./seo-ui";
 import { BarsIcon, BoltIcon, CloseIcon, FileIcon, HomeIcon, KeyIcon, ListIcon, PlugIcon, SearchIcon } from "./Icons";
 
 export type NavItem = { id: string; label: string; icon: ComponentType<SVGProps<SVGSVGElement>> };
@@ -95,6 +96,7 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
             <p className="truncate text-sm text-white" title={email}>{company || email}</p>
             <button
               onClick={async () => {
+                clearApiCache();
                 await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
                 window.location.href = "/analytics";
               }}

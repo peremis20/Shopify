@@ -62,11 +62,13 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
 
   async function disconnect() {
     setSaving(true);
+    clearApiCache();
     await fetch("/api/auth/google/disconnect", { method: "POST" }).catch(() => undefined);
     window.location.href = "/analytics";
   }
 
   async function signOut() {
+    clearApiCache();
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     window.location.href = "/analytics";
   }

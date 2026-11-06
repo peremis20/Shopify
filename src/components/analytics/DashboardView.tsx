@@ -15,6 +15,9 @@ import { SignInScreen } from "./SignIn";
 import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
 import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
+import { clearApiCache, keptOwner, setKeptOwner } from "./seo-ui";
+import { isEmbedded } from "./embedded-client";
+
 import { Backlinks } from "./Backlinks";
 import { Scorecard } from "./Scorecard";
 import { WeeklyReport } from "./WeeklyReport";
@@ -82,6 +85,8 @@ export function DashboardView() {
       setNotice({ tone: "bad", text: `Couldn't connect Shopify: ${shopError}` });
     }
     if (params.has("connected") || authError || shop || shopError) {
+      // A new connection changes what every page shows: nothing kept from before is reused.
+      clearApiCache();
       window.history.replaceState(null, "", window.location.pathname + window.location.hash);
     }
   }, []);
@@ -99,17 +104,44 @@ export function DashboardView() {
   }, []);
 
   const load = useCallback(async (key: RangeKey, refresh = false) => {
-    setLoading(true);
+    // This tab's last numbers show at once; the new ones replace them quietly when they arrive.
+    const keptKey = `dp:overview:${key}`;
+    let shown = false;
+    // Inside the Shopify admin one tab can switch between stores, so nothing is kept there.
+    if (!refresh && !isEmbedded()) {
+      try {
+        const raw = sessionStorage.getItem(keptKey);
+        const v = raw ? (JSON.parse(raw) as { at: number; data: OverviewResponse }) : null;
+        // Only for the account this tab last loaded.
+        if (v && keptOwner() && Date.now() - v.at < 30 * 60_000) {
+          setData(v.data);
+          shown = true;
+        }
+      } catch {
+        /* nothing kept */
+      }
+    }
+    setLoading(!shown);
     setFailed(null);
     try {
       const res = await fetch(`/api/analytics/overview?range=${key}${refresh ? "&refresh=1" : ""}`);
       const body = await res.json().catch(() => ({}));
       if (res.status === 401) {
+        clearApiCache();
+        setData(null);
         setSignedOut(true);
         return;
       }
       if (!res.ok) throw new Error(body.error ?? `Server responded with ${res.status}`);
+      // Another account than the one these kept numbers came from: forget them all.
+      if (keptOwner() !== (body.account?.email ?? null)) clearApiCache();
+      if (!isEmbedded()) setKeptOwner(body.account?.email ?? null);
       setData(body);
+      try {
+        if (!isEmbedded()) sessionStorage.setItem(keptKey, JSON.stringify({ at: Date.now(), data: body }));
+      } catch {
+        /* storage full or blocked */
+      }
     } catch (err) {
       setFailed(err instanceof Error ? err.message : "Something went wrong");
     } finally {

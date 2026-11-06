@@ -16,7 +16,7 @@ import { DownloadIcon, KeyIcon } from "./Icons";
 import { Opportunities } from "./Opportunities";
 import { RankTracker } from "./RankTracker";
 import { Backlinks } from "./Backlinks";
-import { api, RankForThis, TrackButton } from "./seo-ui";
+import { api, RankForThis, TrackButton, clearApiCache } from "./seo-ui";
 import { TopicsView } from "./TopicsView";
 import { SortHeader, useSort } from "./sorting";
 import { Sparkline } from "./Sparkline";
@@ -68,6 +68,7 @@ const siteFromProperty = (site?: string) =>
   site ? site.replace(/^sc-domain:/, "").replace(/^https?:\/\//, "").replace(/\/$/, "") : "";
 
 async function post<T>(url: string, body: unknown): Promise<T> {
+  clearApiCache();
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
