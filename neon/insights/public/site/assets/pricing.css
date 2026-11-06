@@ -1,0 +1,43 @@
+/* Pricing page */
+.pr-plans { background: linear-gradient(180deg,#ffffff,#f7fcf4); padding: 6px 32px 56px; }
+.pr-plans__inner { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; align-items: center; gap: 30px; }
+
+.billing { display: flex; align-items: center; gap: 4px; padding: 5px; border-radius: 999px; background: #eaf5e4; border: 1px solid #d6e9cf; }
+.billing__opt { padding: 10px 22px; border-radius: 999px; border: none; background: transparent; color: var(--ink); font-family: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
+.billing__opt.is-on { background: #0f6b2f; color: #fff; }
+.billing__disc { color: #1f8a3b; }
+.billing__opt.is-on .billing__disc { color: var(--lime); }
+
+.plans { width: 100%; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 18px; align-items: stretch; }
+.plan { position: relative; padding: 30px 26px; border-radius: 20px; border: 1px solid #dcebd6; background: #fff; color: var(--ink); display: flex; flex-direction: column; gap: 16px; box-shadow: 0 14px 40px rgba(16,80,36,0.1); }
+.plan--popular { border: 2px solid var(--lime); background: linear-gradient(180deg,#0a4a24,#06341a); color: #fff; }
+.plan__badge { position: absolute; top: -13px; left: 26px; padding: 5px 14px; border-radius: 999px; background: #f2e43a; color: #3d3a06; font-size: 12px; font-weight: 800; letter-spacing: 0.06em; }
+.plan__name { font-size: 26px; font-weight: 800; letter-spacing: -0.01em; }
+.plan__desc { font-size: 15px; line-height: 1.5; opacity: 0.85; }
+.plan__price { display: flex; align-items: baseline; gap: 6px; }
+.plan__amount { font-size: 48px; font-weight: 800; letter-spacing: -0.03em; }
+.plan__per { font-size: 15px; opacity: 0.8; }
+.plan__note { font-size: 13px; font-weight: 600; color: #1f8a3b; }
+.plan--popular .plan__note { color: var(--lime); }
+.plan__btn, .plan__btn:hover { text-align: center; padding: 14px; border-radius: 12px; background: #0f6b2f; color: #fff; font-size: 16px; font-weight: 700; }
+.plan--popular .plan__btn, .plan--popular .plan__btn:hover { background: linear-gradient(180deg,#b0f25c,#86dc35); color: var(--forest); }
+.plan__items { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; }
+.plan__item { display: flex; align-items: center; gap: 10px; font-size: 15px; line-height: 1.4; }
+
+.pr-assure { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center; font-size: 15px; color: var(--ink-2); }
+.pr-assure span { display: flex; align-items: center; gap: 6px; }
+
+.pr-faq { background: #f7fcf4; padding: 10px 32px 64px; }
+.pr-faq__inner { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.pr-faq h2 { margin: 0 0 8px; text-align: center; font-size: clamp(34px, 4.4vw, 50px); font-weight: 800; letter-spacing: -0.025em; color: var(--ink); }
+.pr-accent { position: relative; display: inline-block; color: #13793a; font-style: italic; }
+.pr-accent svg { position: absolute; left: 10%; bottom: -8px; width: 90%; height: 12px; }
+.pq { border-radius: 16px; background: #fff; border: 1px solid #e1eedc; overflow: hidden; box-shadow: 0 6px 20px rgba(16,80,36,0.06); }
+.pq__h { margin: 0; font: inherit; }
+.pq__btn { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; border: none; background: transparent; font-family: inherit; font-size: 17px; font-weight: 600; color: var(--ink); cursor: pointer; text-align: left; }
+.pq__icon { width: 30px; height: 30px; border-radius: 50%; background: #e3f6d6; display: grid; place-items: center; flex-shrink: 0; }
+.pq__icon svg { transition: transform 0.2s; }
+.pq__btn[aria-expanded="true"] .pq__icon svg { transform: rotate(45deg); }
+.pq__a { padding: 0 22px 18px; font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+.pq__a[hidden] { display: none; }
+.pr-all, .pr-all:hover { align-self: center; font-size: 16px; font-weight: 700; color: var(--green); }

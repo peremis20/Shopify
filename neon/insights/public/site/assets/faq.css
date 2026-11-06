@@ -1,0 +1,20 @@
+/* FAQ page */
+.faq { background: linear-gradient(180deg,#ffffff,#f7fcf4); padding: 6px 32px 64px; }
+.faq__inner { max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.faq__search { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 18px; border-radius: 14px; background: #fff; border: 1.5px solid #d6e5d1; box-shadow: 0 8px 24px rgba(16,80,36,0.06); }
+.faq__search svg { flex-shrink: 0; }
+.faq__search input { flex: 1; min-width: 0; border: none; outline: none; padding: 12px 4px; font-family: inherit; font-size: 16px; background: transparent; color: var(--ink); -webkit-appearance: none; appearance: none; }
+.faq__search input::-webkit-search-cancel-button { display: none; }
+.faq-item { border-radius: 14px; background: #fff; border: 1px solid #dcebd6; overflow: hidden; box-shadow: 0 6px 20px rgba(16,80,36,0.06); }
+.faq-item[hidden] { display: none; }
+.faq-item.is-open { border-color: #a6dd8a; }
+.faq-item__q { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 22px; border: none; background: transparent; font-family: inherit; font-size: 18px; font-weight: 700; color: var(--ink); cursor: pointer; text-align: left; }
+.faq-item__text { display: flex; flex-direction: column; gap: 6px; }
+.faq-item__cat { align-self: flex-start; padding: 3px 12px; border-radius: 999px; background: #e3f6d6; color: var(--green-dark); font-size: 13px; font-weight: 600; }
+.faq-item__icon { width: 30px; height: 30px; border-radius: 50%; background: #e3f6d6; color: var(--green-dark); display: grid; place-items: center; flex-shrink: 0; }
+.faq-item__icon svg { transition: transform 0.2s; }
+.faq-item.is-open .faq-item__icon svg { transform: rotate(45deg); }
+.faq-item__a { padding: 0 22px 20px; font-size: 15px; line-height: 1.6; color: var(--ink-2); }
+.faq__empty { padding: 28px; text-align: center; border-radius: 14px; background: #fff; border: 1px dashed #cfe3c8; font-size: 16px; color: var(--ink-2); }
+.faq__empty[hidden] { display: none; }
+.faq__empty a { color: #13793a; font-weight: 700; }
