@@ -945,6 +945,8 @@ export async function writeOutreach(
     ourPage: string | null;
     brokenLink?: string | null;
     anchor?: string | null;
+    /** What the business offers, from its site profile, so the email fits it. */
+    sells?: string | null;
   }
 ): Promise<{ subject: string; body: string }> {
   const ask =
@@ -961,9 +963,11 @@ export async function writeOutreach(
       : p.kind === "resource"
         ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`
         : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only: never ask for a link in return for the article.`;
+  // What the business offers is a known fact for the writer and for the second AI's check alike.
+  const given = `${p.sells ? `What ${p.ourBrand ?? p.ourSite} offers: ${p.sells}. Keep the email about how that fits their page and readers; never invent products, services or offers beyond this.\n` : ""}${ask}`;
   const prompt = `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
-${ask}
+${given}
 Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only.
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
 Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`;
@@ -981,7 +985,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const subject = safeEmailText(out.subject ?? "", keep, urls);
     if (!body.text || body.dropped > body.total / 3) continue;
     // A second AI checks it and may improve it; its version passes the same checks, else the first one stands.
-    const r = await reviewOutreach(ai, p, ask, { subject: subject.text, body: body.text });
+    const r = await reviewOutreach(ai, p, given, { subject: subject.text, body: body.text });
     if (!r.ok) continue;
     const rb = r.body ? safeEmailText(r.body, keep, urls) : null;
     const rs = r.subject ? safeEmailText(r.subject, keep, urls) : null;

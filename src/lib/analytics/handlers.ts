@@ -847,6 +847,8 @@ async function composeOutreach(accountId: string, p: Prospect): Promise<Outreach
     ourPage,
     brokenLink: p.brokenLink ?? null,
     anchor: p.anchor ?? null,
+    // Only what the owner set in the site profile, never a guess.
+    sells: profile.businessType ? siteBrief(profile).sells : null,
   });
   return { subject: email.subject, body: email.body, to: await contactP, at: new Date().toISOString() };
 }
