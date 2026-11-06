@@ -43,6 +43,14 @@ export function DashboardView() {
   // Pages stay mounted once opened, so going back to one shows it right away with its data, no reload.
   const [opened, setOpened] = useState<Set<SimplePage>>(() => new Set(["home"]));
   useEffect(() => setOpened((cur) => (cur.has(page) ? cur : new Set(cur).add(page))), [page]);
+  // Once Home has its numbers, the other pages load quietly in the background, so every menu opens right away.
+  // Keywords is left to load when opened: it asks Keyword Planner and Google page one, which cost lookups.
+  const homeReady = Boolean(data) && !loading;
+  useEffect(() => {
+    if (!homeReady) return;
+    const t = setTimeout(() => setOpened((cur) => new Set<SimplePage>([...cur, "content", "backlinks", "report", "settings"])), 800);
+    return () => clearTimeout(t);
+  }, [homeReady]);
   const keep = (p: SimplePage) => opened.has(p) || page === p;
   const [menuOpen, setMenuOpen] = useState(false);
   const [showSetup, setShowSetup] = useState(false);

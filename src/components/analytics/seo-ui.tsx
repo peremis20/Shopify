@@ -5,7 +5,35 @@ import type { TargetResult } from "@/lib/analytics/autopilot/targets";
 
 /** Small shared pieces for the SEO tool tabs. */
 
+/** Recent GET answers, shared by every part of the page that asks the same thing (Home and Keywords both read ranks). */
+const recent = new Map<string, { at: number; p: Promise<unknown> }>();
+const FRESH_MS = 60_000;
+
 export async function api<T>(url: string, body?: unknown): Promise<T> {
+  if (body === undefined) {
+    const hit = recent.get(url);
+    if (hit && Date.now() - hit.at < FRESH_MS) return hit.p as Promise<T>;
+    const p = request<T>(url);
+    recent.set(url, { at: Date.now(), p });
+    // A failed answer is never reused.
+    p.catch(() => recent.delete(url));
+    return p;
+  }
+  // Anything sent can change what the pages show, so the next read asks again.
+  recent.clear();
+  return request<T>(url, body);
+}
+
+/** Forget every shared answer (after a change made outside api()). */
+export const clearApiCache = () => recent.clear();
+
+/** A GET that always asks again (an Update button). */
+export function apiFresh<T>(url: string): Promise<T> {
+  recent.delete(url);
+  return api<T>(url);
+}
+
+async function request<T>(url: string, body?: unknown): Promise<T> {
   const res = await fetch(url, body === undefined ? undefined : {
     method: "POST",
     headers: { "Content-Type": "application/json" },

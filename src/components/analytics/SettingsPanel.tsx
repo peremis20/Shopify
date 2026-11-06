@@ -1,5 +1,7 @@
 "use client";
 
+import { clearApiCache } from "./seo-ui";
+
 import { connectGoogleEmbedded, isEmbedded } from "./embedded-client";
 import { useEffect, useState } from "react";
 import type { ConnectionInfo, PropertyOptions } from "@/lib/analytics/types";
@@ -42,6 +44,7 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
     setSaving(true);
     setSaveError(null);
     try {
+      clearApiCache();
       const res = await fetch("/api/analytics/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -237,6 +240,7 @@ export function GoogleClientForm({ onSaved }: { onSaved: () => void }) {
     setSaving(true);
     setError(null);
     try {
+      clearApiCache();
       const res = await fetch("/api/analytics/google-client", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

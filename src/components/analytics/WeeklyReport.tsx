@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { WeeklyReportData } from "@/lib/analytics/autopilot/alerts";
 import { DonutChart } from "./DonutChart";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
-import { api } from "./seo-ui";
+import { api, apiFresh } from "./seo-ui";
 import { Card, CardHeader, Skeleton } from "./ui";
 
 const n = (v: number) => Math.round(v).toLocaleString("en-US");
@@ -14,11 +14,11 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
   const [data, setData] = useState<WeeklyReportData | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  async function load() {
+  async function load(fresh = false) {
     setBusy(true);
     setErr(null);
     try {
-      setData((await api<{ data: WeeklyReportData }>("/api/autopilot/weekly-report")).data);
+      setData((await (fresh ? apiFresh : api)<{ data: WeeklyReportData }>("/api/autopilot/weekly-report")).data);
     } catch (e) {
       setErr(e instanceof Error ? e.message : "The report couldn't be made right now.");
     } finally {
@@ -40,7 +40,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
             {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-24" />)}
           </div>
         ) : (
-          <button onClick={load} className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white">See this week&apos;s report</button>
+          <button onClick={() => load()} className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white">See this week&apos;s report</button>
         )}
         {err && <p className="mt-2 text-xs text-dash-down">{err}</p>}
       </Card>
@@ -60,7 +60,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
     <div className="mt-6 space-y-5">
       <div className="flex items-center justify-between">
         <p className="text-xs text-dash-muted">Last 7 days, from your own Google data. The weekly email sends the same.</p>
-        <button onClick={load} disabled={busy} className="text-xs font-semibold text-dash-green hover:underline disabled:opacity-50">{busy ? "Updating..." : "Update"}</button>
+        <button onClick={() => load(true)} disabled={busy} className="text-xs font-semibold text-dash-green hover:underline disabled:opacity-50">{busy ? "Updating..." : "Update"}</button>
       </div>
 
       {/* Headline cards */}
