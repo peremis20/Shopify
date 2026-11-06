@@ -28,10 +28,12 @@ export const NAV_SIMPLE: NavItem[] = [
   { id: "settings", label: "Settings", icon: BoltIcon },
 ];
 
-export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations, open, onClose, email }: {
+export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations, open, onClose, email, company }: {
   items?: NavItem[];
   /** Who is signed in; with it the menu shows the account and a Sign out button. */
   email?: string | null;
+  /** The business name; shown in place of the email when set. */
+  company?: string | null;
   active: string;
   onNavigate: (id: string) => void;
   integrations: IntegrationInfo[];
@@ -89,7 +91,7 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
         {email && !isEmbedded() && (
           <div className="border-t border-white/10 px-6 py-4">
             <p className="text-[11px] uppercase tracking-[0.16em] text-white/45">Signed in as</p>
-            <p className="truncate text-sm text-white" title={email}>{email}</p>
+            <p className="truncate text-sm text-white" title={email}>{company || email}</p>
             <button
               onClick={async () => {
                 await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);

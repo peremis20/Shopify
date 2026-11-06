@@ -97,7 +97,7 @@ export interface PropertyOptions {
 }
 
 export interface OverviewResponse {
-  account?: { email: string; admin: boolean };
+  account?: { email: string; admin: boolean; company?: string | null };
   generatedAt: string;
   rangeKey: RangeKey;
   ga: SourceResult<GaData>;

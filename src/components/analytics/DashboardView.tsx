@@ -162,6 +162,7 @@ export function DashboardView() {
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
         email={data?.account?.email}
+        company={data?.account?.company}
       />
 
       <main className="lg:pl-64">

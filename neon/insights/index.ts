@@ -129,6 +129,9 @@ ${embedded ? '<meta name="robots" content="noindex">\n' : ""}<meta name="descrip
 ${bridge}<title>${api.APP_NAME}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap">
+<link rel="icon" href="${assets}/site/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="${assets}/site/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="${assets}/site/apple-touch-icon.png">
 <link rel="stylesheet" href="${assets}/app.css">
 <style>:root{--font-serif:"Fraunces",Georgia,serif;--font-dash:"Inter",system-ui,sans-serif}body{margin:0;background:#F7F3EC;color:#2B2A27}</style>
 </head>

@@ -602,7 +602,10 @@ export async function overview(req: Request): Promise<Response> {
       params.get("refresh") === "1",
       (await readProfile(account.id, account.email)).gaExcludeHosts
     );
-    return json({ ...data, account: { email: account.email, admin: account.admin } });
+    // The business the owner set up (its brand, else its site), shown instead of the sign in email.
+    const profile = await readProfile(account.id, account.email).catch(() => null);
+    const company = profile?.brandName?.trim() || profile?.siteDomain || null;
+    return json({ ...data, account: { email: account.email, admin: account.admin, company } });
   });
 }
 
