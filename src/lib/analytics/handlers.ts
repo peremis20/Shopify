@@ -12,7 +12,7 @@ import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHi
 import { readStatus, report } from "./autopilot/status";
 import { findContactEmail } from "./autopilot/contact-finder";
 import { checkKeKey } from "./autopilot/keywords-everywhere";
-import { accountsDueForWeeklyReport, lastEmailError, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
+import { accountsDueForWeeklyReport, lastEmailError, weeklyReportText, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
 import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
@@ -945,6 +945,17 @@ export const shareKits = (req: Request) =>
       return json({ items: await markSharePosted(account.id, body.changeId, body.posted !== false && body.posted !== "false") });
     }
     return json({ items: await readShareKits(account.id) });
+  });
+
+/** This week's report as the owner's email will read, made now from the site's own data. */
+export const weeklyReportPreview = (req: Request) =>
+  withAccount(req, async (account) => {
+    const text = await weeklyReportText(account.id);
+    // Kept so the platform owner can check the latest preview the site saw.
+    await sql`
+      INSERT INTO insights_settings (key, value) VALUES (${`weekly_preview:${account.id}`}, ${text})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch((e) => console.error(`weekly preview couldn't be kept: ${message(e)}`));
+    return json({ text });
   });
 
 /** Each agent's record on this site (Advanced view). */

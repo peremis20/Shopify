@@ -17,6 +17,7 @@ import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { Backlinks } from "./Backlinks";
 import { Scorecard } from "./Scorecard";
+import { WeeklyReport } from "./WeeklyReport";
 import { ShareKits } from "./ShareKits";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
@@ -340,6 +341,7 @@ export function DashboardView() {
                   onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))}
                 />
               )}
+              <WeeklyReport />
               <p className="mt-8 text-center text-xs text-dash-muted">
                 Want every chart, table and score?{" "}
                 <button onClick={() => changeMode("advanced")} className="font-semibold text-dash-green hover:underline">Switch to Advanced</button>
@@ -349,6 +351,7 @@ export function DashboardView() {
 
           {mode === "advanced" && (<>
           <Scorecard />
+          <WeeklyReport />
           {/* KPI row */}
           <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Kpi
