@@ -22,7 +22,7 @@ export const NAV_ADVANCED: NavItem[] = [
 
 /** Simple view: six places, the home screen first. */
 export const NAV_SIMPLE: NavItem[] = [
-  { id: "home", label: "Home", icon: HomeIcon },
+  { id: "home", label: "Dashboard", icon: HomeIcon },
   { id: "keywords", label: "Keywords", icon: KeyIcon },
   { id: "content", label: "Content", icon: FileIcon },
   { id: "backlinks", label: "Backlinks", icon: PlugIcon },
@@ -43,19 +43,23 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
   onClose: () => void;
 }) {
   const upcoming = integrations.filter((i) => i.status === "coming_soon");
+  const connected = integrations.filter((i) => i.status === "connected");
 
   return (
     <>
       {open && <div className="fixed inset-0 z-30 bg-black/30 lg:hidden" onClick={onClose} />}
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col bg-dash-deep text-white/85 transition-transform lg:translate-x-0 ${
+        className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col overflow-hidden bg-gradient-to-b from-[#0F5130] via-[#0C4428] to-[#0A3A22] text-white/90 transition-transform lg:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex items-center justify-between px-6 pb-6 pt-7">
-          <div>
-            <p className="font-serif text-2xl text-white">DashPatrol</p>
-            <p className="text-[11px] uppercase tracking-[0.2em] text-white/50">SEO on autopilot</p>
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#4CC34A] text-lg font-extrabold text-[#0C4428]">D</span>
+            <div>
+              <p className="text-2xl font-bold leading-none text-white">DashPatrol</p>
+              <p className="mt-1 text-xs text-white/70">SEO Growth Manager</p>
+            </div>
           </div>
           <button onClick={onClose} className="rounded-md p-1 text-white/70 hover:bg-white/10 lg:hidden" aria-label="Close menu">
             <CloseIcon className="h-5 w-5" />
@@ -67,14 +71,28 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
             <button
               key={id}
               onClick={() => onNavigate(id)}
-              className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left text-[15px] transition-colors ${
-                active === id ? "bg-white/10 text-white" : "hover:bg-white/5 hover:text-white"
+              className={`flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-left text-[16px] font-medium transition-colors ${
+                active === id ? "bg-gradient-to-r from-[#4CC34A] to-[#6FD35A] text-white shadow-lg shadow-black/20" : "hover:bg-white/10 hover:text-white"
               }`}
             >
               <Icon className="h-5 w-5 shrink-0" />
               {label}
             </button>
           ))}
+
+          {connected.length > 0 && (
+            <div className="mt-6 border-t border-white/15 pt-5">
+              <p className="px-3.5 pb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-white/80">Connected to</p>
+              <div className="space-y-2">
+                {connected.map((app) => (
+                  <div key={app.id} className="flex items-center justify-between gap-2 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white">
+                    <span className="truncate">{app.name}</span>
+                    <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#4CC34A] text-[10px] font-bold text-[#0C4428]" aria-label="Connected">✓</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {upcoming.length > 0 && (
             <div className="mt-6 border-t border-white/10 pt-5">

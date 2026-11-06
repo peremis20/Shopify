@@ -227,7 +227,7 @@ export function DashboardView() {
 
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <h1 className="font-serif text-3xl text-dash-ink sm:text-4xl">{mode === "simple" && page !== "home" ? SIMPLE_TITLE[page] : usingDemo || !returning ? "Welcome!" : "Welcome back!"}</h1>
+                <h1 className="text-3xl font-bold tracking-tight text-dash-ink sm:text-4xl">{mode === "simple" && page !== "home" ? SIMPLE_TITLE[page] : usingDemo || !returning ? "Welcome! 👋" : "Welcome back! 👋"}</h1>
                 <p className="mt-1 text-dash-muted">
                   {mode === "simple" ? SIMPLE_SUB[page] : "Your website performance from Google Analytics and Search Console in one place."}
                 </p>
@@ -274,7 +274,7 @@ export function DashboardView() {
                 <button
                   onClick={() => load(range, true)}
                   disabled={loading}
-                  className="flex items-center gap-2 rounded-xl bg-dash-green px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-dash-deep disabled:opacity-60"
+                  className="flex items-center gap-2 rounded-xl bg-gradient-to-b from-[#239B48] to-[#1B7A39] px-5 py-2.5 text-sm font-semibold text-white shadow transition hover:from-[#1E8A40] disabled:opacity-60"
                 >
                   <RefreshIcon className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
                   Refresh
