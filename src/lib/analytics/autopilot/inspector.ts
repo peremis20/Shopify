@@ -80,7 +80,10 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
   },
   "ai-review": {
     name: "The second AI that checks the work",
-    fix: () => "Add a key from a second AI provider in Platform keys, so every change can be checked by a different AI.",
+    fix: (d) =>
+      /only one ai service/i.test(d) || !d
+        ? "Add a key from a second AI provider in Platform keys, so every change can be checked by a different AI."
+        : "The checking AI was busy or gave empty answers, so DashPatrol tries again by itself.",
     workaround: "Page changes and new articles wait until it is added; plans are shown but not acted on.",
   },
   "share-kit": {
@@ -113,6 +116,10 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   const status = await readStatus();
   for (const [part, st] of Object.entries(status) as [Part, NonNullable<(typeof status)[Part]>][]) {
     if (!st || st.ok) continue;
+    // A busy AI service that answered within the last 3 hours is a blip the backups and retries handle, not a fault
+    // to show the owner. A refused key or billing problem always shows.
+    const busy = /busy|demand|empty|timeout|aborted|fetch failed|overloaded|\b(429|503)\b/i.test(st.detail ?? "") && !/accept the key|401|403|billing|quota|payment/i.test(st.detail ?? "");
+    if ((part === "ai" || part === "ai-review") && busy && st.lastOk && Date.now() - Date.parse(st.lastOk) < 3 * HOUR) continue;
     const p = PART_FIX[part];
     problems.push({
       id: `service:${part}`,

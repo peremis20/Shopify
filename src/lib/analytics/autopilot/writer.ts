@@ -629,16 +629,17 @@ async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string,
   await spend("ai");
   const errors: string[] = [];
   const system = rulesFor(ai.site);
+  const part = ai.role === "review" ? "ai-review" : "ai";
   for (const one of [ai, ...(ai.backups ?? [])]) {
     try {
       const out = await askOne<T>(one, system, prompt, schema);
-      void report("ai", true);
+      void report(part, true);
       return out;
     } catch (err) {
       errors.push((err as Error).message);
     }
   }
-  void report("ai", false, errors.join(" "));
+  void report(part, false, errors.join(" "));
   throw new Error(`${errors.join(" ")} The next run will try again.`);
 }
 
@@ -1345,8 +1346,8 @@ export function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
     void report("ai-review", false, "Only one AI service is set up. A second one, from another provider, is needed to check the work before anything changes on a site.");
     throw new Error(NO_SECOND_AI);
   }
-  void report("ai-review", true);
-  return { ...others[0], site: keepSite ? ai.site : undefined, backups: others.slice(1) };
+  // Marked working only when the checker really answers (askJson), so an outage is never hidden.
+  return { ...others[0], site: keepSite ? ai.site : undefined, backups: others.slice(1), role: "review" };
 }
 
 /**
