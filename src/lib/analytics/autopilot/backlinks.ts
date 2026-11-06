@@ -251,7 +251,9 @@ export async function accountsDueForDrafts(limit: number): Promise<string[]> {
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'drafts_at:' || a.account_id
-    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
+      -- A failed week (an AI outage) is tried again 3 hours later, not a week later.
+      OR (s.value::jsonb->>'note' LIKE 'failed:%' AND s.updated_at < now() - interval '3 hours'))
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
