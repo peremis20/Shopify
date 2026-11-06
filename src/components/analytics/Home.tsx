@@ -139,7 +139,7 @@ export function Home({ data, loading, onGo }: {
     });
   }
   const lastRun = runs[0];
-  if (lastRun && /fail|error/i.test(lastRun.status) && !problems.some((p) => p.id === "autopilot:failed")) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
+  if (admin && lastRun && /fail|error/i.test(lastRun.status) && !problems.some((p) => p.id === "autopilot:failed")) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
 
   // Biggest win: the largest climb among tracked searches, between two real positions (never a made up one).
   const win = (ranks ?? [])

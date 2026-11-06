@@ -164,6 +164,15 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       });
     }
     // A run waits out the Sabbath, so allow for that day as well as the usual one.
+    // Stalled because of something on the owner's side (a store or Google connection that broke): they can fix it.
+    if (lastRun && Date.now() - lastRun > 50 * HOUR && acct?.run_note && /connect|store|google|permission|access/i.test(String(acct.run_note))) {
+      problems.push({
+        id: "autopilot:blocked",
+        text: `The autopilot can't run: ${acct.run_note}`,
+        fix: "Reconnect it in Settings; the autopilot tries again within 2 hours.",
+        who: "owner",
+      });
+    }
     if (lastRun && Date.now() - lastRun > 50 * HOUR) {
       problems.push({
         id: "autopilot:stalled",

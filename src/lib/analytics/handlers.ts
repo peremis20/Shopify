@@ -990,20 +990,25 @@ export const rankings = (req: Request) =>
 
 // ---------- autopilot ----------
 
+/** What a customer sees for a run that failed because of the app's own services (AI busy, a platform key). */
+const APP_RETRY = "This run couldn't finish. DashPatrol tries again by itself.";
+/** A failure the customer can fix (their store or Google connection), or one that still did real work: shown as is. */
+const customerCanFix = (summary: string | null | undefined) =>
+  /reconnect|permission|access|token|sign in|connect your|store|search console|analytics|undone|improved|published/i.test(String(summary ?? ""));
+
+/** App errors stay with the platform owner; a customer sees only what concerns their own website. */
+function forCustomer<T extends { runs: { status: string; summary: string | null }[] }>(history: T, admin: boolean): T {
+  if (admin) return history;
+  return { ...history, runs: history.runs.map((r) => (r.status === "failed" && !customerCanFix(r.summary) ? { ...r, summary: APP_RETRY } : r)) };
+}
+
 export const autopilotStatus = (req: Request) =>
   withAccount(req, async (account) => {
     const [conn, platform] = await Promise.all([getConnection(account.id), readPlatformSettings()]);
     const apps = conn
       ? await appStatuses({ accountId: account.id, conn, platform, ourDomain: "", shared: new Map() }).catch(() => [])
       : [];
-    const history = await autopilotHistory(account.id);
-    // A failed run's reason is about the app's services (AI busy, a key): the platform owner sees it, a customer
-    // sees only that it will try again, since there is nothing on their website to fix.
-    if (!account.admin) {
-      history.runs = history.runs.map((r) =>
-        r.status === "failed" ? { ...r, summary: "This run couldn't finish. DashPatrol tries again by itself." } : r
-      );
-    }
+    const history = forCustomer(await autopilotHistory(account.id), account.admin);
     return json({ settings: await autopilotView(account.id, account.admin), apps, ...history });
   });
 
@@ -1233,7 +1238,9 @@ export const runAutopilotNow = (req: Request) =>
   withAccount(req, async (account) => {
     // Sabbath rest: no changes to live sites from Friday sundown to Saturday sundown.
     if (isSabbath()) return json({ error: "The autopilot rests for the Sabbath and changes nothing until Saturday sundown. Run now works again after that." }, 409);
-    return json(await runAutopilot(account.id, await getConnection(account.id), "manual"));
+    const out = await runAutopilot(account.id, await getConnection(account.id), "manual");
+    if (account.admin || out.run?.status !== "failed" || customerCanFix(out.message)) return json(out);
+    return json({ ...out, run: out.run && { ...out.run, summary: APP_RETRY }, message: APP_RETRY });
   });
 
 /** Fix list: the owner pasted a change in, or skipped it. */
@@ -1242,7 +1249,7 @@ export const markFix = (req: Request) =>
     const b = await req.json().catch(() => ({}));
     try {
       await markSuggestion(account.id, String(b.id ?? ""), b.done !== false);
-      return json(await autopilotHistory(account.id));
+      return json(forCustomer(await autopilotHistory(account.id), account.admin));
     } catch (err) {
       return json({ error: message(err) }, 400);
     }
@@ -1253,7 +1260,7 @@ export const revertAutopilot = (req: Request) =>
     const b = await req.json().catch(() => ({}));
     try {
       await revertChange(account.id, String(b.id ?? ""));
-      return json(await autopilotHistory(account.id));
+      return json(forCustomer(await autopilotHistory(account.id), account.admin));
     } catch (err) {
       return json({ error: message(err) }, 400);
     }
