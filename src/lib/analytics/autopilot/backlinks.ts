@@ -66,6 +66,16 @@ export interface Prospect {
   ourPage?: string | null;
   /** Authority Coach: the competitor this page mentions. */
   rival?: string;
+  /** Outreach Drafter: the email written ahead for the owner to review and send (never sent by the app). */
+  draft?: OutreachDraft;
+}
+
+export interface OutreachDraft {
+  subject: string;
+  body: string;
+  /** The address the site shows publicly, when one was found. */
+  to: string | null;
+  at: string;
 }
 
 export interface ProspectList {
@@ -157,7 +167,14 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
   // The owner's marks (emailed, won, skipped) are always kept; only new finds are capped.
   const marked = prospects.filter((p) => p.status !== "new");
   const fresh = prospects.filter((p) => p.status === "new");
-  const list = { updatedAt: new Date().toISOString(), prospects: [...fresh.slice(0, Math.max(0, MAX - marked.length)), ...marked] };
+  // Sites with an email already written are kept first when the list is full.
+  const room = Math.max(0, MAX - marked.length);
+  const keepIds = new Set([...fresh].sort((a, b) => Number(Boolean(b.draft)) - Number(Boolean(a.draft))).slice(0, room).map((p) => p.url));
+  const list = { updatedAt: new Date().toISOString(), prospects: [...fresh.filter((p) => keepIds.has(p.url)), ...marked] };
+  // Emails written while the search ran (by the owner or the Outreach Drafter) are kept, not overwritten.
+  const now = await readProspects(accountId).catch(() => null);
+  const written = new Map((now?.prospects ?? []).filter((p) => p.draft).map((p) => [p.url, p.draft!]));
+  list.prospects = list.prospects.map((p) => (!p.draft && p.status === "new" && written.has(p.url) ? { ...p, draft: written.get(p.url) } : p));
   await save(accountId, list);
   return list;
 }
@@ -174,10 +191,11 @@ export async function setProspectStatus(accountId: string, url: string, status: 
 const KIND_VALUE: Record<string, number> = { broken: 0, mention: 1, resource: 2, roundup: 3, podcast: 4, guest: 5, competitor: 6 };
 
 /** When new finds must be trimmed to `room`: the most valuable kinds and strongest sites stay, in their listed order. */
-export function keepBestFresh<P extends { kind: string; authority: number | null }>(fresh: P[], room: number): P[] {
+export function keepBestFresh<P extends { kind: string; authority: number | null; draft?: unknown }>(fresh: P[], room: number): P[] {
   if (fresh.length <= room) return fresh;
+  // A site with an email already written stays first.
   const best = new Set(
-    [...fresh].sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0)).slice(0, room)
+    [...fresh].sort((a, b) => Number(Boolean(b.draft)) - Number(Boolean(a.draft)) || (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0)).slice(0, room)
   );
   return fresh.filter((p) => best.has(p));
 }
@@ -204,7 +222,13 @@ export async function upsertProspects(accountId: string, updates: Prospect[], ou
       i = j;
     }
     if (i === -1) list.prospects.unshift(u);
-    else if (list.prospects[i].status === "new") list.prospects[i] = { ...list.prospects[i], ...u, status: "new" };
+    else if (list.prospects[i].status === "new") {
+      const cur = list.prospects[i];
+      // An email written for what the page was no longer fits when the find changes: it is written again.
+      const same = cur.url === u.url && cur.kind === u.kind && (cur.brokenLink ?? null) === (u.brokenLink ?? null) && (cur.ourPage ?? null) === (u.ourPage ?? null);
+      const { draft, ...rest } = cur;
+      list.prospects[i] = { ...rest, ...u, status: "new", ...(same && draft && !u.draft ? { draft } : {}) };
+    }
   }
   // Same cap as the weekly search: the owner's marks always stay; when new finds must be
   // trimmed, the most valuable kinds and strongest sites stay, in their listed order.
@@ -214,4 +238,51 @@ export async function upsertProspects(accountId: string, updates: Prospect[], ou
   await save(accountId, { ...list, prospects: [...kept, ...marked] });
   const on = new Set([...kept, ...marked].map((p) => p.url));
   return new Set(updates.map((u) => u.url).filter((u) => on.has(u)));
+}
+
+// ---------- Outreach Drafter: three emails written ahead each week, for the owner to review and send ----------
+
+/** How many emails are written ahead each week. */
+export const DRAFTS_PER_WEEK = 3;
+
+/** Sites with autopilot on whose drafts are more than a week old (or never made). */
+export async function accountsDueForDrafts(limit: number): Promise<string[]> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT a.account_id FROM insights_account_autopilot a
+    LEFT JOIN insights_settings s ON s.key = 'drafts_at:' || a.account_id
+    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
+  return rows.map((r) => String(r.account_id));
+}
+
+export async function markDraftsMade(accountId: string, note: string): Promise<void> {
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${`drafts_at:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), note })})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
+
+/** The open sites most worth an email that have none written yet: the most valuable kinds, then the strongest sites. */
+export function pickForDrafts(list: ProspectList | null, n = DRAFTS_PER_WEEK): Prospect[] {
+  const open = (list?.prospects ?? []).filter((p) => p.status === "new");
+  const waiting = open.filter((p) => p.draft).length;
+  return open
+    .filter((p) => !p.draft)
+    .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0))
+    .slice(0, Math.max(0, n - waiting));
+}
+
+/** Saves written emails onto their sites, reading the list fresh so the owner's marks made meanwhile are kept. */
+export async function saveDrafts(accountId: string, drafts: Map<string, OutreachDraft>): Promise<number> {
+  const list = await readProspects(accountId);
+  if (!list || drafts.size === 0) return 0;
+  let n = 0;
+  list.prospects = list.prospects.map((p) => {
+    const d = drafts.get(p.url);
+    if (!d || p.status !== "new") return p;
+    n++;
+    return { ...p, draft: d };
+  });
+  await save(accountId, list);
+  return n;
 }

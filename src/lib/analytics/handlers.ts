@@ -6,7 +6,7 @@ import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
-import { findProspects, prospectsDue, readProspects, setProspectStatus, type ProspectStatus } from "./autopilot/backlinks";
+import { accountsDueForDrafts, findProspects, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
@@ -817,46 +817,78 @@ export const backlinkProspects = (req: Request) =>
     return json({ list });
   });
 
+/** Writes the outreach email for one listed site (checked by the second AI in writeOutreach) and finds its public address. */
+async function composeOutreach(accountId: string, p: Prospect): Promise<OutreachDraft> {
+  const [platform, conn, profile] = await Promise.all([readPlatformSettings(), getConnection(accountId), readProfile(accountId)]);
+  const ai = aiProvider(platform);
+  if (!ai) throw new Error("Add an AI key in platform keys first.");
+  const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
+  // The page worth offering: the one already doing best on Google for this topic (real clicks),
+  // else the page aimed at it with Rank for this.
+  // The topic's meaningful words (filler like "the" and "for" dropped), matched as whole words.
+  const words = p.topic.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !FILLER.has(w));
+  const best = conn ? await bestPageForTopic(conn, words).catch(() => null) : null;
+  const target = (await readTargets(accountId).catch(() => [])).find((t) => {
+    const kw = new Set(t.keyword.split(/[^a-z0-9]+/));
+    return t.page && words.length > 0 && words.every((w) => kw.has(w));
+  });
+  // The Broken Link Agent already picked the replacement page for a dead link.
+  const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
+  // The address the site shows publicly, looked up while the email is written.
+  const contactP = findContactEmail(p.url, p.domain).catch(() => null);
+  const email = await writeOutreach(ai, {
+    kind: p.kind,
+    siteName: p.domain,
+    pageTitle: p.title,
+    pageUrl: p.url,
+    ourSite: domain,
+    ourBrand: profile.brandName ?? null,
+    topic: p.topic,
+    ourPage,
+    brokenLink: p.brokenLink ?? null,
+    anchor: p.anchor ?? null,
+  });
+  return { subject: email.subject, body: email.body, to: await contactP, at: new Date().toISOString() };
+}
+
 export const backlinkEmail = (req: Request) =>
   withAccount(req, async (account) => {
     const { url } = (await req.json().catch(() => ({}))) as { url?: string };
-    const [platform, conn, profile, list] = await Promise.all([readPlatformSettings(), getConnection(account.id), readProfile(account.id), readProspects(account.id)]);
+    const list = await readProspects(account.id);
     const p = list?.prospects.find((x) => x.url === url);
-    const ai = aiProvider(platform);
     if (!p) return json({ error: "That site isn't on the list anymore." }, 404);
-    if (!ai) return json({ error: "Add an AI key in platform keys first." }, 400);
-    const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
-    // The page worth offering: the one already doing best on Google for this topic (real clicks),
-    // else the page aimed at it with Rank for this.
-    // The topic's meaningful words (filler like "the" and "for" dropped), matched as whole words.
-    const words = p.topic.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !FILLER.has(w));
-    const best = conn ? await bestPageForTopic(conn, words).catch(() => null) : null;
-    const target = (await readTargets(account.id).catch(() => [])).find((t) => {
-      const kw = new Set(t.keyword.split(/[^a-z0-9]+/));
-      return t.page && words.length > 0 && words.every((w) => kw.has(w));
-    });
-    // The Broken Link Agent already picked the replacement page for a dead link.
-    const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
     try {
-      // The address the site shows publicly, looked up while the email is written.
-      const contactP = findContactEmail(p.url, p.domain).catch(() => null);
-      const email = await writeOutreach(ai, {
-          kind: p.kind,
-          siteName: p.domain,
-          pageTitle: p.title,
-          pageUrl: p.url,
-          ourSite: domain,
-          ourBrand: profile.brandName ?? null,
-          topic: p.topic,
-          ourPage,
-          brokenLink: p.brokenLink ?? null,
-          anchor: p.anchor ?? null,
-        });
-      return json({ subject: email.subject, body: email.body, to: await contactP });
+      const draft = await composeOutreach(account.id, p);
+      // Kept on the site, so the email is still there next time the owner looks.
+      await saveDrafts(account.id, new Map([[p.url, draft]])).catch((e) => console.error(`outreach draft couldn't be saved: ${message(e)}`));
+      return json(draft);
     } catch (err) {
-      return json({ error: message(err) }, 502);
+      return json({ error: message(err) }, /AI key/.test(message(err)) ? 400 : 502);
     }
   });
+
+/**
+ * The Outreach Drafter: each week writes the emails for the best open sites (up to three waiting at a time), so the
+ * owner only reviews and sends them from their own email. Nothing is ever sent by the app.
+ */
+async function runOutreachDrafter(accountId: string): Promise<string> {
+  const picks = pickForDrafts(await readProspects(accountId));
+  if (picks.length === 0) {
+    await report("outreach-drafter", true);
+    return "nothing new to write";
+  }
+  const drafts = new Map<string, OutreachDraft>();
+  let failure: unknown = null;
+  for (const p of picks) {
+    const d = await composeOutreach(accountId, p).catch((e) => ((failure = e), null));
+    if (d) drafts.set(p.url, d);
+  }
+  const saved = await saveDrafts(accountId, drafts);
+  // Any one failing is a fault the Inspector must see.
+  await report("outreach-drafter", !failure, failure ? message(failure) : null);
+  if (saved === 0 && failure) throw failure;
+  return `${saved} ${saved === 1 ? "email" : "emails"} ready to review`;
+}
 
 /** The Strategist's plan for the week. POST with {refresh: true} plans again now (at most once a day). */
 export const strategyReport = (req: Request) =>
@@ -1378,6 +1410,20 @@ export async function autopilotTick(): Promise<Response> {
       const plan = domain ? await forSite(accountId, () => runAuthorityCoach(accountId, conn, domain)).catch((e) => (console.error(`authority coach failed: ${message(e)}`), null)) : null;
       if (plan) results.push(`account ${accountId} authority plan: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves kept`);
       else await markAuthorityTried(accountId, "no plan this week");
+    }
+    // The Outreach Drafter: three backlink emails written ahead each week, one site per hour, for the owner to send.
+    for (const accountId of late() ? [] : await accountsDueForDrafts(1)) {
+      let note: string;
+      try {
+        note = await forSite(accountId, () => runOutreachDrafter(accountId));
+        results.push(`account ${accountId} outreach drafts: ${note}`);
+      } catch (e) {
+        note = `failed: ${message(e)}`;
+        console.error(`outreach drafter failed: ${message(e)}`);
+        await report("outreach-drafter", false, message(e));
+      }
+      // Tried either way, so one site never holds up the others; it is tried again next week.
+      await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
     }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {

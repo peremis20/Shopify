@@ -88,6 +88,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
     workaround: "Articles still publish; their posts can be written by hand.",
   },
+  "outreach-drafter": {
+    name: "The Outreach Drafter (backlink emails written ahead)",
+    fix: (d) => (/AI key/i.test(d) ? "Add an AI key in Platform keys." : "It tries again next week by itself. Write the email on a site by hand meanwhile."),
+    workaround: "Each site on the Backlinks list still has Write the email.",
+  },
   "idea-finder": {
     name: "The Idea finder (new searches from Google)",
     fix: (d) => (/keyword planner/i.test(d) ? "Reconnect Google Ads under Keyword ideas, so new searches can be measured." : "It tries again in 6 hours by itself. Nothing to do unless it keeps happening."),

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { backedByFacts, polish, safeEmailText } from "../src/lib/analytics/autopilot/writer";
 import { measuredWorse } from "../src/lib/analytics/autopilot/engine";
 import { earlyBucket } from "../src/lib/analytics/autopilot/results";
-import { keepBestFresh } from "../src/lib/analytics/autopilot/backlinks";
+import { keepBestFresh, pickForDrafts } from "../src/lib/analytics/autopilot/backlinks";
 import { isRisky } from "../src/lib/analytics/autopilot/claims";
 
 const FACTS = [
@@ -72,6 +72,16 @@ test("backlink list: when full, the best kinds and strongest sites stay, in orde
   assert.deepEqual(keepBestFresh(fresh, 3).map((x) => x.id), ["b", "c", "e"]);
   assert.deepEqual(keepBestFresh(fresh, 10).map((x) => x.id), ["a", "b", "c", "d", "e"]);
   assert.deepEqual(keepBestFresh(fresh, 0), []);
+});
+
+test("outreach drafts: the best open sites without an email, up to three waiting", () => {
+  const p = (url: string, kind: string, authority: number | null, status = "new", draft = false) =>
+    ({ url, domain: url, title: "", snippet: "", kind, topic: "sleep", authority, status, foundAt: "", ...(draft ? { draft: { subject: "s", body: "b", to: null, at: "" } } : {}) }) as never;
+  const list = { updatedAt: "", prospects: [p("a", "competitor", 9), p("b", "broken", 1), p("c", "resource", 6), p("d", "resource", 2), p("e", "broken", 8, "contacted")] };
+  assert.deepEqual(pickForDrafts(list).map((x) => x.url), ["b", "c", "d"]);
+  const withOne = { updatedAt: "", prospects: [...list.prospects, p("f", "mention", 3, "new", true)] };
+  assert.deepEqual(pickForDrafts(withOne).map((x) => x.url), ["b", "c"]);
+  assert.deepEqual(pickForDrafts(null), []);
 });
 
 const keep = ["Peremis", "peremis.com", "healthblog.org"];

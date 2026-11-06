@@ -55,7 +55,11 @@ export function Backlinks() {
 
   if (loading && !list) return <Skeleton className="h-40" />;
   const all = list?.prospects ?? [];
-  const shown = all.filter((p) => (view === "open" ? p.status === "new" : p.status === view));
+  // Emails already written wait at the top of To do.
+  const shown = all
+    .filter((p) => (view === "open" ? p.status === "new" : p.status === view))
+    .sort((a, b) => (view === "open" ? Number(Boolean(b.draft)) - Number(Boolean(a.draft)) : 0));
+  const ready = all.filter((p) => p.status === "new" && p.draft).length;
   const won = all.filter((p) => p.status === "won").length;
 
   return (
@@ -81,6 +85,11 @@ export function Backlinks() {
         </button>
         {list && <span className="text-xs text-dash-muted">Last checked {new Date(list.updatedAt).toLocaleDateString()}</span>}
       </div>
+      {ready > 0 && view === "open" && (
+        <p className="mb-3 rounded-lg bg-[#EEF5EF] px-3 py-2 text-sm text-dash-ink">
+          {ready === 1 ? "1 email is" : `${ready} emails are`} written and ready. Read each one, click Send to open it in your email, then mark I emailed them. New ones are written each week.
+        </p>
+      )}
       {error && <p className="mb-3 text-sm text-dash-down">{error}</p>}
       {shown.length === 0 ? (
         <p className="py-6 text-center text-sm text-dash-muted">{view === "open" ? "Nothing to do here right now. New sites are added each week." : "None yet."}</p>
@@ -96,7 +105,13 @@ export function Backlinks() {
 }
 
 function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: ProspectStatus) => void }) {
-  const [email, setEmail] = useState<{ subject: string; body: string; to?: string | null } | null>(null);
+  const [email, setEmail] = useState<{ subject: string; body: string; to?: string | null; at?: string } | null>(p.status === "new" ? (p.draft ?? null) : null);
+  // A draft written after this row first showed (the weekly Outreach Drafter) is loaded in when the list reloads.
+  const draftAt = p.status === "new" ? p.draft?.at : undefined;
+  useEffect(() => {
+    if (draftAt && p.draft) setEmail((cur) => (cur?.at && cur.at >= draftAt ? cur : p.draft!));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftAt]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -105,7 +120,7 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
     setBusy(true);
     setErr(null);
     try {
-      setEmail(await api<{ subject: string; body: string; to?: string | null }>("/api/seo/backlinks/email", { url: p.url }));
+      setEmail(await api<{ subject: string; body: string; to?: string | null; at?: string }>("/api/seo/backlinks/email", { url: p.url }));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't write the email");
     } finally {
@@ -137,6 +152,7 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
         </p>
       )}
       <div className="mt-2 flex flex-wrap gap-2">
+        {p.status === "new" && p.draft && email?.at === p.draft.at && <span className="self-center text-xs font-semibold text-dash-up">Ready to send</span>}
         {p.status === "new" && (
           <button onClick={write} disabled={busy} className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white disabled:opacity-50">
             {busy ? "Writing..." : email ? "Write another" : "Write the email"}
