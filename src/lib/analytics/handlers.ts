@@ -10,6 +10,7 @@ import { findProspects, prospectsDue, readProspects, setProspectStatus, type Pro
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
+import { findContactEmail } from "./autopilot/contact-finder";
 import { checkKeKey } from "./autopilot/keywords-everywhere";
 import { accountsDueForWeeklyReport, lastEmailError, retestEmail, sendEmail, sendUrgentAlerts, sendWeeklyReport } from "./autopilot/alerts";
 import { forSite } from "./autopilot/usage";
@@ -837,6 +838,8 @@ export const backlinkEmail = (req: Request) =>
     // The Broken Link Agent already picked the replacement page for a dead link.
     const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
     try {
+      // The address the site shows publicly, looked up while the email is written.
+      const contactP = findContactEmail(p.url, p.domain).catch(() => null);
       const email = await writeOutreach(ai, {
           kind: p.kind,
           siteName: p.domain,
@@ -849,7 +852,7 @@ export const backlinkEmail = (req: Request) =>
           brokenLink: p.brokenLink ?? null,
           anchor: p.anchor ?? null,
         });
-      return json({ subject: email.subject, body: email.body });
+      return json({ subject: email.subject, body: email.body, to: await contactP });
     } catch (err) {
       return json({ error: message(err) }, 502);
     }

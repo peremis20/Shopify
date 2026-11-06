@@ -104,7 +104,7 @@ async function isPublic(url: URL): Promise<boolean | "unresolved"> {
  * A GET or HEAD that follows at most 3 redirects, checking every hop is a public address.
  * Null when not allowed; "unresolved" when a hop's name doesn't resolve.
  */
-async function safeFetch(href: string, method: "GET" | "HEAD", timeoutMs: number): Promise<Response | null | "unresolved"> {
+export async function safeFetch(href: string, method: "GET" | "HEAD", timeoutMs: number): Promise<Response | null | "unresolved"> {
   let url = new URL(href);
   for (let hop = 0; hop <= 3; hop++) {
     const ok = await isPublic(url);
@@ -120,7 +120,7 @@ async function safeFetch(href: string, method: "GET" | "HEAD", timeoutMs: number
 }
 
 /** Reads at most `max` characters of a page, then stops (a huge or endless page can't fill memory). */
-async function readCapped(res: Response, max: number): Promise<string> {
+export async function readCapped(res: Response, max: number): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) return "";
   const decoder = new TextDecoder();

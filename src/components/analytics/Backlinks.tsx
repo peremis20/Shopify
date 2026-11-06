@@ -96,7 +96,7 @@ export function Backlinks() {
 }
 
 function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: ProspectStatus) => void }) {
-  const [email, setEmail] = useState<{ subject: string; body: string } | null>(null);
+  const [email, setEmail] = useState<{ subject: string; body: string; to?: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -105,7 +105,7 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
     setBusy(true);
     setErr(null);
     try {
-      setEmail(await api<{ subject: string; body: string }>("/api/seo/backlinks/email", { url: p.url }));
+      setEmail(await api<{ subject: string; body: string; to?: string | null }>("/api/seo/backlinks/email", { url: p.url }));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Couldn't write the email");
     } finally {
@@ -154,7 +154,16 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
           <p className="mt-2 whitespace-pre-wrap break-words text-sm text-dash-ink">{email.body}</p>
           <div className="mt-2 flex gap-3">
             <button onClick={copy} className="text-xs font-semibold text-dash-green hover:underline">{copied ? "Copied" : "Copy email"}</button>
-            <span className="text-xs text-dash-muted">Find their email on their contact page, then send it from yours.</span>
+            {email.to ? (
+              <a
+                href={`mailto:${email.to}?subject=${encodeURIComponent(email.subject)}&body=${encodeURIComponent(email.body)}`}
+                className="text-xs font-semibold text-dash-green hover:underline"
+              >
+                Send to {email.to}
+              </a>
+            ) : (
+              <span className="text-xs text-dash-muted">No email shown on their site. Use their contact form, then send it from yours.</span>
+            )}
           </div>
         </div>
       )}
