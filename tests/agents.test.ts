@@ -100,7 +100,8 @@ test("app check: leaked values and dashes in customer text are caught, addresses
 
 test("app check: a section empty long after connecting is flagged when most sites have it", () => {
   const peers = [{ shape: fullShape, age: 30 }, { shape: fullShape, age: 20 }];
-  const base = { report: null, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, verified: true, peers };
+  const okReport = { week: { changes: 1, articles: 0, links: 0, suggested: 0 }, visitors: null, focus: null, plan: [], traffic: [], totals: { visits: 0, leads: 0, revenue: 0 }, backlinks: null, agents: [], shopify: null } as never;
+  const base = { report: okReport, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, verified: true, peers };
   const ids = ruleProblems({ ...base, shape: { ...fullShape, backlinks: false }, age: 10 }).map((p) => p.id);
   assert.deepEqual(ids, ["app:empty:backlinks"]);
   // A brand new site is given time.
@@ -110,6 +111,8 @@ test("app check: a section empty long after connecting is flagged when most site
   // No other site to compare with: nothing is flagged.
   assert.deepEqual(ruleProblems({ ...base, peers: [], shape: emptyShape, age: 30 }), []);
   // On the free trial, the plan, backlinks and changes may stay empty.
+  // A Report that failed to load is one finding, not one per empty section.
+  assert.deepEqual(ruleProblems({ ...base, report: null, reportError: "boom", shape: emptyShape, age: 30 }).map((p) => p.id), ["app:report-fails"]);
   assert.deepEqual(ruleProblems({ ...base, verified: false, shape: { ...fullShape, backlinks: false, plan: false, changes: false }, age: 30 }), []);
 });
 
@@ -125,5 +128,5 @@ test("app check: broken numbers are caught and a long view is shortened, never c
   const view = { site: "x.com", report: { agents: Array.from({ length: 400 }, (_, i) => ({ agent: `a${i}`, did: "did a thing" })), plan: [] } };
   const out = fitView(view, 2000);
   assert.ok(out.length <= 2000);
-  assert.doesNotThrow(() => JSON.parse(out));
+  assert.deepEqual(JSON.parse(out).shortenedByChecker, ["report.agents"]);
 });

@@ -33,15 +33,20 @@ const within = <T>(work: Promise<T>, ms: number, why: string): Promise<T> =>
 
 /** The view as JSON under the AI's size budget, shortened by dropping detail, never by cutting the JSON midway. */
 export function fitView(view: Record<string, unknown>, max = 9000): string {
+  // Fields shortened here are named in "shortenedByChecker", so neither AI mistakes the shortening for what the customer sees.
   let json = JSON.stringify(view);
   const r = view.report as Record<string, unknown> | null | undefined;
+  const shortened: string[] = [];
   for (const field of ["agents", "plan", "traffic", "shopify"]) {
     if (json.length <= max || !r) break;
     if (Array.isArray(r[field])) r[field] = (r[field] as unknown[]).slice(0, 3);
     else if (r[field] && typeof r[field] === "object") r[field] = "(left out for length)";
-    json = JSON.stringify(view);
+    else continue;
+    shortened.push(`report.${field}`);
+    json = JSON.stringify({ ...view, shortenedByChecker: shortened });
   }
-  return json.length <= max ? json : JSON.stringify({ ...view, report: "(left out for length)" });
+  if (json.length <= max) return json;
+  return JSON.stringify({ ...view, report: "(left out for length)", shortenedByChecker: ["report"] });
 }
 
 /** Which parts of the app have something to show for this site. Shape only, shared between sites for comparison. */
@@ -125,7 +130,8 @@ export function ruleProblems(input: {
   }
   // Empty well past when it should be filled, while most sites of that age have it: a gap a customer would notice.
   const grown = input.peers.filter((p) => p.age >= 7);
-  for (const s of Object.keys(READY_DAYS) as Section[]) {
+  // A Report that failed to load says nothing about which sections are empty; its failure is the one finding.
+  for (const s of r ? (Object.keys(READY_DAYS) as Section[]) : []) {
     if (input.shape[s] || input.age < READY_DAYS[s]) continue;
     const others = grown.filter((p) => p.age >= READY_DAYS[s]);
     const filled = others.filter((p) => p.shape[s]).length;
@@ -134,6 +140,7 @@ export function ruleProblems(input: {
     if (!others.length || filled / others.length < 0.5) continue;
     // Already reported as its cause, or not possible on this site.
     if (s === "visits" && (!input.conn.ga || r?.traffic === "error")) continue;
+    if (s === "backlinks" && r?.backlinks === "error") continue;
     if (!input.verified && TRIAL_MAY_LACK.includes(s)) continue;
     add(`empty:${s}`, `${SECTION_NAME[s]} is still empty ${Math.floor(input.age)} days after this site connected Google, while ${filled} of ${others.length} other sites have it.`, "The platform owner is told, so the agent that fills it gets looked at.");
   }
@@ -236,7 +243,8 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
         if (issues) aiAt = new Date().toISOString();
       }
     }
-    const next: Saved = { at: new Date().toISOString(), aiAt, shape, age, problems, aiProblems };
+    // A shape read from a failed Report isn't the site's real one, so other sites keep comparing with the last good one.
+    const next: Saved = { at: new Date().toISOString(), aiAt, shape: report || !saved?.shape ? shape : saved.shape, age, problems, aiProblems };
     await sql`INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(next)})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
     return [...problems, ...aiProblems];

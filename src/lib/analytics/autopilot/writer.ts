@@ -1692,7 +1692,7 @@ ${view}
 
 Sections that other sites on the app usually have filled by this age: ${usualSections.join(", ") || "(unknown)"}
 
-List each real problem: text (one short plain sentence a person understands), fix (what should change in the app or which agent should act), evidence (the exact field and value in the JSON that shows it). Only problems the JSON proves; a site that is simply new or small is not a problem when the page says so. Leave out anything already listed in ruleFindings. At most 5. No hyphens or dashes. Return an empty list when nothing is wrong.`,
+List each real problem: text (one short plain sentence a person understands), fix (what should change in the app or which agent should act), evidence (the exact field and value in the JSON that shows it). Fields named in "shortenedByChecker" were cut by the checker to fit, not by the app: never report them. Only problems the JSON proves; a site that is simply new or small is not a problem when the page says so. Leave out anything already listed in ruleFindings. At most 5. No hyphens or dashes. Return an empty list when nothing is wrong.`,
     schema
   );
   const issues = (found.issues ?? []).filter((i) => i.text && i.evidence).slice(0, 5);
@@ -1700,7 +1700,7 @@ List each real problem: text (one short plain sentence a person understands), fi
   // The first AI confirms each point against the data before it counts; never the reviewer's own provider, so the check stays independent.
   const checked = await askJson<{ keep: boolean[] }>(
     { ...ai, site: undefined, backups: (ai.backups ?? []).filter((b) => b.kind !== reviewer.kind) },
-    `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, or just a new or small site that the page already explains.
+    `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, about a field named in "shortenedByChecker" (cut by the checker, not the app), or just a new or small site that the page already explains.
 
 JSON:
 ${view}
