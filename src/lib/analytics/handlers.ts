@@ -875,7 +875,10 @@ export const backlinkEmail = (req: Request) =>
  * owner only reviews and sends them from their own email. Nothing is ever sent by the app.
  */
 async function runOutreachDrafter(accountId: string): Promise<string> {
-  const picks = pickForDrafts(await readProspects(accountId));
+  const [qrow] = await sql`SELECT value FROM insights_settings WHERE key = ${`draft_queue:${accountId}`}`.catch(() => [] as { value: string | null }[]);
+  const queue = qrow?.value ? (JSON.parse(qrow.value) as string[]) : [];
+  const picks = pickForDrafts(await readProspects(accountId), undefined, queue);
+
   if (picks.length === 0) {
     await report("outreach-drafter", true);
     return "nothing new to write";
@@ -887,6 +890,13 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
     if (d) drafts.set(p.url, d);
   }
   const saved = await saveDrafts(accountId, drafts);
+  // Queued sites leave the queue once written (or gone from the list); one that failed stays for the next try.
+  if (queue.length) {
+    // Kept: queued sites not written this time (not picked yet, or failed); dropped: written, or gone from the open list.
+    const open = new Set(((await readProspects(accountId).catch(() => null))?.prospects ?? []).filter((p) => p.status === "new" && !p.draft).map((p) => p.domain));
+    const still = queue.filter((d) => open.has(d));
+    await sql`UPDATE insights_settings SET value = ${JSON.stringify(still)} WHERE key = ${`draft_queue:${accountId}`}`.catch(() => undefined);
+  }
   // Any one failing is a fault the Inspector must see.
   await report("outreach-drafter", !failure, failure ? message(failure) : null);
   if (saved === 0 && failure) throw failure;

@@ -17,6 +17,7 @@ import { faithAllowed, readSiteKeywords } from "./site-keywords";
 import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
 import { pagesForQuery } from "./guards";
+import { rescuable } from "./engine";
 import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type StrategyMove } from "./writer";
 
 /**
@@ -57,6 +58,15 @@ export async function readStrategy(accountId: string): Promise<StrategyReport | 
 }
 
 export const strategyDue = (r: StrategyReport | null) => !r || Date.now() - Date.parse(r.at) > WEEK;
+
+/** Adds an item to an agent's work queue (newest first, no repeats, at most 10). */
+async function queueFor(key: string, item: string): Promise<void> {
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`.catch(() => [] as { value: string | null }[]);
+  const cur = row?.value ? (JSON.parse(row.value) as string[]) : [];
+  const next = [item, ...cur.filter((x) => x !== item)].slice(0, 10);
+  await sql`INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(next)})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
 
 /** Everything the agents know, as plain facts the strategist (and its critic) can check against. */
 async function gatherFacts(accountId: string, conn: Connection | null, ourDomain: string): Promise<{ facts: string; known: Set<string>; visitors: number | null; revenue: number | null }> {
@@ -117,7 +127,18 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (prospects) {
     const ps = prospects.prospects;
     lines.push(`Backlinks: ${ps.filter((p) => p.status === "won").length} won, ${ps.filter((p) => p.status === "contacted").length} emailed, ${ps.filter((p) => p.status === "new").length} not contacted yet.`);
+    // Sites with an email already written are left out: the Drafter has nothing more to do for them.
+    const open = ps.filter((p) => p.status === "new" && !p.draft).sort((a, b) => (b.authority ?? 0) - (a.authority ?? 0)).slice(0, 8);
+    if (open.length)
+      lines.push(
+        "Backlink sites not contacted yet (for outreach): " +
+          open.map((p) => `${p.domain} (${p.kind}${p.authority != null ? `, strength ${p.authority.toFixed(1)}` : ""}${p.draft ? ", email written" : ""})`).join("; "),
+      );
   }
+  // Pages Google left out of its index, for the Index rescue.
+  // Only pages the Index rescue can take now (rested, not a control), so a rescue move is always acted on.
+  const left = (await rescuable(accountId).catch(() => [])).slice(0, 8);
+  if (left.length) lines.push("Pages Google crawled but left out of its index (for rescue): " + left.join("; "));
   const problems = await inspect(accountId, conn, { repair: false, ourDomain }).catch(() => []);
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
@@ -245,6 +266,22 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
           })();
           done = `Handled by the autopilot: ${path} is now the target page for this search, so it works on that page first.`;
         }
+      }
+    }
+    // Rescue: a page from the facts Google left out goes to the front of the Index rescue's queue.
+    if (checked && kept && m.kind === "rescue") {
+      const url = (m.page ?? "").trim();
+      if (url && facts.includes(url) && /Pages Google crawled but left out/.test(facts)) {
+        await queueFor(`rescue_queue:${accountId}`, url);
+        done = "Sent to the Index rescue: this page is worked on first.";
+      }
+    }
+    // Outreach: a backlink site from the facts goes to the front of the Outreach Drafter's queue.
+    if (checked && kept && m.kind === "outreach") {
+      const domain = (m.page ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/\/.*$/, "");
+      if (domain && facts.includes(domain) && /Backlink sites not contacted yet/.test(facts)) {
+        await queueFor(`draft_queue:${accountId}`, domain);
+        done = "Sent to the Outreach Drafter: its email is written first.";
       }
     }
     if (kept && m.kind === "asset" && !done) done = "An idea for you: the agents can't make this one on their own yet.";

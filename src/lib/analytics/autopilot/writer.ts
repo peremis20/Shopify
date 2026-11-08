@@ -410,6 +410,13 @@ function toGeminiSchema(schema: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(schema)) {
     if (k === "additionalProperties") continue;
+    // A type that allows null (["string", "null"]) becomes Gemini's single type with nullable.
+    if (k === "type" && Array.isArray(v)) {
+      const real = v.filter((t) => t !== "null");
+      out.type = String(real[0] ?? "string").toUpperCase();
+      if (v.includes("null")) out.nullable = true;
+      continue;
+    }
     out[k] = k === "type" && typeof v === "string" ? v.toUpperCase() : toGeminiSchema(v);
   }
   return out;
@@ -1216,8 +1223,14 @@ export function safeEmailText(raw: string, keep: string[], allowedUrls: string[]
 /* ---------- Strategist (strategist.ts): a weekly plan, and a second AI that challenges it ---------- */
 
 export interface StrategyMove {
-  /** "target": aim at this search (Rank for this). "cluster": build articles around a topic. "fix": something to repair. "hold": stop doing something. "asset": a resource other sites would want to link to. */
-  kind: "target" | "cluster" | "fix" | "hold" | "asset";
+  /**
+   * "target": aim at this search (Rank for this). "cluster": build articles around a topic. "fix": something to repair.
+   * "hold": stop doing something. "asset": a resource other sites would want to link to. "rescue": a page Google left out,
+   * for the Index rescue. "outreach": a backlink site for the Outreach Drafter to write to first.
+   */
+  kind: "target" | "cluster" | "fix" | "hold" | "asset" | "rescue" | "outreach";
+  /** For "rescue": the page's address; for "outreach": the site's domain. Copied from the facts. */
+  page?: string | null;
   /** The exact search, copied from the facts, for "target" and "cluster". */
   keyword: string | null;
   action: string;
@@ -1234,13 +1247,14 @@ export interface StrategyPlan {
 const MOVE_SCHEMA = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["target", "cluster", "fix", "hold", "asset"] },
+    kind: { type: "string", enum: ["target", "cluster", "fix", "hold", "asset", "rescue", "outreach"] },
     keyword: { type: ["string", "null"] },
+    page: { type: ["string", "null"], description: "For rescue: the page address; for outreach: the site's domain; copied from the facts. Else null." },
     action: { type: "string" },
     why: { type: "string" },
     evidence: { type: "string", description: "The fact this move rests on, copied word for word from the facts." },
   },
-  required: ["kind", "keyword", "action", "why", "evidence"],
+  required: ["kind", "keyword", "action", "why", "evidence", "page"],
 };
 
 export async function planStrategy(ai: AiProvider, facts: string): Promise<StrategyPlan> {
@@ -1252,6 +1266,8 @@ Facts from this week (real data, nothing else is known):
 ${facts}
 
 Think like a seasoned SEO: refreshing pages already at positions 4 to 20 is the fastest win, faster than new pages; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated; backlinks come easier to a page worth linking to, so you may suggest one "asset" move: a resource other sites would cite (a clear guide, checklist or comparison), built only from what the site can honestly say, never invented data or surveys.
+
+You direct these agents, and each move goes to one of them: "target" (the autopilot aims at a search: rewrites the page for it, or writes a new article when none exists), "cluster" (articles around one topic, then a pillar page), "fix" (the autopilot reworks the page that already shows on Google for a search), "rescue" (the Index rescue adds a substantial section to a page Google left out; put the page address from the facts in "page"), "outreach" (the Outreach Drafter writes the email to this backlink site first; put its domain from the facts in "page"), "hold" (stop something), "asset" (an idea for the owner).
 
 Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of the kinds of change that moved up, and stop the kinds that moved down. Never invent searches, numbers or results. No hyphens or dashes in the text.`,
     { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }
@@ -1273,7 +1289,7 @@ Facts:
 ${facts}
 
 Plan:
-${plan.moves.map((m, i) => `${i + 1}. [${m.kind}] ${m.action} (${m.keyword ?? "no search"}): ${m.why} Evidence: ${m.evidence ?? "(none)"}`).join("\n")}
+${plan.moves.map((m, i) => `${i + 1}. [${m.kind}] ${m.action} (${m.keyword ?? "no search"}${(m as { page?: string | null }).page ? `, ${(m as { page?: string | null }).page}` : ""}): ${m.why} Evidence: ${m.evidence ?? "(none)"}`).join("\n")}
 
 Return JSON "verdicts": one per move, in order, each with "keep" (true or false) and "note" (one plain sentence: why it holds up, or what is wrong with it). No hyphens or dashes.`,
     {

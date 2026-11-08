@@ -1190,7 +1190,9 @@ export async function accountsDueForRescue(limit: number): Promise<string[]> {
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'index_rescue_at:' || a.account_id
-    WHERE a.enabled AND coalesce(a.allow_content, true) AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    LEFT JOIN insights_settings q ON q.key = 'rescue_queue:' || a.account_id
+    WHERE a.enabled AND coalesce(a.allow_content, true) AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
+      OR (q.value IS NOT NULL AND q.value <> '[]' AND q.updated_at > s.updated_at))
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
@@ -1216,6 +1218,38 @@ export async function rescueUnindexed(accountId: string, conn: Connection | null
   if (!baseAi) throw new Error("No AI key is set up.");
   const access = await siteFor(accountId);
   if (!access?.writer) return "this site can't be edited by the app";
+  const rows = await rescuable(accountId);
+  if (!rows.length) return "no page waiting to be rescued";
+  // Pages the Strategist sent go first.
+  const [qrow] = await sql`SELECT value FROM insights_settings WHERE key = ${`rescue_queue:${accountId}`}`.catch(() => [] as { value: string | null }[]);
+  const queue = qrow?.value ? (JSON.parse(qrow.value) as string[]) : [];
+  const at = (u: string) => (queue.includes(u) ? queue.indexOf(u) : 99);
+  rows.sort((a, b) => at(a) - at(b));
+  rows.splice(3);
+  // One autopilot change at a time per site.
+  const lock = `autopilot_running:${accountId}`;
+  const got = await sql`INSERT INTO insights_settings (key, value) VALUES (${lock}, ${String(Date.now())})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '30 minutes'
+    RETURNING key`;
+  if (!got.length) return "no page waiting to be rescued: an autopilot run is in progress, so it's tried again next hour";
+  // Tried: the queued pages leave the queue only now (whatever the outcome, they were worked on).
+  const tried = new Set(rows);
+  const doneQueue = () =>
+    queue.length
+      ? sql`UPDATE insights_settings SET value = ${JSON.stringify(queue.filter((u) => !tried.has(u)))} WHERE key = ${`rescue_queue:${accountId}`}`.catch(() => undefined)
+      : Promise.resolve(undefined);
+  try {
+    return await rescueSome(accountId, conn, rows, access, baseAi, platform, acct.maxPagesPerWeek);
+  } finally {
+    await doneQueue();
+    await sql`DELETE FROM insights_settings WHERE key = ${lock}`.catch(() => undefined);
+  }
+}
+
+/** Pages Google crawled but left out, ready for a rescue: not changed in 7 days, no new section in 30, not a control page. */
+export async function rescuable(accountId: string): Promise<string[]> {
+  await ensureSchema();
   const rows = await sql`
     SELECT h.url FROM insights_page_health h
     WHERE h.account_id = ${accountId}
@@ -1225,16 +1259,23 @@ export async function rescueUnindexed(accountId: string, conn: Connection | null
         AND (c.created_at > now() - make_interval(days => ${RESCUE_AFTER_DAYS})
           OR (c.field = 'content' AND c.created_at > now() - make_interval(days => ${RESCUE_EVERY_DAYS}))))
       AND NOT EXISTS (SELECT 1 FROM insights_autopilot_controls k WHERE k.account_id = ${accountId} AND k.page_url = h.url AND k.evaluated_at IS NULL)
-    ORDER BY h.checked_at DESC LIMIT 3`;
-  if (!rows.length) return "no page waiting to be rescued";
-  // One autopilot change at a time per site.
-  const lock = `autopilot_running:${accountId}`;
-  const got = await sql`INSERT INTO insights_settings (key, value) VALUES (${lock}, ${String(Date.now())})
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-    WHERE insights_settings.updated_at < now() - interval '30 minutes'
-    RETURNING key`;
-  if (!got.length) return "an autopilot run is in progress; tried again next week";
-  try {
+    ORDER BY h.checked_at DESC LIMIT 20`;
+  return rows.map((r) => String(r.url));
+}
+
+/** Writes a rescue section for the first of these pages that passes every check. The caller holds the site's run lock. */
+async function rescueSome(
+  accountId: string,
+  conn: Connection | null,
+  rows: string[],
+  access: SiteAccess,
+  baseAi: AiProvider,
+  platform: PlatformSettings,
+  maxPagesPerWeek: number,
+): Promise<string> {
+  const writer = access.writer!;
+  {
+    const acct = { maxPagesPerWeek };
     const profile = await readProfile(accountId);
     const brand = profile.brandName ?? (await access.name().catch(() => null));
     const ai = { ...baseAi, site: siteBrief({ ...profile, brandName: brand }) };
@@ -1252,11 +1293,10 @@ export async function rescueUnindexed(accountId: string, conn: Connection | null
       import("./site-keywords").then((m) => m.readSiteKeywords(accountId)).catch(() => []),
       readTargets(accountId).catch(() => []),
     ]);
-    for (const r of rows) {
-      const url = String(r.url);
+    for (const url of rows) {
       const page = await access.resolve(url).catch(() => null);
       if (!page || (page.type !== "article" && page.type !== "page")) continue;
-      if (access.writer.supports && !(await access.writer.supports("content", page.id).catch(() => false))) continue;
+      if (writer.supports && !(await writer.supports("content", page.id).catch(() => false))) continue;
       const query =
         targets.find((t) => t.page === url && t.role !== "support")?.keyword ??
         kws.find((k) => k.page === url && k.role !== "support")?.keyword ??
@@ -1271,7 +1311,7 @@ export async function rescueUnindexed(accountId: string, conn: Connection | null
       const blockId = `rescue-${Date.now()}-content`;
       const block = wrap(blockId, section);
       try {
-        await access.writer.setBodyIfUnchanged(page.type, page.id, page.body, `${page.body}\n${block}`);
+        await writer.setBodyIfUnchanged(page.type, page.id, page.body, `${page.body}\n${block}`);
       } catch (err) {
         // The owner edited the page meanwhile: their edit wins; the next page is tried.
         if (err instanceof EditedMeanwhile || (err as Error).name === "UnpublishedDraft") continue;
@@ -1294,7 +1334,5 @@ export async function rescueUnindexed(accountId: string, conn: Connection | null
       return `added a new section to ${new URL(url).pathname} so Google indexes it`;
     }
     return "no rescue section passed the checks";
-  } finally {
-    await sql`DELETE FROM insights_settings WHERE key = ${lock}`.catch(() => undefined);
   }
 }

@@ -251,9 +251,12 @@ export async function accountsDueForDrafts(limit: number): Promise<string[]> {
   const rows = await sql`
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'drafts_at:' || a.account_id
+    LEFT JOIN insights_settings q ON q.key = 'draft_queue:' || a.account_id
     WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
       -- A failed week (an AI outage) is tried again 3 hours later, not a week later.
-      OR (s.value::jsonb->>'note' LIKE 'failed:%' AND s.updated_at < now() - interval '3 hours'))
+      OR (s.value::jsonb->>'note' LIKE 'failed:%' AND s.updated_at < now() - interval '3 hours')
+      -- The Strategist sent a site to write to first: done on the next hour.
+      OR (q.value IS NOT NULL AND q.value <> '[]' AND q.updated_at > s.updated_at))
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
@@ -265,13 +268,16 @@ export async function markDraftsMade(accountId: string, note: string): Promise<v
 }
 
 /** The open sites most worth an email that have none written yet: the most valuable kinds, then the strongest sites. */
-export function pickForDrafts(list: ProspectList | null, n = DRAFTS_PER_WEEK): Prospect[] {
+export function pickForDrafts(list: ProspectList | null, n = DRAFTS_PER_WEEK, first: string[] = []): Prospect[] {
   const open = (list?.prospects ?? []).filter((p) => p.status === "new");
   const waiting = open.filter((p) => p.draft).length;
-  return open
-    .filter((p) => !p.draft)
-    .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0))
-    .slice(0, Math.max(0, n - waiting));
+  // Sites the Strategist sent come first, and are written even when three emails already wait.
+  const rank = (p: Prospect) => (first.includes(p.domain) ? first.indexOf(p.domain) : 99);
+  const queued = open.filter((p) => !p.draft && rank(p) < 99).sort((a, b) => rank(a) - rank(b));
+  const rest = open
+    .filter((p) => !p.draft && rank(p) === 99)
+    .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0));
+  return [...queued.slice(0, n), ...rest.slice(0, Math.max(0, n - waiting - queued.length))];
 }
 
 /** Saves written emails onto their sites, reading the list fresh so the owner's marks made meanwhile are kept. */
