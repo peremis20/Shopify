@@ -1462,7 +1462,8 @@ export async function autopilotTick(): Promise<Response> {
       await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
     }
     // The Index rescue: once a week per site, a page Google crawled but left out gets a substantial new section.
-    for (const accountId of late() ? [] : await accountsDueForRescue(1)) {
+    // Sites with nothing waiting stay due (they're skipped quickly), so up to 5 are looked at and one is worked on.
+    for (const accountId of late() ? [] : await accountsDueForRescue(5)) {
       const conn = await getConnection(accountId).catch(() => null);
       let note: string;
       try {
@@ -1475,7 +1476,9 @@ export async function autopilotTick(): Promise<Response> {
         await report("index-rescue", false, message(e));
       }
       // Nothing waiting is checked again next hour (a cheap query), so a page becomes eligible without a week's delay.
-      if (!/^no page waiting/.test(note)) await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
+      if (/^no page waiting/.test(note)) continue;
+      await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
+      break;
     }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
