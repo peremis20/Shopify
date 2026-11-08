@@ -1000,11 +1000,14 @@ export const weeklyReportPreview = (req: Request) =>
 /** A problem from an owner's browser (a script error, a failed request, a layout wider than the screen, a crash). */
 export async function clientErrors(req: Request): Promise<Response> {
   try {
-    const report = cleanReport(await req.json().catch(() => null));
-    if (!report) return json({ ok: true });
-    // Kept with the account when signed in; problems before sign in are kept together.
+    // Small reports only, and only from a signed in owner: nobody else can write here.
+    if (Number(req.headers.get("content-length") ?? 0) > 4000) return json({ ok: true });
     const account = await accountOf(req).catch(() => null);
-    await saveClientError(account?.id ?? "anon", report);
+    if (!account) return json({ ok: true });
+    const text = (await req.text().catch(() => "")).slice(0, 4000);
+    const report = cleanReport((() => { try { return JSON.parse(text); } catch { return null; } })());
+    if (!report) return json({ ok: true });
+    await saveClientError(account.id, report);
   } catch (e) {
     console.error(`client error not kept: ${message(e)}`);
   }

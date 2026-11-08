@@ -18,15 +18,17 @@ export interface ClientError {
 
 const KINDS = new Set(["script", "promise", "request", "layout", "render"]);
 const KEY = (who: string) => `client_errors:${who}`;
-/** Errors from browser extensions and the like, not the app's own code. */
-const NOISE = /ResizeObserver loop|extension:\/\/|Script error\.?$|Non-Error promise rejection|Load failed$|NetworkError when attempting/i;
+/** Errors from browser extensions and the like, not the app's own code. Failed app requests are always kept. */
+const NOISE = /ResizeObserver loop|extension:\/\/|Script error\.?$|Non-Error promise rejection|^Load failed$|NetworkError when attempting|Failed to fetch$/i;
+/** New errors kept per account per hour, so one browser (or someone on purpose) can't flood the record. */
+const PER_HOUR = 15;
 
 export function cleanReport(body: unknown): Pick<ClientError, "kind" | "message" | "where" | "width"> | null {
   if (!body || typeof body !== "object") return null;
   const b = body as Record<string, unknown>;
   const kind = String(b.kind ?? "");
   const message = String(b.message ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
-  if (!KINDS.has(kind) || !message || NOISE.test(message)) return null;
+  if (!KINDS.has(kind) || !message || (kind !== "request" && NOISE.test(message))) return null;
   const width = Number(b.width);
   return { kind: kind as ClientError["kind"], message, where: String(b.where ?? "").slice(0, 120), width: Number.isFinite(width) ? Math.round(width) : null };
 }
@@ -51,7 +53,10 @@ export async function saveClientError(who: string, report: NonNullable<ReturnTyp
     same.count++;
     same.last = now;
     same.width = report.width;
-  } else list.push({ ...report, first: now, last: now, count: 1 });
+  } else {
+    if (list.filter((e) => Date.now() - Date.parse(e.first) < 3_600_000).length >= PER_HOUR) return;
+    list.push({ ...report, first: now, last: now, count: 1 });
+  }
   const kept = list.sort((a, b) => b.last.localeCompare(a.last)).slice(0, 40);
   await sql`INSERT INTO insights_settings (key, value) VALUES (${KEY(who)}, ${JSON.stringify(kept)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

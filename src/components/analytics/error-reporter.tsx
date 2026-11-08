@@ -35,7 +35,9 @@ export function installErrorReporter(): void {
   window.addEventListener("unhandledrejection", (e) => reportClientError("promise", String((e.reason as Error)?.message ?? e.reason)));
   const wrapped = window.fetch;
   window.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    // Relative or absolute, only the app's own requests count.
+    const url = raw.startsWith(location.origin) ? raw.slice(location.origin.length) : raw;
     const own = url.startsWith("/api/") && !url.startsWith("/api/client-errors");
     try {
       const res = await wrapped(input, init);
@@ -50,8 +52,11 @@ export function installErrorReporter(): void {
   const checkWidth = () => {
     const over = document.documentElement.scrollWidth - window.innerWidth;
     if (over > 4) {
-      const wide = [...document.querySelectorAll<HTMLElement>("body *")].find((el) => el.getBoundingClientRect().right > window.innerWidth + 4 && el.children.length === 0);
-      reportClientError("layout", `The page is ${over}px wider than a ${window.innerWidth}px screen${wide ? `; it overflows at <${wide.tagName.toLowerCase()} class="${String(wide.className).slice(0, 80)}">` : ""}`);
+      // The first element sticking out that isn't inside something meant to scroll sideways.
+      const scrolls = (el: Element | null): boolean => !!el && el !== document.body && (/(auto|scroll)/.test(getComputedStyle(el).overflowX) || scrolls(el.parentElement));
+      const wide = [...document.querySelectorAll<HTMLElement>("body *")].find((el) => el.getBoundingClientRect().right > window.innerWidth + 4 && el.children.length === 0 && !scrolls(el.parentElement));
+      if (!wide) return;
+      reportClientError("layout", `The page is ${over}px wider than a ${window.innerWidth}px screen; it overflows at <${wide.tagName.toLowerCase()} class="${(wide.getAttribute("class") ?? "").slice(0, 80)}">`);
     }
   };
   window.addEventListener("load", () => setTimeout(checkWidth, 3000));
@@ -61,6 +66,14 @@ export function installErrorReporter(): void {
 /** Shows a short message instead of a blank page when drawing a page crashes, and reports it. */
 export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
+  // Moving to another page tries again, so one page's crash doesn't block the others.
+  private retry = () => this.state.failed && this.setState({ failed: false });
+  componentDidMount() {
+    window.addEventListener("hashchange", this.retry);
+  }
+  componentWillUnmount() {
+    window.removeEventListener("hashchange", this.retry);
+  }
   static getDerivedStateFromError() {
     return { failed: true };
   }
