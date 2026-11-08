@@ -16,6 +16,7 @@ import { aiProvider, readPlatformSettings, type AiProvider } from "./settings";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
 import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
+import { pagesForQuery } from "./guards";
 import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type StrategyMove } from "./writer";
 
 /**
@@ -212,6 +213,36 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
           done = m.kind === "cluster" ? `Added as a target, with its best long tail searches, so the autopilot builds articles around it.` : "Added as a target: the autopilot works on it first.";
         } else {
           done = "Couldn't be added as a target this time; it will be tried again next week.";
+        }
+      }
+    }
+    // A fix for a search the site already shows for on Google (a weak title or description, say): the page Google
+    // ranks for it becomes that search's target page, so the autopilot works on that page first. Nothing is guessed:
+    // with no ranking page in Search Console, the move stays an idea for the owner.
+    if (checked && kept && k && m.kind === "fix" && conn && !isJunkKeyword(k, { faith }) && added < MAX_NEW_TARGETS) {
+      const ranking = (await pagesForQuery(conn, k).catch(() => []))[0]?.page ?? null;
+      if (ranking) {
+        const current = (await readTargets(accountId).catch(() => [])).find((t) => t.keyword === k);
+        const ok = current
+          ? await saveTarget(accountId, { ...current, page: ranking, role: "main" }).then(() => true, () => false)
+          : await addTarget(accountId, k, { serperKey: platform.serperKey ?? null, ourDomain }, false)
+              .then(async () => {
+                const t = (await readTargets(accountId)).find((x) => x.keyword === k);
+                if (!t) return false;
+                await saveTarget(accountId, { ...t, page: ranking, role: "main" });
+                return true;
+              })
+              .catch((e) => (console.error(`strategist could not add fix target "${k}": ${(e as Error).message}`), false));
+        if (ok) {
+          if (!current) added++;
+          const path = (() => {
+            try {
+              return new URL(ranking).pathname;
+            } catch {
+              return ranking;
+            }
+          })();
+          done = `Handled by the autopilot: ${path} is now the target page for this search, so it works on that page first.`;
         }
       }
     }
