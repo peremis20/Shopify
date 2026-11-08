@@ -236,6 +236,27 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     }
   }
 
+  // 3b. The week's plan: a move that passed the critic but that no agent took on (no "done" note) a day after planning
+  // is a gap between planning and acting. It is shown so it gets built or handled, never left silent.
+  const [plan] = await sql`SELECT value FROM insights_settings WHERE key = ${`strategy:${accountId}`}`.catch(() => [] as { value: string | null }[]);
+  if (plan?.value) {
+    try {
+      const r = JSON.parse(plan.value) as { at: string; checked?: boolean; moves: { kind: string; kept: boolean; done: string | null; action: string }[] };
+      const idle = r.checked !== false && Date.now() - Date.parse(r.at) > 24 * HOUR ? r.moves.filter((m) => m.kept && !m.done && m.kind !== "hold") : [];
+      if (idle.length) {
+        problems.push({
+          id: "plan:idle",
+          text: `${idle.length} ${idle.length === 1 ? "move" : "moves"} in this week's plan ${idle.length === 1 ? "has" : "have"} no agent acting on ${idle.length === 1 ? "it" : "them"}: ${idle.map((m) => `"${m.action.slice(0, 80)}"`).join("; ")}.`,
+          fix: "The platform owner is told, so an agent can be taught to do this kind of move.",
+          who: "watching",
+          platform: true,
+        });
+      }
+    } catch {
+      /* an unreadable plan is the Strategist's own problem, reported there */
+    }
+  }
+
   // 4. Rankings swinging for reasons that aren't the agents' work: changes wait to be judged, the owner is told why.
   const turbulence = await rankingTurbulence().catch(() => null);
   if (turbulence) problems.push({ id: "google:update", text: turbulence, fix: "Nothing to do: the agents keep working, and the untouched control pages show what the changes did.", who: "watching", platform: true });

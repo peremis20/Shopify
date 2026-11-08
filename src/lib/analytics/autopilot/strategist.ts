@@ -195,6 +195,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     let done: string | null = null;
     if (checked && kept && k && (m.kind === "target" || m.kind === "cluster") && added < MAX_NEW_TARGETS && platform.serperKey) {
       const already = (await readTargets(accountId).catch(() => [])).some((t) => t.keyword === k);
+      if (already) done = "Already a target: the autopilot is working on it.";
       if (!already) {
         const result = await addTarget(accountId, k, { serperKey: platform.serperKey, ourDomain }, m.kind === "cluster").catch((e) => {
           console.error(`strategist could not add target "${k}": ${(e as Error).message}`);
