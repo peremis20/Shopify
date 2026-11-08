@@ -349,25 +349,59 @@ function Finish({ status, busy, act, onLater, onPreview }: { status: Status; bus
   );
 }
 
-/** One tap: what the business sells (the brand name is filled in from the store and can be changed later). */
+/**
+ * One tap: what kind of site it is. The types read from the site's own pages
+ * come first; every other type is one tap away, in groups.
+ */
 function BusinessPicker({ status, busy, act }: { status: Status; busy: string | null; act: Act }) {
+  const suggested = status.suggestedTypes
+    .map((id) => status.businessTypes.find((b) => b.id === id))
+    .filter((b): b is Status["businessTypes"][number] => Boolean(b));
+  const [showAll, setShowAll] = useState(suggested.length === 0);
+  const groups = status.businessTypes.reduce<{ name: string; types: Status["businessTypes"] }[]>((out, b) => {
+    const g = out.find((x) => x.name === b.group) ?? (out.push({ name: b.group, types: [] }), out[out.length - 1]);
+    g.types.push(b);
+    return out;
+  }, []);
+  const choice = (b: Status["businessTypes"][number], best = false) => (
+    <button
+      key={b.id}
+      disabled={busy !== null}
+      onClick={() => act(`business`, () => api<Status>("/api/onboarding/profile", { businessType: b.id }), true)}
+      className={`rounded-xl border px-4 py-3 text-left font-semibold hover:border-dash-green hover:bg-dash-green/5 disabled:opacity-60 ${
+        status.businessType === b.id ? "border-dash-green bg-dash-green/5" : "border-dash-line bg-white"
+      }`}
+    >
+      {b.label}
+      {best && <span className="ml-2 rounded-full bg-dash-green/10 px-2 py-0.5 text-xs font-semibold text-dash-green">Best match</span>}
+    </button>
+  );
   return (
     <div className="space-y-3">
-      <p className="text-dash-muted">So every change fits your site, speaks to shoppers or readers, and stays within health claim rules.</p>
-      <div className="grid gap-2 sm:grid-cols-2">
-        {status.businessTypes.map((b) => (
-          <button
-            key={b.id}
-            disabled={busy !== null}
-            onClick={() => act(`business`, () => api<Status>("/api/onboarding/profile", { businessType: b.id }), true)}
-            className={`rounded-xl border px-4 py-3 text-left font-semibold hover:border-dash-green hover:bg-dash-green/5 disabled:opacity-60 ${
-              status.businessType === b.id ? "border-dash-green bg-dash-green/5" : "border-dash-line bg-white"
-            }`}
-          >
-            {b.label}
-          </button>
-        ))}
-      </div>
+      <p className="text-dash-muted">
+        {suggested.length
+          ? `From reading ${status.domain ?? "your site"}, it looks like one of these. Pick the one that fits, so every change speaks to your customers.`
+          : "Pick the one that fits, so every change speaks to your customers or readers."}
+      </p>
+      {suggested.length > 0 && <div className="grid gap-2 sm:grid-cols-2">{suggested.map((b, i) => choice(b, i === 0))}</div>}
+      {suggested.length > 0 && (
+        <button type="button" onClick={() => setShowAll((v) => !v)} className={link}>
+          {showAll ? "Hide the other types" : "Not one of these? See every type"}
+        </button>
+      )}
+      {showAll && (
+        <div className="space-y-4">
+          {groups
+            .map((g) => ({ ...g, types: g.types.filter((b) => !suggested.includes(b)) }))
+            .filter((g) => g.types.length > 0)
+            .map((g) => (
+              <div key={g.name} className="space-y-2">
+                <p className="text-sm font-semibold text-dash-muted">{g.name}</p>
+                <div className="grid gap-2 sm:grid-cols-2">{g.types.map((b) => choice(b))}</div>
+              </div>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

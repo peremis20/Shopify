@@ -1,12 +1,14 @@
 import { readTargets } from "./autopilot/targets";
 import { claimReport } from "./autopilot/claim-scan";
+import { overlapReport } from "./autopilot/overlap-scan";
 import { readAccountAutopilot } from "./autopilot/settings";
 import { shopifyGql, shopName } from "./autopilot/shopify";
 import { getConnection, saveConnection, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listProperties } from "./properties";
-import { bareDomain, BUSINESS_TYPES, readProfile, saveProfile, type Profile } from "./profile";
+import { bareDomain, BUSINESS_TYPES, healthRulesApply, readProfile, saveProfile, type BusinessType, type Profile } from "./profile";
+import { detectSiteTypes, hasSitePages } from "./autopilot/business-profile";
 import { PLATFORM_LABEL, type Platform } from "./site-crawl";
 import { readConnection } from "./autopilot/connections";
 import { snippetInstalled } from "./autopilot/snippet";
@@ -166,7 +168,9 @@ export interface Onboarding {
   domain: string | null;
   brandName: string | null;
   businessType: string | null;
-  businessTypes: { id: string; label: string }[];
+  businessTypes: { id: string; label: string; group: string }[];
+  /** The likely types read from the site's own pages, best first (offered before the full list). */
+  suggestedTypes: string[];
   /** Detected platform of a site connected by address (not Shopify). */
   platform: string | null;
   /** WordPress, Webflow or Wix sites: connected for automatic changes. */
@@ -190,6 +194,10 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     readProfile(accountId, email),
     readWp(accountId).catch(() => null),
   ]);
+  // A site connected before types were suggested (or through Shopify or WordPress) is read once, the first time setup asks.
+  let suggested: BusinessType[] = profile.suggestedTypes;
+  if (!profile.businessType && profile.siteDomain && !profile.suggestedRead && (await hasSitePages(accountId).catch(() => false)))
+    suggested = await detectSiteTypes(accountId, 8_000).catch(() => []);
   const [wf, wx] = await Promise.all([
     readConnection("webflow", accountId).catch(() => null),
     readConnection("wix", accountId).catch(() => null),
@@ -200,8 +208,9 @@ export async function onboardingStatus(accountId: string, email: string): Promis
   const domain = await storeDomain(accountId, profile).catch(() => profile.siteDomain);
   const store = acct.shopDomain ? { accountId, shopDomain: acct.shopDomain } : null;
   const brand = profile.brandName ?? (shopConnected && store ? await shopName(store).catch(() => null) : null);
-  const [claims, previewed, targets] = await Promise.all([
+  const [claims, overlap, previewed, targets] = await Promise.all([
     claimReport(accountId).catch(() => null),
+    overlapReport(accountId).catch(() => null),
     hasPreview(accountId).catch(() => false),
     readTargets(accountId).catch(() => []),
   ]);
@@ -236,7 +245,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       done: Boolean(profile.businessType),
       detail: profile.businessType
         ? `${brand ?? "Your site"}: ${BUSINESS_TYPES.find((b) => b.id === profile.businessType)?.label.toLowerCase()}.`
-        : "So every change fits what you sell and stays within health claim rules.",
+        : "So every change fits what your site offers and who it serves.",
     },
     {
       id: "search_console",
@@ -275,8 +284,15 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     {
       id: "first_check",
       title: "Run the first site check",
-      done: Boolean(claims?.checkedAt),
-      detail: claims?.checkedAt ? "Health, claims and overlap checks are running weekly." : "Checks rankings, site health, risky claims and overlapping pages.",
+      // The overlap check runs for every site; the claim check only for health sites.
+      done: Boolean(claims?.checkedAt || overlap?.checkedAt),
+      detail: healthRulesApply(profile)
+        ? claims?.checkedAt || overlap?.checkedAt
+          ? "Health, claims and overlap checks are running weekly."
+          : "Checks rankings, site health, risky claims and overlapping pages."
+        : overlap?.checkedAt
+          ? "Site health and overlap checks are running weekly."
+          : "Checks rankings, site health and overlapping pages.",
     },
     {
       id: "preview",
@@ -301,7 +317,8 @@ export async function onboardingStatus(accountId: string, email: string): Promis
     domain,
     brandName: brand,
     businessType: profile.businessType,
-    businessTypes: BUSINESS_TYPES.map(({ id, label }) => ({ id, label })),
+    businessTypes: BUSINESS_TYPES.map(({ id, label, group }) => ({ id, label, group })),
+    suggestedTypes: suggested,
     platform: shopConnected ? "shopify" : profile.platform,
     siteConnected: Boolean(connectedTo),
     gaExcludeHosts: profile.gaExcludeHosts,

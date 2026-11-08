@@ -1,5 +1,4 @@
 import { lookup } from "dns/promises";
-import { isAdminEmail } from "./accounts";
 import { ensureSchema, sql } from "./db";
 
 /**
@@ -9,18 +8,99 @@ import { ensureSchema, sql } from "./db";
  * properties) and other sites sharing their Analytics tag.
  */
 
+/**
+ * Every kind of site the app works for, in groups. The ids already saved for
+ * existing sites never change. "health" marks the types where health claim
+ * rules apply (the Claim guard); "cues" are words on a site's own pages that
+ * point to the type, used to suggest the likely types when the site connects.
+ */
 export const BUSINESS_TYPES = [
-  { id: "supplements", label: "Supplements and vitamins", sells: "dietary supplements and vitamins" },
-  { id: "skincare", label: "Skincare and beauty", sells: "skincare and beauty products" },
-  { id: "fitness", label: "Fitness and sports nutrition", sells: "fitness and sports nutrition products" },
-  { id: "health_store", label: "Health food or wellness store", sells: "natural health and wellness products" },
-  { id: "practice", label: "Clinic or health practice", sells: "health care services" },
-  { id: "publisher", label: "Health magazine or blog", sells: "health and wellness articles", readers: true },
-  { id: "faith_health", label: "Faith and health magazine or blog", sells: "health, wellness and faith articles", readers: true },
-  { id: "other", label: "Other health and wellness", sells: "health and wellness products" },
+  // Software and online services
+  { id: "saas", group: "Software and online services", label: "Software or SaaS", sells: "software and online tools", cues: ["saas", "software", "dashboard", "free trial", "start free", "sign up free", "pricing", "per month", "a month", "api", "integrations", "automate", "automation", "app for", "subscription plan", "no credit card"] },
+  { id: "mobile_app", group: "Software and online services", label: "Mobile app", sells: "a mobile app", cues: ["app store", "google play", "download the app", "ios", "android", "iphone app"] },
+  { id: "online_course", group: "Software and online services", label: "Online courses or coaching", sells: "online courses and coaching", cues: ["course", "courses", "lesson", "enroll", "coaching", "masterclass", "students", "curriculum", "certificate"] },
+  // Stores
+  { id: "ecommerce", group: "Online stores", label: "Online store", sells: "products online", cues: ["add to cart", "shop now", "free shipping", "checkout", "in stock", "on sale", "shop all", "free returns"] },
+  { id: "fashion", group: "Online stores", label: "Clothing, shoes or jewelry", sells: "clothing, shoes and accessories", cues: ["dress", "shirt", "shoes", "jewelry", "apparel", "clothing", "sizes", "outfit"] },
+  { id: "home_goods", group: "Online stores", label: "Home, garden or furniture", sells: "home and garden products", cues: ["furniture", "decor", "garden", "kitchen", "bedding", "home goods"] },
+  // Services
+  { id: "local_service", group: "Services", label: "Local service business", sells: "local services", cues: ["call us", "book an appointment", "free estimate", "free quote", "service area", "near you", "licensed and insured", "proudly serving"] },
+  { id: "agency", group: "Services", label: "Agency or consulting", sells: "professional services", cues: ["agency", "consulting", "consultant", "our clients", "case studies", "we help businesses", "marketing services", "book a call"] },
+  { id: "professional", group: "Services", label: "Law, finance or real estate", sells: "professional services", cues: ["attorney", "lawyer", "law firm", "accounting", "tax preparation", "insurance agency", "realtor", "real estate", "mortgage", "financial advisor"] },
+  { id: "restaurant", group: "Services", label: "Restaurant, cafe or food", sells: "food and dining", cues: ["menu", "reservations", "order online", "dine in", "takeout", "restaurant", "cafe", "catering"] },
+  { id: "travel", group: "Services", label: "Travel, hotel or events", sells: "travel and event services", cues: ["book your stay", "hotel", "tours", "vacation", "rooms", "upcoming events", "tickets", "venue"] },
+  // Publishers and organizations
+  { id: "blog", group: "Publishers and organizations", label: "Blog, magazine or news site", sells: "articles and news", readers: true, cues: ["blog", "articles", "read more", "latest posts", "newsletter", "magazine", "latest news", "editor"] },
+  { id: "nonprofit", group: "Publishers and organizations", label: "Nonprofit or church", sells: "a mission and community programs", readers: true, cues: ["donate", "nonprofit", "volunteer", "ministry", "church", "worship", "mission", "charity", "501(c)"] },
+  { id: "education", group: "Publishers and organizations", label: "School or education", sells: "education", readers: true, cues: ["admissions", "school", "students", "campus", "tuition", "faculty", "enrollment"] },
+  // Health and wellness (the original ids)
+  { id: "supplements", group: "Health and wellness", label: "Supplements and vitamins", sells: "dietary supplements and vitamins", health: true, cues: ["supplement", "supplements", "vitamin", "capsules", "magnesium", "probiotic", "servings per container"] },
+  { id: "skincare", group: "Health and wellness", label: "Skincare and beauty", sells: "skincare and beauty products", health: true, cues: ["skincare", "serum", "moisturizer", "cleanser", "beauty", "skin care", "cosmetics"] },
+  { id: "fitness", group: "Health and wellness", label: "Fitness and sports nutrition", sells: "fitness and sports nutrition products", health: true, cues: ["workout", "fitness", "protein powder", "pre workout", "gym", "training program"] },
+  { id: "health_store", group: "Health and wellness", label: "Health food or wellness store", sells: "natural health and wellness products", health: true, cues: ["organic", "wellness", "natural health", "herbal", "holistic"] },
+  { id: "practice", group: "Health and wellness", label: "Clinic or health practice", sells: "health care services", health: true, cues: ["clinic", "patients", "doctor", "dentist", "chiropractor", "therapy", "medical", "new patients"] },
+  { id: "publisher", group: "Health and wellness", label: "Health magazine or blog", sells: "health and wellness articles", readers: true, health: true, cues: ["health tips", "nutrition", "wellness blog", "healthy living"] },
+  { id: "faith_health", group: "Health and wellness", label: "Faith and health magazine or blog", sells: "health, wellness and faith articles", readers: true, health: true, cues: ["faith and health", "biblical health", "sabbath", "scripture"] },
+  { id: "other", group: "Health and wellness", label: "Other health and wellness", sells: "health and wellness products", health: true, cues: [] },
+  // Anything else
+  { id: "other_business", group: "Something else", label: "Something else", sells: "its products and services", cues: [] },
 ] as const;
 
 export type BusinessType = (typeof BUSINESS_TYPES)[number]["id"];
+
+/** What the writer is told a site offers before its type is known: never assume a niche. */
+export const DEFAULT_SELLS = "its products and services";
+
+/** Health claim rules (the Claim guard) apply only to health and wellness sites. */
+export const isHealthSite = (businessType: string | null | undefined): boolean =>
+  BUSINESS_TYPES.some((b) => b.id === businessType && "health" in b && b.health);
+
+/**
+ * Whether health claim rules (the Claim guard) apply to this site. A known
+ * type decides it. While the type isn't picked yet they stay on, unless the
+ * site was read and nothing on it pointed to health: a health store that
+ * skipped setup keeps its guardrail, a SaaS site never sees it.
+ */
+export function healthRulesApply(p: Pick<Profile, "businessType" | "suggestedTypes" | "suggestedRead">): boolean {
+  if (p.businessType) return isHealthSite(p.businessType);
+  if (p.suggestedRead && p.suggestedTypes.length) return p.suggestedTypes.some((t) => isHealthSite(t));
+  return true;
+}
+
+const isBusinessType = (v: unknown): v is BusinessType => BUSINESS_TYPES.some((b) => b.id === v);
+
+/** Keeps known ids only, in order, without repeats, at most four. */
+export function cleanTypes(v: unknown): BusinessType[] {
+  const list = Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [];
+  const out: BusinessType[] = [];
+  for (const raw of list) {
+    const id = String(raw).trim();
+    if (isBusinessType(id) && !out.includes(id)) out.push(id);
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/**
+ * The likely types from words on the site's own pages (no AI, so it always
+ * works): each type scores by how many of its cues appear. Only types with
+ * real evidence come back, best first, at most four.
+ */
+export function guessBusinessTypes(pagesText: string): BusinessType[] {
+  const text = ` ${pagesText.toLowerCase().replace(/\s+/g, " ")} `;
+  const scored = BUSINESS_TYPES.map((b) => {
+    let score = 0;
+    for (const cue of b.cues) {
+      const esc = cue.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+      const hits = text.match(new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, "g"))?.length ?? 0;
+      score += Math.min(hits, 3);
+    }
+    return { id: b.id as BusinessType, score };
+  })
+    .filter((s) => s.score >= 2)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, 4).map((s) => s.id);
+}
 
 export interface Profile {
   brandName: string | null;
@@ -34,6 +114,10 @@ export interface Profile {
   about: BusinessAbout | null;
   /** "auto": read from the site's own pages by the agents; "owner": written or checked by the owner. */
   aboutSource: "auto" | "owner" | null;
+  /** The likely site types read from its own pages, best first, offered first in setup. */
+  suggestedTypes: BusinessType[];
+  /** True once the site was read for its type (even when nothing clear came of it). */
+  suggestedRead: boolean;
 }
 
 export interface BusinessAbout {
@@ -160,8 +244,8 @@ export async function readProfile(accountId: string, email?: string): Promise<Pr
   await ensureSchema();
   const [row] = await sql`SELECT * FROM insights_account_profile WHERE account_id = ${accountId}`;
   const yes = (v: string | null | undefined) => v === "t" || v === "true";
-  // The platform owner's account keeps the setting it had before profiles existed.
-  const envHosts = email && isAdminEmail(email) ? hostsOf(process.env.GA_EXCLUDE_HOSTNAMES) : [];
+  // Each site's own setting only: a server wide list of another site's hosts never applies to an account.
+  const envHosts: string[] = [];
   return {
     brandName: row?.brand_name ?? null,
     businessType: (row?.business_type as BusinessType) ?? null,
@@ -171,6 +255,8 @@ export async function readProfile(accountId: string, email?: string): Promise<Pr
     platform: row?.platform ?? null,
     about: cleanAbout(row?.about),
     aboutSource: row?.about_source === "owner" ? "owner" : row?.about_source === "auto" ? "auto" : null,
+    suggestedTypes: cleanTypes(row?.suggested_types),
+    suggestedRead: row?.suggested_types != null,
   };
 }
 
@@ -205,9 +291,21 @@ export async function saveProfile(accountId: string, patch: Partial<Profile>): P
       onboarding_dismissed = EXCLUDED.onboarding_dismissed,
       platform = EXCLUDED.platform,
       updated_at = now()`;
-  // A new site: the description the agents read from the old one no longer fits (the owner's own stays).
-  if (patch.siteDomain !== undefined && next.domain !== cur.siteDomain)
+  // A new site: the description the agents read from the old one no longer fits (the owner's own stays),
+  // and the types suggested for the old site are read again for the new one.
+  if (patch.siteDomain !== undefined && next.domain !== cur.siteDomain) {
     await sql`UPDATE insights_account_profile SET about = NULL, about_source = NULL, about_at = NULL WHERE account_id = ${accountId} AND about_source = 'auto'`;
+    await sql`UPDATE insights_account_profile SET suggested_types = NULL WHERE account_id = ${accountId}`;
+  }
+}
+
+/** Saves the site types read from the site's own pages (an empty list means "read, nothing clear"). */
+export async function saveSuggestedTypes(accountId: string, types: BusinessType[]): Promise<void> {
+  await ensureSchema();
+  const value = cleanTypes(types).join(",");
+  await sql`
+    INSERT INTO insights_account_profile (account_id, suggested_types) VALUES (${accountId}, ${value})
+    ON CONFLICT (account_id) DO UPDATE SET suggested_types = EXCLUDED.suggested_types`;
 }
 
 /** What the writer is told about the business. */
@@ -227,11 +325,11 @@ export function siteBrief(p: Profile): { brand: string | null; sells: string; re
     : "";
   return {
     brand: p.brandName,
-    sells: type?.sells ?? "health and wellness products",
+    sells: type?.sells ?? DEFAULT_SELLS,
     readers: Boolean(type && "readers" in type && type.readers),
     ...(about ? { about } : {}),
   };
 }
 
-/** Faith topics (sabbath, prayer, church) are on topic for a faith and health publication. */
-export const allowsFaith = (businessType: string | null | undefined) => businessType === "faith_health";
+/** Faith topics (sabbath, prayer, church) are on topic for a faith and health publication, a church or a ministry. */
+export const allowsFaith = (businessType: string | null | undefined) => businessType === "faith_health" || businessType === "nonprofit";

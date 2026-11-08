@@ -27,7 +27,7 @@ function baseRules(site: AiProvider["site"]): string {
     ? `You are the SEO editor for ${who} that publishes ${site.sells}.
 Write for real readers first, search engines second. Never sell or push products; inform and help.
 ${site.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`
-    : `You are the SEO editor for ${who} that sells ${site?.sells ?? "health and wellness products"}.
+    : `You are the SEO editor for ${who} that sells ${site?.sells ?? "its products and services"}.
 Write for real shoppers first, search engines second.
 ${site?.brand ? `\nEnd SEO titles with " | ${site.brand}" when it fits within 60 characters; never use another brand name there.\n` : ""}${RULES}`;
 }
@@ -1626,6 +1626,51 @@ const ABOUT_SCHEMA = {
  * where. Only what the pages say: a field the pages don't state stays empty. A second AI then checks each field
  * against the same text and every field it can't find there is dropped.
  */
+/**
+ * Which kinds of site this is, from its own pages only: up to four ids from
+ * the given list, best first. A second AI checks the best pick against the
+ * text; a pick it can't confirm is dropped, so a guess is never offered first.
+ */
+export async function readSiteTypes(
+  ai: AiProvider,
+  pagesText: string,
+  options: readonly { id: string; label: string; group: string }[],
+): Promise<{ types: string[]; rejected: string | null }> {
+  const ids = options.map((o) => o.id);
+  const list = options.map((o) => `${o.id}: ${o.label} (${o.group})`).join("\n");
+  const out = await askJson<{ types: string[] }>(
+    { ...ai, site: undefined },
+    `Here is the text of a website's own pages (home page, about page).
+
+"""
+${pagesText.slice(0, 12000)}
+"""
+
+Which of these kinds of site is it? Judge only from what the text shows the site offers and to whom. Never guess.
+
+${list}
+
+Return JSON "types": up to four ids from the list, the best fit first, only ones the text clearly supports. Use "other_business" only when nothing else fits. An empty list is fine when the text doesn't make it clear.`,
+    { type: "object", properties: { types: { type: "array", items: { type: "string", enum: ids } } }, required: ["types"] },
+  );
+  const picked = (out.types ?? []).filter((t, i, a) => ids.includes(t) && a.indexOf(t) === i).slice(0, 4);
+  if (!picked.length) return { types: [], rejected: null };
+  const best = options.find((o) => o.id === picked[0])!;
+  const check = await askJson<{ supported: boolean }>(
+    reviewerOf(ai, false),
+    `Website text:
+
+"""
+${pagesText.slice(0, 12000)}
+"""
+
+Statement: this website is a "${best.label}" site (${best.group}).
+Return JSON "supported": true only if the text clearly shows this, false if it is a guess or the text points elsewhere.`,
+    { type: "object", properties: { supported: { type: "boolean" } }, required: ["supported"] },
+  );
+  return check.supported === true ? { types: picked, rejected: null } : { types: picked.slice(1), rejected: picked[0] };
+}
+
 export async function readBusiness(ai: AiProvider, pagesText: string): Promise<Record<string, string>> {
   const out = await askJson<Record<string, string>>(
     { ...ai, site: undefined },

@@ -1,7 +1,7 @@
 import { resolveRange } from "./dates";
-import { envGa4PropertyId, fetchGa4, ga4OpenUrl } from "./ga4";
-import { getServiceAccount, type GoogleAuth } from "./google-auth";
-import { envGscSiteUrl, fetchGsc, gscOpenUrl } from "./gsc";
+import { fetchGa4, ga4OpenUrl } from "./ga4";
+import type { GoogleAuth } from "./google-auth";
+import { fetchGsc, gscOpenUrl } from "./gsc";
 import { buildIntegrations } from "./integrations";
 import { signInAvailable, type Connection } from "./connection";
 import { ensureSchema, hasDatabase, sql } from "./db";
@@ -36,14 +36,6 @@ async function writeCache(key: string, data: OverviewResponse): Promise<void> {
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`;
 }
 
-function hasServiceAccount(): boolean {
-  try {
-    return Boolean(getServiceAccount());
-  } catch {
-    return true; // credentials are present but malformed, let the fetch report it
-  }
-}
-
 interface Source {
   auth: GoogleAuth | null;
   gaId?: string;
@@ -51,7 +43,12 @@ interface Source {
   info: ConnectionInfo;
 }
 
-/** A signed in Google account wins; otherwise fall back to a server service account. */
+/**
+ * Only the customer's own signed in Google account is ever read. There is no
+ * server wide fallback (a service account with a fixed property): that would
+ * show one site's Analytics and Search Console to every account that hasn't
+ * connected Google yet.
+ */
 async function resolveSource(conn: Connection | null, redirectUri: string): Promise<Source> {
   const oauthAvailable = await signInAvailable();
   const setup = { canSaveClient: canSaveClient(), redirectUri };
@@ -61,16 +58,6 @@ async function resolveSource(conn: Connection | null, redirectUri: string): Prom
       gaId: conn.gaPropertyId,
       site: conn.gscSiteUrl,
       info: { mode: "oauth", oauthAvailable, ...setup, email: conn.email, gaPropertyId: conn.gaPropertyId, gscSiteUrl: conn.gscSiteUrl },
-    };
-  }
-  if (hasServiceAccount()) {
-    const gaId = envGa4PropertyId();
-    const site = envGscSiteUrl();
-    return {
-      auth: { kind: "service_account" },
-      gaId,
-      site,
-      info: { mode: "service_account", oauthAvailable, ...setup, gaPropertyId: gaId, gscSiteUrl: site },
     };
   }
   return { auth: null, info: { mode: "none", oauthAvailable, ...setup } };
