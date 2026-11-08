@@ -48,7 +48,7 @@ export const siteAudit: RankingApp = {
     const out: Candidate[] = [];
     for (const p of pages) {
       // Only real problems send a page to the autopilot; a small one (a long title) waits until the page is picked anyway.
-      const fix = p.issues.filter((i) => i.auto && i.level !== "low");
+      const fix = p.issues.filter((i) => i.auto && i.confirmed && i.level !== "low");
       if (!fix.length || p.issues.some((i) => i.code === "error" || i.code === "noindex")) continue;
       const t = targets.find((x) => x.page === p.url && x.role !== "support");
       const k = kws.find((x) => x.page === p.url && x.role !== "support");
@@ -83,13 +83,13 @@ export const siteAudit: RankingApp = {
       hub.shared.set("site-audit.pages", map);
     }
     for (const c of cands) {
-      const fix = (map.get(c.op.page) ?? []).filter((i) => i.auto);
+      const fix = (map.get(c.op.page) ?? []).filter((i) => i.auto && i.confirmed);
       if (fix.length) c.weights[this.id] = Math.max(c.weights[this.id] ?? 0, fix.some((i) => i.code === "title-missing" || i.code === "thin") ? SERIOUS_WEIGHT : FIX_WEIGHT);
     }
   },
 
   async brief(hub, c) {
-    const issues = ((hub.shared.get("site-audit.pages") as Map<string, AuditIssue[]> | undefined)?.get(c.op.page) ?? []).filter((i) => i.auto);
+    const issues = ((hub.shared.get("site-audit.pages") as Map<string, AuditIssue[]> | undefined)?.get(c.op.page) ?? []).filter((i) => i.auto && i.confirmed);
     if (!issues.length) return null;
     const asks = [...new Set(issues.map((i) => ASK[i.code]).filter(Boolean))];
     return { text: `Site audit of ${pathOf(c.op.page)}: ${asks.join(" ")}`, summary: `Audit: ${issues[0].text}` };

@@ -1253,6 +1253,9 @@ export async function rescuable(accountId: string): Promise<string[]> {
   const rows = await sql`
     SELECT h.url FROM insights_page_health h
     WHERE h.account_id = ${accountId}
+      -- A second look: Google's answer must be fresh (checked in the last 8 days), so a page Google has since taken
+      -- in is never rewritten.
+      AND h.checked_at > now() - interval '8 days'
       AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.issues) i WHERE i->>'text' ~* '^Not in Google: .*(crawled|discovered)')
       AND NOT EXISTS (SELECT 1 FROM insights_autopilot_changes c WHERE c.account_id = ${accountId} AND c.page_url = h.url
         AND c.status IN ('applied', 'kept', 'suggested')

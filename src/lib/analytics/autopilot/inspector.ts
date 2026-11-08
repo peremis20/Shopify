@@ -245,7 +245,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   // 3a. The Site Auditor's findings only a person can fix (the rest go to the autopilot): the site's own problems,
   // shown to its owner with the pages they're on.
   const audit = await readAudit(accountId).catch(() => []);
-  const manual = audit.flatMap((p) => p.issues.filter((i) => !i.auto && i.level !== "low").map((i) => ({ path: (() => { try { return new URL(p.url).pathname; } catch { return p.url; } })(), i })));
+  const manual = audit.flatMap((p) => p.issues.filter((i) => !i.auto && i.confirmed && i.level !== "low").map((i) => ({ path: (() => { try { return new URL(p.url).pathname; } catch { return p.url; } })(), i })));
   if (manual.length) {
     const pages = new Set(manual.map((m) => m.path)).size;
     problems.push({

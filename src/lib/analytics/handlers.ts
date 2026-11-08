@@ -6,7 +6,7 @@ import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
-import { accountsDueForDrafts, findProspects, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
+import { accountsDueForDrafts, accountsDueForLinkCheck, checkWonLinks, findProspects, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
@@ -1501,6 +1501,14 @@ export async function autopilotTick(): Promise<Response> {
     for (const accountId of late() ? [] : await accountsDueForBusiness(1)) {
       const note = await forSite(accountId, () => learnBusiness(accountId)).catch((e) => (console.error(`business profile failed: ${message(e)}`), null));
       if (note) results.push(`account ${accountId} business profile: ${note}`);
+    }
+    // The Link checker: links the owner marked won are confirmed on the other site's page, weekly.
+    for (const accountId of late() ? [] : await accountsDueForLinkCheck(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile?.siteDomain ?? "");
+      const note = await forSite(accountId, () => checkWonLinks(accountId, domain)).catch((e) => (console.error(`link check failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} link check: ${note}`);
     }
     // The Site Auditor: every page in the sitemap read weekly, about 25 pages per site per hour, one site per hour.
     for (const { accountId, domain } of late() ? [] : await accountsDueForAudit(1)) {

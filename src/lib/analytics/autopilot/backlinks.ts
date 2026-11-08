@@ -70,6 +70,8 @@ export interface Prospect {
   draft?: OutreachDraft;
   /** When the Outreach Drafter last tried and couldn't write a safe email: it moves on to other sites for a week. */
   draftTriedAt?: string;
+  /** For a won link: whether the link to this site was really found on their page, and when it was checked. */
+  linkCheck?: { at: string; found: boolean };
 }
 
 export interface OutreachDraft {
@@ -308,4 +310,62 @@ export async function saveDrafts(accountId: string, drafts: Map<string, Outreach
   });
   await save(accountId, list);
   return n;
+}
+
+// ---------- Link checker: a link the owner marked won is confirmed on the other site's page ----------
+
+/** Sites with a won link not checked in the last week. */
+export async function accountsDueForLinkCheck(limit: number): Promise<string[]> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT a.account_id FROM insights_account_autopilot a
+    JOIN insights_settings s ON s.key = 'backlinks:' || a.account_id
+    LEFT JOIN insights_settings t ON t.key = 'linkcheck_at:' || a.account_id
+    WHERE a.enabled AND s.value LIKE '%"status":"won"%' AND (t.updated_at IS NULL OR t.updated_at < now() - interval '7 days'
+      OR s.updated_at > t.updated_at)
+    ORDER BY t.updated_at NULLS FIRST LIMIT ${limit}`;
+  return rows.map((r) => String(r.account_id));
+}
+
+/**
+ * Reads each page the owner marked "Got the link" and looks for a link to this site on it. Checked weekly, so a
+ * link that was removed later shows too. Only the other site's public page is read.
+ */
+export async function checkWonLinks(accountId: string, ourDomain: string): Promise<string> {
+  const { safeFetch, readCapped } = await import("./broken-links");
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${`linkcheck_at:${accountId}`}, ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  const list = await readProspects(accountId);
+  const ours = ourDomain.toLowerCase().replace(/^www\./, "");
+  if (!list || !ours) return "nothing to check";
+  const due = list.prospects.filter((p) => p.status === "won" && (!p.linkCheck || Date.now() - Date.parse(p.linkCheck.at) > 6 * 864e5)).slice(0, 10);
+  if (!due.length) return "nothing to check";
+  const results = new Map<string, { at: string; found: boolean }>();
+  for (const p of due) {
+    const res = await safeFetch(p.url, "GET", 12_000).catch(() => null);
+    if (!res || res === "unresolved" || !res.ok) {
+      if (res && res !== "unresolved") await res.body?.cancel().catch(() => undefined);
+      continue; // couldn't read it this time: checked again next week, never marked missing from one miss
+    }
+    const html = await readCapped(res, 3_000_000).catch(() => "");
+    if (!html) continue;
+    const hrefs = [...html.matchAll(/<a\b[^>]*\bhref\s*=\s*["']([^"']+)["']/gi)].map((m) => m[1]);
+    const found = hrefs.some((h) => {
+      try {
+        const host = new URL(h, p.url).hostname.toLowerCase().replace(/^www\./, "");
+        return host === ours || host.endsWith(`.${ours}`);
+      } catch {
+        return false;
+      }
+    });
+    results.set(p.url, { at: new Date().toISOString(), found });
+  }
+  // Read fresh before saving, so the owner's marks made meanwhile stay.
+  const now = await readProspects(accountId);
+  if (!now) return "nothing to check";
+  now.prospects = now.prospects.map((p) => (results.has(p.url) && p.status === "won" ? { ...p, linkCheck: results.get(p.url)! } : p));
+  await save(accountId, now);
+  const found = [...results.values()].filter((r) => r.found).length;
+  return `${results.size} won ${results.size === 1 ? "link" : "links"} checked, ${found} found`;
 }

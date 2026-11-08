@@ -142,6 +142,12 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
         </a>
         <span className="text-xs text-dash-muted">{p.domain}</span>
         <span className="rounded-full bg-[#F1ECE3] px-2 py-0.5 text-xs text-dash-ink" title={KIND[p.kind].hint}>{KIND[p.kind].label}</span>
+        {p.status === "won" && p.linkCheck && (
+          <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${p.linkCheck.found ? "bg-dash-up/10 text-dash-up" : "bg-dash-down/10 text-dash-down"}`} title={`Checked ${new Date(p.linkCheck.at).toLocaleDateString()}`}>
+            {p.linkCheck.found ? "Link confirmed on their page" : "Link not found on their page"}
+          </span>
+        )}
+        {p.status === "won" && !p.linkCheck && <span className="text-xs text-dash-muted">Checking the link soon</span>}
         <span className="text-xs tabular-nums text-dash-muted" title="Site strength (Open PageRank)">{p.authority === null ? "not scored" : `${p.authority.toFixed(1)} / 10`}</span>
       </div>
       <p className="mt-1 whitespace-normal break-words text-xs text-dash-muted">{KIND[p.kind].hint} {p.snippet}</p>

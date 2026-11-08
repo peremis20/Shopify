@@ -16,6 +16,8 @@ export interface AuditIssue {
   text: string;
   /** True when the autopilot can fix it with a content change. */
   auto: boolean;
+  /** Seen on two checks in a row: only confirmed problems are fixed or shown, so one bad read never acts. */
+  confirmed?: boolean;
 }
 
 export interface AuditedPage {
@@ -104,8 +106,10 @@ export async function auditPass(accountId: string, domain: string, deadline = Da
     await sql`INSERT INTO insights_settings (key, value) VALUES (${urlKey}, ${JSON.stringify(urls)})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch(() => undefined);
   }
-  const known = new Map(
-    (await sql`SELECT url, checked_at FROM insights_site_audit WHERE account_id = ${accountId}`).map((r) => [String(r.url), Date.parse(String(r.checked_at))]),
+  const previous = await sql`SELECT url, checked_at, issues FROM insights_site_audit WHERE account_id = ${accountId}`;
+  const known = new Map(previous.map((r) => [String(r.url), Date.parse(String(r.checked_at))]));
+  const before = new Map(
+    previous.map((r) => [String(r.url), new Set(((typeof r.issues === "string" ? JSON.parse(r.issues) : r.issues) as AuditIssue[]).map((i) => i.code))]),
   );
   const due = urls
     .filter((u) => !known.has(u) || Date.now() - known.get(u)! > WEEK_MS)
@@ -133,6 +137,9 @@ export async function auditPass(accountId: string, domain: string, deadline = Da
         // A page that isn't HTML (a PDF, an image) is skipped.
         if (res.ok && !html) return void (await later(url));
         const r = pageIssues(url, status, html);
+        // The second look: a problem found on the last check too is confirmed.
+        const seen = before.get(url);
+        r.issues = r.issues.map((i) => ({ ...i, confirmed: Boolean(seen?.has(i.code)) }));
         await sql`
           INSERT INTO insights_site_audit (account_id, url, status, title, description, issues, checked_at)
           VALUES (${accountId}, ${url}, ${status || null}, ${r.title}, ${r.description}, ${JSON.stringify(r.issues)}::jsonb, now())
@@ -169,8 +176,9 @@ async function markDuplicates(accountId: string): Promise<void> {
     const issues = before.filter((i) => i.code !== "title-dup" && i.code !== "description-dup");
     const t = norm(r.title as string | null);
     const d = norm(r.description as string | null);
-    if (t && (titles.get(t) ?? 0) > 1) issues.push({ code: "title-dup", level: "medium", text: `${titles.get(t)! - 1} other ${titles.get(t)! - 1 === 1 ? "page has" : "pages have"} the same title.`, auto: true });
-    if (d && (descs.get(d) ?? 0) > 1) issues.push({ code: "description-dup", level: "medium", text: `${descs.get(d)! - 1} other ${descs.get(d)! - 1 === 1 ? "page has" : "pages have"} the same meta description.`, auto: true });
+    const had = (code: string) => before.some((i) => i.code === code);
+    if (t && (titles.get(t) ?? 0) > 1) issues.push({ code: "title-dup", level: "medium", text: `${titles.get(t)! - 1} other ${titles.get(t)! - 1 === 1 ? "page has" : "pages have"} the same title.`, auto: true, confirmed: had("title-dup") });
+    if (d && (descs.get(d) ?? 0) > 1) issues.push({ code: "description-dup", level: "medium", text: `${descs.get(d)! - 1} other ${descs.get(d)! - 1 === 1 ? "page has" : "pages have"} the same meta description.`, auto: true, confirmed: had("description-dup") });
     if (JSON.stringify(issues) !== JSON.stringify(before))
       await sql`UPDATE insights_site_audit SET issues = ${JSON.stringify(issues)}::jsonb WHERE account_id = ${accountId} AND url = ${r.url}`;
   }
