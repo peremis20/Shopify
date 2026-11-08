@@ -85,3 +85,33 @@ test("gemini schema: a field that may be null becomes one type with nullable", (
   assert.deepEqual(out.properties.page, { type: "STRING", nullable: true });
   assert.equal(out.properties.n.type, "NUMBER");
 });
+
+import { badText, ruleProblems, visibleText } from "../src/lib/analytics/autopilot/app-check";
+
+const fullShape = { visits: true, plan: true, agents: true, backlinks: true, keywords: true, pages: true, ranks: true, business: true, changes: true };
+const emptyShape = { visits: false, plan: false, agents: false, backlinks: false, keywords: false, pages: false, ranks: false, business: false, changes: false };
+
+test("app check: leaked values and dashes in customer text are caught, addresses are not", () => {
+  assert.equal(badText("Visits: NaN"), "a broken value");
+  assert.equal(badText("Fix the page - now"), "a dash");
+  assert.equal(badText("All good"), null);
+  assert.deepEqual(visibleText({ url: "https://a-b.com/x-y", path: "/a-b", text: "ok" }), [{ path: "text", text: "ok" }]);
+});
+
+test("app check: a section empty long after connecting is flagged when most sites have it", () => {
+  const peers = [{ shape: fullShape, age: 30 }, { shape: fullShape, age: 20 }];
+  const base = { report: null, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, peers };
+  const ids = ruleProblems({ ...base, shape: { ...fullShape, backlinks: false }, age: 10 }).map((p) => p.id);
+  assert.deepEqual(ids, ["app:empty:backlinks"]);
+  // A brand new site is given time.
+  assert.deepEqual(ruleProblems({ ...base, shape: emptyShape, age: 1 }), []);
+  // Empty on most other sites too: it depends on the site, not a fault.
+  assert.deepEqual(ruleProblems({ ...base, peers: [{ shape: emptyShape, age: 30 }], shape: emptyShape, age: 30 }), []);
+});
+
+test("app check: a report that fails, or reads a connected source as an error, is flagged", () => {
+  const report = { week: { changes: 0, articles: 0, links: 0, suggested: 0 }, visitors: null, focus: null, plan: [], traffic: "error", totals: null, backlinks: null, agents: [], shopify: "error" } as const;
+  const ids = ruleProblems({ report: report as never, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, shape: fullShape, age: 30, peers: [] }).map((p) => p.id);
+  assert.deepEqual(ids, ["app:ga-unread", "app:shop-unread"]);
+  assert.equal(ruleProblems({ report: null, reportError: "boom", reportMs: 100, conn: { ga: true, gsc: true }, shape: fullShape, age: 30, peers: [] })[0].id, "app:report-fails");
+});

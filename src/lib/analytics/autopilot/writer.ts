@@ -1671,6 +1671,48 @@ Return JSON "supported": true only if the text clearly shows this, false if it i
   return check.supported === true ? { types: picked, rejected: null } : { types: picked.slice(1), rejected: picked[0] };
 }
 
+/**
+ * The App checker's customer view review. A second AI reads what one site's owner sees, as a demanding first time
+ * customer and a tester, and lists what looks broken, empty without a reason, contradictory or confusing. The first AI
+ * then checks each point against the same data and drops anything the data doesn't show, so nothing guessed counts.
+ */
+export async function reviewCustomerView(ai: AiProvider, view: string, usualSections: string[]): Promise<{ text: string; fix: string }[]> {
+  const schema = {
+    type: "object",
+    properties: { issues: { type: "array", items: { type: "object", properties: { text: { type: "string" }, fix: { type: "string" }, evidence: { type: "string" } }, required: ["text", "fix", "evidence"] } } },
+    required: ["issues"],
+  };
+  const found = await askJson<{ issues: { text: string; fix: string; evidence: string }[] }>(
+    reviewerOf(ai, false),
+    `You test a website growth app (DashPatrol) by looking at one customer's account exactly as the customer sees it. Look past any one feature: anything a paying customer would find broken, empty without a reason, contradictory, confusing, out of date or not worth paying for counts.
+
+What this customer sees (JSON, their own data only):
+${view}
+
+Sections that other sites on the app usually have filled by this age: ${usualSections.join(", ") || "(unknown)"}
+
+List each real problem: text (one short plain sentence a person understands), fix (what should change in the app or which agent should act), evidence (the exact field and value in the JSON that shows it). Only problems the JSON proves; a site that is simply new or small is not a problem when the page says so. Leave out anything already listed in ruleFindings. At most 5. No hyphens or dashes. Return an empty list when nothing is wrong.`,
+    schema
+  );
+  const issues = (found.issues ?? []).filter((i) => i.text && i.evidence).slice(0, 5);
+  if (!issues.length) return [];
+  // The first AI confirms each point against the data before it counts.
+  const checked = await askJson<{ keep: boolean[] }>(
+    { ...ai, site: undefined },
+    `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, or just a new or small site that the page already explains.
+
+JSON:
+${view}
+
+Problems:
+${issues.map((i, n) => `${n + 1}. ${i.text} (evidence: ${i.evidence})`).join("\n")}
+
+Return keep: one true or false per problem, in order.`,
+    { type: "object", properties: { keep: { type: "array", items: { type: "boolean" } } }, required: ["keep"] }
+  );
+  return issues.filter((_, n) => checked.keep?.[n] === true).map((i) => ({ text: polish(i.text), fix: polish(i.fix) }));
+}
+
 export async function readBusiness(ai: AiProvider, pagesText: string): Promise<Record<string, string>> {
   const out = await askJson<Record<string, string>>(
     { ...ai, site: undefined },

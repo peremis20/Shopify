@@ -11,6 +11,7 @@ import { rankingTurbulence } from "./google-updates";
 import { trafficCheck } from "./guards";
 import { usageThisMonth } from "./usage";
 import { readAudit } from "./site-audit";
+import { appCheck } from "./app-check";
 
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
@@ -346,6 +347,9 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       });
     }
   }
+
+  // 7. Beyond every agent's own job: the App checker looks at the account the way its owner sees it.
+  if (opts.repair) problems.push(...(await appCheck(accountId, conn)));
 
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${`inspect:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), problems })})

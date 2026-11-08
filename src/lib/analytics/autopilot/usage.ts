@@ -11,6 +11,8 @@ const site = new AsyncLocalStorage<{ accountId: string }>();
 
 /** Runs `work` on behalf of one site, so what it spends is counted for that site. */
 export const forSite = <T>(accountId: string, work: () => Promise<T>): Promise<T> => site.run({ accountId }, work);
+/** Runs `work` as the platform's own (a check of the app, not work for the site): nothing is counted against a site. */
+export const asPlatform = <T>(work: () => Promise<T>): Promise<T> => site.exit(work);
 export const currentSite = (): string | null => site.getStore()?.accountId ?? null;
 
 export type Spend = "ai" | "search";
