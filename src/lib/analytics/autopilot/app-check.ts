@@ -7,6 +7,9 @@ import type { Problem } from "./inspector";
 import { readAccountAutopilot, readPlatformSettings, aiProvider } from "./settings";
 import { readStrategy } from "./strategist";
 import { asPlatform, siteVerified } from "./usage";
+import { readClientErrors } from "./client-errors";
+import { findProspects } from "./backlinks";
+const domainOf = (site: string) => new URL(site.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "");
 import { reviewCustomerView } from "./writer";
 
 /**
@@ -69,6 +72,8 @@ const READY_DAYS: Record<Section, number> = { visits: 7, plan: 8, backlinks: 5, 
 
 interface Saved {
   at: string;
+  /** When each section was last repaired, so a repair that didn't work is escalated instead of repeated. */
+  repaired?: Partial<Record<Section, string>>;
   aiAt: string | null;
   shape: Shape;
   age: number;
@@ -178,6 +183,42 @@ async function ageOf(accountId: string): Promise<number> {
 }
 
 /**
+ * Puts the agent that fills an empty section back to work now, instead of waiting for its usual turn. Returns what it
+ * did, or null when no agent can fill it (then the code repair agent and the platform owner take it).
+ */
+async function repairSection(accountId: string, s: Section, conn: Connection | null): Promise<string | null> {
+  switch (s) {
+    case "plan":
+      await sql`DELETE FROM insights_settings WHERE key = ${`strategy_tried:${accountId}`}`;
+      await sql`UPDATE insights_settings SET updated_at = now() - interval '8 days' WHERE key = ${`strategy:${accountId}`}`;
+      return "The Strategist was told to plan this site on the next hourly check.";
+    case "keywords":
+      await sql`UPDATE insights_settings SET updated_at = now() - interval '8 days' WHERE key = ${`sitekw:${accountId}`}`;
+      return "The keyword agent was told to read this site's searches again on the next hourly check.";
+    case "business":
+      await sql`DELETE FROM insights_settings WHERE key = ${`business_tried:${accountId}`}`;
+      return "The business profile agent was told to read the site again on the next hourly check.";
+    case "ranks":
+      await sql`UPDATE insights_account_autopilot SET upkeep_tried_at = NULL WHERE account_id = ${accountId}`;
+      return "The rank tracker was told to check this site on the next hourly check.";
+    case "changes":
+      await sql`UPDATE insights_account_autopilot SET run_tried_at = NULL WHERE account_id = ${accountId}`;
+      return "The autopilot was told to run for this site on the next hourly check.";
+    case "backlinks": {
+      // Found until now only when the owner opened the Backlinks page; the checker finds them itself.
+      const platform = await readPlatformSettings();
+      const profile = await readProfile(accountId).catch(() => null);
+      const domain = profile?.siteDomain ?? (conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : null);
+      if (!platform.serperKey || !domain) return null;
+      const list = await findProspects(accountId, platform.serperKey, domain, profile?.brandName ?? null);
+      return `The backlink agent searched now and found ${list.prospects.length} ${list.prospects.length === 1 ? "site" : "sites"}.`;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * Runs the App checker for one site when due, and returns what it found (the saved findings between runs).
  * Never throws: a failure of the checker itself is reported as a problem, not swallowed.
  */
@@ -210,6 +251,37 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
     });
     const verified = await siteVerified(accountId).catch(() => true);
     const problems = ruleProblems({ report, reportError, reportMs, conn: { ga: Boolean(conn?.gaPropertyId), gsc: Boolean(conn?.gscSiteUrl) }, verified, shape, age, peers });
+
+    // Act, don't just show: an empty section's agent is put back to work. Once a day per section at most; a repair
+    // that didn't fill it within a day stays listed for the code repair agent.
+    const repaired = { ...(saved?.repaired ?? {}) };
+    for (const p of problems) {
+      const s = /^app:empty:(\w+)$/.exec(p.id)?.[1] as Section | undefined;
+      if (!s) continue;
+      const last = repaired[s];
+      if (last && Date.now() - Date.parse(last) < DAY) {
+        p.fix = "An agent was put back to work on it within the last day; if it stays empty, the code repair agent looks at the cause.";
+        continue;
+      }
+      const did = await repairSection(accountId, s, conn).catch((e) => (console.error(`app check repair of ${s} failed: ${(e as Error).message}`), null));
+      if (did) {
+        repaired[s] = new Date().toISOString();
+        p.who = "repaired";
+        p.fix = did;
+      }
+    }
+
+    // What broke in owners' browsers in the last 3 days: script errors, failed requests, layout and drawing crashes.
+    const browser = (await readClientErrors(accountId)).filter((e) => Date.now() - Date.parse(e.last) < 3 * DAY);
+    for (const e of browser.slice(0, 8)) {
+      problems.push({
+        id: `app:browser:${createHash("sha1").update(`${e.kind}|${e.message}|${e.where}`).digest("hex").slice(0, 10)}`,
+        text: `In the owner's browser (${e.kind}${e.where ? ` on ${e.where}` : ""}${e.width ? `, ${e.width}px wide` : ""}), ${e.count} ${e.count === 1 ? "time" : "times"}: ${e.message.slice(0, 200)}`,
+        fix: "The code repair agent fixes it in the app's code.",
+        who: "watching",
+        platform: true,
+      });
+    }
 
     // Once a day: a second AI reads the whole view like a customer would, and the first confirms each point.
     let aiProblems = saved?.aiProblems ?? [];
@@ -244,7 +316,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
       }
     }
     // A shape read from a failed Report isn't the site's real one, so other sites keep comparing with the last good one.
-    const next: Saved = { at: new Date().toISOString(), aiAt, shape: report || !saved?.shape ? shape : saved.shape, age, problems, aiProblems };
+    const next: Saved = { at: new Date().toISOString(), aiAt, shape: report || !saved?.shape ? shape : saved.shape, age, problems, aiProblems, repaired };
     await sql`INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(next)})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
     return [...problems, ...aiProblems];

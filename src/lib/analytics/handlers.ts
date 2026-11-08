@@ -53,6 +53,7 @@ import {
 } from "./autopilot/shopify";
 import { appStatuses } from "./autopilot/apps";
 import { accountsDueForHealth, checkHealth, healthReport } from "./autopilot/health";
+import { cleanReport, saveClientError } from "./autopilot/client-errors";
 import { heartbeatEnd, heartbeatStart, judgeHeartbeat, readHeartbeat } from "./autopilot/heartbeat";
 import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
@@ -995,6 +996,20 @@ export const weeklyReportPreview = (req: Request) =>
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch((e) => console.error(`weekly preview couldn't be kept: ${message(e)}`));
     return json({ data });
   });
+
+/** A problem from an owner's browser (a script error, a failed request, a layout wider than the screen, a crash). */
+export async function clientErrors(req: Request): Promise<Response> {
+  try {
+    const report = cleanReport(await req.json().catch(() => null));
+    if (!report) return json({ ok: true });
+    // Kept with the account when signed in; problems before sign in are kept together.
+    const account = await accountOf(req).catch(() => null);
+    await saveClientError(account?.id ?? "anon", report);
+  } catch (e) {
+    console.error(`client error not kept: ${message(e)}`);
+  }
+  return json({ ok: true });
+}
 
 /** Each agent's record on this site (Advanced view). */
 export const agentScorecard = (req: Request) => withAccount(req, async (account) => json({ scores: await readScorecard(account.id) }));

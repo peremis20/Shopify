@@ -31,6 +31,7 @@ type Handler = (req: Request) => Promise<Response>;
 const routes: Record<string, Handler> = {
   "GET /api/session": api.session,
   "GET /api/heartbeat": api.heartbeat,
+  "POST /api/client-errors": api.clientErrors,
   "GET /api/auth/google/start": api.authStart,
   "GET /api/auth/google/callback": api.authCallback,
   "GET /api/auth/google/link": api.googleLinkStart,

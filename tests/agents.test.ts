@@ -130,3 +130,13 @@ test("app check: broken numbers are caught and a long view is shortened, never c
   assert.ok(out.length <= 2000);
   assert.deepEqual(JSON.parse(out).shortenedByChecker, ["report.agents"]);
 });
+
+import { cleanReport } from "../src/lib/analytics/autopilot/client-errors";
+
+test("browser errors: the app's own problems are kept, extension noise and junk are not", () => {
+  assert.deepEqual(cleanReport({ kind: "layout", message: "The page is 40px wider", where: "/#report", width: 390 }), { kind: "layout", message: "The page is 40px wider", where: "/#report", width: 390 });
+  assert.equal(cleanReport({ kind: "script", message: "ResizeObserver loop limit exceeded" }), null);
+  assert.equal(cleanReport({ kind: "evil", message: "x" }), null);
+  assert.equal(cleanReport(null), null);
+  assert.equal(cleanReport({ kind: "script", message: "x".repeat(900) })?.message.length, 500);
+});

@@ -12,7 +12,7 @@ About 20,000 visitors a month from Google, and revenue from them. Every feature 
 - **Plan:** the Strategist (`autopilot/strategist.ts`) plans each week from real numbers; a second AI from another provider challenges every move, and only moves backed by the data are acted on.
 - **Act:** the autopilot improves pages, writes new articles (checked by a second AI so they read as human), adds internal links, and finds backlink prospects. Easy searches first, harder ones as site strength grows.
 - **Measure:** daily rank checks; every change is measured and kept or undone.
-- **Watch each other:** the Inspector (`autopilot/inspector.ts`) checks every part each hour, repairs what an agent can, and tells the owner in plain words what only a person can fix. Services report to the status board (`autopilot/status.ts`) so nothing fails quietly.
+- **Watch each other:** the Inspector (`autopilot/inspector.ts`) checks every part each hour, repairs what an agent can, and tells the owner in plain words what only a person can fix. Services report to the status board (`autopilot/status.ts`) so nothing fails quietly. The App checker (`autopilot/app-check.ts`) looks past every agent's job at each account as its owner sees it, puts stalled agents back to work, and collects browser errors; the code repair agent (`docs/code-repair.md`, a scheduled Claude Code session) fixes the app's own code, releases it after tests and review, and rolls back a bad release.
 - **Learn:** the Learning loop (`autopilot/apps/feedback.ts`) feeds results back: rescue drops, follow sales, build on won links.
 
 ## Rules for building it
