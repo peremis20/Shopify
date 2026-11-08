@@ -12,6 +12,7 @@ import {
   cleanTypes,
   DEFAULT_SELLS,
   guessBusinessTypes,
+  healthRulesApply,
   isHealthSite,
   siteBrief,
 } from "../src/lib/analytics/profile";
@@ -74,4 +75,19 @@ test("site types: faith topics fit a church or a faith and health publication", 
   assert.equal(allowsFaith("nonprofit"), true);
   assert.equal(allowsFaith("faith_health"), true);
   assert.equal(allowsFaith("saas"), false);
+});
+
+test("site types: health rules stay on until the site is known not to be a health site", () => {
+  const p = (businessType: string | null, suggestedTypes: string[], suggestedRead: boolean) =>
+    healthRulesApply({ businessType: businessType as never, suggestedTypes: suggestedTypes as never, suggestedRead });
+  assert.equal(p("saas", [], true), false);
+  assert.equal(p("supplements", [], true), true);
+  assert.equal(p(null, [], false), true, "not read yet: a health store that skipped setup keeps its guardrail");
+  assert.equal(p(null, [], true), true, "read but unclear: stays on");
+  assert.equal(p(null, ["saas", "agency"], true), false, "read as software: off");
+  assert.equal(p(null, ["ecommerce", "supplements"], true), true, "any health suggestion: on");
+});
+
+test("site types: weak words alone don't suggest a type", () => {
+  assert.deepEqual(guessBusinessTypes("Big sale on our platform. Read the news about our strategy and upcoming tax changes."), []);
 });

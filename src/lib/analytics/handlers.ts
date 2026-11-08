@@ -78,7 +78,7 @@ import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLin
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { ABOUT_FIELDS, assertPublicUrl, bareDomain, DEFAULT_SELLS, isHealthSite, readProfile, saveAbout, saveProfile, siteBrief } from "./profile";
+import { ABOUT_FIELDS, assertPublicUrl, bareDomain, DEFAULT_SELLS, healthRulesApply, readProfile, saveAbout, saveProfile, siteBrief } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
@@ -1249,7 +1249,7 @@ async function fixLinks(accountId: string, force: boolean): Promise<number> {
 /** Weekly claim guard scan of the whole store (read only), whenever a store is connected. */
 async function runClaimScan(accountId: string, force: boolean): Promise<number> {
   // Health claim rules apply to health and wellness sites only.
-  if (!isHealthSite((await readProfile(accountId)).businessType)) return 0;
+  if (!healthRulesApply(await readProfile(accountId))) return 0;
   const acct = await readAccountAutopilot(accountId);
   if (!(force || (await claimScanDue(accountId)))) return 0;
   if (acct.shopDomain && acct.shopTokenEnc) return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
@@ -1314,7 +1314,7 @@ export const autopilotWatch = (req: Request) =>
       claimReport(account.id),
       overlapReport(account.id),
     ]);
-    const healthSite = isHealthSite((await readProfile(account.id)).businessType);
+    const healthSite = healthRulesApply(await readProfile(account.id));
     return json({ ranks, health, claims, overlap, healthSite, roles: await keywordRoles(account.id) });
   });
 
@@ -1338,7 +1338,7 @@ export const autopilotCheckNow = (req: Request) =>
       claimReport(account.id),
       overlapReport(account.id),
     ]);
-    const healthSite = isHealthSite((await readProfile(account.id)).businessType);
+    const healthSite = healthRulesApply(await readProfile(account.id));
     return json({ ranks, health, claims, overlap, healthSite });
   });
 

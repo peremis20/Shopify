@@ -53,30 +53,44 @@ async function ownPagesText(accountId: string, domain: string): Promise<string> 
   return picked.map((p) => `${p.title}\n${p.metaDescription ?? ""}\n${p.text.slice(0, 5000)}`).join("\n\n");
 }
 
+/** True once at least one of the site's pages has been read and stored (a cheap check, no page text). */
+export async function hasSitePages(accountId: string): Promise<boolean> {
+  await ensureSchema();
+  const [row] = await sql`SELECT 1 AS ok FROM insights_site_pages WHERE account_id = ${accountId} AND status = 200 LIMIT 1`;
+  return Boolean(row);
+}
+
 /**
  * The likely kinds of site, read from its own pages, saved so setup offers
- * them first. The AI picks (checked by a second AI) come first; the word
- * cues on the pages back them up and stand in when no AI is set up or it
- * fails. Never invents a type: with no clear evidence the list stays empty
- * and the owner sees every type.
+ * them first. The word cues on the pages are saved straight away (so the
+ * site counts as read and a second page load doesn't read it again); then
+ * the AI picks, checked by a second AI, go first. A pick the checking AI
+ * rejected is never offered, even if the word cues point to it. Never
+ * invents a type: with no clear evidence the list stays empty and the owner
+ * sees every type.
  */
 export async function detectSiteTypes(accountId: string, timeoutMs = 15_000): Promise<BusinessType[]> {
   const profile = await readProfile(accountId);
   if (!profile.siteDomain) return [];
   const text = await ownPagesText(accountId, profile.siteDomain);
-  if (!text.trim()) return [];
-  const words = guessBusinessTypes(text);
-  let fromAi: string[] = [];
+  const words = text.trim() ? guessBusinessTypes(text) : [];
+  await saveSuggestedTypes(accountId, words);
+  if (!text.trim()) return words;
   const ai = aiProvider(await readPlatformSettings().catch(() => ({}) as never));
-  if (ai) {
-    const options = BUSINESS_TYPES.map(({ id, label, group }) => ({ id, label, group }));
-    const timeout = new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error("site type reading took too long")), timeoutMs));
-    fromAi = await Promise.race([readSiteTypes(ai, text, options), timeout]).catch((e) => {
+  if (!ai) return words;
+  const options = BUSINESS_TYPES.map(({ id, label, group }) => ({ id, label, group }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("site type reading took too long")), timeoutMs);
+  });
+  const fromAi = await Promise.race([readSiteTypes(ai, text, options), timeout])
+    .catch((e) => {
       console.error(`site type reading failed: ${e instanceof Error ? e.message : String(e)}`);
-      return [];
-    });
-  }
-  const types = cleanTypes([...fromAi, ...words]);
+      return null;
+    })
+    .finally(() => clearTimeout(timer));
+  if (!fromAi) return words;
+  const types = cleanTypes([...fromAi.types, ...words.filter((w) => w !== fromAi.rejected)]);
   await saveSuggestedTypes(accountId, types);
   return types;
 }

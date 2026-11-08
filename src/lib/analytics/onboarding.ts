@@ -7,8 +7,8 @@ import { getConnection, saveConnection, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listProperties } from "./properties";
-import { bareDomain, BUSINESS_TYPES, isHealthSite, readProfile, saveProfile, type BusinessType, type Profile } from "./profile";
-import { detectSiteTypes } from "./autopilot/business-profile";
+import { bareDomain, BUSINESS_TYPES, healthRulesApply, readProfile, saveProfile, type BusinessType, type Profile } from "./profile";
+import { detectSiteTypes, hasSitePages } from "./autopilot/business-profile";
 import { PLATFORM_LABEL, type Platform } from "./site-crawl";
 import { readConnection } from "./autopilot/connections";
 import { snippetInstalled } from "./autopilot/snippet";
@@ -196,8 +196,8 @@ export async function onboardingStatus(accountId: string, email: string): Promis
   ]);
   // A site connected before types were suggested (or through Shopify or WordPress) is read once, the first time setup asks.
   let suggested: BusinessType[] = profile.suggestedTypes;
-  if (!profile.businessType && profile.siteDomain && !profile.suggestedRead)
-    suggested = await detectSiteTypes(accountId).catch(() => []);
+  if (!profile.businessType && profile.siteDomain && !profile.suggestedRead && (await hasSitePages(accountId).catch(() => false)))
+    suggested = await detectSiteTypes(accountId, 8_000).catch(() => []);
   const [wf, wx] = await Promise.all([
     readConnection("webflow", accountId).catch(() => null),
     readConnection("wix", accountId).catch(() => null),
@@ -245,7 +245,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       done: Boolean(profile.businessType),
       detail: profile.businessType
         ? `${brand ?? "Your site"}: ${BUSINESS_TYPES.find((b) => b.id === profile.businessType)?.label.toLowerCase()}.`
-        : "So every change fits what you sell and stays within health claim rules.",
+        : "So every change fits what your site offers and who it serves.",
     },
     {
       id: "search_console",
@@ -286,7 +286,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       title: "Run the first site check",
       // The overlap check runs for every site; the claim check only for health sites.
       done: Boolean(claims?.checkedAt || overlap?.checkedAt),
-      detail: isHealthSite(profile.businessType)
+      detail: healthRulesApply(profile)
         ? claims?.checkedAt || overlap?.checkedAt
           ? "Health, claims and overlap checks are running weekly."
           : "Checks rankings, site health, risky claims and overlapping pages."

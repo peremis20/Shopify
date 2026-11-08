@@ -16,21 +16,21 @@ import { ensureSchema, sql } from "./db";
  */
 export const BUSINESS_TYPES = [
   // Software and online services
-  { id: "saas", group: "Software and online services", label: "Software or SaaS", sells: "software and online tools", cues: ["saas", "software", "dashboard", "free trial", "start free", "sign up free", "pricing", "per month", "/mo", "api", "integrations", "automate", "automation", "platform", "app for", "subscription plan"] },
+  { id: "saas", group: "Software and online services", label: "Software or SaaS", sells: "software and online tools", cues: ["saas", "software", "dashboard", "free trial", "start free", "sign up free", "pricing", "per month", "a month", "api", "integrations", "automate", "automation", "app for", "subscription plan", "no credit card"] },
   { id: "mobile_app", group: "Software and online services", label: "Mobile app", sells: "a mobile app", cues: ["app store", "google play", "download the app", "ios", "android", "iphone app"] },
   { id: "online_course", group: "Software and online services", label: "Online courses or coaching", sells: "online courses and coaching", cues: ["course", "courses", "lesson", "enroll", "coaching", "masterclass", "students", "curriculum", "certificate"] },
   // Stores
-  { id: "ecommerce", group: "Online stores", label: "Online store", sells: "products online", cues: ["add to cart", "shop now", "free shipping", "checkout", "in stock", "sale", "collections", "returns"] },
+  { id: "ecommerce", group: "Online stores", label: "Online store", sells: "products online", cues: ["add to cart", "shop now", "free shipping", "checkout", "in stock", "on sale", "shop all", "free returns"] },
   { id: "fashion", group: "Online stores", label: "Clothing, shoes or jewelry", sells: "clothing, shoes and accessories", cues: ["dress", "shirt", "shoes", "jewelry", "apparel", "clothing", "sizes", "outfit"] },
   { id: "home_goods", group: "Online stores", label: "Home, garden or furniture", sells: "home and garden products", cues: ["furniture", "decor", "garden", "kitchen", "bedding", "home goods"] },
   // Services
-  { id: "local_service", group: "Services", label: "Local service business", sells: "local services", cues: ["call us", "book an appointment", "free estimate", "free quote", "service area", "near you", "licensed and insured", "serving"] },
-  { id: "agency", group: "Services", label: "Agency or consulting", sells: "professional services", cues: ["agency", "consulting", "consultant", "our clients", "case studies", "we help businesses", "marketing services", "strategy"] },
-  { id: "professional", group: "Services", label: "Law, finance or real estate", sells: "professional services", cues: ["attorney", "lawyer", "law firm", "accounting", "tax", "insurance", "realtor", "real estate", "mortgage", "financial advisor"] },
+  { id: "local_service", group: "Services", label: "Local service business", sells: "local services", cues: ["call us", "book an appointment", "free estimate", "free quote", "service area", "near you", "licensed and insured", "proudly serving"] },
+  { id: "agency", group: "Services", label: "Agency or consulting", sells: "professional services", cues: ["agency", "consulting", "consultant", "our clients", "case studies", "we help businesses", "marketing services", "book a call"] },
+  { id: "professional", group: "Services", label: "Law, finance or real estate", sells: "professional services", cues: ["attorney", "lawyer", "law firm", "accounting", "tax preparation", "insurance agency", "realtor", "real estate", "mortgage", "financial advisor"] },
   { id: "restaurant", group: "Services", label: "Restaurant, cafe or food", sells: "food and dining", cues: ["menu", "reservations", "order online", "dine in", "takeout", "restaurant", "cafe", "catering"] },
-  { id: "travel", group: "Services", label: "Travel, hotel or events", sells: "travel and event services", cues: ["book your stay", "hotel", "tours", "vacation", "rooms", "events", "tickets", "venue"] },
+  { id: "travel", group: "Services", label: "Travel, hotel or events", sells: "travel and event services", cues: ["book your stay", "hotel", "tours", "vacation", "rooms", "upcoming events", "tickets", "venue"] },
   // Publishers and organizations
-  { id: "blog", group: "Publishers and organizations", label: "Blog, magazine or news site", sells: "articles and news", readers: true, cues: ["blog", "articles", "read more", "latest posts", "newsletter", "magazine", "news", "editor"] },
+  { id: "blog", group: "Publishers and organizations", label: "Blog, magazine or news site", sells: "articles and news", readers: true, cues: ["blog", "articles", "read more", "latest posts", "newsletter", "magazine", "latest news", "editor"] },
   { id: "nonprofit", group: "Publishers and organizations", label: "Nonprofit or church", sells: "a mission and community programs", readers: true, cues: ["donate", "nonprofit", "volunteer", "ministry", "church", "worship", "mission", "charity", "501(c)"] },
   { id: "education", group: "Publishers and organizations", label: "School or education", sells: "education", readers: true, cues: ["admissions", "school", "students", "campus", "tuition", "faculty", "enrollment"] },
   // Health and wellness (the original ids)
@@ -38,7 +38,7 @@ export const BUSINESS_TYPES = [
   { id: "skincare", group: "Health and wellness", label: "Skincare and beauty", sells: "skincare and beauty products", health: true, cues: ["skincare", "serum", "moisturizer", "cleanser", "beauty", "skin care", "cosmetics"] },
   { id: "fitness", group: "Health and wellness", label: "Fitness and sports nutrition", sells: "fitness and sports nutrition products", health: true, cues: ["workout", "fitness", "protein powder", "pre workout", "gym", "training program"] },
   { id: "health_store", group: "Health and wellness", label: "Health food or wellness store", sells: "natural health and wellness products", health: true, cues: ["organic", "wellness", "natural health", "herbal", "holistic"] },
-  { id: "practice", group: "Health and wellness", label: "Clinic or health practice", sells: "health care services", health: true, cues: ["clinic", "patients", "doctor", "dentist", "chiropractor", "therapy", "medical", "appointment"] },
+  { id: "practice", group: "Health and wellness", label: "Clinic or health practice", sells: "health care services", health: true, cues: ["clinic", "patients", "doctor", "dentist", "chiropractor", "therapy", "medical", "new patients"] },
   { id: "publisher", group: "Health and wellness", label: "Health magazine or blog", sells: "health and wellness articles", readers: true, health: true, cues: ["health tips", "nutrition", "wellness blog", "healthy living"] },
   { id: "faith_health", group: "Health and wellness", label: "Faith and health magazine or blog", sells: "health, wellness and faith articles", readers: true, health: true, cues: ["faith and health", "biblical health", "sabbath", "scripture"] },
   { id: "other", group: "Health and wellness", label: "Other health and wellness", sells: "health and wellness products", health: true, cues: [] },
@@ -54,6 +54,18 @@ export const DEFAULT_SELLS = "its products and services";
 /** Health claim rules (the Claim guard) apply only to health and wellness sites. */
 export const isHealthSite = (businessType: string | null | undefined): boolean =>
   BUSINESS_TYPES.some((b) => b.id === businessType && "health" in b && b.health);
+
+/**
+ * Whether health claim rules (the Claim guard) apply to this site. A known
+ * type decides it. While the type isn't picked yet they stay on, unless the
+ * site was read and nothing on it pointed to health: a health store that
+ * skipped setup keeps its guardrail, a SaaS site never sees it.
+ */
+export function healthRulesApply(p: Pick<Profile, "businessType" | "suggestedTypes" | "suggestedRead">): boolean {
+  if (p.businessType) return isHealthSite(p.businessType);
+  if (p.suggestedRead && p.suggestedTypes.length) return p.suggestedTypes.some((t) => isHealthSite(t));
+  return true;
+}
 
 const isBusinessType = (v: unknown): v is BusinessType => BUSINESS_TYPES.some((b) => b.id === v);
 

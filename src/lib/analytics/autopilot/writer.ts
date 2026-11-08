@@ -1635,7 +1635,7 @@ export async function readSiteTypes(
   ai: AiProvider,
   pagesText: string,
   options: readonly { id: string; label: string; group: string }[],
-): Promise<string[]> {
+): Promise<{ types: string[]; rejected: string | null }> {
   const ids = options.map((o) => o.id);
   const list = options.map((o) => `${o.id}: ${o.label} (${o.group})`).join("\n");
   const out = await askJson<{ types: string[] }>(
@@ -1654,7 +1654,7 @@ Return JSON "types": up to four ids from the list, the best fit first, only ones
     { type: "object", properties: { types: { type: "array", items: { type: "string", enum: ids } } }, required: ["types"] },
   );
   const picked = (out.types ?? []).filter((t, i, a) => ids.includes(t) && a.indexOf(t) === i).slice(0, 4);
-  if (!picked.length) return [];
+  if (!picked.length) return { types: [], rejected: null };
   const best = options.find((o) => o.id === picked[0])!;
   const check = await askJson<{ supported: boolean }>(
     reviewerOf(ai, false),
@@ -1668,7 +1668,7 @@ Statement: this website is a "${best.label}" site (${best.group}).
 Return JSON "supported": true only if the text clearly shows this, false if it is a guess or the text points elsewhere.`,
     { type: "object", properties: { supported: { type: "boolean" } }, required: ["supported"] },
   );
-  return check.supported === true ? picked : picked.slice(1);
+  return check.supported === true ? { types: picked, rejected: null } : { types: picked.slice(1), rejected: picked[0] };
 }
 
 export async function readBusiness(ai: AiProvider, pagesText: string): Promise<Record<string, string>> {
