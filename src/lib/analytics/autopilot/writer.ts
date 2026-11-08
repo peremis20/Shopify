@@ -585,7 +585,14 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
             ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
           }),
         });
-        const body = await res.json().catch(() => ({}));
+        // Read as text first, so an answer that isn't JSON is still seen in the error, never lost.
+        const raw = await res.text().catch(() => "");
+        let body: any = {}; // eslint-disable-line @typescript-eslint/no-explicit-any
+        try {
+          body = raw ? JSON.parse(raw) : {};
+        } catch {
+          body = {};
+        }
         if (res.ok) {
           const text: string = body.choices?.[0]?.message?.content ?? "";
           const finish: string = body.choices?.[0]?.finish_reason ?? "";
@@ -594,7 +601,7 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
           // Enough detail to tell a refusal, a filter or a cut off answer apart the next time this happens.
           const refusal: string = body.choices?.[0]?.message?.refusal ?? "";
           const used = body.usage ? ` ${body.usage.prompt_tokens ?? "?"} in, ${body.usage.completion_tokens ?? "?"} out` : "";
-          lastError = `${model}: ${text ? "the answer wasn't complete JSON" : "the answer was empty"} (${finish || (body.choices?.length ? "no reason" : `no choices, got ${Object.keys(body).slice(0, 5).join(" ") || "nothing"}`)}${used}${refusal ? `, refused: ${refusal.slice(0, 80)}` : ""})`;
+          lastError = `${model}: ${text ? "the answer wasn't complete JSON" : "the answer was empty"} (${finish || (body.choices?.length ? "no reason" : `no choices, got ${Object.keys(body).slice(0, 5).join(" ") || (raw ? `"${raw.slice(0, 120).replace(/\s+/g, " ")}"` : `an empty reply, ${res.headers.get("content-type") ?? "no type"}`)}`)}${used}${refusal ? `, refused: ${refusal.slice(0, 80)}` : ""})`;
           // A content filter answers the same in plain mode: go straight to the next model.
           if (finish === "content_filter") break modes;
           break; // try plain mode, or the next model
