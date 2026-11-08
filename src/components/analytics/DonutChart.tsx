@@ -10,7 +10,8 @@ interface Slice {
 
 export function DonutChart({ slices, centerValue, centerLabel }: {
   slices: Slice[];
-  centerValue: number;
+  /** null when the number isn't known: the ring shows "None", never a made up 0. */
+  centerValue: number | null;
   centerLabel: string;
 }) {
   const r = 62;
@@ -46,7 +47,7 @@ export function DonutChart({ slices, centerValue, centerLabel }: {
           })}
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="font-serif text-2xl text-dash-ink">{formatNumber(centerValue)}</span>
+          <span className="font-serif text-2xl text-dash-ink">{centerValue === null ? "None" : formatNumber(centerValue)}</span>
           <span className="text-xs text-dash-muted">{centerLabel}</span>
         </div>
       </div>

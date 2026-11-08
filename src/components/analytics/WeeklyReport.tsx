@@ -7,6 +7,8 @@ import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
 import { api, apiFresh } from "./seo-ui";
 import { Card, CardHeader, Skeleton } from "./ui";
 
+/** The product's goal for every site (CLAUDE.md), used before the first measurement. */
+const GOAL = 20000;
 const n = (v: number) => Math.round(v).toLocaleString("en-US");
 
 /** This week's report as charts and cards, from the site's own data. The weekly email sends the same numbers. */
@@ -55,6 +57,15 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
   const withLeads = traffic.filter((c) => c.now.keyEvents > 0);
   const maxLeads = Math.max(0, ...withLeads.map((c) => c.now.keyEvents));
   const google = traffic.find((c) => c.name === "Organic Search");
+  const shop = data.shopify && typeof data.shopify === "object" ? data.shopify : null;
+  const shopNote =
+    data.shopify === "access"
+      ? "Reconnect your store under Content to allow reading orders."
+      : data.shopify === "error"
+        ? "Shopify couldn't be read. Left out, not guessed."
+        : "Connect a Shopify store to count orders.";
+  const goal = Number(data.visitors?.goal) > 0 ? Number(data.visitors?.goal) : GOAL;
+  const bl = data.backlinks && typeof data.backlinks === "object" ? data.backlinks : null;
 
   return (
     <div className="mt-6 space-y-5">
@@ -67,57 +78,56 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Visits" value={traffic.length ? n(visits) : "None"} sub="all channels" />
         <Stat label="From Google" value={google ? n(google.now.sessions) : "None"} change={google ? [google.now.sessions, google.before.sessions] : undefined} />
-        <Stat label="Leads and sales" value={n(leads)} sub={sales > 0 ? `${n(sales)} in sales` : "key events"} />
+        <Stat label="Leads and sales" value={data.totals ? n(leads) : "None"} sub={!data.totals ? "connect Google Analytics" : sales > 0 ? `${n(sales)} in sales` : "key events"} />
         <Stat label="Work done" value={n(data.week.changes + data.week.articles + data.week.links)} sub={`${data.week.changes} changes, ${data.week.articles} ${data.week.articles === 1 ? "article" : "articles"}, ${data.week.links} ${data.week.links === 1 ? "link" : "links"}`} />
       </div>
 
       {/* Sales straight from Shopify */}
-      {data.shopify === "access" && (
-        <Card>
-          <p className="text-sm text-dash-ink">
-            To count sales from Google, DashPatrol needs permission to read your Shopify orders. Click Reconnect next to your store under Content and approve it.
-          </p>
-        </Card>
-      )}
-      {data.shopify && data.shopify !== "access" && (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <Stat label="Shopify orders (28 days)" value={`${data.shopify.capped ? "Over " : ""}${n(data.shopify.orders)}`} sub={`${n(data.shopify.revenue)} ${data.shopify.currency ?? ""} in sales`} />
-          <Stat label="Orders from Google search" value={n(data.shopify.fromGoogle)} sub={`${n(data.shopify.fromGoogleRevenue)} ${data.shopify.currency ?? ""} in sales`} />
-          {data.shopify.pages.length > 0 && (
-            <Card className="sm:col-span-2">
-              <p className="mb-2 text-sm text-dash-muted">Pages Google searchers bought from</p>
-              <div className="space-y-2">
-                {data.shopify.pages.slice(0, 4).map((p) => (
-                  <Funnel key={p.path} label={p.path} value={p.orders} max={data.shopify && data.shopify !== "access" ? data.shopify.pages[0].orders : 1} />
-                ))}
-              </div>
-            </Card>
+      {/* Every account sees the same sections; a missing source shows what to connect, never a made up number. */}
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Stat label="Shopify orders (28 days)" value={shop ? `${shop.capped ? "Over " : ""}${n(shop.orders)}` : "None"} sub={shop ? `${n(shop.revenue)} ${shop.currency ?? ""} in sales` : shopNote} />
+        <Stat label="Orders from Google search" value={shop ? n(shop.fromGoogle) : "None"} sub={shop ? `${n(shop.fromGoogleRevenue)} ${shop.currency ?? ""} in sales` : shopNote} />
+        <Card className="sm:col-span-2">
+          <p className="mb-2 text-sm text-dash-muted">Pages Google searchers bought from</p>
+          {shop && shop.pages.length > 0 ? (
+            <div className="space-y-2">
+              {shop.pages.slice(0, 4).map((p) => (
+                <Funnel key={p.path} label={p.path} value={p.orders} max={shop.pages[0].orders} />
+              ))}
+            </div>
+          ) : (
+            <Empty text={shop ? "No orders from Google yet." : shopNote} />
           )}
-        </div>
-      )}
+        </Card>
+      </div>
 
       {/* Goal */}
-      {data.visitors && (
-        <Card>
-          <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 text-sm">
-            <span className="font-semibold text-dash-ink">Goal: {n(data.visitors.goal)} Google visitors a month</span>
-            <span className="tabular-nums text-dash-muted">{n(data.visitors.value)} now</span>
-          </div>
-          <Bar value={data.visitors.value} max={data.visitors.goal} />
-          {data.focus && <p className="mt-3 text-sm text-dash-ink">{data.focus}</p>}
-        </Card>
-      )}
+      <Card>
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 text-sm">
+          <span className="font-semibold text-dash-ink">Goal: {n(goal)} Google visitors a month</span>
+          <span className="tabular-nums text-dash-muted">{data.visitors ? `${n(data.visitors.value)} now` : "Not measured yet"}</span>
+        </div>
+        <Bar value={data.visitors?.value ?? 0} max={goal} />
+        <p className="mt-3 text-sm text-dash-ink">{data.focus || "The Strategist sets the focus with the next weekly plan."}</p>
+      </Card>
 
       <div className="grid gap-5 xl:grid-cols-2">
         {/* Channels */}
         <Card>
           <CardHeader title="Where visits came from" />
-          {data.traffic === "none" ? (
-            <p className="text-sm text-dash-muted">Connect Google Analytics in Settings.</p>
-          ) : data.traffic === "error" ? (
-            <p className="text-sm text-dash-muted">Google Analytics couldn&apos;t be read. Left out, not guessed.</p>
-          ) : traffic.length === 0 ? (
-            <p className="text-sm text-dash-muted">No visits recorded.</p>
+          {traffic.length === 0 ? (
+            <>
+              <DonutChart slices={[]} centerValue={data.totals ? 0 : null} centerLabel="visits" />
+              <Empty
+                text={
+                  data.traffic === "none"
+                    ? "Connect Google Analytics in Settings."
+                    : data.traffic === "error"
+                      ? "Google Analytics couldn't be read. Left out, not guessed."
+                      : "No visits recorded yet. They show here as they come in."
+                }
+              />
+            </>
           ) : (
             <>
               <DonutChart
@@ -141,41 +151,37 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
         {/* Backlinks funnel */}
         <Card>
           <CardHeader title="Backlinks" />
-          {data.backlinks ? (
-            <div className="space-y-3">
-              <Funnel label="Sites found" value={data.backlinks.found} max={data.backlinks.found} />
-              <Funnel label="Emails ready" value={data.backlinks.ready} max={data.backlinks.found} />
-              <Funnel label="Emailed" value={data.backlinks.emailed} max={data.backlinks.found} />
-              <Funnel label="Links won" value={data.backlinks.wonAll} max={data.backlinks.found} note={data.backlinks.wonWeek ? `${data.backlinks.wonWeek} this week` : undefined} />
-              {data.backlinks.fromLinks.length > 0 && (
-                <p className="text-xs text-dash-muted">Visits from your links: {data.backlinks.fromLinks.map((x) => `${x.domain} ${x.visits}`).join(", ")}</p>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-dash-muted">No sites found yet.</p>
-          )}
+          <div className="space-y-3">
+            <Funnel label="Sites found" value={bl?.found ?? 0} max={bl?.found ?? 0} />
+            <Funnel label="Emails ready" value={bl?.ready ?? 0} max={bl?.found ?? 0} />
+            <Funnel label="Emailed" value={bl?.emailed ?? 0} max={bl?.found ?? 0} />
+            <Funnel label="Links won" value={bl?.wonAll ?? 0} max={bl?.found ?? 0} note={bl?.wonWeek ? `${bl.wonWeek} this week` : undefined} />
+            {bl && bl.fromLinks.length > 0 && (
+              <p className="text-xs text-dash-muted">Visits from your links: {bl.fromLinks.map((x) => `${x.domain} ${x.visits}`).join(", ")}</p>
+            )}
+            {!bl && <Empty text={data.backlinks === "error" ? "Backlinks couldn't be read. Left out, not guessed." : "The backlink agent is looking for sites. They show here once found."} />}
+          </div>
         </Card>
       </div>
 
       {/* Plan */}
-      {data.plan.length > 0 && (
-        <Card>
-          <CardHeader title="This week's plan" />
-          <ol className="space-y-1.5">
+      <Card>
+        <CardHeader title="This week's plan" />
+        {data.plan.length === 0 && <Empty text="The Strategist writes the plan with the next weekly run." />}
+        <ol className="space-y-1.5">
             {data.plan.map((m, i) => (
               <li key={i} className="flex gap-2 text-sm">
                 <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-dash-green text-xs font-semibold text-white">{i + 1}</span>
                 <span className="min-w-0 text-dash-ink">{m}</span>
               </li>
-            ))}
-          </ol>
-        </Card>
-      )}
+          ))}
+        </ol>
+      </Card>
 
       {/* Agents */}
-      {data.agents.length > 0 && (
-        <Card>
-          <CardHeader title="What each agent did" />
+      <Card>
+        <CardHeader title="What each agent did" />
+        {data.agents.length === 0 && <Empty text="The agents' work shows here after their first run." />}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {data.agents.map((a) => (
               <div key={a.agent} className="rounded-lg border border-dash-line bg-[#FBF8F2] px-3 py-2">
@@ -185,8 +191,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
               </div>
             ))}
           </div>
-        </Card>
-      )}
+      </Card>
 
       <p className="text-center text-xs text-dash-muted">A rise after a change is a good sign, not proof the change caused it.</p>
     </div>
@@ -234,4 +239,8 @@ function Funnel({ label, value, max, note }: { label: string; value: number; max
       <Bar value={value} max={max} />
     </div>
   );
+}
+
+function Empty({ text }: { text: string }) {
+  return <p className="mt-2 text-xs text-dash-muted">{text}</p>;
 }

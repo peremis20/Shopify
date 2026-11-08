@@ -208,10 +208,10 @@ export interface WeeklyReportData {
   traffic: "none" | "error" | { name: string; now: ChannelResult; before: ChannelResult }[];
   /** Every channel added up (the chart shows the top six). */
   totals: { visits: number; leads: number; revenue: number } | null;
-  backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | null;
+  backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
-  shopify: { orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | null;
+  shopify: { orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
 }
 
 /** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
@@ -220,7 +220,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     readStrategy(accountId).catch(() => null),
     readScorecard(accountId).catch(() => []),
     getConnection(accountId).catch(() => null),
-    readProspects(accountId).catch(() => null),
+    readProspects(accountId).catch(() => "error" as const),
   ]);
   const [week] = await sql`
     SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
@@ -231,7 +231,8 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
   const fresh = strategy && Date.now() - Date.parse(strategy.at) < 8 * 864e5 ? strategy : null;
   const results = conn?.gaPropertyId ? await weekResults(conn).catch((e) => (console.error(`weekly results failed: ${(e as Error).message}`), undefined)) : null;
   const recent = (at?: string) => Boolean(at && Date.now() - Date.parse(at) < WEEK_MS);
-  const won = (list?.prospects ?? []).filter((p) => p.status === "won");
+  const prospects = list === "error" ? null : list;
+  const won = (prospects?.prospects ?? []).filter((p) => p.status === "won");
   const fromLinks = results
     ? won
         .map((p) => {
@@ -253,18 +254,19 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     totals: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })
       : null,
-    backlinks: list?.prospects.length
+    backlinks: list === "error" ? "error" : prospects?.prospects.length
       ? {
-          found: list.prospects.length,
-          ready: list.prospects.filter((p) => p.status === "new" && p.draft).length,
-          emailed: list.prospects.filter((p) => p.status === "contacted" || p.status === "won").length,
+          found: prospects.prospects.length,
+          ready: prospects.prospects.filter((p) => p.status === "new" && p.draft).length,
+          emailed: prospects.prospects.filter((p) => p.status === "contacted" || p.status === "won").length,
           wonWeek: won.filter((p) => recent(p.statusAt)).length,
           wonAll: won.length,
           fromLinks,
         }
       : null,
     agents: scores.map((x) => ({ agent: x.agent, did: x.did, result: x.result })),
-    shopify: await salesFor(accountId).catch(() => null),
+    // A failed read is "error", never mistaken for "no store".
+    shopify: await salesFor(accountId).catch((e) => (console.error(`weekly shopify sales failed: ${(e as Error).message}`), "error" as const)),
   };
 }
 
