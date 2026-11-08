@@ -226,7 +226,7 @@ export async function refreshSiteKeywords(accountId: string, brand: string, serp
           ? `You're #${ours}; ${small} smaller sites on page 1`
           : small >= 3
             ? `${small} smaller sites on page 1${k.why ? `, ${k.why}` : ""}`
-            : "Page 1 is mostly big health sites";
+            : "Page 1 is mostly big, well known sites";
     }
   }
   // Main targets first (winnable, then Easy before Medium before Hard, then by searches), then the broad ones that support them.

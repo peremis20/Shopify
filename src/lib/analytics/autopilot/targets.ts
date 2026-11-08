@@ -90,7 +90,7 @@ async function bestPage(accountId: string, keyword: string): Promise<string | nu
 
 function describe(small: number, ours: number | null): string {
   if (ours !== null) return `You're #${ours} on Google; ${small} smaller sites on page 1`;
-  return small >= 3 ? `${small} smaller sites on page 1, so there's room` : "Page 1 is mostly big health sites, so this one is hard";
+  return small >= 3 ? `${small} smaller sites on page 1, so there's room` : "Page 1 is mostly big, well known sites, so this one is hard";
 }
 
 export async function addTarget(
