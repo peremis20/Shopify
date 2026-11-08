@@ -1682,8 +1682,9 @@ export async function reviewCustomerView(ai: AiProvider, view: string, usualSect
     properties: { issues: { type: "array", items: { type: "object", properties: { text: { type: "string" }, fix: { type: "string" }, evidence: { type: "string" } }, required: ["text", "fix", "evidence"] } } },
     required: ["issues"],
   };
+  const reviewer = reviewerOf(ai, false);
   const found = await askJson<{ issues: { text: string; fix: string; evidence: string }[] }>(
-    reviewerOf(ai, false),
+    reviewer,
     `You test a website growth app (DashPatrol) by looking at one customer's account exactly as the customer sees it. Look past any one feature: anything a paying customer would find broken, empty without a reason, contradictory, confusing, out of date or not worth paying for counts.
 
 What this customer sees (JSON, their own data only):
@@ -1696,9 +1697,9 @@ List each real problem: text (one short plain sentence a person understands), fi
   );
   const issues = (found.issues ?? []).filter((i) => i.text && i.evidence).slice(0, 5);
   if (!issues.length) return [];
-  // The first AI confirms each point against the data before it counts.
+  // The first AI confirms each point against the data before it counts; never the reviewer's own provider, so the check stays independent.
   const checked = await askJson<{ keep: boolean[] }>(
-    { ...ai, site: undefined },
+    { ...ai, site: undefined, backups: (ai.backups ?? []).filter((b) => b.kind !== reviewer.kind) },
     `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, or just a new or small site that the page already explains.
 
 JSON:

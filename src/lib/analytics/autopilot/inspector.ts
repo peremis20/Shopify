@@ -349,7 +349,8 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   }
 
   // 7. Beyond every agent's own job: the App checker looks at the account the way its owner sees it.
-  if (opts.repair) problems.push(...(await appCheck(accountId, conn)));
+  // The hourly tick runs it; the Inspector page and the Strategist read what it last found, so nothing is erased.
+  problems.push(...(await appCheck(accountId, conn, { readOnly: !opts.repair })));
 
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${`inspect:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), problems })})

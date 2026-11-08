@@ -86,10 +86,10 @@ test("gemini schema: a field that may be null becomes one type with nullable", (
   assert.equal(out.properties.n.type, "NUMBER");
 });
 
-import { badText, ruleProblems, visibleText } from "../src/lib/analytics/autopilot/app-check";
+import { badText, fitView, ruleProblems, visibleText } from "../src/lib/analytics/autopilot/app-check";
 
-const fullShape = { visits: true, plan: true, agents: true, backlinks: true, keywords: true, pages: true, ranks: true, business: true, changes: true };
-const emptyShape = { visits: false, plan: false, agents: false, backlinks: false, keywords: false, pages: false, ranks: false, business: false, changes: false };
+const fullShape = { visits: true, plan: true, backlinks: true, keywords: true, pages: true, ranks: true, business: true, changes: true };
+const emptyShape = { visits: false, plan: false, backlinks: false, keywords: false, pages: false, ranks: false, business: false, changes: false };
 
 test("app check: leaked values and dashes in customer text are caught, addresses are not", () => {
   assert.equal(badText("Visits: NaN"), "a broken value");
@@ -100,18 +100,30 @@ test("app check: leaked values and dashes in customer text are caught, addresses
 
 test("app check: a section empty long after connecting is flagged when most sites have it", () => {
   const peers = [{ shape: fullShape, age: 30 }, { shape: fullShape, age: 20 }];
-  const base = { report: null, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, peers };
+  const base = { report: null, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, verified: true, peers };
   const ids = ruleProblems({ ...base, shape: { ...fullShape, backlinks: false }, age: 10 }).map((p) => p.id);
   assert.deepEqual(ids, ["app:empty:backlinks"]);
   // A brand new site is given time.
   assert.deepEqual(ruleProblems({ ...base, shape: emptyShape, age: 1 }), []);
   // Empty on most other sites too: it depends on the site, not a fault.
   assert.deepEqual(ruleProblems({ ...base, peers: [{ shape: emptyShape, age: 30 }], shape: emptyShape, age: 30 }), []);
+  // No other site to compare with: nothing is flagged.
+  assert.deepEqual(ruleProblems({ ...base, peers: [], shape: emptyShape, age: 30 }), []);
+  // On the free trial, the plan, backlinks and changes may stay empty.
+  assert.deepEqual(ruleProblems({ ...base, verified: false, shape: { ...fullShape, backlinks: false, plan: false, changes: false }, age: 30 }), []);
 });
 
 test("app check: a report that fails, or reads a connected source as an error, is flagged", () => {
   const report = { week: { changes: 0, articles: 0, links: 0, suggested: 0 }, visitors: null, focus: null, plan: [], traffic: "error", totals: null, backlinks: null, agents: [], shopify: "error" } as const;
-  const ids = ruleProblems({ report: report as never, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, shape: fullShape, age: 30, peers: [] }).map((p) => p.id);
+  const ids = ruleProblems({ report: report as never, reportError: null, reportMs: 100, conn: { ga: true, gsc: true }, verified: true, shape: fullShape, age: 30, peers: [] }).map((p) => p.id);
   assert.deepEqual(ids, ["app:ga-unread", "app:shop-unread"]);
-  assert.equal(ruleProblems({ report: null, reportError: "boom", reportMs: 100, conn: { ga: true, gsc: true }, shape: fullShape, age: 30, peers: [] })[0].id, "app:report-fails");
+  assert.equal(ruleProblems({ report: null, reportError: "boom", reportMs: 100, conn: { ga: true, gsc: true }, verified: true, shape: fullShape, age: 30, peers: [] })[0].id, "app:report-fails");
+});
+
+test("app check: broken numbers are caught and a long view is shortened, never cut midway", () => {
+  assert.deepEqual(visibleText({ totals: { visits: NaN, leads: 3 } }), [{ path: "totals.visits", text: "NaN" }]);
+  const view = { site: "x.com", report: { agents: Array.from({ length: 400 }, (_, i) => ({ agent: `a${i}`, did: "did a thing" })), plan: [] } };
+  const out = fitView(view, 2000);
+  assert.ok(out.length <= 2000);
+  assert.doesNotThrow(() => JSON.parse(out));
 });

@@ -6,7 +6,7 @@ import { weeklyReportData, type WeeklyReportData } from "./alerts";
 import type { Problem } from "./inspector";
 import { readAccountAutopilot, readPlatformSettings, aiProvider } from "./settings";
 import { readStrategy } from "./strategist";
-import { asPlatform } from "./usage";
+import { asPlatform, siteVerified } from "./usage";
 import { reviewCustomerView } from "./writer";
 
 /**
@@ -25,14 +25,31 @@ import { reviewCustomerView } from "./writer";
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const KEY = (id: string) => `app_check:${id}`;
+/** When the last full checks started in this process, to cap them per tick. */
+let recent: number[] = [];
+
+const within = <T>(work: Promise<T>, ms: number, why: string): Promise<T> =>
+  Promise.race([work, new Promise<T>((_, no) => setTimeout(() => no(new Error(why)), ms).unref?.())]);
+
+/** The view as JSON under the AI's size budget, shortened by dropping detail, never by cutting the JSON midway. */
+export function fitView(view: Record<string, unknown>, max = 9000): string {
+  let json = JSON.stringify(view);
+  const r = view.report as Record<string, unknown> | null | undefined;
+  for (const field of ["agents", "plan", "traffic", "shopify"]) {
+    if (json.length <= max || !r) break;
+    if (Array.isArray(r[field])) r[field] = (r[field] as unknown[]).slice(0, 3);
+    else if (r[field] && typeof r[field] === "object") r[field] = "(left out for length)";
+    json = JSON.stringify(view);
+  }
+  return json.length <= max ? json : JSON.stringify({ ...view, report: "(left out for length)" });
+}
 
 /** Which parts of the app have something to show for this site. Shape only, shared between sites for comparison. */
 export type Shape = Record<Section, boolean>;
-type Section = "visits" | "plan" | "agents" | "backlinks" | "keywords" | "pages" | "ranks" | "business" | "changes";
+type Section = "visits" | "plan" | "backlinks" | "keywords" | "pages" | "ranks" | "business" | "changes";
 const SECTION_NAME: Record<Section, string> = {
   visits: "Report: where visits came from",
   plan: "Report: this week's plan",
-  agents: "Report: what each agent did",
   backlinks: "Backlinks list",
   keywords: "Keywords list",
   pages: "Site pages read",
@@ -40,8 +57,10 @@ const SECTION_NAME: Record<Section, string> = {
   business: "Business profile",
   changes: "Changes made by the autopilot",
 };
+/** Sections a site on the free trial (not yet shown to be the owner's) may leave empty: its small limits run out first. */
+const TRIAL_MAY_LACK: Section[] = ["plan", "backlinks", "changes"];
 /** Days after connecting by which a working site has each section filled. */
-const READY_DAYS: Record<Section, number> = { visits: 7, plan: 8, agents: 7, backlinks: 5, keywords: 3, pages: 3, ranks: 4, business: 3, changes: 7 };
+const READY_DAYS: Record<Section, number> = { visits: 7, plan: 8, backlinks: 5, keywords: 3, pages: 3, ranks: 4, business: 3, changes: 7 };
 
 interface Saved {
   at: string;
@@ -63,6 +82,7 @@ async function readSaved(accountId: string): Promise<Saved | null> {
 
 /** Every string a customer would read, with where it came from. Addresses and paths are skipped. */
 export function visibleText(value: unknown, path = ""): { path: string; text: string }[] {
+  if (typeof value === "number") return Number.isFinite(value) ? [] : [{ path, text: String(value) }];
   if (typeof value === "string") return /^(https?:\/\/|\/)\S*$/.test(value) || /^\d{4}-\d\d-\d\dT/.test(value) ? [] : [{ path, text: value }];
   if (Array.isArray(value)) return value.flatMap((v, i) => visibleText(v, `${path}[${i}]`));
   if (value && typeof value === "object") return Object.entries(value).flatMap(([k, v]) => (/^(at|url|path|domain|currency)$/.test(k) ? [] : visibleText(v, path ? `${path}.${k}` : k)));
@@ -83,6 +103,8 @@ export function ruleProblems(input: {
   reportError: string | null;
   reportMs: number;
   conn: { ga: boolean; gsc: boolean };
+  /** False on the free trial. */
+  verified: boolean;
   shape: Shape;
   age: number;
   peers: { shape: Shape; age: number }[];
@@ -107,10 +129,13 @@ export function ruleProblems(input: {
     if (input.shape[s] || input.age < READY_DAYS[s]) continue;
     const others = grown.filter((p) => p.age >= READY_DAYS[s]);
     const filled = others.filter((p) => p.shape[s]).length;
-    // Empty on most sites too means it depends on the site (a new store, no traffic yet), not that this one is broken.
-    if (others.length && filled / others.length < 0.5) continue;
-    if (s === "visits" && !input.conn.ga) continue;
-    add(`empty:${s}`, `${SECTION_NAME[s]} is still empty ${Math.floor(input.age)} days after this site connected${others.length ? `, while ${filled} of ${others.length} other sites have it` : ""}.`, "The platform owner is told, so the agent that fills it gets looked at.");
+    // With no other site to compare, or empty on most of them too, it depends on the site (a new store, no traffic
+    // yet), not a sign this one is broken.
+    if (!others.length || filled / others.length < 0.5) continue;
+    // Already reported as its cause, or not possible on this site.
+    if (s === "visits" && (!input.conn.ga || r?.traffic === "error")) continue;
+    if (!input.verified && TRIAL_MAY_LACK.includes(s)) continue;
+    add(`empty:${s}`, `${SECTION_NAME[s]} is still empty ${Math.floor(input.age)} days after this site connected Google, while ${filled} of ${others.length} other sites have it.`, "The platform owner is told, so the agent that fills it gets looked at.");
   }
   return out;
 }
@@ -129,7 +154,6 @@ async function shapeOf(accountId: string, report: WeeklyReportData | null): Prom
   return {
     visits: traffic.length > 0,
     plan: Boolean(strategy && Date.now() - Date.parse(strategy.at) < 8 * DAY && strategy.moves.length),
-    agents: Boolean(report?.agents.length),
     backlinks: Boolean(bl?.found),
     keywords: Number(counts?.keywords ?? 0) > 0,
     pages: Number(counts?.pages ?? 0) > 0,
@@ -139,13 +163,10 @@ async function shapeOf(accountId: string, report: WeeklyReportData | null): Prom
   };
 }
 
-/** Days since the site connected Google (or the account was made). */
+/** Days since the site connected Google (0 when it hasn't). */
 async function ageOf(accountId: string): Promise<number> {
-  const [row] = await sql`
-    SELECT LEAST(
-      COALESCE((SELECT connected_at FROM insights_account_google WHERE account_id = ${accountId}), now()),
-      COALESCE((SELECT created_at FROM insights_accounts WHERE id = ${accountId}), now())
-    ) AS since`;
+  // From connecting Google, not from signing up: a site that waited to connect isn't late.
+  const [row] = await sql`SELECT connected_at AS since FROM insights_account_google WHERE account_id = ${accountId}`;
   return row?.since ? (Date.now() - Date.parse(String(row.since))) / DAY : 0;
 }
 
@@ -153,15 +174,21 @@ async function ageOf(accountId: string): Promise<number> {
  * Runs the App checker for one site when due, and returns what it found (the saved findings between runs).
  * Never throws: a failure of the checker itself is reported as a problem, not swallowed.
  */
-export async function appCheck(accountId: string, conn: Connection | null, opts: { force?: boolean } = {}): Promise<Problem[]> {
-  await ensureSchema();
-  const saved = await readSaved(accountId);
-  if (saved && !opts.force && Date.now() - Date.parse(saved.at) < 6 * HOUR) return [...saved.problems, ...saved.aiProblems];
+export async function appCheck(accountId: string, conn: Connection | null, opts: { force?: boolean; readOnly?: boolean } = {}): Promise<Problem[]> {
   try {
+    await ensureSchema();
+    const saved = await readSaved(accountId);
+    const kept = saved ? [...saved.problems, ...saved.aiProblems] : [];
+    // The Inspector page and the Strategist only read what the last check found; the hourly tick runs it.
+    if (opts.readOnly || (saved && !opts.force && Date.now() - Date.parse(saved.at) < 6 * HOUR)) return kept;
+    // At most two full checks in any 10 minutes, so the hourly tick keeps its time for the agents' real work.
+    recent = recent.filter((t) => Date.now() - t < 10 * 60_000);
+    if (recent.length >= 2 && !opts.force) return kept;
+    recent.push(Date.now());
     const started = Date.now();
     let reportError: string | null = null;
     // Built as the platform's own check: it isn't counted against the site's monthly limits.
-    const report = await asPlatform(() => weeklyReportData(accountId)).catch((e) => ((reportError = (e as Error).message), null));
+    const report = await asPlatform(() => within(weeklyReportData(accountId), 60_000, "The Report took over a minute to build.")).catch((e) => ((reportError = (e as Error).message), null));
     const reportMs = Date.now() - started;
     const shape = await shapeOf(accountId, report);
     const age = await ageOf(accountId);
@@ -174,7 +201,8 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
         return [];
       }
     });
-    const problems = ruleProblems({ report, reportError, reportMs, conn: { ga: Boolean(conn?.gaPropertyId), gsc: Boolean(conn?.gscSiteUrl) }, shape, age, peers });
+    const verified = await siteVerified(accountId).catch(() => true);
+    const problems = ruleProblems({ report, reportError, reportMs, conn: { ga: Boolean(conn?.gaPropertyId), gsc: Boolean(conn?.gscSiteUrl) }, verified, shape, age, peers });
 
     // Once a day: a second AI reads the whole view like a customer would, and the first confirms each point.
     let aiProblems = saved?.aiProblems ?? [];
@@ -195,7 +223,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
         };
         const usual = (Object.keys(READY_DAYS) as Section[]).filter((s) => peers.filter((p) => p.age >= READY_DAYS[s]).some((p) => p.shape[s]));
         // A busy or failed AI keeps yesterday's findings and tries again next pass; its outage shows on the status board.
-        const issues = await asPlatform(() => reviewCustomerView(ai, JSON.stringify(view).slice(0, 9000), usual.map((s) => SECTION_NAME[s]))).catch(
+        const issues = await asPlatform(() => within(reviewCustomerView(ai, fitView(view), usual.map((s) => SECTION_NAME[s])), 150_000, "The customer view review took too long.")).catch(
           (e) => (console.error(`app check AI review failed: ${(e as Error).message}`), null)
         );
         if (issues) aiProblems = issues.map((i) => ({

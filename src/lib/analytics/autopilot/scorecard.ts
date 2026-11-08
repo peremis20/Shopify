@@ -130,7 +130,8 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
   const [insp] = await sql`SELECT value FROM insights_settings WHERE key = ${`inspect:${accountId}`}`.catch(() => [] as { value: string | null }[]);
   let problems: { who: string }[] | null = null;
   try {
-    problems = insp?.value ? ((JSON.parse(insp.value) as { problems?: { who: string }[] }).problems ?? []) : null;
+    // Only what the owner can see on their own list: platform problems are counted for the platform owner, not here.
+    problems = insp?.value ? ((JSON.parse(insp.value) as { problems?: { who: string; platform?: boolean }[] }).problems ?? []).filter((p) => !p.platform) : null;
   } catch {
     problems = null; // a damaged record leaves out this one line, not the whole scorecard
   }
