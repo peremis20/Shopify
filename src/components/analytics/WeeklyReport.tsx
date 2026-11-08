@@ -71,6 +71,31 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
         <Stat label="Work done" value={n(data.week.changes + data.week.articles + data.week.links)} sub={`${data.week.changes} changes, ${data.week.articles} ${data.week.articles === 1 ? "article" : "articles"}, ${data.week.links} ${data.week.links === 1 ? "link" : "links"}`} />
       </div>
 
+      {/* Sales straight from Shopify */}
+      {data.shopify === "access" && (
+        <Card>
+          <p className="text-sm text-dash-ink">
+            To count sales from Google, DashPatrol needs permission to read your Shopify orders. Click Reconnect next to your store under Content and approve it.
+          </p>
+        </Card>
+      )}
+      {data.shopify && data.shopify !== "access" && (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <Stat label="Shopify orders (28 days)" value={`${data.shopify.capped ? "Over " : ""}${n(data.shopify.orders)}`} sub={`${n(data.shopify.revenue)} ${data.shopify.currency ?? ""} in sales`} />
+          <Stat label="Orders from Google search" value={n(data.shopify.fromGoogle)} sub={`${n(data.shopify.fromGoogleRevenue)} ${data.shopify.currency ?? ""} in sales`} />
+          {data.shopify.pages.length > 0 && (
+            <Card className="sm:col-span-2">
+              <p className="mb-2 text-sm text-dash-muted">Pages Google searchers bought from</p>
+              <div className="space-y-2">
+                {data.shopify.pages.slice(0, 4).map((p) => (
+                  <Funnel key={p.path} label={p.path} value={p.orders} max={data.shopify && data.shopify !== "access" ? data.shopify.pages[0].orders : 1} />
+                ))}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* Goal */}
       {data.visitors && (
         <Card>

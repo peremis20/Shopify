@@ -313,6 +313,14 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
           <p className="text-dash-muted">
             Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
             {" · "}
+            <a
+              href={`/api/shopify/install?shop=${encodeURIComponent(state.settings.shopDomain ?? "")}`}
+              className="font-semibold text-dash-green hover:underline"
+              title="Approve again, for example to let DashPatrol count sales from Google"
+            >
+              Reconnect
+            </a>
+            {" · "}
             <ConfirmButton
               label="Disconnect store"
               confirmLabel="Click again to disconnect the store"
@@ -668,7 +676,8 @@ function ConnectShopify({ adminLink, onWebsite }: { adminLink?: () => void; onWe
         <p className="font-semibold">Connect your Shopify store</p>
         <p className="text-dash-muted">
           Type your store name and click Connect. Shopify will ask you to approve access to edit your blog posts, pages,
-          SEO titles and image descriptions. Prices, product names and checkout are never changed.
+          SEO titles and image descriptions, and to read orders so sales from Google are counted. Prices, product names
+          and checkout are never changed.
         </p>
         {adminLink && (
           <button onClick={adminLink} className="font-semibold text-dash-green hover:underline">

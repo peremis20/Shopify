@@ -9,6 +9,7 @@ import { polish } from "./writer";
 import { readProspects } from "./backlinks";
 import { weekResults, type ChannelResult, type WeekResults } from "./signals";
 import { getConnection } from "../connection";
+import { salesFor } from "./shopify-sales";
 
 /**
  * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
@@ -209,6 +210,8 @@ export interface WeeklyReportData {
   totals: { visits: number; leads: number; revenue: number } | null;
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | null;
   agents: { agent: string; did: string; result: string | null }[];
+  /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
+  shopify: { orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | null;
 }
 
 /** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
@@ -261,6 +264,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
         }
       : null,
     agents: scores.map((x) => ({ agent: x.agent, did: x.did, result: x.result })),
+    shopify: await salesFor(accountId).catch(() => null),
   };
 }
 

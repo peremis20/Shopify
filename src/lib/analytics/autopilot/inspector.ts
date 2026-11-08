@@ -92,6 +92,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
     workaround: "Articles still publish; their posts can be written by hand.",
   },
+  "shopify-sales": {
+    name: "Sales from Shopify",
+    fix: () => "It tries again by itself. If it keeps failing, reconnect the store under Content.",
+    workaround: "Sales are counted from Google Analytics meanwhile.",
+  },
   "site-audit": {
     name: "The Site Auditor (every page, every week)",
     fix: () => "It tries again next hour by itself.",

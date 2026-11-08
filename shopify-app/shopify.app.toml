@@ -12,7 +12,7 @@ embedded = true
 [access_scopes]
 # Shopify installs the app with these scopes itself (managed installation),
 # then the app gets its token by token exchange; no install redirects.
-scopes = "write_content,write_products,write_online_store_pages,write_files"
+scopes = "write_content,write_products,write_online_store_pages,write_files,read_orders"
 
 [auth]
 # Still used by the "Connect Shopify" form on the standalone dashboard.

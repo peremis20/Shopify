@@ -15,7 +15,7 @@ import {
  */
 
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-07";
-export const SHOPIFY_SCOPES = "write_content,write_products,write_online_store_pages,write_files";
+export const SHOPIFY_SCOPES = "write_content,write_products,write_online_store_pages,write_files,read_orders";
 export const SHOPIFY_STATE_COOKIE = "insights_shopify_state";
 
 /** Which store to act on: the customer's account. */

@@ -1632,6 +1632,8 @@ export async function shopifyCallback(req: Request): Promise<Response> {
 export const shopifyDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
     await saveAccountAutopilot(account.id, { shopDomain: "", shopTokenEnc: null, enabled: false });
+    // The store's sales are no longer this account's to show.
+    await sql`DELETE FROM insights_report_cache WHERE cache_key = ${`shopsales:${account.id}`}`.catch(() => undefined);
     return json({ settings: await autopilotView(account.id, account.admin) });
   });
 

@@ -1,6 +1,7 @@
 import { readAuthorityPlan } from "./authority-coach";
 import { readIdeas } from "./idea-finder";
 import { lessons, measuredResults } from "./results";
+import { salesFor } from "./shopify-sales";
 import { readScorecard } from "./scorecard";
 import { rankingTurbulence } from "./google-updates";
 import { readReviewer, reviewList } from "./expert-review";
@@ -144,6 +145,14 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
   lines.push(...(await measuredResults(accountId).catch(() => [])));
   lines.push(...(await lessons(accountId).catch(() => [])));
+  // Sales straight from Shopify: which pages Google searchers buy from (real orders, not estimates).
+  const shop = await salesFor(accountId).catch(() => null);
+  if (shop && shop !== "access")
+    lines.push(
+      `Shopify orders, last ${shop.days} days: ${shop.orders} (${Math.round(shop.revenue)} ${shop.currency ?? ""}); from Google search: ${shop.fromGoogle}` +
+        (shop.pages.length ? `, landing on ${shop.pages.map((p) => `${p.path} (${p.orders})`).join("; ")}` : "") +
+        ".",
+    );
   // Expert review: a trust signal Google weighs heavily on health and money topics.
   const items = await reviewList(accountId).catch(() => []);
   if (items.length) {
