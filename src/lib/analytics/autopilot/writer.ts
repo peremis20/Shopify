@@ -694,19 +694,22 @@ export async function writeImprovement(
   target: WriteTarget,
   /** What each connected app knows about this search and page. */
   briefs: string[],
-  allowContent: boolean
+  allowContent: boolean,
+  /** Index rescue: Google crawled the page and left it out, so a substantial new section is the point of the change. */
+  rescue = false
 ): Promise<PageImprovement> {
   const editableBody = page.type === "article" || page.type === "page";
   // A search the daily rank check no longer finds is passed on with a stand in position and no impressions; neither is real.
   const unranked = target.mode === "defend" && target.position === UNRANKED_POSITION && target.impressions === 0;
-  const goal =
-    target.mode === "defend"
+  const goal = rescue
+    ? `Google crawled this page and chose not to put it in its index. Make it more useful and distinct for people searching "${target.query}".`
+    : target.mode === "defend"
       ? `This page held position ${target.previousPosition?.toFixed(1) ?? "near the top"} on Google for "${target.query}" and ${unranked ? "no longer ranks in the tracked range" : `has slipped to ${target.position.toFixed(1)} over the last 7 days`}. Refresh it so it wins the spot back and keeps it.`
       : target.mode === "top"
         ? `This page ranks around position ${target.position.toFixed(1)} on Google for "${target.query}". Improve it so it takes position 1.`
         : `Improve this page so it reaches the top 3 on Google for the search "${target.query}". It ranks around position ${target.position.toFixed(1)} now.`;
   const prompt = `${goal}
-${unranked ? "" : `It had ${target.impressions} impressions in the last ${target.mode === "defend" ? 7 : 28} days.`}
+${unranked || rescue ? "" : `It had ${target.impressions} impressions in the last ${target.mode === "defend" ? 7 : 28} days.`}
 
 ${briefs.filter(Boolean).join("\n\n")}
 
@@ -724,7 +727,9 @@ ${plainText(page.body).slice(0, 12000)}
 ${page.imagesMissingAlt.length ? `Images with no alt text (write one for each): ${page.imagesMissingAlt.map((i) => `${i.id} (${i.url})`).join(", ")}` : "No images need alt text; return an empty altTexts list."}
 
 ${
-  allowContent && editableBody
+  allowContent && editableBody && rescue
+    ? `Google crawled this page and chose not to put it in its index, usually because it reads as thin or too close to other pages. Write contentSectionHtml: a substantial new section (about 300 to 600 words, with its own heading and short paragraphs) that adds genuinely useful, distinct information for people searching "${target.query}" that the page does not cover yet. Use only well established facts consistent with the page; no numbers, doses or claims the page doesn't already make. Make the first sentence under its heading a direct, plain answer. Do not repeat what is already there.`
+    : allowContent && editableBody
     ? `If the page text does not already answer what people searching "${target.query}" want to know, write contentSectionHtml: a new section that fills that gap using only facts consistent with the page. Do not repeat what is already there. Make the first sentence under its heading a direct, plain answer that Google could quote on its own. Otherwise return an empty string.`
     : "Return an empty string for contentSectionHtml."
 }

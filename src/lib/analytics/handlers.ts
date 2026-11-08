@@ -19,7 +19,7 @@ import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
-import { accountsDueForInspection, accountsDueForRun, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
+import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
 import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
@@ -1460,6 +1460,21 @@ export async function autopilotTick(): Promise<Response> {
       }
       // Tried either way, so one site never holds up the others; it is tried again next week.
       await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
+    }
+    // The Index rescue: once a week per site, a page Google crawled but left out gets a substantial new section.
+    for (const accountId of late() ? [] : await accountsDueForRescue(1)) {
+      const conn = await getConnection(accountId).catch(() => null);
+      let note: string;
+      try {
+        note = await forSite(accountId, () => rescueUnindexed(accountId, conn));
+        await report("index-rescue", true);
+        results.push(`account ${accountId} index rescue: ${note}`);
+      } catch (e) {
+        note = `failed: ${message(e)}`;
+        console.error(`index rescue failed: ${message(e)}`);
+        await report("index-rescue", false, message(e));
+      }
+      await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
     }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {

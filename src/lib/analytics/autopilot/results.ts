@@ -20,7 +20,7 @@ export async function measuredResults(accountId: string): Promise<string[]> {
   // later kept or undone: an owner's undo, a failed or skipped undo, or a change with no data must not skew the facts.
   const rows = await sql`
     SELECT field,
-      count(*) FILTER (WHERE evaluated_at IS NULL AND status = 'applied') AS waiting,
+      count(*) FILTER (WHERE evaluated_at IS NULL AND status = 'applied' AND run_id IS NOT NULL) AS waiting,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND (result_position IS NULL OR baseline_position IS NULL) AND coalesce(note, '') NOT LIKE 'Dropped out%') AS nodata,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position IS NOT NULL AND result_position <= 10) AS entered,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND baseline_position = 25 AND result_position > 10) AS stilloff,

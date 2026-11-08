@@ -1176,3 +1176,125 @@ export async function autopilotHistory(accountId: string): Promise<{ changes: Au
     runs: runs.map(toRun),
   };
 }
+
+// ---------- Index rescue ----------
+
+/** A page Google crawled and left out gets one substantial new section, at most once a month. */
+const RESCUE_EVERY_DAYS = 30;
+/** Waits this long after any change to the page, so Google has seen the last one first. */
+const RESCUE_AFTER_DAYS = 7;
+
+/** Sites with autopilot on and content allowed whose index rescue is due (weekly). */
+export async function accountsDueForRescue(limit: number): Promise<string[]> {
+  await ensureSchema();
+  const rows = await sql`
+    SELECT a.account_id FROM insights_account_autopilot a
+    LEFT JOIN insights_settings s ON s.key = 'index_rescue_at:' || a.account_id
+    WHERE a.enabled AND coalesce(a.allow_content, true) AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
+  return rows.map((r) => String(r.account_id));
+}
+
+export async function markRescueTried(accountId: string, note: string): Promise<void> {
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${`index_rescue_at:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), note })})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
+
+/**
+ * The Index rescue: a page Google crawled but chose not to index (thin or too similar) gets one substantial new
+ * section, written and checked like every other change (facts, human edit, claim guard, second AI, duplicate guard).
+ * Only the body changes, never the title or description, so it can't collide with another change being measured;
+ * it is logged outside the autopilot runs (no run), so the ranking measure leaves it alone, and the owner can undo it.
+ * Success is Google putting the page in its index, which the health check sees on its next pass.
+ */
+export async function rescueUnindexed(accountId: string, conn: Connection | null): Promise<string> {
+  await ensureSchema();
+  const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
+  if (!acct.enabled || !acct.allowContent) return "new content is off for this site";
+  const baseAi = aiProvider(platform);
+  if (!baseAi) throw new Error("No AI key is set up.");
+  const access = await siteFor(accountId);
+  if (!access?.writer) return "this site can't be edited by the app";
+  const rows = await sql`
+    SELECT h.url FROM insights_page_health h
+    WHERE h.account_id = ${accountId}
+      AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.issues) i WHERE i->>'text' ~* '^Not in Google: .*(crawled|discovered)')
+      AND NOT EXISTS (SELECT 1 FROM insights_autopilot_changes c WHERE c.account_id = ${accountId} AND c.page_url = h.url
+        AND c.status IN ('applied', 'kept', 'suggested')
+        AND (c.created_at > now() - make_interval(days => ${RESCUE_AFTER_DAYS})
+          OR (c.field = 'content' AND c.created_at > now() - make_interval(days => ${RESCUE_EVERY_DAYS}))))
+      AND NOT EXISTS (SELECT 1 FROM insights_autopilot_controls k WHERE k.account_id = ${accountId} AND k.page_url = h.url AND k.evaluated_at IS NULL)
+    ORDER BY h.checked_at DESC LIMIT 3`;
+  if (!rows.length) return "no page waiting to be rescued";
+  // One autopilot change at a time per site.
+  const lock = `autopilot_running:${accountId}`;
+  const got = await sql`INSERT INTO insights_settings (key, value) VALUES (${lock}, ${String(Date.now())})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '30 minutes'
+    RETURNING key`;
+  if (!got.length) return "an autopilot run is in progress; tried again next week";
+  try {
+    const profile = await readProfile(accountId);
+    const brand = profile.brandName ?? (await access.name().catch(() => null));
+    const ai = { ...baseAi, site: siteBrief({ ...profile, brandName: brand }) };
+    const ctx: Ctx = {
+      accountId,
+      site: access,
+      store: access.store,
+      ai,
+      platform,
+      ourDomain: conn?.gscSiteUrl ? new URL(conn.gscSiteUrl.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "") : (profile.siteDomain ?? ""),
+      allowContent: true,
+      maxPagesPerWeek: acct.maxPagesPerWeek,
+    };
+    const [kws, targets] = await Promise.all([
+      import("./site-keywords").then((m) => m.readSiteKeywords(accountId)).catch(() => []),
+      readTargets(accountId).catch(() => []),
+    ]);
+    for (const r of rows) {
+      const url = String(r.url);
+      const page = await access.resolve(url).catch(() => null);
+      if (!page || (page.type !== "article" && page.type !== "page")) continue;
+      if (access.writer.supports && !(await access.writer.supports("content", page.id).catch(() => false))) continue;
+      const query =
+        targets.find((t) => t.page === url && t.role !== "support")?.keyword ??
+        kws.find((k) => k.page === url && k.role !== "support")?.keyword ??
+        page.title;
+      const imp = await writeImprovement(ai, page, { query, position: 0, impressions: 0, mode: "climb" }, [], true, true);
+      // A section the writer itself says misses what searchers want is never added (and it skipped the second AI's check).
+      if (!imp.intentMatch) continue;
+      // Only the new section is used; the guard drops anything that repeats this or another page.
+      const guarded = await guardDuplicates(ctx, page, { ...imp, metaTitle: page.metaTitle ?? "", metaDescription: page.metaDescription ?? "" }, []);
+      const section = guarded.contentSectionHtml;
+      if (!section) continue;
+      const blockId = `rescue-${Date.now()}-content`;
+      const block = wrap(blockId, section);
+      try {
+        await access.writer.setBodyIfUnchanged(page.type, page.id, page.body, `${page.body}\n${block}`);
+      } catch (err) {
+        // The owner edited the page meanwhile: their edit wins; the next page is tried.
+        if (err instanceof EditedMeanwhile || (err as Error).name === "UnpublishedDraft") continue;
+        throw err;
+      }
+      await logChange({
+        accountId,
+        runId: null,
+        pageUrl: url,
+        resourceType: access.mode === "snippet" ? "snippet" : page.type,
+        resourceId: page.id,
+        query,
+        field: "content",
+        before: blockId,
+        after: block,
+        reason: "Index rescue: Google crawled this page but left it out of its index, so a substantial new section was added to make it more useful and distinct.",
+        status: "applied",
+      });
+      if (conn) await askGoogleToRecrawl(conn).catch(() => null);
+      return `added a new section to ${new URL(url).pathname} so Google indexes it`;
+    }
+    return "no rescue section passed the checks";
+  } finally {
+    await sql`DELETE FROM insights_settings WHERE key = ${lock}`.catch(() => undefined);
+  }
+}
