@@ -1085,6 +1085,23 @@ async function clearPlatformProblem(id: string): Promise<void> {
   );
 }
 
+/**
+ * Once the writer and the checking AI both work again, every warning whose cause was an AI service (a failed run, the
+ * Outreach Drafter, an article not written) is cleared at once, not at the next hourly check. A site's own monthly AI
+ * limit is left alone: a working service doesn't fix that.
+ */
+async function clearAiCausedProblems(): Promise<void> {
+  const cause = "(GitHub Models|Groq|Gemini|Mistral|Claude|second AI from another)";
+  await sql`
+    UPDATE insights_settings SET value = jsonb_set(value::jsonb, '{problems}', coalesce(
+      (SELECT jsonb_agg(x) FROM jsonb_array_elements(value::jsonb->'problems') x
+        WHERE NOT ((coalesce(x->>'text', '') || ' ' || coalesce(x->>'fix', '')) ~* ${cause}
+          AND (coalesce(x->>'text', '') || ' ' || coalesce(x->>'fix', '')) !~* 'limit')), '[]'::jsonb))::text
+    WHERE key LIKE 'inspect:%' AND CASE WHEN key LIKE 'inspect:%' THEN jsonb_typeof(value::jsonb->'problems') = 'array' ELSE false END`.catch((e) =>
+    console.warn(`clearing AI caused warnings failed: ${message(e)}`),
+  );
+}
+
 /** The platform owner's keys: Claude, and the public Shopify app. */
 export const savePlatform = (req: Request) =>
   withAdmin(req, async (account) => {
@@ -1136,6 +1153,10 @@ export const savePlatform = (req: Request) =>
       if (working.size >= 2) {
         await report("ai-review", true);
         await clearPlatformProblem("service:ai-review");
+        await clearAiCausedProblems();
+        // These name no service in their wording, but only an AI outage stops them.
+        await clearPlatformProblem("service:outreach-drafter");
+        await clearPlatformProblem("service:share-kit");
       }
     }
     if (p.serperKey && (str("serperKey")?.trim() || failing("serper"))) {
