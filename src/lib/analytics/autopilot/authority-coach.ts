@@ -95,7 +95,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     for (const r of rivals) {
       if (found.length >= MAX_COMPETITOR_FINDS) break;
       // The sites that really link to the rival (Keywords Everywhere) beat a search for pages that mention it.
-      const links = realLinks ? await rivalBacklinks(r.domain, 15).catch(() => []) : [];
+      const links = realLinks ? await rivalBacklinks(r.domain, 15).catch((e) => (nullUnlessLimit(e), [])) : [];
       const results = links.length
         ? links.map((l) => ({ link: l.sourceUrl, domain: l.sourceDomain, title: l.sourceDomain, snippet: l.anchor ? `Links to ${r.domain} with "${l.anchor}".` : `Links to ${r.domain}.` }))
         : platform.serperKey

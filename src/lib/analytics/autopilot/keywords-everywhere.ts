@@ -122,6 +122,10 @@ async function call(path: string, params: Record<string, string | number>, cost:
     await report("keywords-everywhere", false, `Monthly credit limit reached (${used} of ${k.limit} used).`);
     return null;
   }
+  // Counted against the site being worked on (a site not yet proven to be the account's stays within its trial);
+  // a reached limit is thrown, so the Inspector and the caller see it rather than an empty answer.
+  const { spend, currentSite } = await import("./usage");
+  if (currentSite()) await spend("search");
   const body = new URLSearchParams(Object.entries(params).map(([a, b]) => [a, String(b)]));
   const res = await fetch(`${API}/${path}`, {
     method: "POST",

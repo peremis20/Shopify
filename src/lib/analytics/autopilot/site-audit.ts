@@ -93,6 +93,17 @@ export function pageIssues(url: string, status: number, html: string): { title: 
 /** One pass: reads the site's due pages (new ones first, then the oldest), then marks titles and descriptions used twice. */
 export async function auditPass(accountId: string, domain: string, deadline = Date.now() + 90_000): Promise<string> {
   await ensureSchema();
+  // A site not yet proven to be this account's gets one look (a first pass), never a weekly crawl of someone else's site.
+  const { siteVerified } = await import("./usage");
+  if (!(await siteVerified(accountId))) {
+    const [seen] = await sql`SELECT 1 AS x FROM insights_site_audit WHERE account_id = ${accountId} LIMIT 1`;
+    if (seen) {
+      await sql`
+        INSERT INTO insights_settings (key, value) VALUES (${`audit_pass:${accountId}`}, ${new Date().toISOString()})
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+      return "waiting until the site is shown to be the account's";
+    }
+  }
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${`audit_pass:${accountId}`}, ${new Date().toISOString()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

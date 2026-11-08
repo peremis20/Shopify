@@ -43,7 +43,11 @@ function extrasFor(s: Status, skips: string[]): { id: Screen; title: string; why
   const step = (id: string) => s.steps.find((x) => x.id === id)?.done ?? false;
   const out: { id: Screen; title: string; why: string }[] = [];
   if (!(step("search_console") && step("analytics")) && !skips.includes("data"))
-    out.push({ id: "data", title: "Connect Search Console and Analytics", why: "See your Google searches and visitors, and let every change be measured." });
+    out.push({
+      id: "data",
+      title: "Show it's your site: connect Search Console and Analytics",
+      why: s.platform === "shopify" ? "See your Google searches and visitors, and let every change be measured." : "Until your site is verified the agents run a small free trial. This unlocks everything, and shows your Google searches and visitors.",
+    });
   if (s.platform && s.platform !== "shopify" && step("website") && !s.siteConnected && !skips.includes("connect"))
     out.push({ id: "connect", title: "Let the app edit your site", why: "Changes go live by themselves instead of waiting on your fix list." });
   if (!step("targets") && !skips.includes("keywords"))

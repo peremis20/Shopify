@@ -150,7 +150,7 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
   // What the rivals actually rank for (Keywords Everywhere), when its key is set: the clearest competitor gap.
   for (const page of competitorPages) {
     const brands = [page.from.replace(/^www\./, "").split(".")[0], ours.split(".")[0]].filter((b) => b.length > 3);
-    for (const r of (await domainKeywords(page.from, 30).catch(() => [])).slice(0, 30)) {
+    for (const r of (await domainKeywords(page.from, 30).catch((e) => (nullUnlessLimit(e), []))).slice(0, 30)) {
       const k = asSearch(r.keyword);
       if (brands.some((b) => k.replace(/\s+/g, "").includes(b))) continue;
       if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "competitor", from: page.from });
