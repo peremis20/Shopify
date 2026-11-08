@@ -24,18 +24,30 @@ const readSkips = (): string[] => {
   }
 };
 
-/** The screens that apply to this customer, in order, and whether each is done. */
-function screensFor(s: Status, skips: string[]): { id: Screen; done: boolean }[] {
+/**
+ * The setup everyone goes through: three short steps (Google, the website, the business) and Start. No code to paste:
+ * the app reads the site and the Google data straight away. Anything technical comes after, as optional extras.
+ */
+function screensFor(s: Status): { id: Screen; done: boolean }[] {
   const step = (id: string) => s.steps.find((x) => x.id === id)?.done ?? false;
-  const out: { id: Screen; done: boolean }[] = [
+  return [
     { id: "google", done: step("google") },
     { id: "website", done: step("website") },
+    { id: "business", done: step("business") },
+    { id: "finish", done: step("autopilot") },
   ];
-  if (s.platform && s.platform !== "shopify" && step("website")) out.push({ id: "connect", done: s.siteConnected || skips.includes("connect") });
-  out.push({ id: "business", done: step("business") });
-  out.push({ id: "data", done: (step("search_console") && step("analytics")) || skips.includes("data") });
-  out.push({ id: "keywords", done: step("targets") || skips.includes("keywords") });
-  out.push({ id: "finish", done: step("autopilot") });
+}
+
+/** Optional extras that make the app stronger, offered once setup is done; each is skippable for good. */
+function extrasFor(s: Status, skips: string[]): { id: Screen; title: string; why: string }[] {
+  const step = (id: string) => s.steps.find((x) => x.id === id)?.done ?? false;
+  const out: { id: Screen; title: string; why: string }[] = [];
+  if (!(step("search_console") && step("analytics")) && !skips.includes("data"))
+    out.push({ id: "data", title: "Connect Search Console and Analytics", why: "See your Google searches and visitors, and let every change be measured." });
+  if (s.platform && s.platform !== "shopify" && step("website") && !s.siteConnected && !skips.includes("connect"))
+    out.push({ id: "connect", title: "Let the app edit your site", why: "Changes go live by themselves instead of waiting on your fix list." });
+  if (!step("targets") && !skips.includes("keywords"))
+    out.push({ id: "keywords", title: "Pick searches to win", why: "Optional: the agents already choose searches for you." });
   return out;
 }
 
@@ -46,7 +58,7 @@ const TITLES: Record<Screen, string> = {
   business: "What kind of site is this?",
   data: "Search Console and Google Analytics",
   keywords: "Pick your first searches to win",
-  finish: "Turn on the autopilot",
+  finish: "Start",
 };
 
 export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview }: {
@@ -99,36 +111,36 @@ export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview
   }
 
   if (!status) return null;
-  const screens = screensFor(status, skips);
+  const screens = screensFor(status);
+  const extras = extrasFor(status, skips);
   const current = back ?? screens.find((x) => !x.done)?.id ?? null;
   const all = (id: string) => status.steps.find((x) => x.id === id);
 
-  // Skipped the Google data: a quiet reminder stays until it's added.
-  const dataMissing = !all("search_console")?.done || !all("analytics")?.done;
-  if (!current && dataMissing && all("google")?.done) {
-    const unskip = () => {
-      const nextSkips = skips.filter((x) => x !== "data");
-      setSkips(nextSkips);
-      setBack("data");
-      try {
-        localStorage.setItem(SKIP_KEY, JSON.stringify(nextSkips));
-      } catch {
-        /* fine */
-      }
-    };
-    return (
-      <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E7D3B4] bg-[#FBF1E1] p-4 text-sm">
-        <span>
-          <b>Add Search Console and Google Analytics</b> to see your search data and let the autopilot measure every change. It
-          takes a minute.
-        </span>
-        <button onClick={unskip} className={button}>
-          Set it up
-        </button>
-      </div>
-    );
-  }
   if (!current) {
+    // Setup done: the optional extras, each one click away and skippable for good.
+    if (extras.length)
+      return (
+        <div className="mt-6 rounded-xl border border-dash-line bg-white p-4 text-sm">
+          <p className="mb-2 font-semibold text-dash-ink">You&apos;re set up. Optional extras that make it even better:</p>
+          <ul className="space-y-2">
+            {extras.map((x) => (
+              <li key={x.id} className="flex flex-wrap items-center justify-between gap-2">
+                <span className="min-w-0">
+                  <span className="font-semibold text-dash-ink">{x.title}</span> <span className="text-dash-muted">{x.why}</span>
+                </span>
+                <span className="flex items-center gap-3">
+                  <button onClick={() => setBack(x.id)} className={button}>
+                    Set it up
+                  </button>
+                  <button onClick={() => skip(x.id)} className="text-xs text-dash-muted hover:underline">
+                    Not now
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      );
     if (status.dismissed) return null;
     return (
       <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-dash-up/30 bg-dash-up/5 p-4 text-sm">
@@ -143,7 +155,7 @@ export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview
     );
   }
   const left = screens.filter((x) => !x.done).length;
-  if (status.dismissed) {
+  if (status.dismissed && screens.some((x) => x.id === current)) {
     return (
       <div className="mt-6 flex items-center justify-between gap-3 rounded-xl border border-dash-line bg-white px-4 py-3 text-sm">
         <span>
@@ -156,15 +168,14 @@ export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview
     );
   }
 
-  const index = screens.findIndex((x) => x.id === current);
-  const previous = screens.slice(0, index).reverse().find((x) => x.id !== "google")?.id ?? null;
+  const extra = !screens.some((x) => x.id === current);
+  const index = extra ? screens.length - 1 : screens.findIndex((x) => x.id === current);
+  const previous = extra ? null : (screens.slice(0, index).reverse().find((x) => x.id !== "google")?.id ?? null);
   return (
     <Card className="mt-6">
       <div className="mx-auto max-w-xl py-2">
         <div className="mb-5 flex items-center justify-between text-xs text-dash-muted">
-          <span>
-            Step {index + 1} of {screens.length}
-          </span>
+          <span>{extra ? "Optional extra" : `Step ${index + 1} of ${screens.length}`}</span>
           <button onClick={() => act("hide", () => api<Status>("/api/onboarding/profile", { dismissed: true }))} className="hover:text-dash-ink">
             Finish later
           </button>
@@ -208,6 +219,11 @@ export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview
             />
           )}
         </div>
+        {extra && (
+          <button onClick={() => setBack(null)} className="mt-6 text-sm text-dash-muted hover:text-dash-ink">
+            ← Back to the dashboard
+          </button>
+        )}
         {previous && current !== "google" && (
           <button onClick={() => setBack(previous)} className="mt-6 text-sm text-dash-muted hover:text-dash-ink">
             ← Back

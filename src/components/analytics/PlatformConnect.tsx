@@ -82,6 +82,14 @@ function SnippetConnect({ platform, onConnected }: { platform: string | null; on
         >
           {busy ? "Checking…" : "I added it, check my site"}
         </button>
+        <a
+          href={`mailto:?subject=${encodeURIComponent("Please add this line to our website")}&body=${encodeURIComponent(
+            `Hi,\n\nCould you add this one line to our website, inside the <head> of every page (usually one shared layout or template file), then publish?\n\n${tag}\n\n${WHERE[platform ?? ""] ?? WHERE.custom}\n\nThank you!`,
+          )}`}
+          className="font-semibold text-dash-green hover:underline"
+        >
+          Not technical? Email it to your web person
+        </a>
       </div>
       {(checkError || error) && <p className="text-dash-down">{checkError ?? error}</p>}
     </div>
