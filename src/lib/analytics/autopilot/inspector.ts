@@ -10,6 +10,7 @@ import { hasScope } from "../google-auth";
 import { rankingTurbulence } from "./google-updates";
 import { trafficCheck } from "./guards";
 import { usageThisMonth } from "./usage";
+import { readAudit } from "./site-audit";
 
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
@@ -90,6 +91,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     name: "Social posts for new articles",
     fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
     workaround: "Articles still publish; their posts can be written by hand.",
+  },
+  "site-audit": {
+    name: "The Site Auditor (every page, every week)",
+    fix: () => "It tries again next hour by itself.",
+    workaround: "The pages already checked stay on the list until the next pass.",
   },
   "index-rescue": {
     name: "The Index rescue (pages Google left out)",
@@ -234,6 +240,23 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     if (failed && runs[0] === failed && !(AI_CAUSE.test(String(failed.summary ?? "")) && aiFixedSince(String(failed.finished_at)))) {
       problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching", platform: true });
     }
+  }
+
+  // 3a. The Site Auditor's findings only a person can fix (the rest go to the autopilot): the site's own problems,
+  // shown to its owner with the pages they're on.
+  const audit = await readAudit(accountId).catch(() => []);
+  const manual = audit.flatMap((p) => p.issues.filter((i) => !i.auto && i.level !== "low").map((i) => ({ path: (() => { try { return new URL(p.url).pathname; } catch { return p.url; } })(), i })));
+  if (manual.length) {
+    const pages = new Set(manual.map((m) => m.path)).size;
+    problems.push({
+      id: "audit:manual",
+      text: `The site check found ${manual.length} ${manual.length === 1 ? "problem" : "problems"} on ${pages} ${pages === 1 ? "page" : "pages"} that need a person: ${manual
+        .slice(0, 3)
+        .map((m) => `${m.path}: ${m.i.text}`)
+        .join(" ")}${manual.length > 3 ? ` And ${manual.length - 3} more.` : ""}`,
+      fix: "Fix these in your site's editor. Everything a content change can fix, the autopilot fixes by itself.",
+      who: "owner",
+    });
   }
 
   // 3b. The week's plan: a move that passed the critic but that no agent took on (no "done" note) a day after planning

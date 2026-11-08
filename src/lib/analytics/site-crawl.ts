@@ -75,7 +75,16 @@ export async function sitemapUrls(origin: string, max = 300): Promise<string[]> 
     if (!res.ok || !/<(urlset|sitemapindex)/i.test(res.text)) continue;
     const locs = [...res.text.matchAll(/<loc>([\s\S]*?)<\/loc>/gi)].map((m) => decode(m[1]));
     if (/<sitemapindex/i.test(res.text)) {
-      queue.push(...locs);
+      // Child sitemaps on the site's own host only: a sitemap can't send the app to read another address.
+      queue.push(
+        ...locs.filter((l) => {
+          try {
+            return new URL(l).hostname.replace(/^www\./, "") === host;
+          } catch {
+            return false;
+          }
+        }),
+      );
       continue;
     }
     for (const loc of locs) {

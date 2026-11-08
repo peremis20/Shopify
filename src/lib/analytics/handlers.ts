@@ -19,6 +19,7 @@ import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
@@ -1460,6 +1461,18 @@ export async function autopilotTick(): Promise<Response> {
       }
       // Tried either way, so one site never holds up the others; it is tried again next week.
       await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
+    }
+    // The Site Auditor: every page in the sitemap read weekly, about 25 pages per site per hour, one site per hour.
+    for (const { accountId, domain } of late() ? [] : await accountsDueForAudit(1)) {
+      const note = await forSite(accountId, () => auditPass(accountId, domain)).catch(async (e) => {
+        console.error(`site audit failed: ${message(e)}`);
+        await report("site-audit", false, message(e));
+        return null;
+      });
+      if (note) {
+        await report("site-audit", true);
+        results.push(`account ${accountId} site audit: ${note}`);
+      }
     }
     // The Index rescue: once a week per site, a page Google crawled but left out gets a substantial new section.
     // Sites with nothing waiting stay due (they're skipped quickly), so up to 5 are looked at and one is worked on.
