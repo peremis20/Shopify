@@ -1035,16 +1035,23 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     required: ["subject", "body"],
   };
   // Written, then checked like an article; when the checks remove too much, written once more, else the owner is told.
+  const reasons: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
     const out = await askJson<{ subject: string; body: string }>(ai, prompt, schema);
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
     const body = safeEmailText(out.body ?? "", keep, urls);
     const subject = safeEmailText(out.subject ?? "", keep, urls);
-    if (!body.text || body.dropped > body.total / 3) continue;
+    if (!body.text || body.dropped > body.total / 3) {
+      reasons.push(`the safety filter removed ${body.dropped} of ${body.total} sentences`);
+      continue;
+    }
     // A second AI checks it and may improve it; its version passes the same checks, else the first one stands.
     const r = await reviewOutreach(ai, p, given, { subject: subject.text, body: body.text });
-    if (!r.ok) continue;
+    if (!r.ok) {
+      reasons.push(`the checking AI turned it down${r.why ? `: ${r.why}` : ""}`);
+      continue;
+    }
     const rb = r.body ? safeEmailText(r.body, keep, urls) : null;
     const rs = r.subject ? safeEmailText(r.subject, keep, urls) : null;
     // The reviewer's version must still carry every link the first draft gave (the page to offer, the dead link).
@@ -1054,7 +1061,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const useSubject = rs && rs.text && rs.dropped === 0 ? rs.text : subject.text;
     return { subject: polish(useSubject) || "A quick note about your page", body: useBody };
   }
-  throw new Error("Couldn't write a safe email for this one. Try again, or write a short note of your own.");
+  throw new Error(`Couldn't write a safe email for this one (${reasons.join("; ") || "no reason given"}). Try again, or write a short note of your own.`);
 }
 
 /** Social posts and a short video script made from one published article. The owner posts them. */
@@ -1542,8 +1549,8 @@ async function reviewOutreach(
   /** What the writer was told about them: the facts the email may state. */
   given: string,
   email: { subject: string; body: string }
-): Promise<{ ok: boolean; subject: string; body: string }> {
-  const out = await askJson<{ ok: boolean; subject: string; body: string }>(
+): Promise<{ ok: boolean; subject: string; body: string; why: string }> {
+  const out = await askJson<{ ok: boolean; subject: string; body: string; why?: string }>(
     reviewerOf(ai),
     `You check outreach emails before a website owner sends them. This one is from the owner of ${p.ourSite} to the person who runs ${p.siteName}, about their page "${p.pageTitle}".
 What is known about them and the reason for writing (these facts are true and may be stated): ${given}
@@ -1553,14 +1560,14 @@ Body:
 ${email.body}
 """
 ok: false if it claims anything beyond the known facts above (credentials, results, numbers), sounds like a template or spam, pushes too hard, or would embarrass the owner.
-If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks.`,
+If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks. Also return "why": one plain sentence on what is wrong when ok is false (empty when ok).`,
     {
       type: "object",
-      properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" } },
-      required: ["ok", "subject", "body"],
+      properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" }, why: { type: "string" } },
+      required: ["ok", "subject", "body", "why"],
     }
   );
-  return { ok: out.ok === true, subject: (out.subject ?? "").trim(), body: (out.body ?? "").trim() };
+  return { ok: out.ok === true, subject: (out.subject ?? "").trim(), body: (out.body ?? "").trim(), why: String(out.why ?? "").trim() };
 }
 
 /**
