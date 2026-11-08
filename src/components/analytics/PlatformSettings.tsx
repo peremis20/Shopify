@@ -16,6 +16,7 @@ export function PlatformForm({ settings, onSaved }: {
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
+  const [mistralKey, setMistralKey] = useState("");
   const [serperKey, setSerperKey] = useState("");
   const [githubKey, setGithubKey] = useState("");
   const [pagespeedKey, setPagespeedKey] = useState("");
@@ -43,6 +44,7 @@ export function PlatformForm({ settings, onSaved }: {
         anthropicKey,
         geminiKey,
         groqKey,
+        mistralKey,
         serperKey,
         githubModelsKey: githubKey,
         pagespeedKey,
@@ -59,6 +61,7 @@ export function PlatformForm({ settings, onSaved }: {
       setAnthropicKey("");
       setGeminiKey("");
       setGroqKey("");
+      setMistralKey("");
       setSerperKey("");
       setGithubKey("");
       setPagespeedKey("");
@@ -102,7 +105,7 @@ export function PlatformForm({ settings, onSaved }: {
         <ol className="list-decimal space-y-1.5 pl-5 marker:text-dash-muted">
           <li>
             <b>AI writer:</b> any of a Claude API key (console.anthropic.com), a Groq API key (console.groq.com, free
-            tier), a GitHub token with the Models permission (github.com/settings/tokens, free tier) or a Gemini API key
+            tier), a Mistral API key (console.mistral.ai, free plan), a GitHub token with the Models permission (github.com/settings/tokens, free tier) or a Gemini API key
             (aistudio.google.com). One is enough. Set more and the others become backups, used in that order whenever one fails. Usage is billed to you, a few cents per page improved.
           </li>
           <li>
@@ -127,6 +130,7 @@ export function PlatformForm({ settings, onSaved }: {
       <form onSubmit={save} className="space-y-3 rounded-xl border border-dash-line bg-white p-4">
         {input("pf-claude", "Claude API key", anthropicKey, setAnthropicKey, has?.hasAnthropic)}
         {input("pf-groq", "or Groq API key", groqKey, setGroqKey, has?.hasGroq)}
+        {input("pf-mistral", "or Mistral API key (console.mistral.ai, free plan)", mistralKey, setMistralKey, has?.hasMistral)}
         {input("pf-github", "or GitHub Models token", githubKey, setGithubKey, has?.hasGithub)}
         {input("pf-gemini", "or Gemini API key", geminiKey, setGeminiKey, has?.hasGemini)}
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}

@@ -60,7 +60,7 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     name: "The writing AI",
     fix: (d) =>
       !/accept the key|401|403|billing|quota|payment/i.test(d) && /busy|demand|empty|fetch failed/i.test(d)
-        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude or Groq) in Platform keys gives it another backup."
+        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude, Mistral or Groq) in Platform keys gives it another backup."
         : "Every AI key failed. Check the keys and their billing in Platform keys.",
     workaround: "No new changes or articles are written until one works.",
   },

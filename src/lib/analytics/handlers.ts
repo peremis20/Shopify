@@ -1094,6 +1094,7 @@ export const savePlatform = (req: Request) =>
       anthropicKey: str("anthropicKey"),
       geminiKey: str("geminiKey"),
       groqKey: str("groqKey"),
+      mistralKey: str("mistralKey"),
       githubModelsKey: str("githubModelsKey"),
       serperKey: str("serperKey"),
       pagespeedKey: str("pagespeedKey"),
@@ -1116,7 +1117,7 @@ export const savePlatform = (req: Request) =>
     const board = await readStatus().catch(() => ({}) as Awaited<ReturnType<typeof readStatus>>);
     const failing = (part: keyof typeof board) => board[part]?.ok === false;
     const ai = aiProvider(p);
-    const NAMES = { claude: "Claude", groq: "Groq", github: "GitHub Models", gemini: "Gemini" } as const;
+    const NAMES = { claude: "Claude", groq: "Groq", mistral: "Mistral", github: "GitHub Models", gemini: "Gemini" } as const;
     if (ai) {
       const problems: string[] = [];
       const working = new Set<string>();

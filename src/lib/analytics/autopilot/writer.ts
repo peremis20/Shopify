@@ -538,6 +538,34 @@ const GROQ: ChatService = {
   options: (model) => ({ max_completion_tokens: 8192, ...(model.startsWith("openai/gpt-oss") ? { reasoning_effort: "low" } : {}) }),
 };
 
+// ---------- Mistral (free Experiment plan) ----------
+
+const MISTRAL_API = "https://api.mistral.ai/v1";
+/** Preferred Mistral models, best first; only ones the key can use are tried. */
+const MISTRAL_PREFERRED = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"];
+let mistralModels: { key: string; names: string[] } | null = null;
+
+async function pickMistralModels(apiKey: string): Promise<string[]> {
+  if (process.env.MISTRAL_MODEL) return [process.env.MISTRAL_MODEL];
+  if (mistralModels?.key === apiKey) return mistralModels.names;
+  const res = await fetch(`${MISTRAL_API}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Mistral didn't accept the key: ${body?.message ?? body?.detail ?? res.status}`);
+  const ids = ((body.data ?? []) as { id: string }[]).map((m) => m.id);
+  const names = MISTRAL_PREFERRED.filter((n) => ids.includes(n));
+  const use = names.length ? names : MISTRAL_PREFERRED;
+  mistralModels = { key: apiKey, names: use };
+  return use;
+}
+
+const MISTRAL: ChatService = {
+  name: "Mistral",
+  url: `${MISTRAL_API}/chat/completions`,
+  headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  models: pickMistralModels,
+  options: () => ({ max_tokens: 8192 }),
+};
+
 const GITHUB: ChatService = {
   name: "GitHub Models",
   url: `${GITHUB_API}/inference/chat/completions`,
@@ -606,7 +634,7 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
           if (finish === "content_filter") break modes;
           break; // try plain mode, or the next model
         }
-        lastError = `${model}: ${body?.error?.message ?? res.status}`;
+        lastError = `${model}: ${body?.error?.message ?? body?.message ?? res.status}`;
         if (res.status === 401 || res.status === 403) throw new Error(`${svc.name} didn't accept the key: ${lastError}`);
         if (res.status === 400 || res.status === 404 || res.status === 422) {
           // Rejected JSON (often fine apart from a stray character or a cut off end), or a model this key can't use.
@@ -626,6 +654,7 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
 
 function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, system, prompt, schema);
+  if (ai.kind === "mistral") return askChat<T>(MISTRAL, ai.key, system, prompt, schema);
   if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, system, prompt, schema);
   return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema);
 }
@@ -819,6 +848,11 @@ export async function checkAiKey(ai: AiProvider): Promise<void> {
   }
   if (ai.kind === "groq") {
     await pickGroqModels(ai.key);
+    return;
+  }
+  if (ai.kind === "mistral") {
+    mistralModels = null;
+    await pickMistralModels(ai.key);
     return;
   }
   if (ai.kind === "github") {
@@ -1340,7 +1374,7 @@ export function backedByFacts(evidence: string | null | undefined, facts: string
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
 
 export const NO_SECOND_AI =
-  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq or GitHub Models) in Settings, and the work goes ahead on the next run.";
+  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq, Mistral or GitHub Models) in Settings, and the work goes ahead on the next run.";
 
 /**
  * The reviewer: another AI service, with the other services as backups. The writer's own service never checks its
