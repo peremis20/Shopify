@@ -11,9 +11,9 @@ import { Component, type ReactNode } from "react";
 const sent = new Set<string>();
 let budget = 10;
 
-export function reportClientError(kind: string, message: string): void {
+export function reportClientError(kind: string, message: string, page?: string): void {
   try {
-    const where = `${location.pathname}${location.hash}`.slice(0, 120);
+    const where = `${location.pathname}${location.hash}${page ? ` (${page} page)` : ""}`.slice(0, 120);
     const key = `${kind}|${message.slice(0, 200)}|${where}`;
     if (sent.has(key) || budget <= 0) return;
     sent.add(key);
@@ -64,28 +64,21 @@ export function installErrorReporter(): void {
 }
 
 /** Shows a short message instead of a blank page when drawing a page crashes, and reports it. */
-export class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+/** Each page has its own, so one page's crash leaves the menu and the other pages working. */
+export class ErrorBoundary extends Component<{ children: ReactNode; where?: string }, { failed: boolean }> {
   state = { failed: false };
-  // Moving to another page tries again, so one page's crash doesn't block the others.
-  private retry = () => this.state.failed && this.setState({ failed: false });
-  componentDidMount() {
-    window.addEventListener("hashchange", this.retry);
-  }
-  componentWillUnmount() {
-    window.removeEventListener("hashchange", this.retry);
-  }
   static getDerivedStateFromError() {
     return { failed: true };
   }
   componentDidCatch(error: Error, info: { componentStack?: string | null }) {
-    reportClientError("render", `${error.message}${info.componentStack ? ` in ${info.componentStack.trim().split("\n")[0].trim()}` : ""}`);
+    reportClientError("render", `${error.message}${info.componentStack ? ` in ${info.componentStack.trim().split("\n")[0].trim()}` : ""}`, this.props.where);
   }
   render() {
     if (!this.state.failed) return this.props.children;
     return (
       <div style={{ padding: 32, fontFamily: "system-ui, sans-serif" }}>
         <p>Something on this page didn&apos;t load. It was reported and is being fixed.</p>
-        <button onClick={() => location.reload()} style={{ marginTop: 12, textDecoration: "underline" }}>
+        <button onClick={() => this.setState({ failed: false })} style={{ marginTop: 12, textDecoration: "underline" }}>
           Try again
         </button>
       </div>

@@ -73,7 +73,7 @@ const READY_DAYS: Record<Section, number> = { visits: 7, plan: 8, backlinks: 5, 
 interface Saved {
   at: string;
   /** Each section's last repair and how many in a row didn't fill it, so a repair that doesn't work is escalated, not repeated. */
-  repairs?: Partial<Record<Section, { at: string; tries: number; none?: boolean }>>;
+  repairs?: Partial<Record<Section, { at: string; tries: number }>>;
   aiAt: string | null;
   shape: Shape;
   age: number;
@@ -189,7 +189,7 @@ async function ageOf(accountId: string): Promise<number> {
  * Puts the agent that fills an empty section back to work now, instead of waiting for its usual turn. Returns what it
  * did, or null when no agent can fill it (then the code repair agent and the platform owner take it).
  */
-async function repairSection(accountId: string, s: Section, conn: Connection | null, shape: Shape): Promise<string | null> {
+async function repairSection(accountId: string, s: Section, conn: Connection | null, shape: Shape): Promise<string | null | "not-stalled"> {
   // Only what really puts the agent back to work counts as a repair: each agent's own conditions are checked first.
   const profile = await readProfile(accountId).catch(() => null);
   switch (s) {
@@ -206,9 +206,11 @@ async function repairSection(accountId: string, s: Section, conn: Connection | n
       await sql`UPDATE insights_account_autopilot SET upkeep_tried_at = NULL WHERE account_id = ${accountId}`;
       return "The rank tracker was told to check this site on the next hourly check.";
     case "changes": {
-      const [a] = await sql`SELECT last_run_at FROM insights_account_autopilot WHERE account_id = ${accountId}`;
+      const [a] = await sql`SELECT last_run_at, shop_token_enc IS NOT NULL AS shop FROM insights_account_autopilot WHERE account_id = ${accountId}`;
       // A run in the last 20 hours that changed nothing is the autopilot's own finding (autopilot:idle), not a stall.
-      if (a?.last_run_at && Date.now() - Date.parse(String(a.last_run_at)) < 20 * HOUR) return null;
+      if (a?.last_run_at && Date.now() - Date.parse(String(a.last_run_at)) < 20 * HOUR) return "not-stalled";
+      // With neither a store nor a website the autopilot can't run; the Inspector already tells the owner.
+      if (!(String(a?.shop) === "true" || String(a?.shop) === "t") && !profile?.siteDomain) return null;
       await sql`UPDATE insights_account_autopilot SET run_tried_at = NULL WHERE account_id = ${accountId}`;
       return "The autopilot was told to run for this site on the next hourly check.";
     }
@@ -270,26 +272,27 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
       if (!s) continue;
       const last = repairs[s];
       if (last && last.tries >= 2) {
-        p.fix = last.none
-          ? "No agent can fill it by itself here, so the code repair agent looks at the cause."
-          : `An agent was put back to work on it ${last.tries} times without result, so the code repair agent looks at the cause.`;
+        p.fix = `An agent was put back to work on it ${last.tries} times without result, so the code repair agent looks at the cause.`;
         continue;
       }
       if (last && Date.now() - Date.parse(last.at) < (s === "backlinks" ? 7 : 1) * DAY) {
         p.fix = "An agent was put back to work on it recently; if it stays empty, the code repair agent looks at the cause.";
         continue;
       }
-      // Recorded even when the attempt throws, so a failing repair isn't retried at every check.
-      repairs[s] = { at: new Date().toISOString(), tries: (last?.tries ?? 0) + 1 };
-      const did = await repairSection(accountId, s, conn, shape).catch((e) => (console.error(`app check repair of ${s} failed: ${(e as Error).message}`), null));
-      if (did) {
+      let failed = false;
+      const did = await repairSection(accountId, s, conn, shape).catch((e) => ((failed = true), console.error(`app check repair of ${s} failed: ${(e as Error).message}`), null));
+      // A failed attempt counts as a try (retried after the wait); one whose conditions don't hold is not recorded, so
+      // it is checked afresh next time (a key added, a domain set).
+      if (did || failed) repairs[s] = { at: new Date().toISOString(), tries: (last?.tries ?? 0) + 1 };
+      if (did === "not-stalled") p.id = "";
+      else if (did) {
         p.who = "repaired";
         p.fix = did;
-      } else {
-        repairs[s] = { ...repairs[s]!, tries: 2, none: true };
-        p.fix = "No agent can fill it by itself here, so the code repair agent looks at the cause.";
-      }
+      } else if (failed) p.fix = "Putting its agent back to work failed this time; it is tried again later.";
+      else p.fix = "No agent can fill it by itself here right now, so the code repair agent looks at the cause.";
     }
+    // Not stalled after all: the autopilot's own idle finding covers it.
+    for (let i = problems.length - 1; i >= 0; i--) if (!problems[i].id) problems.splice(i, 1);
 
     // What broke in owners' browsers in the last 3 days: script errors, failed requests, layout and drawing crashes.
     const browser = (await readClientErrors(accountId)).filter((e) => Date.now() - Date.parse(e.last) < 3 * DAY);

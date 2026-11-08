@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { RANGE_OPTIONS } from "@/lib/analytics/dates";
 import type { IntegrationInfo, OverviewResponse, RangeKey } from "@/lib/analytics/types";
 import { DonutChart } from "./DonutChart";
+import { ErrorBoundary } from "./error-reporter";
 import { formatDuration, formatNumber, formatPct, formatRange } from "./format";
 import { ClockIcon, CloseIcon, FileIcon, InfoIcon, KeyIcon, MenuIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./Icons";
 import { Legend, LineChart } from "./LineChart";
@@ -351,11 +352,14 @@ export function DashboardView() {
             <>
               {keep("home") && (
                 <div hidden={page !== "home"}>
+                  <ErrorBoundary where="home">
                   <Home data={data} loading={loading} onGo={go} />
+                  </ErrorBoundary>
                 </div>
               )}
               {keep("keywords") && (
                 <div hidden={page !== "keywords"}>
+                  <ErrorBoundary where="keywords">
                   {/* The searches Home counts ("tracked, on page 1"), with their daily Google positions, first. */}
                   <RankHealth connected={connection?.mode === "oauth"} />
                   <KeywordResearch
@@ -364,10 +368,12 @@ export function DashboardView() {
                     range={range}
                     onChanged={() => load(range, true)}
                   />
+                  </ErrorBoundary>
                 </div>
               )}
               {keep("content") && (
                 <div hidden={page !== "content"}>
+                  <ErrorBoundary where="content">
                   <Autopilot
                     simple
                     connected={connection?.mode === "oauth"}
@@ -377,30 +383,37 @@ export function DashboardView() {
                   />
                   <ShareKits />
                   <ExpertReview />
+                  </ErrorBoundary>
                 </div>
               )}
               {keep("backlinks") && (
                 <div hidden={page !== "backlinks"}>
+                  <ErrorBoundary where="backlinks">
                   <Card className="mt-5">
                     <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
                     <SiteAuthority />
                     <Backlinks />
                   </Card>
+                  </ErrorBoundary>
                 </div>
               )}
               {keep("settings") && (
                 <div hidden={page !== "settings"}>
+                  <ErrorBoundary where="settings">
                   <BusinessProfile />
                   <ConnectedApps
                     integrations={data?.integrations ?? []}
                     admin={data?.account?.admin ?? false}
                     onSetup={(id) => (id === "keywords" ? go("keywords") : setSettingsOpen(true))}
                   />
+                  </ErrorBoundary>
                 </div>
               )}
               {keep("report") && (
                 <div hidden={page !== "report"}>
+                  <ErrorBoundary where="report">
                   <WeeklyReport auto />
+                  </ErrorBoundary>
                 </div>
               )}
               <p className="mt-8 text-center text-xs text-dash-muted">

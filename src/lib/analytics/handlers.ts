@@ -997,6 +997,25 @@ export const weeklyReportPreview = (req: Request) =>
     return json({ data });
   });
 
+/** Reads at most `max` bytes of a request body, so a big or endless body is never held in memory. */
+async function readCapped(req: Request, max: number): Promise<string> {
+  const reader = req.body?.getReader();
+  if (!reader) return "";
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < max) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      parts.push(value);
+      size += value.length;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return new TextDecoder().decode(Buffer.concat(parts).subarray(0, max));
+}
+
 /** A problem from an owner's browser (a script error, a failed request, a layout wider than the screen, a crash). */
 export async function clientErrors(req: Request): Promise<Response> {
   try {
@@ -1004,7 +1023,7 @@ export async function clientErrors(req: Request): Promise<Response> {
     if (Number(req.headers.get("content-length") ?? 0) > 4000) return json({ ok: true });
     const account = await accountOf(req).catch(() => null);
     if (!account) return json({ ok: true });
-    const text = (await req.text().catch(() => "")).slice(0, 4000);
+    const text = await readCapped(req, 4000);
     const report = cleanReport((() => { try { return JSON.parse(text); } catch { return null; } })());
     if (!report) return json({ ok: true });
     await saveClientError(account.id, report);
