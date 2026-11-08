@@ -28,7 +28,7 @@ import { EditedMeanwhile, siteFor, type SiteAccess } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
-import { measuredResults } from "./results";
+import { lessons, measuredResults } from "./results";
 import { googleUpdates, updatesDuring, type GoogleUpdate } from "./google-updates";
 import { expireReviews } from "./expert-review";
 import { askGoogleToRecrawl } from "./recrawl";
@@ -544,7 +544,7 @@ async function planNextChange(
 
     const { briefs, summaries, used } = await gatherBriefs(hub, apps, cand, notes);
     // What this site's own past changes did, measured: the writer and its reviewer learn from it.
-    briefs.unshift(...(await (results ??= measuredResults(ctx.accountId).catch(() => []))));
+    briefs.unshift(...(await (results ??= measuredResults(ctx.accountId).then(async (r) => [...r, ...(await lessons(ctx.accountId).catch(() => []))]).catch(() => []))));
     const improvement = await writeImprovement(
       ctx.ai,
       page,
@@ -1075,7 +1075,7 @@ async function revertRow(ctx: Ctx, c: Row, opts: { checkLive?: boolean } = {}): 
       if (live.id === c.resource_id) {
         const now = field === "meta_title" ? live.metaTitle : live.metaDescription;
         if (ownerChangedSeo(now, c.after_value)) {
-          const note = `The ${field === "meta_title" ? "title" : "description"} was changed on the site after this change, so the owner's version was kept.`;
+          const note = `The ${field === "meta_title" ? "title" : "description"} was changed on the site after this change, so the owner's version was kept. Owner's version: ${String(now ?? "").slice(0, 200)}`;
           await sql`UPDATE insights_autopilot_changes SET status = 'kept', note = ${note} WHERE id = ${c.id}`;
           return "Kept: the owner changed it since.";
         }

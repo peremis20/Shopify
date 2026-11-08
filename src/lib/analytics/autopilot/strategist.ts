@@ -1,6 +1,6 @@
 import { readAuthorityPlan } from "./authority-coach";
 import { readIdeas } from "./idea-finder";
-import { measuredResults } from "./results";
+import { lessons, measuredResults } from "./results";
 import { readScorecard } from "./scorecard";
 import { rankingTurbulence } from "./google-updates";
 import { readReviewer, reviewList } from "./expert-review";
@@ -143,6 +143,7 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (problems.length) lines.push("Inspector found: " + problems.map((p) => p.text).join(" "));
   // What the agents' own changes did on this site, measured four weeks after each one: the data to learn from.
   lines.push(...(await measuredResults(accountId).catch(() => [])));
+  lines.push(...(await lessons(accountId).catch(() => [])));
   // Expert review: a trust signal Google weighs heavily on health and money topics.
   const items = await reviewList(accountId).catch(() => []);
   if (items.length) {

@@ -38,6 +38,8 @@ const routes: Record<string, Handler> = {
   "POST /api/auth/logout": api.logout,
   "GET /api/onboarding": api.onboarding,
   "POST /api/onboarding/profile": api.saveOnboardingProfile,
+  "GET /api/profile/business": api.businessProfile,
+  "POST /api/profile/business": api.businessProfile,
   "POST /api/onboarding/match": api.rematchProperties,
   "POST /api/onboarding/site": api.connectWebsite,
   "POST /api/onboarding/setup-google": api.setupGoogleTools,

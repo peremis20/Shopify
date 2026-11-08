@@ -20,6 +20,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
+import { accountsDueForBusiness, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
@@ -77,7 +78,7 @@ import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLin
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { assertPublicUrl, bareDomain, readProfile, saveProfile, siteBrief } from "./profile";
+import { ABOUT_FIELDS, assertPublicUrl, bareDomain, readProfile, saveAbout, saveProfile, siteBrief } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
@@ -821,8 +822,10 @@ export const backlinkProspects = (req: Request) =>
 /** Writes the outreach email for one listed site (checked by the second AI in writeOutreach) and finds its public address. */
 async function composeOutreach(accountId: string, p: Prospect): Promise<OutreachDraft> {
   const [platform, conn, profile] = await Promise.all([readPlatformSettings(), getConnection(accountId), readProfile(accountId)]);
-  const ai = aiProvider(platform);
-  if (!ai) throw new Error("Add an AI key in platform keys first.");
+  const base = aiProvider(platform);
+  if (!base) throw new Error("Add an AI key in platform keys first.");
+  // The business in its own words, so the email fits it.
+  const ai = { ...base, site: siteBrief(profile) };
   const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? "");
   // The page worth offering: the one already doing best on Google for this topic (real clicks),
   // else the page aimed at it with Rank for this.
@@ -902,6 +905,18 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
   if (saved === 0 && failure) throw failure;
   return `${saved} ${saved === 1 ? "email" : "emails"} ready to review`;
 }
+
+/** The business in its own words: read by the agents from the site, and edited by the owner (who then always wins). */
+export const businessProfile = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const about = Object.fromEntries(ABOUT_FIELDS.map((k) => [k, typeof b[k] === "string" ? String(b[k]) : ""]));
+      await saveAbout(account.id, about, "owner");
+    }
+    const p = await readProfile(account.id);
+    return json({ about: p.about, source: p.aboutSource });
+  });
 
 /** The Strategist's plan for the week. POST with {refresh: true} plans again now (at most once a day). */
 export const strategyReport = (req: Request) =>
@@ -1471,6 +1486,12 @@ export async function autopilotTick(): Promise<Response> {
       }
       // Tried either way, so one site never holds up the others; it is tried again next week.
       await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
+    }
+    // The business profile: read from the site's own pages (checked by a second AI) so every agent writes for this
+    // business, not generically. Monthly per site, never over what the owner wrote.
+    for (const accountId of late() ? [] : await accountsDueForBusiness(1)) {
+      const note = await forSite(accountId, () => learnBusiness(accountId)).catch((e) => (console.error(`business profile failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} business profile: ${note}`);
     }
     // The Site Auditor: every page in the sitemap read weekly, about 25 pages per site per hour, one site per hour.
     for (const { accountId, domain } of late() ? [] : await accountsDueForAudit(1)) {

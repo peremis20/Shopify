@@ -30,7 +30,33 @@ export interface Profile {
   onboardingDismissed: boolean;
   /** What the site is built with (detected): shopify, wordpress, wix, squarespace, webflow, custom, ... */
   platform: string | null;
+  /** The business in its own words, so every agent writes for it and not generically. */
+  about: BusinessAbout | null;
+  /** "auto": read from the site's own pages by the agents; "owner": written or checked by the owner. */
+  aboutSource: "auto" | "owner" | null;
 }
+
+export interface BusinessAbout {
+  /** Who the customers or readers are. */
+  audience: string;
+  /** What it sells or offers, in a sentence or two. */
+  offer: string;
+  /** What makes it different from others in its field. */
+  difference: string;
+  /** How it talks: warm, clinical, plain, faith based... */
+  tone: string;
+  /** Where it serves (a city, a country, online everywhere). */
+  location: string;
+}
+
+export const ABOUT_FIELDS: (keyof BusinessAbout)[] = ["audience", "offer", "difference", "tone", "location"];
+
+const cleanAbout = (v: unknown): BusinessAbout | null => {
+  const o = (typeof v === "string" ? (() => { try { return JSON.parse(v); } catch { return null; } })() : v) as Record<string, unknown> | null;
+  if (!o || typeof o !== "object") return null;
+  const out = Object.fromEntries(ABOUT_FIELDS.map((k) => [k, typeof o[k] === "string" ? String(o[k]).trim().slice(0, 400) : ""])) as unknown as BusinessAbout;
+  return ABOUT_FIELDS.some((k) => out[k]) ? out : null;
+};
 
 const hostsOf = (v: string | null | undefined) =>
   (v ?? "")
@@ -143,7 +169,18 @@ export async function readProfile(accountId: string, email?: string): Promise<Pr
     gaExcludeHosts: row?.ga_exclude_hosts != null ? hostsOf(row.ga_exclude_hosts) : envHosts,
     onboardingDismissed: yes(row?.onboarding_dismissed),
     platform: row?.platform ?? null,
+    about: cleanAbout(row?.about),
+    aboutSource: row?.about_source === "owner" ? "owner" : row?.about_source === "auto" ? "auto" : null,
   };
+}
+
+/** Saves the business description; "owner" when the owner wrote or checked it (the agents then never overwrite it). */
+export async function saveAbout(accountId: string, about: unknown, source: "auto" | "owner"): Promise<void> {
+  await ensureSchema();
+  const clean = cleanAbout(about);
+  await sql`
+    INSERT INTO insights_account_profile (account_id, about, about_source, about_at) VALUES (${accountId}, ${clean ? JSON.stringify(clean) : null}::jsonb, ${clean ? source : null}, ${clean ? new Date().toISOString() : null})
+    ON CONFLICT (account_id) DO UPDATE SET about = EXCLUDED.about, about_source = EXCLUDED.about_source, about_at = EXCLUDED.about_at`;
 }
 
 export async function saveProfile(accountId: string, patch: Partial<Profile>): Promise<void> {
@@ -168,12 +205,32 @@ export async function saveProfile(accountId: string, patch: Partial<Profile>): P
       onboarding_dismissed = EXCLUDED.onboarding_dismissed,
       platform = EXCLUDED.platform,
       updated_at = now()`;
+  // A new site: the description the agents read from the old one no longer fits (the owner's own stays).
+  if (patch.siteDomain !== undefined && next.domain !== cur.siteDomain)
+    await sql`UPDATE insights_account_profile SET about = NULL, about_source = NULL, about_at = NULL WHERE account_id = ${accountId} AND about_source = 'auto'`;
 }
 
 /** What the writer is told about the business. */
-export function siteBrief(p: Profile): { brand: string | null; sells: string; readers: boolean } {
+export function siteBrief(p: Profile): { brand: string | null; sells: string; readers: boolean; about?: string } {
   const type = BUSINESS_TYPES.find((b) => b.id === p.businessType);
-  return { brand: p.brandName, sells: type?.sells ?? "health and wellness products", readers: Boolean(type && "readers" in type && type.readers) };
+  const a = p.about;
+  const about = a
+    ? [
+        a.offer && `What it offers: ${a.offer}`,
+        a.audience && `Who it serves: ${a.audience}`,
+        a.difference && `What makes it different: ${a.difference}`,
+        a.tone && `How it talks: ${a.tone}`,
+        a.location && `Where: ${a.location}`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  return {
+    brand: p.brandName,
+    sells: type?.sells ?? "health and wellness products",
+    readers: Boolean(type && "readers" in type && type.readers),
+    ...(about ? { about } : {}),
+  };
 }
 
 /** Faith topics (sabbath, prayer, church) are on topic for a faith and health publication. */

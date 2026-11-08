@@ -173,3 +173,49 @@ async function earlyReadings(accountId: string): Promise<string[]> {
       "."
   );
 }
+
+/**
+ * What this site has taught the agents, as examples, not averages: titles and descriptions that moved the page up or
+ * down on Google, what the owner undid by hand, and what the owner rewrote. The writer and its reviewer read these
+ * before every change, so they do more of what works here and stop what the owner doesn't want.
+ */
+export async function lessons(accountId: string): Promise<string[]> {
+  await ensureSchema();
+  const out: string[] = [];
+  const fmt = (t: string | null) => `"${String(t ?? "").replace(/\s+/g, " ").slice(0, 120)}"`;
+  const moved = await sql`
+    SELECT field, before_value, after_value, baseline_position, result_position FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND field IN ('meta_title', 'meta_description') AND evaluated_at IS NOT NULL
+      AND baseline_position IS NOT NULL AND result_position IS NOT NULL AND across_update IS NULL
+    ORDER BY evaluated_at DESC LIMIT 60`;
+  const up = moved.filter((r) => Number(r.result_position) < Number(r.baseline_position) - 0.5).slice(0, 3);
+  const down = moved.filter((r) => Number(r.result_position) > Number(r.baseline_position) + 0.5).slice(0, 2);
+  if (up.length)
+    out.push(
+      "On this site these rewrites moved the page up on Google (write more like these): " +
+        up.map((r) => `${fmt(r.after_value)} (was ${fmt(r.before_value)}, #${Number(r.baseline_position).toFixed(0)} to #${Number(r.result_position).toFixed(0)})`).join("; "),
+    );
+  if (down.length)
+    out.push(
+      "These rewrites moved the page down (avoid this style): " +
+        down.map((r) => `${fmt(r.after_value)} (#${Number(r.baseline_position).toFixed(0)} to #${Number(r.result_position).toFixed(0)})`).join("; "),
+    );
+  const undone = await sql`
+    SELECT field, after_value FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND status = 'reverted' AND note LIKE 'Undone by hand%' AND field IN ('meta_title', 'meta_description', 'content', 'new_article')
+    ORDER BY created_at DESC LIMIT 3`;
+  if (undone.length)
+    out.push(
+      "The owner undid these by hand (don't write like this): " +
+        undone.map((r) => `${String(r.field).replace("_", " ")} ${fmt(String(r.after_value ?? "").replace(/<[^>]+>/g, " "))}`).join("; "),
+    );
+  const rewritten = await sql`
+    SELECT field, after_value, note FROM insights_autopilot_changes
+    WHERE account_id = ${accountId} AND note LIKE '%Owner''s version: %' ORDER BY created_at DESC LIMIT 3`;
+  if (rewritten.length)
+    out.push(
+      "The owner rewrote these (their version shows what they want): " +
+        rewritten.map((r) => `${fmt(r.after_value)} became ${fmt(String(r.note).split("Owner's version: ")[1] ?? "")}`).join("; "),
+    );
+  return out;
+}

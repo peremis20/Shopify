@@ -145,7 +145,7 @@ export interface AiProvider {
   /** "review": the second AI checking another's work; its outages show as the checker's, not the writer's. */
   role?: "review";
   /** The customer's business, so the writer fits it (brand for titles, what they sell). */
-  site?: { brand: string | null; sells: string; readers?: boolean };
+  site?: { brand: string | null; sells: string; readers?: boolean; about?: string };
 }
 
 export const platformReady = (p: PlatformSettings) => Boolean(aiProvider(p) && p.shopifyClientId && p.shopifyClientSecret);

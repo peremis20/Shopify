@@ -18,6 +18,10 @@ export const UNRANKED_POSITION = 25;
 
 /** Instructions for every request, fitted to the customer's business (see AiProvider.site). */
 function rulesFor(site: AiProvider["site"]): string {
+  return baseRules(site) + (site?.about ? `\n\nAbout this business (from its own site and owner; write for it specifically, and never claim anything beyond this or the page):\n${site.about}` : "");
+}
+
+function baseRules(site: AiProvider["site"]): string {
   const who = site?.brand ? `"${site.brand}", a website` : "a website";
   return site?.readers
     ? `You are the SEO editor for ${who} that publishes ${site.sells}.
@@ -1583,4 +1587,66 @@ Return in "keep" the numbers of the sites worth contacting: a real site or publi
   );
   const keep = new Set((out.keep ?? []).map(Number));
   return { keep: prospects.map((_, i) => keep.has(i)) };
+}
+
+/* ---------- Business profile: what the site says about itself, checked by a second AI ---------- */
+
+const ABOUT_SCHEMA = {
+  type: "object",
+  properties: {
+    audience: { type: "string" },
+    offer: { type: "string" },
+    difference: { type: "string" },
+    tone: { type: "string" },
+    location: { type: "string" },
+  },
+  required: ["audience", "offer", "difference", "tone", "location"],
+};
+
+/**
+ * Reads the business from its own pages: who it serves, what it offers, what makes it different, how it talks and
+ * where. Only what the pages say: a field the pages don't state stays empty. A second AI then checks each field
+ * against the same text and every field it can't find there is dropped.
+ */
+export async function readBusiness(ai: AiProvider, pagesText: string): Promise<Record<string, string>> {
+  const out = await askJson<Record<string, string>>(
+    { ...ai, site: undefined },
+    `Here is the text of a website's own pages (home page, about page).
+
+"""
+${pagesText.slice(0, 12000)}
+"""
+
+Describe the business only from what this text says. Return JSON with:
+"audience": who its customers or readers are (one sentence),
+"offer": what it sells or offers (one or two sentences),
+"difference": what makes it different from others, in its own claims (one sentence),
+"tone": how its writing sounds (a few words, like "warm and plain" or "clinical and precise"),
+"location": where it serves (a city, a country, or "online"), only if stated.
+Leave a field as an empty string when the text doesn't say it. Never guess or invent. No hyphens or dashes.`,
+    ABOUT_SCHEMA,
+  );
+  const fields = Object.fromEntries(Object.keys(ABOUT_SCHEMA.properties).map((k) => [k, polish(String(out[k] ?? "").trim())])) as Record<string, string>;
+  const filled = Object.entries(fields).filter(([k, v]) => v && k !== "tone");
+  if (!filled.length) return fields;
+  const check = await askJson<{ supported: boolean[] }>(
+    reviewerOf(ai, false),
+    `Check each statement against the website text below. A statement is supported only if the text says it (the same meaning, not a guess).
+
+"""
+${pagesText.slice(0, 12000)}
+"""
+
+Statements:
+${filled.map(([k, v], i) => `${i + 1}. (${k}) ${v}`).join("\n")}
+
+Return JSON "supported": one true or false per statement, in order.`,
+    { type: "object", properties: { supported: { type: "array", items: { type: "boolean" } } }, required: ["supported"] },
+  );
+  filled.forEach(([k], i) => {
+    if (check.supported?.[i] !== true) fields[k] = "";
+  });
+  // No claim survives the guards: health claims and unsourced promises are dropped even if the site makes them.
+  for (const k of Object.keys(fields)) if (isRisky(fields[k]) || isUnsourced(fields[k])) fields[k] = "";
+  return fields;
 }

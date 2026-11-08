@@ -21,6 +21,7 @@ import { isEmbedded } from "./embedded-client";
 import { Backlinks } from "./Backlinks";
 import { Scorecard } from "./Scorecard";
 import { WeeklyReport } from "./WeeklyReport";
+import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
@@ -389,6 +390,7 @@ export function DashboardView() {
               )}
               {keep("settings") && (
                 <div hidden={page !== "settings"}>
+                  <BusinessProfile />
                   <ConnectedApps
                     integrations={data?.integrations ?? []}
                     admin={data?.account?.admin ?? false}
