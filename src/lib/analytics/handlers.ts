@@ -6,7 +6,7 @@ import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
-import { accountsDueForDrafts, findProspects, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
+import { accountsDueForDrafts, findProspects, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
@@ -888,11 +888,20 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
   }
   const drafts = new Map<string, OutreachDraft>();
   let failure: unknown = null;
+  const failed: string[] = [];
+  // About two minutes per hour, so a slow AI never holds up the other agents; the rest is written next hour.
+  const started = Date.now();
+  let tried = 0;
   for (const p of picks) {
-    const d = await composeOutreach(accountId, p).catch((e) => ((failure = e), null));
+    if (tried && Date.now() - started > 120_000) break;
+    tried++;
+    // Only a site whose email couldn't be written safely is set aside; an AI outage or limit sets nothing aside.
+    const d = await composeOutreach(accountId, p).catch((e) => ((failure = e), /^Couldn't write a safe email/.test(message(e)) && failed.push(p.url), null));
     if (d) drafts.set(p.url, d);
   }
   const saved = await saveDrafts(accountId, drafts);
+  await markDraftTried(accountId, failed).catch(() => undefined);
+  const left = picks.length - tried;
   // Queued sites leave the queue once written (or gone from the list); one that failed stays for the next try.
   if (queue.length) {
     // Kept: queued sites not written this time (not picked yet, or failed); dropped: written, or gone from the open list.
@@ -902,8 +911,8 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
   }
   // Any one failing is a fault the Inspector must see.
   await report("outreach-drafter", !failure, failure ? message(failure) : null);
-  if (saved === 0 && failure) throw failure;
-  return `${saved} ${saved === 1 ? "email" : "emails"} ready to review`;
+  if (saved === 0 && failure && !left) throw failure;
+  return `${left ? "partial: " : ""}${saved} ${saved === 1 ? "email" : "emails"} ready to review${left ? `, ${left} more next hour` : ""}`;
 }
 
 /** The business in its own words: read by the agents from the site, and edited by the owner (who then always wins). */

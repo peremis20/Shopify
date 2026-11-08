@@ -606,11 +606,20 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
 
   let lastError = "";
   const tried: string[] = [];
+  // One service gets about a minute and a half in all: past that the next service is asked, so one slow or empty
+  // service never holds up the hourly run.
+  const started = Date.now();
+  const spent = () => Date.now() - started > 75_000;
   for (const model of await svc.models(apiKey)) {
     if (lastError) tried.push(lastError);
     lastError = "";
+    if (spent()) {
+      lastError = `${model}: skipped, ${svc.name} took too long`;
+      break;
+    }
     modes: for (const jsonMode of [true, false]) {
       for (let attempt = 0; attempt < 2; attempt++) {
+        if (spent()) break modes;
         if (attempt) await pause(2000);
         const res = await fetch(svc.url, {
           method: "POST",

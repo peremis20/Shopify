@@ -68,6 +68,8 @@ export interface Prospect {
   rival?: string;
   /** Outreach Drafter: the email written ahead for the owner to review and send (never sent by the app). */
   draft?: OutreachDraft;
+  /** When the Outreach Drafter last tried and couldn't write a safe email: it moves on to other sites for a week. */
+  draftTriedAt?: string;
 }
 
 export interface OutreachDraft {
@@ -255,6 +257,8 @@ export async function accountsDueForDrafts(limit: number): Promise<string[]> {
     WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
       -- A failed week (an AI outage) is tried again 3 hours later, not a week later.
       OR (s.value::jsonb->>'note' LIKE 'failed:%' AND s.updated_at < now() - interval '3 hours')
+      -- Part of the week's emails written: the rest next hour (one slow AI never holds up the other agents).
+      OR (s.value::jsonb->>'note' LIKE 'partial:%' AND s.updated_at < now() - interval '50 minutes')
       -- The Strategist sent a site to write to first: done on the next hour.
       OR (q.value IS NOT NULL AND q.value <> '[]' AND q.updated_at > s.updated_at))
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
@@ -273,11 +277,22 @@ export function pickForDrafts(list: ProspectList | null, n = DRAFTS_PER_WEEK, fi
   const waiting = open.filter((p) => p.draft).length;
   // Sites the Strategist sent come first, and are written even when three emails already wait.
   const rank = (p: Prospect) => (first.includes(p.domain) ? first.indexOf(p.domain) : 99);
-  const queued = open.filter((p) => !p.draft && rank(p) < 99).sort((a, b) => rank(a) - rank(b));
+  const fresh = (p: Prospect) => !p.draft && !(p.draftTriedAt && Date.now() - Date.parse(p.draftTriedAt) < 7 * 864e5);
+  const queued = open.filter((p) => fresh(p) && rank(p) < 99).sort((a, b) => rank(a) - rank(b));
   const rest = open
-    .filter((p) => !p.draft && rank(p) === 99)
+    .filter((p) => fresh(p) && rank(p) === 99)
     .sort((a, b) => (KIND_VALUE[a.kind] ?? 9) - (KIND_VALUE[b.kind] ?? 9) || (b.authority ?? 0) - (a.authority ?? 0));
   return [...queued.slice(0, n), ...rest.slice(0, Math.max(0, n - waiting - queued.length))];
+}
+
+/** Notes the sites whose email couldn't be written safely, so the next tries go to other sites. */
+export async function markDraftTried(accountId: string, urls: string[]): Promise<void> {
+  if (!urls.length) return;
+  const list = await readProspects(accountId);
+  if (!list) return;
+  const at = new Date().toISOString();
+  list.prospects = list.prospects.map((p) => (urls.includes(p.url) ? { ...p, draftTriedAt: at } : p));
+  await save(accountId, list);
 }
 
 /** Saves written emails onto their sites, reading the list fresh so the owner's marks made meanwhile are kept. */
