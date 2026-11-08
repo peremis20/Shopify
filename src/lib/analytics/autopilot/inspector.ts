@@ -93,7 +93,7 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
   },
   "outreach-drafter": {
     name: "The Outreach Drafter (backlink emails written ahead)",
-    fix: (d) => (/AI key/i.test(d) ? "Add an AI key in Platform keys." : "It tries again next week by itself. Write the email on a site by hand meanwhile."),
+    fix: (d) => (/AI key/i.test(d) ? "Add an AI key in Platform keys." : "It tries again by itself. Write the email on a site by hand meanwhile."),
     workaround: "Each site on the Backlinks list still has Write the email.",
   },
   "idea-finder": {
@@ -114,8 +114,16 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
 
   // 1. Services every agent relies on.
   const status = await readStatus();
+  // A failure caused by the AI services is already fixed when both the writer and the checker have worked since
+  // (a key added or a busy spell over): it isn't shown, and the next run proves it.
+  const aiFixedSince = (at: string | null | undefined) =>
+    Boolean(at) && [status.ai, status["ai-review"]].every((x) => x?.ok && x.lastOk && Date.parse(x.lastOk) > Date.parse(at!));
+  // Named AI services only; a site's own monthly AI limit is not something a working service fixes.
+  const AI_CAUSE_RE = /GitHub Models|Groq|Gemini|Mistral|Claude|second AI from another/i;
+  const AI_CAUSE = { test: (t: string) => AI_CAUSE_RE.test(t) && !/limit/i.test(t) };
   for (const [part, st] of Object.entries(status) as [Part, NonNullable<(typeof status)[Part]>][]) {
     if (!st || st.ok) continue;
+    if (part !== "ai" && part !== "ai-review" && AI_CAUSE.test(st.detail ?? "") && aiFixedSince(st.at)) continue;
     // A busy AI service that answered within the last 3 hours is a blip the backups and retries handle, not a fault
     // to show the owner. A refused key or billing problem always shows.
     const busy = /busy|demand|empty|timeout|aborted|fetch failed|overloaded|\b(429|503)\b/i.test(st.detail ?? "") && !/accept the key|401|403|billing|quota|payment/i.test(st.detail ?? "");
@@ -195,7 +203,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       });
     }
     const runs = await sql`
-      SELECT r.summary, r.status, (SELECT count(*) FROM insights_autopilot_changes c WHERE c.run_id = r.id AND c.status IN ('applied','suggested','kept')) AS made
+      SELECT r.summary, r.status, r.finished_at, (SELECT count(*) FROM insights_autopilot_changes c WHERE c.run_id = r.id AND c.status IN ('applied','suggested','kept')) AS made
       FROM insights_autopilot_runs r WHERE r.account_id = ${accountId} AND r.finished_at IS NOT NULL AND r.trigger <> 'preview'
       ORDER BY r.started_at DESC LIMIT 4`;
     // Pages changed this week, as the last run counted them: once the owner raises the weekly limit above it, the
@@ -218,7 +226,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       });
     }
     const failed = runs.find((r) => /fail|error/i.test(String(r.status)));
-    if (failed && runs[0] === failed) {
+    if (failed && runs[0] === failed && !(AI_CAUSE.test(String(failed.summary ?? "")) && aiFixedSince(String(failed.finished_at)))) {
       problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching", platform: true });
     }
   }

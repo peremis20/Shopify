@@ -29,7 +29,6 @@ export function Home({ data, loading, onGo }: {
   onGo: (p: SimplePage) => void;
 }) {
   const [changes, setChanges] = useState<AutopilotChange[] | null>(null);
-  const [runs, setRuns] = useState<AutopilotRun[]>([]);
   const [settings, setSettings] = useState<AutopilotSettingsView | null>(null);
   const [ranks, setRanks] = useState<RankWatchRow[] | null>(null);
   const [health, setHealth] = useState<PageHealth[]>([]);
@@ -63,7 +62,6 @@ export function Home({ data, loading, onGo }: {
     api<{ changes: AutopilotChange[]; runs: AutopilotRun[]; settings: AutopilotSettingsView }>("/api/autopilot")
       .then((d) => {
         setChanges(d.changes ?? []);
-        setRuns(d.runs ?? []);
         setSettings(d.settings ?? null);
       })
       .catch(() => setChanges([]));
@@ -139,8 +137,7 @@ export function Home({ data, loading, onGo }: {
       allowGoogle: p.id === "google:recrawl",
     });
   }
-  const lastRun = runs[0];
-  if (admin && lastRun && /fail|error/i.test(lastRun.status) && !problems.some((p) => p.id === "autopilot:failed")) warnings.push({ text: `The last autopilot run had a problem: ${lastRun.summary ?? "see Content for details"}.`, page: "content" });
+  // A failed run is shown through the Inspector, which hides it once its cause (a busy AI, say) is fixed.
 
   // Biggest win: the largest climb among tracked searches, between two real positions (never a made up one).
   const win = (ranks ?? [])
