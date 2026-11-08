@@ -55,7 +55,7 @@ const TITLES: Record<Screen, string> = {
   google: "Sign in with Google",
   website: "What's your website?",
   connect: "Let the app make changes for you",
-  business: "What kind of site is this?",
+  business: "What kind of site is this? One click and you're done",
   data: "Search Console and Google Analytics",
   keywords: "Pick your first searches to win",
   finish: "Start",
@@ -367,7 +367,24 @@ function BusinessPicker({ status, busy, act }: { status: Status; busy: string | 
     <button
       key={b.id}
       disabled={busy !== null}
-      onClick={() => act(`business`, () => api<Status>("/api/onboarding/profile", { businessType: b.id }), true)}
+      onClick={() =>
+        act(
+          `business`,
+          async () => {
+            const first = !status.businessType;
+            const next = await api<Status>("/api/onboarding/profile", { businessType: b.id });
+            // The first pick starts everything (the text above says so): the autopilot turns on and the first site check
+            // runs. A later pick only changes the type, so an autopilot the owner turned off stays off. If it can't
+            // start, the Start screen shows next with its own button.
+            if (first) {
+              await api("/api/autopilot/settings", { enabled: true }).catch(() => undefined);
+              void api("/api/autopilot/check", {}).catch(() => undefined);
+            }
+            return (await api<Status>("/api/onboarding").catch(() => next)) ?? next;
+          },
+          true,
+        )
+      }
       className={`rounded-xl border px-4 py-3 text-left font-semibold hover:border-dash-green hover:bg-dash-green/5 disabled:opacity-60 ${
         status.businessType === b.id ? "border-dash-green bg-dash-green/5" : "border-dash-line bg-white"
       }`}
@@ -380,8 +397,8 @@ function BusinessPicker({ status, busy, act }: { status: Status; busy: string | 
     <div className="space-y-3">
       <p className="text-dash-muted">
         {suggested.length
-          ? `From reading ${status.domain ?? "your site"}, it looks like one of these. Pick the one that fits, so every change speaks to your customers.`
-          : "Pick the one that fits, so every change speaks to your customers or readers."}
+          ? `From reading ${status.domain ?? "your site"}, it looks like one of these. Pick the one that fits${status.businessType ? "." : " and the autopilot starts improving your site right away. Every change can be undone."}`
+          : `Pick the one that fits${status.businessType ? "." : " and the autopilot starts improving your site right away. Every change can be undone."}`}
       </p>
       {suggested.length > 0 && <div className="grid gap-2 sm:grid-cols-2">{suggested.map((b, i) => choice(b, i === 0))}</div>}
       {suggested.length > 0 && (

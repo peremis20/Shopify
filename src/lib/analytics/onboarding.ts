@@ -304,7 +304,7 @@ export async function onboardingStatus(accountId: string, email: string): Promis
       id: "autopilot",
       title: "Turn on the autopilot",
       done: acct.enabled,
-      detail: acct.enabled ? "On. It improves a page a day within your weekly limit." : "Turn it on when you're happy with the preview.",
+      detail: acct.enabled ? "On. It improves a page a day within your weekly limit." : "Turn it on to start improving your site. Every change can be undone.",
     },
   ];
 
