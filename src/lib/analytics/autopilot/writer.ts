@@ -408,7 +408,7 @@ async function pickGeminiModels(apiKey: string): Promise<string[]> {
 }
 
 /** Gemini's schema format: OpenAPI style types and no additionalProperties. */
-function toGeminiSchema(schema: unknown): unknown {
+export function toGeminiSchema(schema: unknown): unknown {
   if (Array.isArray(schema)) return schema.map(toGeminiSchema);
   if (!schema || typeof schema !== "object") return schema;
   const out: Record<string, unknown> = {};

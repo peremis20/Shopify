@@ -36,7 +36,7 @@ const WEEK_MS = 7 * 864e5;
 const words = (t: string) => (t.match(/\b[\p{L}\p{N}']+\b/gu) ?? []).length;
 const norm = (t: string | null) => (t ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 /** A single article (not a blog's own listing, tag or page list): Shopify's /blogs/<blog>/<post>, or /blog/<post> elsewhere. */
-const isArticle = (url: string) => {
+export const isArticle = (url: string) => {
   const path = new URL(url).pathname.replace(/\/$/, "");
   if (/\/(tagged|tag|tags|category|categories|page|author)(\/|$)/i.test(path)) return false;
   return /^\/blogs\/[^/]+\/[^/]+$/i.test(path) || /\/(blog|news|articles?|posts?|journal|insights|resources|learn)\/[^/]+$/i.test(path);
@@ -55,7 +55,7 @@ export async function accountsDueForAudit(limit: number): Promise<{ accountId: s
 }
 
 /** The problems on one page, before the checks that compare pages with each other. */
-function pageIssues(url: string, status: number, html: string): { title: string | null; description: string | null; issues: AuditIssue[] } {
+export function pageIssues(url: string, status: number, html: string): { title: string | null; description: string | null; issues: AuditIssue[] } {
   const issues: AuditIssue[] = [];
   if (status >= 400 || !html) {
     issues.push({ code: "error", level: "high", text: `The page doesn't load (${status || "no answer"}), but the sitemap lists it.`, auto: false });
