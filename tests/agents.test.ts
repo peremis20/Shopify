@@ -69,7 +69,7 @@ test("drafter: a site whose email couldn't be written safely is skipped for a we
 });
 
 test("profile: the business description reaches the writer's brief; an empty one adds nothing", () => {
-  const base = { brandName: "Peremis", businessType: "supplements" as const, siteDomain: "peremis.com", gaExcludeHosts: [], onboardingDismissed: false, platform: null };
+  const base = { brandName: "Peremis", businessType: "supplements" as const, siteDomain: "peremis.com", gaExcludeHosts: [], onboardingDismissed: false, platform: null, suggestedTypes: [], suggestedRead: false };
   const withAbout = siteBrief({ ...base, about: { offer: "Third party tested supplements", audience: "", difference: "", tone: "warm", location: "" }, aboutSource: "auto" });
   assert.match(withAbout.about ?? "", /What it offers: Third party tested supplements/);
   assert.match(withAbout.about ?? "", /How it talks: warm/);

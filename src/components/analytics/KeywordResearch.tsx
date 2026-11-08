@@ -465,7 +465,7 @@ function KeywordTool({ site, searchQueries, isTracked, onTrack }: {
             id="kw-seed"
             value={keywords}
             onChange={(e) => setKeywords(e.target.value)}
-            placeholder="brain supplements, magnesium glycinate"
+            placeholder="what you offer, a question customers ask"
             className="w-full rounded-lg border border-dash-line bg-white px-3 py-2 text-sm"
           />
         </label>

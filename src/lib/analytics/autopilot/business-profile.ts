@@ -1,8 +1,8 @@
 import { ensureSchema, sql } from "../db";
-import { readProfile, saveAbout } from "../profile";
-import { sitePage } from "../site-crawl";
+import { BUSINESS_TYPES, cleanTypes, guessBusinessTypes, readProfile, saveAbout, saveSuggestedTypes, type BusinessType } from "../profile";
+import { sitePage, sitePages } from "../site-crawl";
 import { aiProvider, readPlatformSettings } from "./settings";
-import { readBusiness } from "./writer";
+import { readBusiness, readSiteTypes } from "./writer";
 
 /** The usual addresses of an about page, on most platforms. */
 const ABOUT_PATHS = ["/", "/about", "/about-us", "/pages/about", "/pages/about-us", "/our-story", "/pages/our-story"];
@@ -40,4 +40,43 @@ export async function learnBusiness(accountId: string): Promise<string> {
   const about = await readBusiness(ai, texts.join("\n\n"));
   await saveAbout(accountId, about, "auto");
   return `business read from ${texts.length} ${texts.length === 1 ? "page" : "pages"}`;
+}
+
+/** The text of the site's own home and about pages, as read when it connected (at most three pages). */
+async function ownPagesText(accountId: string, domain: string): Promise<string> {
+  const pages = await sitePages(accountId).catch(() => []);
+  const wanted = new Set(ABOUT_PATHS.map((p) => `https://${domain}${p}`.replace(/\/$/, "")));
+  const norm = (u: string) => u.replace(/^https?:\/\/www\./, "https://").replace(/\/$/, "");
+  const own = pages.filter((p) => wanted.has(norm(p.url)));
+  // Few sites have every usual address; the rest of the pages read fill in.
+  const picked = [...own, ...pages.filter((p) => !own.includes(p))].slice(0, 3);
+  return picked.map((p) => `${p.title}\n${p.metaDescription ?? ""}\n${p.text.slice(0, 5000)}`).join("\n\n");
+}
+
+/**
+ * The likely kinds of site, read from its own pages, saved so setup offers
+ * them first. The AI picks (checked by a second AI) come first; the word
+ * cues on the pages back them up and stand in when no AI is set up or it
+ * fails. Never invents a type: with no clear evidence the list stays empty
+ * and the owner sees every type.
+ */
+export async function detectSiteTypes(accountId: string, timeoutMs = 15_000): Promise<BusinessType[]> {
+  const profile = await readProfile(accountId);
+  if (!profile.siteDomain) return [];
+  const text = await ownPagesText(accountId, profile.siteDomain);
+  if (!text.trim()) return [];
+  const words = guessBusinessTypes(text);
+  let fromAi: string[] = [];
+  const ai = aiProvider(await readPlatformSettings().catch(() => ({}) as never));
+  if (ai) {
+    const options = BUSINESS_TYPES.map(({ id, label, group }) => ({ id, label, group }));
+    const timeout = new Promise<string[]>((_, reject) => setTimeout(() => reject(new Error("site type reading took too long")), timeoutMs));
+    fromAi = await Promise.race([readSiteTypes(ai, text, options), timeout]).catch((e) => {
+      console.error(`site type reading failed: ${e instanceof Error ? e.message : String(e)}`);
+      return [];
+    });
+  }
+  const types = cleanTypes([...fromAi, ...words]);
+  await saveSuggestedTypes(accountId, types);
+  return types;
 }

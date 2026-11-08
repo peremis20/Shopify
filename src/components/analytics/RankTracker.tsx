@@ -97,7 +97,7 @@ export function RankTracker({ lists, activeId, setActiveId, update }: {
               id="rank-add"
               value={newKeyword}
               onChange={(e) => setNewKeyword(e.target.value)}
-              placeholder="neuro plus, brain supplements"
+              placeholder="your brand, what you offer"
               className="w-64 max-w-full rounded-lg border border-dash-line bg-white px-3 py-2"
             />
           </label>

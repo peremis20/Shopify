@@ -20,7 +20,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
-import { accountsDueForBusiness, learnBusiness } from "./autopilot/business-profile";
+import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
@@ -78,7 +78,7 @@ import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLin
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
-import { ABOUT_FIELDS, assertPublicUrl, bareDomain, readProfile, saveAbout, saveProfile, siteBrief } from "./profile";
+import { ABOUT_FIELDS, assertPublicUrl, bareDomain, DEFAULT_SELLS, isHealthSite, readProfile, saveAbout, saveProfile, siteBrief } from "./profile";
 import { listProperties } from "./properties";
 import { addKeywords, bestPageForTopic, createList, deleteList, findOpportunities, getLists, gscSearchCount, removeKeyword, THIN_GSC, trackRankings } from "./seo-tools";
 import type { Opportunity } from "./seo-types";
@@ -580,6 +580,8 @@ export const connectWebsite = (req: Request) =>
     await saveProfile(account.id, { siteDomain: domain });
     const { platform } = await crawlSite(account.id, domain, 15);
     await saveProfile(account.id, { platform: platform ?? "custom" });
+    // What kind of site it is, read from its own pages, so setup offers the types that fit it first.
+    await detectSiteTypes(account.id).catch((e) => console.error(`site type reading failed: ${message(e)}`));
     await autoMatch(account.id).catch(() => undefined);
     return json(await onboardingStatus(account.id, account.email));
   });
@@ -1246,6 +1248,8 @@ async function fixLinks(accountId: string, force: boolean): Promise<number> {
 
 /** Weekly claim guard scan of the whole store (read only), whenever a store is connected. */
 async function runClaimScan(accountId: string, force: boolean): Promise<number> {
+  // Health claim rules apply to health and wellness sites only.
+  if (!isHealthSite((await readProfile(accountId)).businessType)) return 0;
   const acct = await readAccountAutopilot(accountId);
   if (!(force || (await claimScanDue(accountId)))) return 0;
   if (acct.shopDomain && acct.shopTokenEnc) return scanStoreClaims(accountId, { accountId, shopDomain: acct.shopDomain });
@@ -1310,7 +1314,8 @@ export const autopilotWatch = (req: Request) =>
       claimReport(account.id),
       overlapReport(account.id),
     ]);
-    return json({ ranks, health, claims, overlap, roles: await keywordRoles(account.id) });
+    const healthSite = isHealthSite((await readProfile(account.id)).businessType);
+    return json({ ranks, health, claims, overlap, healthSite, roles: await keywordRoles(account.id) });
   });
 
 /** Which tracked searches are long tail main targets and which are broad support. */
@@ -1333,7 +1338,8 @@ export const autopilotCheckNow = (req: Request) =>
       claimReport(account.id),
       overlapReport(account.id),
     ]);
-    return json({ ranks, health, claims, overlap });
+    const healthSite = isHealthSite((await readProfile(account.id)).businessType);
+    return json({ ranks, health, claims, overlap, healthSite });
   });
 
 /** Goes through a whole run on live data and returns what it would change, without changing anything. */
@@ -1445,7 +1451,7 @@ export async function autopilotTick(): Promise<Response> {
       // Everything it needs is read safely first, so a failure here can't escape and stall the hourly check.
       const settings = await readPlatformSettings().catch(() => null);
       const ai = settings ? aiProvider(settings) : null;
-      const sells = profile ? siteBrief(profile).sells : "health and wellness products";
+      const sells = profile ? siteBrief(profile).sells : DEFAULT_SELLS;
       // Nothing is taken down while rankings swing for every site (a Google update) or this site's clicks just fell.
       const update = await updateRollingOut().catch(() => null);
       const fell = !update && conn ? (await trafficCheck(conn).catch(() => null))?.sharp : false;

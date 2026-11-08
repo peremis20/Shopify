@@ -16,6 +16,8 @@ interface Watch {
   health: PageHealth[];
   claims: ClaimReport;
   overlap: OverlapReport;
+  /** Health claim rules apply: the Claim guard shows only for health and wellness sites. */
+  healthSite?: boolean;
 }
 
 /** Daily Google positions and technical health, side by side under the autopilot. */
@@ -73,7 +75,7 @@ export function RankHealth({ connected }: { connected: boolean }) {
         </Explainer>
         {!data ? <Skeleton className="h-48" /> : <HealthList pages={data.health} />}
       </Card>
-      <Card className="xl:col-span-2">
+      {data?.healthSite && <Card className="xl:col-span-2">
         <CardHeader title="Claim guard">{checkButton}</CardHeader>
         <Explainer>
           Health claims the FTC and FDA treat as risky, found in your blog posts, pages and product descriptions: disease
@@ -81,8 +83,8 @@ export function RankHealth({ connected }: { connected: boolean }) {
           weekly. The autopilot never writes these; existing wording is yours to change, with a safer version for each. This is
           a guide, not legal advice.
         </Explainer>
-        {!data ? <Skeleton className="h-32" /> : <ClaimList report={data.claims} />}
-      </Card>
+        <ClaimList report={data.claims} />
+      </Card>}
       <Card className="xl:col-span-2">
         <CardHeader title="Overlap check">{checkButton}</CardHeader>
         <Explainer>

@@ -158,6 +158,7 @@ export function ensureSchema(): Promise<void> {
     await sql`ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS about jsonb`;
     await sql`ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS about_source text`;
     await sql`ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS about_at timestamptz`;
+    await sql`ALTER TABLE insights_account_profile ADD COLUMN IF NOT EXISTS suggested_types text`;
     await sql`CREATE TABLE IF NOT EXISTS insights_claim_flags (
       account_id bigint NOT NULL,
       url text NOT NULL,
