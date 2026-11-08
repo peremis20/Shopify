@@ -1474,7 +1474,8 @@ export async function autopilotTick(): Promise<Response> {
         console.error(`index rescue failed: ${message(e)}`);
         await report("index-rescue", false, message(e));
       }
-      await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
+      // Nothing waiting is checked again next hour (a cheap query), so a page becomes eligible without a week's delay.
+      if (!/^no page waiting/.test(note)) await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
     }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
