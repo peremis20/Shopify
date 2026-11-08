@@ -1046,7 +1046,9 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
   // Written, then checked like an article; when the checks remove too much, written once more, else the owner is told.
   const reasons: string[] = [];
   for (let attempt = 0; attempt < 2; attempt++) {
-    const out = await askJson<{ subject: string; body: string }>(ai, prompt, schema);
+    // The second try hears what the checking AI didn't like about the first.
+    const feedback = reasons.length ? `\n\nA reviewer turned down the last version: ${reasons[reasons.length - 1]}. Fix exactly that.` : "";
+    const out = await askJson<{ subject: string; body: string }>(ai, prompt + feedback, schema);
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
     const body = safeEmailText(out.body ?? "", keep, urls);

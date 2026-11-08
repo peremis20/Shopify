@@ -1482,20 +1482,6 @@ export async function autopilotTick(): Promise<Response> {
       if (plan) results.push(`account ${accountId} authority plan: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves kept`);
       else await markAuthorityTried(accountId, "no plan this week");
     }
-    // The Outreach Drafter: three backlink emails written ahead each week, one site per hour, for the owner to send.
-    for (const accountId of late() ? [] : await accountsDueForDrafts(1)) {
-      let note: string;
-      try {
-        note = await forSite(accountId, () => runOutreachDrafter(accountId));
-        results.push(`account ${accountId} outreach drafts: ${note}`);
-      } catch (e) {
-        note = `failed: ${message(e)}`;
-        console.error(`outreach drafter failed: ${message(e)}`);
-        await report("outreach-drafter", false, message(e));
-      }
-      // Tried either way, so one site never holds up the others; it is tried again next week.
-      await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
-    }
     // The business profile: read from the site's own pages (checked by a second AI) so every agent writes for this
     // business, not generically. Monthly per site, never over what the owner wrote.
     for (const accountId of late() ? [] : await accountsDueForBusiness(1)) {
@@ -1566,6 +1552,20 @@ export async function autopilotTick(): Promise<Response> {
       const plan = await forSite(accountId, () => runStrategist(accountId, conn, domain)).catch((e) => ((failure = message(e)), console.error(`strategist failed: ${failure}`), null));
       if (!plan) await markStrategyTried(accountId, failure ?? "No AI key, so no plan was made.");
       if (plan) results.push(`account ${accountId} strategist: ${plan.moves.filter((m) => m.kept).length} of ${plan.moves.length} moves survived review`);
+    }
+    // The Outreach Drafter, last: it can take a few minutes, so every other agent gets its turn first.
+    for (const accountId of late() ? [] : await accountsDueForDrafts(1)) {
+      let note: string;
+      try {
+        note = await forSite(accountId, () => runOutreachDrafter(accountId));
+        results.push(`account ${accountId} outreach drafts: ${note}`);
+      } catch (e) {
+        note = `failed: ${message(e)}`;
+        console.error(`outreach drafter failed: ${message(e)}`);
+        await report("outreach-drafter", false, message(e));
+      }
+      // Tried either way, so one site never holds up the others; it is tried again next week.
+      await markDraftsMade(accountId, note).catch((e) => console.error(`outreach drafter couldn't save: ${message(e)}`));
     }
     if (late()) results.push("time budget used, the rest waits for the next hour");
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
