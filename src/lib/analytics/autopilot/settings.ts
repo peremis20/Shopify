@@ -22,6 +22,8 @@ export interface PlatformSettings {
   groqKey?: string;
   /** Mistral (free Experiment plan), usable as the writer or the checking AI. */
   mistralKey?: string;
+  /** Cerebras (free plan), usable as the writer or the checking AI. */
+  cerebrasKey?: string;
   /** A GitHub token with the models permission, for GitHub Models. */
   githubModelsKey?: string;
   /** serper.dev, for Google page one results and competitor analysis. */
@@ -70,7 +72,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -93,6 +95,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     geminiKey: process.env.GEMINI_API_KEY || stored.geminiKey,
     groqKey: process.env.GROQ_API_KEY || stored.groqKey,
     mistralKey: process.env.MISTRAL_API_KEY || stored.mistralKey,
+    cerebrasKey: process.env.CEREBRAS_API_KEY || stored.cerebrasKey,
     githubModelsKey: process.env.GITHUB_MODELS_TOKEN || stored.githubModelsKey,
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
@@ -132,13 +135,14 @@ export function aiProvider(p: PlatformSettings): AiProvider | null {
   if (p.anthropicKey) all.push({ kind: "claude", key: p.anthropicKey });
   if (p.groqKey) all.push({ kind: "groq", key: p.groqKey });
   if (p.mistralKey) all.push({ kind: "mistral", key: p.mistralKey });
+  if (p.cerebrasKey) all.push({ kind: "cerebras", key: p.cerebrasKey });
   if (p.githubModelsKey) all.push({ kind: "github", key: p.githubModelsKey });
   if (p.geminiKey) all.push({ kind: "gemini", key: p.geminiKey });
   return all.length ? { ...all[0], backups: all.slice(1) } : null;
 }
 
 export interface AiProvider {
-  kind: "claude" | "groq" | "mistral" | "github" | "gemini";
+  kind: "claude" | "groq" | "mistral" | "cerebras" | "github" | "gemini";
   key: string;
   /** Tried in order when this one fails. */
   backups?: AiProvider[];
@@ -223,7 +227,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }

@@ -578,6 +578,34 @@ const MISTRAL: ChatService = {
   options: () => ({ max_tokens: 8192 }),
 };
 
+// ---------- Cerebras (free plan) ----------
+
+const CEREBRAS_API = "https://api.cerebras.ai/v1";
+/** Preferred Cerebras models, best first; only ones the key can use are tried, else whatever it lists. */
+const CEREBRAS_PREFERRED = ["gpt-oss-120b", "qwen-3-235b-a22b-instruct-2507", "llama-3.3-70b", "qwen-3-32b"];
+let cerebrasModels: { key: string; names: string[] } | null = null;
+
+async function pickCerebrasModels(apiKey: string): Promise<string[]> {
+  if (cerebrasModels?.key === apiKey) return cerebrasModels.names;
+  const res = await fetch(`${CEREBRAS_API}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000) });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Cerebras didn't accept the key: ${body?.message ?? body?.error?.message ?? res.status}`);
+  const ids = ((body.data ?? []) as { id: string }[]).map((m) => m.id);
+  const names = CEREBRAS_PREFERRED.filter((n) => ids.includes(n));
+  const use = (names.length ? names : ids).slice(0, 3);
+  if (!use.length) throw new Error("Cerebras lists no models for this key.");
+  cerebrasModels = { key: apiKey, names: use };
+  return use;
+}
+
+const CEREBRAS: ChatService = {
+  name: "Cerebras",
+  url: `${CEREBRAS_API}/chat/completions`,
+  headers: (key) => ({ Authorization: `Bearer ${key}` }),
+  models: pickCerebrasModels,
+  options: (model) => ({ max_completion_tokens: 8192, ...(model.startsWith("gpt-oss") ? { reasoning_effort: "low" } : {}) }),
+};
+
 const GITHUB: ChatService = {
   name: "GitHub Models",
   url: `${GITHUB_API}/inference/chat/completions`,
@@ -679,6 +707,7 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
 function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
   if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, system, prompt, schema);
   if (ai.kind === "mistral") return askChat<T>(MISTRAL, ai.key, system, prompt, schema);
+  if (ai.kind === "cerebras") return askChat<T>(CEREBRAS, ai.key, system, prompt, schema);
   if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, system, prompt, schema);
   return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema);
 }
@@ -949,6 +978,11 @@ export async function checkAiKey(ai: AiProvider): Promise<void> {
   if (ai.kind === "mistral") {
     mistralModels = null;
     await pickMistralModels(ai.key);
+    return;
+  }
+  if (ai.kind === "cerebras") {
+    cerebrasModels = null;
+    await pickCerebrasModels(ai.key);
     return;
   }
   if (ai.kind === "github") {

@@ -62,7 +62,7 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     name: "The writing AI",
     fix: (d) =>
       !/accept the key|401|403|billing|quota|payment/i.test(d) && /busy|demand|empty|fetch failed/i.test(d)
-        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude, Mistral or Groq) in Platform keys gives it another backup."
+        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude, Mistral, Cerebras or Groq) in Platform keys gives it another backup."
         : "Every AI key failed. Check the keys and their billing in Platform keys.",
     workaround: "No new changes or articles are written until one works.",
   },
@@ -136,7 +136,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   const aiFixedSince = (at: string | null | undefined) =>
     Boolean(at) && [status.ai, status["ai-review"]].every((x) => x?.ok && x.lastOk && Date.parse(x.lastOk) > Date.parse(at!));
   // Named AI services only; a site's own monthly AI limit is not something a working service fixes.
-  const AI_CAUSE_RE = /GitHub Models|Groq|Gemini|Mistral|Claude|second AI from another/i;
+  const AI_CAUSE_RE = /GitHub Models|Groq|Gemini|Mistral|Cerebras|Claude|second AI from another/i;
   const AI_CAUSE = { test: (t: string) => AI_CAUSE_RE.test(t) && !/limit/i.test(t) };
   for (const [part, st] of Object.entries(status) as [Part, NonNullable<(typeof status)[Part]>][]) {
     if (!st || st.ok) continue;
