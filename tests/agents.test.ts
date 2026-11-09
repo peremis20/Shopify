@@ -142,3 +142,17 @@ test("browser errors: the app's own problems are kept, extension noise and junk 
   assert.equal(cleanReport(null), null);
   assert.equal(cleanReport({ kind: "script", message: "x".repeat(900) })?.message.length, 500);
 });
+
+import { restFor } from "../src/lib/analytics/autopilot/writer";
+
+test("AI services rest after their limit: daily quota until it resets, per minute limits briefly", () => {
+  assert.equal(restFor("Quota exceeded for metric: generate_content_free_tier_requests. Please retry in 13h41m23.4s."), (13 * 3600 + 41 * 60 + 23.4) * 1000);
+  assert.equal(restFor("mistral-small-latest: Rate limit exceeded"), 2 * 60_000);
+  assert.equal(restFor('GitHub Models answered "OK" with no reply, so its key needs renewing.'), 3600_000);
+  assert.equal(restFor("the answer wasn't complete JSON"), null);
+  assert.equal(restFor("Please retry in 750ms."), null);
+  assert.equal(restFor("Please retry in 41.2s."), 41_200);
+  assert.equal(restFor("tokens per day (TPD): Limit 100000. Please try again in 1m30s."), 90_000);
+  assert.equal(restFor("Resource has been exhausted (e.g. check quota)."), 2 * 60_000);
+  assert.equal(restFor("Rate limit of 150 per 86400s exceeded for UserByModelByDay. Please wait 33000 seconds"), 33_000_000);
+});

@@ -59,7 +59,7 @@ import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
-import { checkAiKey, writeOutreach } from "./autopilot/writer";
+import { checkAiKey, endRest, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -1219,6 +1219,8 @@ export const savePlatform = (req: Request) =>
         );
       }
       if (problems.length) claude = problems.join(" ");
+      // A key that works now isn't kept resting from an earlier limit.
+      await endRest([...working]);
       if (working.size >= 1) {
         await report("ai", true);
         await clearPlatformProblem("service:ai");

@@ -1,4 +1,5 @@
 import { spend } from "./usage";
+import { hasDatabase, sql } from "../db";
 import { report } from "./status";
 import Anthropic from "@anthropic-ai/sdk";
 import { isRisky } from "./claims";
@@ -641,6 +642,9 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
         } catch {
           body = {};
         }
+        // A 200 with a bare "OK" and no answer means the service isn't really serving this key: every model would
+        // answer the same, so stop here instead of spending a minute on each.
+        if (res.ok && !body.choices && /^\s*OK\s*$/i.test(raw)) throw new Error(`${svc.name} answered "OK" with no reply, so its key or its access to the models likely needs renewing.`);
         if (res.ok) {
           const text: string = body.choices?.[0]?.message?.content ?? "";
           const finish: string = body.choices?.[0]?.finish_reason ?? "";
@@ -679,6 +683,65 @@ function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Recor
   return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema);
 }
 
+/**
+ * How long a service rests after it said it can't take more: a daily free quota until it resets, a per minute limit
+ * for two minutes, a broken service for an hour. Resting services are skipped, so the free quotas aren't burned on
+ * calls that will fail, and the run moves straight to a service that can answer. Null: try again next time.
+ */
+export function restFor(error: string): number | null {
+  const cap = (ms: number) => Math.min(24 * 3600_000, ms);
+  // The service's own hint: "retry in 13h41m23.4s", "try again in 1m30s", "retry in 750ms", "wait 33000 seconds".
+  const hint = /(?:retry|try again) in ((?:[\d.]+(?:h|ms|m|s)\s*)+)/i.exec(error);
+  if (hint) {
+    let ms = 0;
+    for (const [, n, unit] of hint[1].matchAll(/([\d.]+)(h|ms|m|s)/g)) ms += Number(n) * { h: 3600_000, m: 60_000, s: 1000, ms: 1 }[unit as "h" | "m" | "s" | "ms"];
+    return ms >= 1000 ? cap(ms) : null;
+  }
+  const wait = /wait (\d+) seconds/i.exec(error);
+  if (wait) return cap(Number(wait[1]) * 1000);
+  if (/answered "OK" with no reply/i.test(error)) return 3600_000;
+  // A daily cap with no hint waits a while; any other limit only briefly.
+  if (/per day|daily|PerDay|ByDay|\b(TPD|RPD)\b/.test(error)) return 6 * 3600_000;
+  if (/rate limit|too many requests|\b429\b|quota|exhausted/i.test(error)) return 2 * 60_000;
+  return null;
+}
+
+const REST_KEY = "ai_rest";
+let resting: { at: number; until: Record<string, number> } | null = null;
+async function restingUntil(): Promise<Record<string, number>> {
+  if (resting && Date.now() - resting.at < 60_000) return resting.until;
+  if (!hasDatabase()) return (resting = { at: Date.now(), until: resting?.until ?? {} }).until;
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${REST_KEY}`.catch(() => [] as { value: string | null }[]);
+  let until: Record<string, number> = {};
+  try {
+    until = row?.value ? (JSON.parse(row.value) as Record<string, number>) : {};
+  } catch {
+    until = {};
+  }
+  resting = { at: Date.now(), until };
+  return until;
+}
+async function rest(kind: string, ms: number): Promise<void> {
+  const entry = { [kind]: Date.now() + ms };
+  resting = { at: resting?.at ?? 0, until: { ...(resting?.until ?? {}), ...entry } };
+  if (!hasDatabase()) return;
+  // Merged in the database, so two runs resting different services at once don't erase each other's entry.
+  await sql`INSERT INTO insights_settings (key, value) VALUES (${REST_KEY}, ${JSON.stringify(entry)})
+    ON CONFLICT (key) DO UPDATE SET value = (insights_settings.value::jsonb || EXCLUDED.value::jsonb)::text, updated_at = now()`.catch((e) =>
+    console.error(`AI rest not saved: ${(e as Error).message}`),
+  );
+}
+
+/** A key just saved and checked works again at once, whatever rest its service was on. */
+export async function endRest(kinds: string[]): Promise<void> {
+  if (!kinds.length) return;
+  if (resting) for (const k of kinds) delete resting.until[k];
+  if (!hasDatabase()) return;
+  await sql`UPDATE insights_settings SET value = (value::jsonb - string_to_array(${kinds.join(",")}, ','))::text, updated_at = now() WHERE key = ${REST_KEY}`.catch((e) =>
+    console.error(`AI rest not cleared: ${(e as Error).message}`),
+  );
+}
+
 /** Asks the main AI, and each backup in turn if it fails. */
 async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
   // Counted against the site being worked on; past its monthly limit this throws and the work waits.
@@ -686,13 +749,21 @@ async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string,
   const errors: string[] = [];
   const system = rulesFor(ai.site);
   const part = ai.role === "review" ? "ai-review" : "ai";
+  const until = await restingUntil();
   for (const one of [ai, ...(ai.backups ?? [])]) {
+    if ((until[one.kind] ?? 0) > Date.now()) {
+      errors.push(`${one.kind} is resting until ${new Date(until[one.kind]).toISOString().slice(11, 16)} UTC after reaching its limit.`);
+      continue;
+    }
     try {
       const out = await askOne<T>(one, system, prompt, schema);
       void report(part, true);
       return out;
     } catch (err) {
-      errors.push((err as Error).message);
+      const msg = (err as Error).message;
+      errors.push(msg);
+      const ms = restFor(msg);
+      if (ms) await rest(one.kind, ms);
     }
   }
   void report(part, false, errors.join(" "));
@@ -887,6 +958,9 @@ export async function checkAiKey(ai: AiProvider): Promise<void> {
       body: JSON.stringify({ model: (await pickGithubModels(ai.key))[0], messages: [{ role: "user", content: "Say ok." }], max_tokens: 2 }),
     });
     if (!res.ok) throw new Error(`GitHub Models didn't accept the token (${res.status}).`);
+    // The same check askChat makes: a 200 with a bare "OK" and no answer isn't a working service.
+    const raw = await res.text().catch(() => "");
+    if (!/"choices"/.test(raw)) throw new Error(`GitHub Models answered without a reply (${raw.slice(0, 40).trim() || "empty"}), so the token likely needs renewing.`);
     return;
   }
   const client = new Anthropic({ apiKey: ai.key });
