@@ -128,7 +128,7 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
 
 /**
  * The AI that writes changes, with every other configured AI as a backup, in
- * this order: Claude, Groq, Mistral, GitHub Models, Gemini.
+ * this order: Claude, Groq, Mistral, Cerebras, GitHub Models, Gemini.
  */
 export function aiProvider(p: PlatformSettings): AiProvider | null {
   const all: AiProvider[] = [];

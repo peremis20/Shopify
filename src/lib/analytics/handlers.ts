@@ -1165,7 +1165,7 @@ async function clearPlatformProblem(id: string): Promise<void> {
  * limit is left alone: a working service doesn't fix that.
  */
 async function clearAiCausedProblems(): Promise<void> {
-  const cause = "(GitHub Models|Groq|Gemini|Mistral|Claude|second AI from another)";
+  const cause = "(GitHub Models|Groq|Gemini|Mistral|Cerebras|Claude|second AI from another)";
   await sql`
     UPDATE insights_settings SET value = jsonb_set(value::jsonb, '{problems}', coalesce(
       (SELECT jsonb_agg(x) FROM jsonb_array_elements(value::jsonb->'problems') x

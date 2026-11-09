@@ -1525,7 +1525,7 @@ export function backedByFacts(evidence: string | null | undefined, facts: string
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
 
 export const NO_SECOND_AI =
-  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq, Mistral or GitHub Models) in Settings, and the work goes ahead on the next run.";
+  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq, Mistral, Cerebras or GitHub Models) in Settings, and the work goes ahead on the next run.";
 
 /**
  * The reviewer: another AI service, with the other services as backups. The writer's own service never checks its
