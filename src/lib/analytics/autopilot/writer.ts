@@ -1,4 +1,5 @@
 import { spend } from "./usage";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { hasDatabase, sql } from "../db";
 import { report } from "./status";
 import Anthropic from "@anthropic-ai/sdk";
@@ -332,7 +333,14 @@ const EDIT_SCHEMA = {
  * an AI tell is dropped.
  */
 async function humanEdit(ai: AiProvider, html: string, pageBody: string): Promise<string> {
-  const reviewer = reviewerOf(ai);
+  let reviewer: AiProvider;
+  try {
+    reviewer = reviewerOf(ai);
+  } catch (e) {
+    // The owner reads it before it goes live; the AI tell filter still runs.
+    if (e instanceof OwnerChecks) return dropBlocks(html, (text) => hasAiTell(text), true);
+    throw e;
+  }
   const prompt = `You are a human copy editor. Another writer drafted this section for a website, and it must read as if a person who knows the subject wrote it. Readers and Google both notice AI writing.
 
 Section:
@@ -878,11 +886,14 @@ Keep the SEO title and description if they are already strong for this search; y
   const descChanged = Boolean(metaDescription) && metaDescription !== (page.metaDescription ?? "");
   let reviewNote = "";
   if (out.intentMatch !== false && (titleChanged || descChanged || section)) {
-    const r = await reviewImprovement(ai, page, target.query, briefs, {
-      metaTitle: titleChanged ? metaTitle : "",
-      metaDescription: descChanged ? metaDescription : "",
-      contentSectionHtml: section,
-    });
+    const r = await orOwner(
+      reviewImprovement(ai, page, target.query, briefs, {
+        metaTitle: titleChanged ? metaTitle : "",
+        metaDescription: descChanged ? metaDescription : "",
+        contentSectionHtml: section,
+      }),
+      { keepTitle: true, keepDescription: true, keepSection: true, betterTitle: "", betterDescription: "" },
+    );
     const better = (text: string, max: number) => (text && sound(text) && !hasAiTell(text) ? trimWords(polish(text), max) : "");
     const keepOr = (kept: boolean, mine: string, current: string | null) => (kept ? mine : (current ?? ""));
     metaTitle = better(r.betterTitle, 70) || (titleChanged ? keepOr(r.keepTitle, metaTitle, page.metaTitle) : metaTitle);
@@ -933,7 +944,7 @@ If the link would feel forced in this article, return an empty string.`;
   const text = plainText(html);
   if (!html || isRisky(text) || isUnsourced(text) || hasAiTell(text) || !numbersKnown(text, `${source.title}\n${source.body}\n${target.title}`)) return "";
   // A second AI checks the link fits; if it can't check, no link is added.
-  return (await reviewLink(ai, source, target, html).catch((e) => {
+  return (await orOwner(reviewLink(ai, source, target, html), true).catch((e) => {
     console.error(`internal link not added, the reviewing AI couldn't check it: ${(e as Error).message}`);
     return false;
   }))
@@ -1076,11 +1087,14 @@ If this search isn't a fit for this website's business, return an empty string f
 
   // A second AI checks it before it is published: it can stop it, drop weak blocks, or offer a stronger title.
   // If the check can't run, the article waits (the error is visible and the next run tries again).
-  const r = await reviewArticle(
-    ai,
-    brief.keyword,
-    brief.competitors.map((c) => `${c.domain}: ${c.title}`),
-    { title: out.title, metaTitle: out.metaTitle, metaDescription: out.metaDescription, html }
+  const r = await orOwner(
+    reviewArticle(
+      ai,
+      brief.keyword,
+      brief.competitors.map((c) => `${c.domain}: ${c.title}`),
+      { title: out.title, metaTitle: out.metaTitle, metaDescription: out.metaDescription, html }
+    ),
+    { publish: true, reason: "", drop: [] as number[], betterTitle: "", betterMetaDescription: "" },
   );
   if (!r.publish) return { rejected: r.reason || "The reviewing AI didn't think it was good enough to publish." };
   const drop = new Set(r.drop);
@@ -1166,7 +1180,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
       continue;
     }
     // A second AI checks it and may improve it; its version passes the same checks, else the first one stands.
-    const r = await reviewOutreach(ai, p, given, { subject: subject.text, body: body.text });
+    const r = await orOwner(reviewOutreach(ai, p, given, { subject: subject.text, body: body.text }), { ok: true, why: "", subject: "", body: "" });
     if (!r.ok) {
       reasons.push(`the checking AI turned it down${r.why ? `: ${r.why}` : ""}`);
       continue;
@@ -1265,7 +1279,7 @@ Health topics: only general, well established knowledge from the article. No dos
     };
     // Every post but Instagram must still send people to the article.
     for (const k of ["linkedin", "facebook", "x"] as const) if (!kit[k].includes(p.url)) kit[k] = `${kit[k]}\n${p.url}`;
-    if (await reviewShareKit(ai, p, kit)) return kit;
+    if (await orOwner(reviewShareKit(ai, p, kit), true)) return kit;
   }
   throw new Error("Couldn't write safe social posts for this article yet. The next run will try again.");
 }
@@ -1524,6 +1538,23 @@ export function backedByFacts(evidence: string | null | undefined, facts: string
 
 /* ---------- Second opinions: every agent's work is checked by another AI before it counts ---------- */
 
+/**
+ * With only one AI service, the owner is the second check: work that waits for the owner's approval before it goes
+ * live (page changes, articles saved as drafts, emails and posts the owner sends) is written without the second AI,
+ * and nothing of it reaches the site until the owner says yes. Everything else still needs a second AI.
+ */
+const ownerReview = new AsyncLocalStorage<boolean>();
+class OwnerChecks extends Error {
+  constructor() {
+    super("The owner checks this before it goes live.");
+  }
+}
+export const hasSecondAi = (ai: AiProvider | null | undefined): boolean => Boolean(ai && (ai.backups ?? []).some((o) => o.kind !== ai.kind));
+/** Runs work whose result the owner approves before it goes live; with a second AI set up, that AI checks it as usual. */
+export const ownerApproves = <T>(ai: AiProvider | null | undefined, work: () => Promise<T>): Promise<T> => (hasSecondAi(ai) ? work() : ownerReview.run(true, work));
+/** The second AI's verdict, or `pass` when the owner is the check. */
+const orOwner = <T>(p: Promise<T>, pass: T): Promise<T> => p.catch((e) => (e instanceof OwnerChecks ? pass : Promise.reject(e)));
+
 export const NO_SECOND_AI =
   "A second AI from another service has to check this work, and only one AI service is set up. Add a key for another one (Claude, Gemini, Groq, Mistral, Cerebras or GitHub Models) in Settings, and the work goes ahead on the next run.";
 
@@ -1533,6 +1564,8 @@ export const NO_SECOND_AI =
  */
 export function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
   const others = (ai.backups ?? []).filter((o) => o.kind !== ai.kind);
+  // Work the owner approves before anything goes live: the owner is the second check.
+  if (!others.length && ownerReview.getStore()) throw new OwnerChecks();
   if (!others.length) {
     // On the status board, so the Inspector tells the platform owner that work is waiting for a second AI key.
     void report("ai-review", false, "Only one AI service is set up. A second one, from another provider, is needed to check the work before anything changes on a site.");
@@ -1699,8 +1732,15 @@ export async function reviewProspects(
   prospects: { domain: string; title: string; snippet: string; kind: string; topic: string }[]
 ): Promise<{ keep: boolean[] }> {
   if (!prospects.length) return { keep: [] };
+  let reviewer: AiProvider;
+  try {
+    reviewer = reviewerOf(ai);
+  } catch (e) {
+    if (e instanceof OwnerChecks) return { keep: prospects.map(() => true) };
+    throw e;
+  }
   const out = await askJson<{ keep: number[] }>(
-    reviewerOf(ai),
+    reviewer,
     `Another agent found these sites as backlink prospects for ${ourSite}. Check each one before the owner spends time on it.
 ${prospects.map((p, i) => `[${i}] ${p.domain} (${p.kind}, topic "${p.topic}"): "${p.title}". ${p.snippet.slice(0, 200)}`).join("\n")}
 
@@ -1764,7 +1804,8 @@ Return JSON "types": up to four ids from the list, the best fit first, only ones
   const picked = (out.types ?? []).filter((t, i, a) => ids.includes(t) && a.indexOf(t) === i).slice(0, 4);
   if (!picked.length) return { types: [], rejected: null };
   const best = options.find((o) => o.id === picked[0])!;
-  const check = await askJson<{ supported: boolean }>(
+  // The owner picks from these in setup, so with one AI service the owner is the second check.
+  const check = await orOwner((async () => askJson<{ supported: boolean }>(
     reviewerOf(ai, false),
     `Website text:
 
@@ -1775,7 +1816,7 @@ ${pagesText.slice(0, 12000)}
 Statement: this website is a "${best.label}" site (${best.group}).
 Return JSON "supported": true only if the text clearly shows this, false if it is a guess or the text points elsewhere.`,
     { type: "object", properties: { supported: { type: "boolean" } }, required: ["supported"] },
-  );
+  ))(), { supported: true });
   return check.supported === true ? { types: picked, rejected: null } : { types: picked.slice(1), rejected: picked[0] };
 }
 
@@ -1843,7 +1884,8 @@ Leave a field as an empty string when the text doesn't say it. Never guess or in
   const fields = Object.fromEntries(Object.keys(ABOUT_SCHEMA.properties).map((k) => [k, polish(String(out[k] ?? "").trim())])) as Record<string, string>;
   const filled = Object.entries(fields).filter(([k, v]) => v && k !== "tone");
   if (!filled.length) return fields;
-  const check = await askJson<{ supported: boolean[] }>(
+  // The owner sees and edits the profile in Settings, so with one AI service the owner is the second check.
+  const check = await orOwner((async () => askJson<{ supported: boolean[] }>(
     reviewerOf(ai, false),
     `Check each statement against the website text below. A statement is supported only if the text says it (the same meaning, not a guess).
 
@@ -1856,7 +1898,7 @@ ${filled.map(([k, v], i) => `${i + 1}. (${k}) ${v}`).join("\n")}
 
 Return JSON "supported": one true or false per statement, in order.`,
     { type: "object", properties: { supported: { type: "array", items: { type: "boolean" } } }, required: ["supported"] },
-  );
+  ))(), { supported: filled.map(() => true) });
   filled.forEach(([k], i) => {
     if (check.supported?.[i] !== true) fields[k] = "";
   });

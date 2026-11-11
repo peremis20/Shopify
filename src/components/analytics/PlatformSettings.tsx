@@ -107,9 +107,8 @@ export function PlatformForm({ settings, onSaved }: {
         <p className="text-dash-muted">Your customers never enter keys. These power the autopilot for everyone.</p>
         <ol className="list-decimal space-y-1.5 pl-5 marker:text-dash-muted">
           <li>
-            <b>AI writer:</b> any of a Claude API key (console.anthropic.com), a Groq API key (console.groq.com, free
-            tier), a Mistral API key (console.mistral.ai, free plan), a Cerebras API key (cloud.cerebras.ai, free plan), a GitHub token with the Models permission (github.com/settings/tokens, free tier) or a Gemini API key
-            (aistudio.google.com). One is enough. Set more and the others become backups, used in that order whenever one fails. Usage is billed to you, a few cents per page improved.
+            <b>AI writer:</b> a Groq API key (console.groq.com, free tier) and later a Claude API key (console.anthropic.com).
+            With Groq alone, every change waits for your approval. With both, Claude writes and Groq checks the work, so it can go live on its own.
           </li>
           <li>
             <b>Google page one data (recommended):</b> a key from serper.dev (2,500 free searches). The autopilot uses it to
@@ -132,11 +131,7 @@ export function PlatformForm({ settings, onSaved }: {
       </div>
       <form onSubmit={save} className="space-y-3 rounded-xl border border-dash-line bg-white p-4">
         {input("pf-claude", "Claude API key", anthropicKey, setAnthropicKey, has?.hasAnthropic)}
-        {input("pf-groq", "or Groq API key", groqKey, setGroqKey, has?.hasGroq)}
-        {input("pf-mistral", "or Mistral API key (console.mistral.ai, free plan)", mistralKey, setMistralKey, has?.hasMistral)}
-        {input("pf-cerebras", "or Cerebras API key (cloud.cerebras.ai, free plan)", cerebrasKey, setCerebrasKey, has?.hasCerebras)}
-        {input("pf-github", "or GitHub Models token", githubKey, setGithubKey, has?.hasGithub)}
-        {input("pf-gemini", "or Gemini API key", geminiKey, setGeminiKey, has?.hasGemini)}
+        {input("pf-groq", "Groq API key (writes the work; you approve it until Claude is added)", groqKey, setGroqKey, has?.hasGroq)}
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-opr", "Open PageRank key (site authority on page one)", oprKey, setOprKey, has?.hasOpr)}

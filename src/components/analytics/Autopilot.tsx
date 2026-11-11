@@ -359,9 +359,9 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
               labels={labels}
               platform={website?.platform ?? (state.settings.shopConnected ? "shopify" : null)}
               busy={busy !== null}
-              onMark={(id, done) =>
+              onMark={(id, done, approve) =>
                 act(`fix-${id}`, async () => {
-                  const d = await api<Omit<State, "settings">>("/api/autopilot/fix", { id, done });
+                  const d = await api<Omit<State, "settings">>("/api/autopilot/fix", { id, done, approve });
                   setState((s) => (s ? { ...s, ...d } : s));
                 })
               }
@@ -404,7 +404,7 @@ function WeekSummary({ changes }: { changes: AutopilotChange[] }) {
     { n: pages, label: pages === 1 ? "page improved" : "pages improved" },
     { n: articles, label: articles === 1 ? "new article" : "new articles" },
     { n: links, label: links === 1 ? "link added" : "links added" },
-    { n: fixList, label: fixList === 1 ? "fix to paste in" : "fixes to paste in" },
+    { n: fixList, label: week.some((c) => c.awaiting) ? (fixList === 1 ? "change to approve" : "changes to approve") : fixList === 1 ? "fix to paste in" : "fixes to paste in" },
   ];
   if (!week.length && !measured.length) return null;
   return (
@@ -440,14 +440,19 @@ function FixList({
   labels: Record<ChangeField, string>;
   platform: string | null;
   busy: boolean;
-  onMark: (id: string, done: boolean) => void;
+  onMark: (id: string, done: boolean, approve?: boolean) => void;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
   const html = (f: AutopilotChange) => f.field === "content" || f.field === "schema" || f.field === "internal_link" || f.field === "new_article";
+  const waiting = fixes.filter((f) => f.awaiting).length;
   return (
     <div>
-      <p className="mb-1 font-semibold">Fix list ({fixes.length})</p>
-      <p className="mb-3 text-dash-muted">Paste each one in, then mark it done. Biggest wins first: titles and descriptions take a minute each.</p>
+      <p className="mb-1 font-semibold">{waiting ? `To approve (${waiting})` : `Fix list (${fixes.length})`}</p>
+      <p className="mb-3 text-dash-muted">
+        {waiting
+          ? "Read each change. Approve puts it live on your site; Skip leaves your page as it is."
+          : "Paste each one in, then mark it done. Biggest wins first: titles and descriptions take a minute each."}
+      </p>
       <ul className="space-y-3">
         {fixes.map((f) => (
           <li key={f.id} className="rounded-xl border border-dash-line bg-white p-4">
@@ -468,18 +473,26 @@ function FixList({
             ) : (
               <p className="rounded-lg border border-dash-line bg-[#FBF8F2] p-3 text-dash-ink">{f.after}</p>
             )}
-            <p className="mt-2 text-dash-muted">{fixGuide(platform, f.field)}</p>
+            {!f.awaiting && <p className="mt-2 text-dash-muted">{fixGuide(platform, f.field)}</p>}
             {f.reason && <p className="mt-1 text-xs text-dash-muted">Why: {f.reason}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                onClick={() => navigator.clipboard?.writeText(f.after ?? "").then(() => setCopied(f.id), () => setCopied(null))}
-                className="rounded-xl border border-dash-line px-3 py-1.5 font-semibold text-dash-ink hover:border-dash-green/40"
-              >
-                {copied === f.id ? "Copied" : "Copy"}
-              </button>
-              <button onClick={() => onMark(f.id, true)} disabled={busy} className="rounded-xl bg-dash-green px-3 py-1.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
-                Done, I pasted it
-              </button>
+              {f.awaiting ? (
+                <button onClick={() => onMark(f.id, true, true)} disabled={busy} className="rounded-xl bg-dash-green px-3 py-1.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+                  Approve
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => navigator.clipboard?.writeText(f.after ?? "").then(() => setCopied(f.id), () => setCopied(null))}
+                    className="rounded-xl border border-dash-line px-3 py-1.5 font-semibold text-dash-ink hover:border-dash-green/40"
+                  >
+                    {copied === f.id ? "Copied" : "Copy"}
+                  </button>
+                  <button onClick={() => onMark(f.id, true)} disabled={busy} className="rounded-xl bg-dash-green px-3 py-1.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+                    Done, I pasted it
+                  </button>
+                </>
+              )}
               <button onClick={() => onMark(f.id, false)} disabled={busy} className="font-semibold text-dash-muted hover:text-dash-ink">
                 Skip
               </button>

@@ -128,16 +128,14 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
 
 /**
  * The AI that writes changes, with every other configured AI as a backup, in
- * this order: Claude, Groq, Mistral, Cerebras, GitHub Models, Gemini.
+ * this order: Claude, Groq.
  */
 export function aiProvider(p: PlatformSettings): AiProvider | null {
   const all: AiProvider[] = [];
   if (p.anthropicKey) all.push({ kind: "claude", key: p.anthropicKey });
   if (p.groqKey) all.push({ kind: "groq", key: p.groqKey });
-  if (p.mistralKey) all.push({ kind: "mistral", key: p.mistralKey });
-  if (p.cerebrasKey) all.push({ kind: "cerebras", key: p.cerebrasKey });
-  if (p.githubModelsKey) all.push({ kind: "github", key: p.githubModelsKey });
-  if (p.geminiKey) all.push({ kind: "gemini", key: p.geminiKey });
+  // Only the services that proved reliable: the free Mistral, Cerebras, GitHub Models and Gemini plans ran out too
+  // often to count on. With Groq alone, the owner approves the work in place of a second AI; Claude adds it back.
   return all.length ? { ...all[0], backups: all.slice(1) } : null;
 }
 

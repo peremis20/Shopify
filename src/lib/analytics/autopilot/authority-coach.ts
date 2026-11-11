@@ -183,6 +183,8 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const moves = plan.moves.slice(0, 5);
   let checked = true;
   const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch((e) => {
+    // One AI service: each move is checked against this week's real data below; the owner sends any outreach.
+    if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you send any outreach.") };
     checked = false;
     console.error(`authority coach review failed: ${(e as Error).message}`);
     const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";

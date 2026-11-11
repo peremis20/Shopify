@@ -2,7 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { plainText } from "./guards";
 import type { AiProvider } from "./settings";
 import { report } from "./status";
-import { writeShareKit, type ShareKit } from "./writer";
+import { ownerApproves, writeShareKit, type ShareKit } from "./writer";
 
 /**
  * Share kits: for each new article the autopilot publishes, social posts for each channel and a short video script,
@@ -111,7 +111,8 @@ export async function makeNextShareKit(accountId: string, ai: AiProvider, brand:
   const summary = text.split(/(?<=[.?!])\s+/).slice(0, 3).join(" ");
   let kit: ShareKit;
   try {
-    kit = await writeShareKit(ai, { title, url: String(next.page_url), summary, text, brand, site: site || "this site" });
+    // The owner posts these themselves, so with one AI service the owner is the second check.
+    kit = await ownerApproves(ai, () => writeShareKit(ai, { title, url: String(next.page_url), summary, text, brand, site: site || "this site" }));
   } catch (e) {
     await saveTries(accountId, { ...tries, [String(next.id)]: (tries[String(next.id)] ?? 0) + 1 });
     void report("share-kit", false, (e as Error).message);

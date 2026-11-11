@@ -156,3 +156,16 @@ test("AI services rest after their limit: daily quota until it resets, per minut
   assert.equal(restFor("Resource has been exhausted (e.g. check quota)."), 2 * 60_000);
   assert.equal(restFor("Rate limit of 150 per 86400s exceeded for UserByModelByDay. Please wait 33000 seconds"), 33_000_000);
 });
+
+import { hasSecondAi, ownerApproves, reviewProspects } from "../src/lib/analytics/autopilot/writer";
+
+test("one AI service: the owner is the second check for work they approve, nothing else skips the check", async () => {
+  const groq = { kind: "groq" as const, key: "x" };
+  assert.equal(hasSecondAi(groq), false);
+  assert.equal(hasSecondAi({ kind: "claude" as const, key: "y", backups: [groq] }), true);
+  const prospects = [{ domain: "a.com", title: "A", snippet: "", kind: "resource", topic: "t" }];
+  // Inside work the owner approves, the missing second AI passes the work to the owner.
+  assert.deepEqual(await ownerApproves(groq, () => reviewProspects(groq, "me.com", prospects)), { keep: [true] });
+  // Anywhere else it still stops the work.
+  await assert.rejects(() => reviewProspects(groq, "me.com", prospects), /second AI/);
+});

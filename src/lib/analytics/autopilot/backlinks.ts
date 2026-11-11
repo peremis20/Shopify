@@ -7,7 +7,7 @@ import { fetchSerp } from "./serp";
 import { isBig, readSiteKeywords } from "./site-keywords";
 import { readTargets } from "./targets";
 import { aiProvider, readPlatformSettings } from "./settings";
-import { reviewProspects } from "./writer";
+import { ownerApproves, reviewProspects } from "./writer";
 
 /**
  * Every new find is checked by a second AI before it reaches the owner's list (no link farms, paid link sellers or
@@ -21,7 +21,8 @@ async function reviewed(accountId: string, ourSite: string, finds: Prospect[]): 
   const out: Prospect[] = [];
   for (let i = 0; i < finds.length; i += 40) {
     const chunk = finds.slice(i, i + 40);
-    const r = await reviewProspects(ai, ourSite, chunk).catch((e) => {
+    // The owner decides whom to email, so with one AI service the owner is the second check (the rule filters still run).
+    const r = await ownerApproves(ai, () => reviewProspects(ai, ourSite, chunk)).catch((e) => {
       throw new Error(`New backlink sites couldn't be checked by the reviewing AI, so the list wasn't changed. ${(e as Error).message}`);
     });
     chunk.forEach((p, j) => r.keep[j] && out.push(p));

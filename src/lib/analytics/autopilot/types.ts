@@ -24,6 +24,8 @@ export interface AutopilotChange {
   note: string | null;
   /** For internal links: the article that received the link. */
   targetId: string | null;
+  /** Written for a site the app edits, waiting for the owner's approval to go live (no second AI checked it). */
+  awaiting?: boolean;
 }
 
 export interface AutopilotRun {

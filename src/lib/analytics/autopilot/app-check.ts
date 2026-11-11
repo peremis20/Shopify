@@ -10,7 +10,7 @@ import { asPlatform, siteVerified } from "./usage";
 import { readClientErrors } from "./client-errors";
 import { findProspects } from "./backlinks";
 const domainOf = (site: string) => new URL(site.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "");
-import { reviewCustomerView } from "./writer";
+import { hasSecondAi, reviewCustomerView } from "./writer";
 
 /**
  * The App checker: part of the Inspector that looks past each agent's own job. It opens a site's account the way the
@@ -311,7 +311,8 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
     let aiAt = saved?.aiAt ?? null;
     if (report && (!aiAt || Date.now() - Date.parse(aiAt) > DAY || opts.force)) {
       const ai = aiProvider(await readPlatformSettings());
-      if (ai) {
+      // It needs two AI services to find and confirm; with one, only the rule checks run (no noise from a missing checker).
+      if (ai && hasSecondAi(ai)) {
         const [profile, auto, strategy] = await Promise.all([readProfile(accountId).catch(() => null), readAccountAutopilot(accountId).catch(() => null), readStrategy(accountId).catch(() => null)]);
         const view = {
           site: profile?.siteDomain ?? null,

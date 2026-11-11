@@ -2,7 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { BUSINESS_TYPES, cleanTypes, guessBusinessTypes, readProfile, saveAbout, saveSuggestedTypes, type BusinessType } from "../profile";
 import { sitePage, sitePages } from "../site-crawl";
 import { aiProvider, readPlatformSettings } from "./settings";
-import { readBusiness, readSiteTypes } from "./writer";
+import { ownerApproves, readBusiness, readSiteTypes } from "./writer";
 
 /** The usual addresses of an about page, on most platforms. */
 const ABOUT_PATHS = ["/", "/about", "/about-us", "/pages/about", "/pages/about-us", "/our-story", "/pages/our-story"];
@@ -37,7 +37,7 @@ export async function learnBusiness(accountId: string): Promise<string> {
     if (texts.length >= 3) break;
   }
   if (!texts.length) return "the site's pages couldn't be read";
-  const about = await readBusiness(ai, texts.join("\n\n"));
+  const about = await ownerApproves(ai, () => readBusiness(ai, texts.join("\n\n")));
   await saveAbout(accountId, about, "auto");
   return `business read from ${texts.length} ${texts.length === 1 ? "page" : "pages"}`;
 }
@@ -83,7 +83,7 @@ export async function detectSiteTypes(accountId: string, timeoutMs = 15_000): Pr
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error("site type reading took too long")), timeoutMs);
   });
-  const fromAi = await Promise.race([readSiteTypes(ai, text, options), timeout])
+  const fromAi = await Promise.race([ownerApproves(ai, () => readSiteTypes(ai, text, options)), timeout])
     .catch((e) => {
       console.error(`site type reading failed: ${e instanceof Error ? e.message : String(e)}`);
       return null;

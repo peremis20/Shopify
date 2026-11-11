@@ -24,7 +24,7 @@ import {
   type SiteItem,
 } from "./guards";
 import { undoLinkFix } from "./link-fixer";
-import { EditedMeanwhile, siteFor, type SiteAccess } from "./site-source";
+import { EditedMeanwhile, siteFor, type SiteAccess, type SiteWriter } from "./site-source";
 import { buildSchema, liveHtml, withoutAutopilotSchema } from "./schema";
 import type { StoreAccess, StoreResource } from "./shopify";
 import type { AutopilotChange, AutopilotPreview, AutopilotRun, ChangeField } from "./types";
@@ -32,7 +32,7 @@ import { lessons, measuredResults } from "./results";
 import { googleUpdates, updatesDuring, type GoogleUpdate } from "./google-updates";
 import { expireReviews } from "./expert-review";
 import { askGoogleToRecrawl } from "./recrawl";
-import { blocksOf, dropBlocks, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
+import { blocksOf, dropBlocks, hasSecondAi, ownerApproves, writeImprovement, writeInternalLink, type PageImprovement } from "./writer";
 
 /**
  * The SEO autopilot. Each run: measure older changes and undo the ones that
@@ -78,6 +78,8 @@ interface Ctx {
   index?: Promise<SiteItem[]>;
   /** A preview run: nothing is changed or recorded. */
   preview?: boolean;
+  /** With only one AI service the owner is the second check: changes wait for the owner's approval, nothing goes live before. */
+  ownerApproves?: boolean;
   /** Paths of pages held as controls: no agent adds links to them. */
   controlPaths?: Set<string>;
 }
@@ -653,9 +655,72 @@ async function suggestPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[
   return done;
 }
 
+/**
+ * With the owner as the check: every change is saved exactly as it would be written, marked as waiting, and goes live
+ * only when the owner approves it (approveChange). Structured data is left for the next run after approval.
+ */
+async function holdPlan(ctx: Ctx, runId: string, plan: Plan, w: SiteWriter): Promise<string[]> {
+  const { cand, page, improvement } = plan;
+  const op = cand.op;
+  const done: string[] = [];
+  const resourceType = ctx.site.mode === "snippet" ? "snippet" : page.type;
+  const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType, resourceId: page.id, query: op.query, reason: improvement.reason, op };
+  const can = async (field: ChangeField, id: string) => !w.supports || (await w.supports(field, id).catch(() => false));
+  const hold = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
+    await logChange({ ...base, field, before, after, status: "suggested", targetId, note: OWNER_APPROVAL });
+    done.push(field);
+  };
+  if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle && (await can("meta_title", page.id))) await hold("meta_title", page.metaTitle, improvement.metaTitle);
+  if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription && (await can("meta_description", page.id))) {
+    await hold("meta_description", page.metaDescription, improvement.metaDescription);
+  }
+  if (w.setAlt) for (const a of improvement.altTexts) await hold("alt", null, a.alt, a.imageId);
+  if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page") && (await can("content", page.id))) {
+    const blockId = `${runId}-content`;
+    await hold("content", blockId, wrap(blockId, improvement.contentSectionHtml));
+  }
+  const source = cand.inferred ? undefined : await linkSource(ctx, cand, page).catch(() => undefined);
+  if (source && (await can("internal_link", source.id))) {
+    const sentence = await writeInternalLink(ctx.ai, source, { path: new URL(op.page).pathname, query: op.query, title: page.title });
+    if (sentence) {
+      const blockId = `${runId}-link`;
+      await hold("internal_link", blockId, wrap(blockId, sentence), source.id);
+    }
+  }
+  return done;
+}
+
+/** The owner approved a change that waited for them: it is written to the site now and measured from today. */
+export async function approveChange(accountId: string, id: string): Promise<void> {
+  await ensureSchema();
+  const [c] = await sql`SELECT * FROM insights_autopilot_changes WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested'`;
+  if (!c) throw new Error("That change isn't waiting anymore.");
+  if (c.resource_type === "site") throw new Error("This one goes in by hand: copy it into your site, then mark it done.");
+  const site = await siteFor(accountId);
+  const w = site?.writer;
+  if (!w) throw new Error("Connect your website first, so approved changes can go live.");
+  const after = String(c.after_value ?? "");
+  const type = (c.resource_type === "article" ? "article" : "page") as "article" | "page";
+  const append = async (bodyType: "article" | "page", resourceId: string) => {
+    const body = await w.getBody(bodyType, resourceId);
+    // Already there (approved twice, or added by hand): nothing to add.
+    if (c.before_value && body.includes(`<!-- autopilot:${c.before_value} -->`)) return;
+    await w.setBodyIfUnchanged(bodyType, resourceId, body, `${body}\n${after}`);
+  };
+  if (c.field === "meta_title") await w.setSeo(String(c.resource_id), "title", after);
+  else if (c.field === "meta_description") await w.setSeo(String(c.resource_id), "description", after);
+  else if (c.field === "alt" && w.setAlt && c.target_id) await w.setAlt(String(c.target_id), after);
+  else if (c.field === "content") await append(type, String(c.resource_id));
+  else if (c.field === "internal_link" && c.target_id) await append("article", String(c.target_id));
+  else throw new Error("This kind of change can't be published from here yet. Copy it into your site, then mark it done.");
+  await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = 'Approved by you.'
+    WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested'`;
+}
+
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
   const w = ctx.site.writer;
   if (!w) return suggestPlan(ctx, runId, plan);
+  if (ctx.ownerApproves) return holdPlan(ctx, runId, plan, w);
   const { cand, page, improvement } = plan;
   const op = cand.op;
   const done: string[] = [];
@@ -763,7 +828,15 @@ type Trigger = "schedule" | "manual" | "preview";
  * A "preview" goes through every step on live data but changes nothing: no
  * store edits, no measuring or undoing, and it doesn't count as a run.
  */
+/** Note on every change that waits for the owner because no second AI checks the work yet. */
+export const OWNER_APPROVAL = "Waiting for your approval: no second AI checks the work yet, so nothing goes live until you approve it.";
+
 export async function runAutopilot(accountId: string, conn: Connection | null, trigger: Trigger): Promise<RunResult> {
+  const ai = aiProvider(await readPlatformSettings());
+  return ownerApproves(ai, () => runAutopilotChecked(accountId, conn, trigger, !hasSecondAi(ai)));
+}
+
+async function runAutopilotChecked(accountId: string, conn: Connection | null, trigger: Trigger, owner: boolean): Promise<RunResult> {
   await ensureSchema();
   const [acct, platform] = await Promise.all([readAccountAutopilot(accountId), readPlatformSettings()]);
   if (trigger === "schedule" && !acct.enabled) return { run: null, message: "Autopilot is turned off." };
@@ -791,6 +864,7 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
     allowContent: acct.allowContent,
     maxPagesPerWeek: acct.maxPagesPerWeek,
     preview: trigger === "preview",
+    ownerApproves: owner,
   };
   const preview = trigger === "preview";
 
@@ -847,7 +921,8 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
         ai,
         platform,
         ourDomain: ctx.ourDomain,
-        publish: acct.allowContent,
+        // Waiting for the owner: saved as a draft they publish themselves.
+        publish: acct.allowContent && !owner,
         perWeek: acct.articlesPerWeek,
       }).catch((e) => (summary.push(`New article not written: ${(e as Error).message}`), null));
       if (posted) {
@@ -863,7 +938,9 @@ export async function runAutopilot(accountId: string, conn: Connection | null, t
           after: `<h1>${posted.article.title}</h1>\n<p><strong>SEO title:</strong> ${posted.article.metaTitle}<br><strong>Meta description:</strong> ${posted.article.metaDescription}</p>\n${posted.article.html}`,
           reason: `No page on the site covered "${posted.keyword}", so the autopilot wrote one from what ranks on Google page one.`,
           status: posted.resourceType === "site" ? "suggested" : "applied",
-          note: posted.note || (posted.live ? "Published." : "Saved as a draft: turn on new content in Autopilot settings to publish automatically."),
+          note:
+            posted.note ||
+            (posted.live ? "Published." : owner ? "Saved as a draft for your approval: no second AI checked it, so read it and publish it in your store when it reads right." : "Saved as a draft: turn on new content in Autopilot settings to publish automatically."),
         });
         if (posted.live) changed = true;
         summary.push(
@@ -1172,6 +1249,7 @@ export async function autopilotHistory(accountId: string): Promise<{ changes: Au
       evaluatedAt: c.evaluated_at,
       note: c.note,
       targetId: c.target_id,
+      awaiting: c.status === "suggested" && c.resource_type !== "site",
     })),
     runs: runs.map(toRun),
   };
@@ -1304,7 +1382,7 @@ async function rescueSome(
         targets.find((t) => t.page === url && t.role !== "support")?.keyword ??
         kws.find((k) => k.page === url && k.role !== "support")?.keyword ??
         page.title;
-      const imp = await writeImprovement(ai, page, { query, position: 0, impressions: 0, mode: "climb" }, [], true, true);
+      const imp = await ownerApproves(ai, () => writeImprovement(ai, page, { query, position: 0, impressions: 0, mode: "climb" }, [], true, true));
       // A section the writer itself says misses what searchers want is never added (and it skipped the second AI's check).
       if (!imp.intentMatch) continue;
       // Only the new section is used; the guard drops anything that repeats this or another page.
@@ -1313,6 +1391,25 @@ async function rescueSome(
       if (!section) continue;
       const blockId = `rescue-${Date.now()}-content`;
       const block = wrap(blockId, section);
+      const reason = "Index rescue: Google crawled this page but left it out of its index, so a substantial new section was added to make it more useful and distinct.";
+      // With the owner as the check, the section waits for their approval instead of going live.
+      if (!hasSecondAi(baseAi)) {
+        await logChange({
+          accountId,
+          runId: null,
+          pageUrl: url,
+          resourceType: access.mode === "snippet" ? "snippet" : page.type,
+          resourceId: page.id,
+          query,
+          field: "content",
+          before: blockId,
+          after: block,
+          reason,
+          status: "suggested",
+          note: OWNER_APPROVAL,
+        });
+        return `wrote a new section for ${new URL(url).pathname}, waiting for your approval`;
+      }
       try {
         await writer.setBodyIfUnchanged(page.type, page.id, page.body, `${page.body}\n${block}`);
       } catch (err) {

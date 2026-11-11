@@ -200,6 +200,9 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
   let checked = true;
   const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch((e) => {
+    // One AI service: each move is checked against this week's real data below, and everything it leads to waits for
+    // the owner's approval before it goes live, so the plan is acted on.
+    if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you approve what it leads to.") };
     checked = false;
     console.error(`strategist review failed: ${(e as Error).message}`);
     const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";

@@ -145,6 +145,17 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     // to show the owner. A refused key or billing problem always shows.
     const busy = /busy|demand|empty|timeout|aborted|fetch failed|overloaded|\b(429|503)\b/i.test(st.detail ?? "") && !/accept the key|401|403|billing|quota|payment/i.test(st.detail ?? "");
     if ((part === "ai" || part === "ai-review") && busy && st.lastOk && Date.now() - Date.parse(st.lastOk) < 3 * HOUR) continue;
+    // Only one AI service: the owner approves the work instead, a chosen setup rather than something broken.
+    if (part === "ai-review" && /only one ai service/i.test(st.detail ?? "")) {
+      problems.push({
+        id: "service:ai-review",
+        text: "Changes wait for your approval, because no second AI checks the work yet.",
+        fix: "Approve each one under Content. Adding a Claude key in Platform keys lets a second AI check the work instead.",
+        who: "watching",
+        platform: true,
+      });
+      continue;
+    }
     const p = PART_FIX[part];
     problems.push({
       id: `service:${part}`,

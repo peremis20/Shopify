@@ -21,7 +21,7 @@ import crypto from "crypto";
 import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
-import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, revertChange, runAutopilot } from "./autopilot/engine";
+import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
 import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
@@ -59,7 +59,7 @@ import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
-import { checkAiKey, endRest, writeOutreach } from "./autopilot/writer";
+import { checkAiKey, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -843,7 +843,8 @@ async function composeOutreach(accountId: string, p: Prospect): Promise<Outreach
   const ourPage = p.ourPage ?? best?.page ?? target?.page ?? null;
   // The address the site shows publicly, looked up while the email is written.
   const contactP = findContactEmail(p.url, p.domain).catch(() => null);
-  const email = await writeOutreach(ai, {
+  // The owner reads and sends every email, so with one AI service the owner is the second check.
+  const email = await ownerApproves(ai, () => writeOutreach(ai, {
     kind: p.kind,
     siteName: p.domain,
     pageTitle: p.title,
@@ -856,7 +857,7 @@ async function composeOutreach(accountId: string, p: Prospect): Promise<Outreach
     anchor: p.anchor ?? null,
     // Only what the owner set in the site profile, never a guess.
     sells: profile.businessType ? siteBrief(profile).sells : null,
-  });
+  }));
   return { subject: email.subject, body: email.body, to: await contactP, at: new Date().toISOString() };
 }
 
@@ -1400,7 +1401,11 @@ export const markFix = (req: Request) =>
   withAccount(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     try {
-      await markSuggestion(account.id, String(b.id ?? ""), b.done !== false);
+      if (b.approve === true) {
+        // Sabbath rest: nothing goes live on a site from Friday sundown to Saturday sundown.
+        if (isSabbath()) return json({ error: "The autopilot rests for the Sabbath. Approve it again after Saturday sundown." }, 409);
+        await approveChange(account.id, String(b.id ?? ""));
+      } else await markSuggestion(account.id, String(b.id ?? ""), b.done !== false);
       return json(forCustomer(await autopilotHistory(account.id), account.admin));
     } catch (err) {
       return json({ error: message(err) }, 400);
