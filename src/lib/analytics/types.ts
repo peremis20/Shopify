@@ -31,6 +31,10 @@ export interface GaData {
   topPages: { path: string; views: number; avgTimeSec: number }[];
   /** Orders and revenue from people who came from Google search (organic). Null when GA can't report it. */
   organicSales?: { orders: Delta; revenue: Delta; currency: string | null } | null;
+  /** Pages where Google search visitors land, with the leads and sales they bring. Null when GA can't report it. */
+  searchLandingPages?: { path: string; sessions: number; keyEvents: number; orders: number; revenue: number }[] | null;
+  /** People on the site in the last 30 minutes. Null when GA can't report it or the tag is shared with other sites. */
+  realtime?: { activeUsers: number; topScreens: { name: string; users: number }[]; at: string } | null;
 }
 
 export interface GscData {

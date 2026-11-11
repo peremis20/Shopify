@@ -142,6 +142,21 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
       filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { matchType: "EXACT", value: "Organic Search" } },
     }),
   }).catch(() => null);
+  const [landing, realtime] = await Promise.all([
+    // Where Google search visitors land, and the leads and sales each page brings.
+    googleRequest<Ga4Report>(auth, url, {
+      dateRanges: [current],
+      dimensions: [{ name: "landingPage" }],
+      metrics: [{ name: "sessions" }, { name: "keyEvents" }, { name: "ecommercePurchases" }, { name: "purchaseRevenue" }],
+      dimensionFilter: allOf(hosts, {
+        filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { matchType: "EXACT", value: "Organic Search" } },
+      }),
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 10,
+    }).catch((e) => logged("landing pages", e)),
+    fetchRealtime(auth, id, excludeHosts.length > 0),
+  ]);
+
   const salesRow = (name: string) => sales?.rows?.find((r) => r.dimensionValues?.[0]?.value === name);
 
   // With two date ranges GA4 adds a "dateRange" dimension to each row.
@@ -190,10 +205,58 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
       ...c,
       share: totalSessions ? (c.sessions / totalSessions) * 100 : 0,
     })),
+    searchLandingPages: landing ? landingRows(landing) : null,
+    realtime,
     topPages: (pages.rows ?? []).map((r) => ({
       path: r.dimensionValues![0].value,
       views: num(r, 0),
       avgTimeSec: num(r, 2) ? num(r, 1) / num(r, 2) : 0,
     })),
+  };
+}
+
+/** Logs a failed extra report so the repair agent sees it, and leaves the rest of the report whole. */
+function logged(what: string, e: unknown): null {
+  console.error(`ga4 ${what} failed`, e instanceof Error ? e.message : e);
+  return null;
+}
+
+/** Search landing pages as plain rows; GA4's "(not set)" page is left out. */
+export function landingRows(report: Ga4Report) {
+  return (report.rows ?? [])
+    .map((r) => ({
+      path: r.dimensionValues?.[0]?.value ?? "",
+      sessions: num(r, 0),
+      keyEvents: num(r, 1),
+      orders: num(r, 2),
+      revenue: num(r, 3),
+    }))
+    .filter((r) => r.path && r.path !== "(not set)");
+}
+
+/**
+ * People on the site in the last 30 minutes. The realtime report can't tell the
+ * sites sharing one tag apart, so it is skipped for a shared tag rather than
+ * showing other sites' visitors.
+ */
+async function fetchRealtime(auth: GoogleAuth, id: string, sharedTag: boolean) {
+  if (sharedTag) return null;
+  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runRealtimeReport`;
+  const [total, screens] = await Promise.all([
+    googleRequest<Ga4Report>(auth, url, { metrics: [{ name: "activeUsers" }] }),
+    googleRequest<Ga4Report>(auth, url, {
+      dimensions: [{ name: "unifiedScreenName" }],
+      metrics: [{ name: "activeUsers" }],
+      orderBys: [{ metric: { metricName: "activeUsers" }, desc: true }],
+      limit: 5,
+    }).catch((e) => logged("realtime pages", e)),
+  ]).catch((e) => [logged("realtime", e), null] as const);
+  if (!total) return null;
+  return {
+    activeUsers: num(total.rows?.[0], 0),
+    topScreens: (screens?.rows ?? [])
+      .map((r) => ({ name: r.dimensionValues?.[0]?.value ?? "", users: num(r, 0) }))
+      .filter((r) => r.name && r.name !== "(not set)"),
+    at: new Date().toISOString(),
   };
 }

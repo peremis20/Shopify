@@ -478,6 +478,14 @@ export function DashboardView() {
                       <MiniStat label="Sessions" value={formatNumber(ga.data.totals.sessions.value)} badge={<DeltaBadge delta={ga.data.totals.sessions} />} />
                       <MiniStat label="Page Views" value={formatNumber(ga.data.totals.pageViews.value)} badge={<DeltaBadge delta={ga.data.totals.pageViews} />} />
                     </div>
+                    {ga.data.realtime && (
+                      <p className="mb-4 text-sm text-dash-muted">
+                        <span className="font-medium text-dash-ink">Right now:</span>{" "}
+                        {formatNumber(ga.data.realtime.activeUsers)} {ga.data.realtime.activeUsers === 1 ? "person" : "people"} on the site in the last 30 minutes
+                        {ga.data.realtime.topScreens.length > 0 && <>, most on {ga.data.realtime.topScreens.slice(0, 2).map((p) => p.name).join(" and ")}</>}.
+                        {" "}As of {new Date(ga.data.realtime.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.
+                      </p>
+                    )}
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-serif text-lg">Users &amp; Page Views</h3>
                       <Legend items={[{ label: "Users", color: GREEN }, { label: "Page Views", color: COPPER }]} />
@@ -589,6 +597,26 @@ export function DashboardView() {
             </Card>
 
             <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
+
+            {ga?.data?.searchLandingPages && (
+              <Card id="search-landing" className="lg:col-span-2 2xl:col-span-3">
+                <CardHeader title="Where Google visitors land" href={ga.openUrl} linkLabel="Open GA" />
+                <Table
+                  head={["Page", "Visits", "Key actions", "Sales", "Revenue"]}
+                  rows={ga.data.searchLandingPages.map((p) => ({
+                    cells: [
+                      p.path,
+                      formatNumber(p.sessions),
+                      formatNumber(p.keyEvents),
+                      formatNumber(p.orders),
+                      new Intl.NumberFormat(undefined, { style: "currency", currency: ga.data?.organicSales?.currency || "USD", maximumFractionDigits: 0 }).format(p.revenue),
+                    ],
+                    values: [p.path, p.sessions, p.keyEvents, p.orders, p.revenue],
+                  }))}
+                  empty="No visits from Google search in this period yet."
+                />
+              </Card>
+            )}
           </div>
 
           <Autopilot
