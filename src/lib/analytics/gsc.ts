@@ -1,6 +1,6 @@
 import { googleRequest, type GoogleAuth } from "./google-auth";
-import { listDates, pctChange } from "./dates";
-import type { DateRange, Delta, GscData, PeriodRanges } from "./types";
+import { addDays, listDates, pctChange, toIso, todayUtc } from "./dates";
+import type { DateRange, Delta, GscData, GscFresh, PeriodRanges } from "./types";
 
 interface GscRow {
   keys?: string[];
@@ -46,12 +46,29 @@ export async function fetchGsc(auth: GoogleAuth, site: string, ranges: PeriodRan
       rowLimit,
     }).then((r) => r.rows ?? []);
 
-  const [[cur], [prev], daily, queries, pages] = await Promise.all([
+  // Early hourly numbers: Google keeps about 10 days of them, a few hours behind real time.
+  const freshRows = googleRequest<{ rows?: GscRow[] }>(auth, url, {
+    startDate: toIso(addDays(todayUtc(), -3)),
+    endDate: toIso(addDays(todayUtc(), 1)),
+    dimensions: ["HOUR"],
+    dataState: "HOURLY_ALL",
+    rowLimit: 200,
+  }).then(
+    (r) => r.rows ?? [],
+    (e) => {
+      // The main report still loads; the error goes to the logs so the repair agent sees it.
+      console.error("gsc hourly data failed", e instanceof Error ? e.message : e);
+      return [] as GscRow[];
+    }
+  );
+
+  const [[cur], [prev], daily, queries, pages, hourly] = await Promise.all([
     query(ranges.current, []),
     query(ranges.previous, []),
     query(ranges.current, ["date"], 500),
     query(ranges.current, ["query"]),
     query(ranges.current, ["page"]),
+    freshRows,
   ]);
 
   const dailyMap = new Map(daily.map((r) => [r.keys![0], r]));
@@ -80,5 +97,21 @@ export async function fetchGsc(auth: GoogleAuth, site: string, ranges: PeriodRan
       clicks: r.clicks,
       impressions: r.impressions,
     })),
+    fresh: summarizeHourly(hourly),
+  };
+}
+
+/** Totals for the 24 hours before `now`, or null when Google reported none in that time. */
+export function summarizeHourly(rows: GscRow[], now = Date.now()): GscFresh | null {
+  const hours = rows
+    .filter((r) => r.keys?.[0] && Date.parse(r.keys[0]) > now - 24 * 3600_000)
+    .sort((a, b) => Date.parse(a.keys![0]) - Date.parse(b.keys![0]));
+  if (!hours.length) return null;
+  const latest = Date.parse(hours[hours.length - 1].keys![0]);
+  return {
+    clicks: hours.reduce((n, r) => n + r.clicks, 0),
+    impressions: hours.reduce((n, r) => n + r.impressions, 0),
+    hours: hours.length,
+    latestHour: new Date(latest).toISOString(),
   };
 }

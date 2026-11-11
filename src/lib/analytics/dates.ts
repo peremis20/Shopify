@@ -21,11 +21,11 @@ function fromIso(s: string): Date {
   return new Date(`${s}T00:00:00Z`);
 }
 
-function addDays(d: Date, days: number): Date {
+export function addDays(d: Date, days: number): Date {
   return new Date(d.getTime() + days * DAY);
 }
 
-function todayUtc(): Date {
+export function todayUtc(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }

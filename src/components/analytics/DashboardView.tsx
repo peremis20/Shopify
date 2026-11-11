@@ -509,6 +509,13 @@ export function DashboardView() {
                       <MiniStat label="Average CTR" value={formatPct(gsc.data.totals.ctr.value)} badge={<DeltaBadge delta={gsc.data.totals.ctr} />} />
                       <MiniStat label="Avg. Position" value={gsc.data.totals.impressions.value > 0 ? gsc.data.totals.position.value.toFixed(1) : "n/a"} badge={gsc.data.totals.impressions.value > 0 && gsc.data.totals.impressions.previous > 0 ? <DeltaBadge delta={gsc.data.totals.position} lowerIsBetter /> : undefined} />
                     </div>
+                    {gsc.data.fresh && (
+                      <p className="mb-4 text-sm text-dash-muted">
+                        <span className="font-medium text-dash-ink">Last 24 hours:</span>{" "}
+                        {formatNumber(gsc.data.fresh.clicks)} clicks, {formatNumber(gsc.data.fresh.impressions)} impressions.
+                        Early numbers through {new Date(gsc.data.fresh.latestHour).toLocaleString([], { weekday: "short", hour: "numeric" })}, Google may still adjust them.
+                      </p>
+                    )}
                     <div className="mb-2 flex items-center justify-between">
                       <h3 className="font-serif text-lg">Clicks &amp; Impressions</h3>
                       <Legend items={[{ label: "Clicks", color: GREEN }, { label: "Impressions", color: COPPER }]} />

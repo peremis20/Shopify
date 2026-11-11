@@ -49,6 +49,17 @@ export interface GscData {
     position: number;
   }[];
   topPages: { page: string; clicks: number; impressions: number }[];
+  /** Early hourly numbers for the last 24 hours (Google may still revise them). Null when Google has none yet. */
+  fresh?: GscFresh | null;
+}
+
+export interface GscFresh {
+  clicks: number;
+  impressions: number;
+  /** How many hours of data the totals cover (up to 24). */
+  hours: number;
+  /** Start of the newest hour Google has reported, as an ISO time. */
+  latestHour: string;
 }
 
 export type SourceStatus = "live" | "demo" | "error";
