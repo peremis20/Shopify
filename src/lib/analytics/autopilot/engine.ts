@@ -2,7 +2,7 @@ import { readTargets, saveTarget } from "./targets";
 import { setArticlePublished } from "./shopify";
 import { restoreTarget } from "./pruner";
 import { nextNewArticle, unpublishArticle } from "./new-articles";
-import type { Connection } from "../connection";
+import { getConnection, type Connection } from "../connection";
 import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
@@ -666,25 +666,47 @@ async function holdPlan(ctx: Ctx, runId: string, plan: Plan, w: SiteWriter): Pro
   const resourceType = ctx.site.mode === "snippet" ? "snippet" : page.type;
   const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType, resourceId: page.id, query: op.query, reason: improvement.reason, op };
   const can = async (field: ChangeField, id: string) => !w.supports || (await w.supports(field, id).catch(() => false));
+  // A newer set for the same page replaces any still waiting, so the owner never approves two versions of one change.
+  await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Replaced by a newer change for this page.'
+    WHERE account_id = ${ctx.accountId} AND status = 'suggested' AND resource_type <> 'site' AND page_url = ${op.page}`;
   const hold = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
     await logChange({ ...base, field, before, after, status: "suggested", targetId, note: OWNER_APPROVAL });
     done.push(field);
   };
-  if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle && (await can("meta_title", page.id))) await hold("meta_title", page.metaTitle, improvement.metaTitle);
-  if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription && (await can("meta_description", page.id))) {
-    await hold("meta_description", page.metaDescription, improvement.metaDescription);
+  // What this platform can't change goes on the fix list, as when the autopilot writes on its own.
+  const fix = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
+    await logChange({ ...base, resourceType: "site", resourceId: page.url, field, before, after, status: "suggested", targetId });
+    done.push(field);
+  };
+  if (improvement.metaTitle && improvement.metaTitle !== page.metaTitle) {
+    await ((await can("meta_title", page.id)) ? hold : fix)("meta_title", page.metaTitle, improvement.metaTitle);
+  }
+  if (improvement.metaDescription && improvement.metaDescription !== page.metaDescription) {
+    await ((await can("meta_description", page.id)) ? hold : fix)("meta_description", page.metaDescription, improvement.metaDescription);
   }
   if (w.setAlt) for (const a of improvement.altTexts) await hold("alt", null, a.alt, a.imageId);
-  if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page") && (await can("content", page.id))) {
+  if (improvement.contentSectionHtml && (page.type === "article" || page.type === "page")) {
     const blockId = `${runId}-content`;
-    await hold("content", blockId, wrap(blockId, improvement.contentSectionHtml));
+    if (await can("content", page.id)) await hold("content", blockId, wrap(blockId, improvement.contentSectionHtml));
+    else await fix("content", null, improvement.contentSectionHtml);
+  }
+  // Structured data built from the page as it will be, approved with the rest.
+  if (page.type === "article" || page.type === "page") {
+    const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
+    const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
+    if (schema) {
+      const blockId = `${runId}-schema`;
+      if (await can("schema", page.id)) await hold("schema", blockId, wrap(blockId, schema));
+      else await fix("schema", null, schema);
+    }
   }
   const source = cand.inferred ? undefined : await linkSource(ctx, cand, page).catch(() => undefined);
-  if (source && (await can("internal_link", source.id))) {
+  if (source) {
     const sentence = await writeInternalLink(ctx.ai, source, { path: new URL(op.page).pathname, query: op.query, title: page.title });
     if (sentence) {
       const blockId = `${runId}-link`;
-      await hold("internal_link", blockId, wrap(blockId, sentence), source.id);
+      if (await can("internal_link", source.id)) await hold("internal_link", blockId, wrap(blockId, sentence), source.id);
+      else await fix("internal_link", null, sentence, new URL(source.url, op.page).href);
     }
   }
   return done;
@@ -701,20 +723,50 @@ export async function approveChange(accountId: string, id: string): Promise<void
   if (!w) throw new Error("Connect your website first, so approved changes can go live.");
   const after = String(c.after_value ?? "");
   const type = (c.resource_type === "article" ? "article" : "page") as "article" | "page";
+  // Undo puts back what is live now (the owner may have edited it since), not what was there when it was written.
+  let before: string | null = c.before_value ?? null;
+  if (c.field === "meta_title" || c.field === "meta_description") {
+    const live = await site!.resolve(String(c.page_url)).catch(() => null);
+    if (live) before = (c.field === "meta_title" ? live.metaTitle : live.metaDescription) ?? null;
+  }
   const append = async (bodyType: "article" | "page", resourceId: string) => {
     const body = await w.getBody(bodyType, resourceId);
     // Already there (approved twice, or added by hand): nothing to add.
     if (c.before_value && body.includes(`<!-- autopilot:${c.before_value} -->`)) return;
     await w.setBodyIfUnchanged(bodyType, resourceId, body, `${body}\n${after}`);
   };
-  if (c.field === "meta_title") await w.setSeo(String(c.resource_id), "title", after);
-  else if (c.field === "meta_description") await w.setSeo(String(c.resource_id), "description", after);
-  else if (c.field === "alt" && w.setAlt && c.target_id) await w.setAlt(String(c.target_id), after);
-  else if (c.field === "content") await append(type, String(c.resource_id));
-  else if (c.field === "internal_link" && c.target_id) await append("article", String(c.target_id));
-  else throw new Error("This kind of change can't be published from here yet. Copy it into your site, then mark it done.");
-  await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = 'Approved by you.'
+  let note = "Approved by you.";
+  try {
+    if (c.field === "meta_title") await w.setSeo(String(c.resource_id), "title", after);
+    else if (c.field === "meta_description") await w.setSeo(String(c.resource_id), "description", after);
+    else if (c.field === "alt" && w.setAlt && c.target_id) await w.setAlt(String(c.target_id), after);
+    else if (c.field === "content") await append(type, String(c.resource_id));
+    else if (c.field === "internal_link" && c.target_id) await append("article", String(c.target_id));
+    else if (c.field === "schema") {
+      if (w.setSchema) await w.setSchema(type, String(c.resource_id), after);
+      else {
+        const body = await w.getBody(type, String(c.resource_id));
+        await w.setBodyIfUnchanged(type, String(c.resource_id), body, `${withoutAutopilotSchema(body)}\n${after}`);
+      }
+    } else throw new Error("This kind of change can't be published from here yet. Copy it into your site, then mark it done.");
+  } catch (err) {
+    const name = (err as Error).name;
+    // Saved, live at the owner's next publish (Webflow with other unpublished work): it counts as done.
+    if (name === "SavedNotLive") note = "Approved by you. Saved; it goes live when you next publish your site.";
+    else if (err instanceof EditedMeanwhile) throw new Error("The page changed while this was being approved. Try again.");
+    else if (name === "UnpublishedDraft") throw new Error("This page has unpublished edits of your own. Publish or discard them, then approve again.");
+    else throw err;
+  }
+  // Measured from today, against where the search ranks today.
+  const [rank] = c.query
+    ? await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${c.query} AND position IS NOT NULL ORDER BY checked_on DESC LIMIT 1`.catch(() => [] as Row[])
+    : [];
+  await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = ${note}, before_value = ${before},
+      baseline_position = COALESCE(${rank?.position ?? null}::numeric, baseline_position)
     WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested'`;
+  // Tell Google about the change now instead of waiting for its next visit.
+  const conn = await getConnection(accountId).catch(() => null);
+  if (conn) await askGoogleToRecrawl(conn).catch(() => null);
 }
 
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
@@ -1023,9 +1075,10 @@ async function runAutopilotChecked(accountId: string, conn: Connection | null, t
         summary.push(`Preview: ${describe(cand).replace(/^(Defended|Pushed|Improved)/, (w) => `would have ${w.toLowerCase()}`)}. ${changes.length} change${changes.length === 1 ? "" : "s"} planned, nothing written.`);
       } else {
         const done = await applyPlan(ctx, runId, plan);
-        if (done.length && ctx.site.writer) changed = true;
+        // Held for the owner's approval: nothing changed on the site yet, so no recrawl and no control.
+        if (done.length && ctx.site.writer && !owner) changed = true;
         // Hold a similar page untouched as this change's control.
-        if (done.length && ctx.site.writer && plan.control) {
+        if (done.length && ctx.site.writer && !owner && plan.control) {
           const c = plan.control.op;
           // Only beside a change really made on the site (not one only suggested).
           await sql`INSERT INTO insights_autopilot_controls (account_id, run_id, page_url, query, baseline_position, baseline_clicks)
@@ -1394,6 +1447,8 @@ async function rescueSome(
       const reason = "Index rescue: Google crawled this page but left it out of its index, so a substantial new section was added to make it more useful and distinct.";
       // With the owner as the check, the section waits for their approval instead of going live.
       if (!hasSecondAi(baseAi)) {
+        await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Replaced by a newer change for this page.'
+          WHERE account_id = ${accountId} AND status = 'suggested' AND resource_type <> 'site' AND page_url = ${url}`;
         await logChange({
           accountId,
           runId: null,

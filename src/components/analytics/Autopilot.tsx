@@ -447,11 +447,12 @@ function FixList({
   const waiting = fixes.filter((f) => f.awaiting).length;
   return (
     <div>
-      <p className="mb-1 font-semibold">{waiting ? `To approve (${waiting})` : `Fix list (${fixes.length})`}</p>
+      <p className="mb-1 font-semibold">
+        {waiting && waiting < fixes.length ? `To approve (${waiting}) and to paste in (${fixes.length - waiting})` : waiting ? `To approve (${waiting})` : `Fix list (${fixes.length})`}
+      </p>
       <p className="mb-3 text-dash-muted">
-        {waiting
-          ? "Read each change. Approve puts it live on your site; Skip leaves your page as it is."
-          : "Paste each one in, then mark it done. Biggest wins first: titles and descriptions take a minute each."}
+        {waiting ? "Read each change. Approve puts it live on your site; Skip leaves your page as it is. " : ""}
+        {waiting < fixes.length ? "Paste the others in yourself, then mark them done." : ""}
       </p>
       <ul className="space-y-3">
         {fixes.map((f) => (
