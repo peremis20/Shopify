@@ -608,7 +608,7 @@ export function DashboardView() {
           </div>
 
           {/* Channels, pages, queries */}
-          <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-[0.9fr_1fr_1.2fr]">
+          <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
             <Card className={show("visitors")}>
               <CardHeader title="Top Traffic Channels" />
               {ga?.data ? (
@@ -638,12 +638,12 @@ export function DashboardView() {
               )}
             </Card>
 
-            <div className={`lg:col-span-2 2xl:col-span-3 ${show("search")}`}>
+            <div className={`lg:col-span-2 ${show("search")}`}>
               <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
             </div>
 
             {ga?.data?.searchLandingPages && (
-              <Card id="search-landing" className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
+              <Card id="search-landing" className={`lg:col-span-2 ${show("sales")}`}>
                 <CardHeader title="Where Google visitors land" href={ga.openUrl} linkLabel="Open GA" />
                 <Table
                   head={["Page", "Visits", "Key actions", "Sales", "Revenue"]}
@@ -663,7 +663,7 @@ export function DashboardView() {
             )}
 
             {ga?.data && (ga.data.devices || ga.data.countries || ga.data.visitorTypes) && (
-              <Card id="who-visits" className={`lg:col-span-2 2xl:col-span-3 ${show("visitors")}`}>
+              <Card id="who-visits" className={`lg:col-span-2 ${show("visitors")}`}>
                 <CardHeader title="Who visits" href={ga.openUrl} linkLabel="Open GA" />
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
                   {([
@@ -689,7 +689,7 @@ export function DashboardView() {
             )}
 
             {!ga?.data?.searchLandingPages && !ga?.data?.funnel && (
-              <Card className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
+              <Card className={`lg:col-span-2 ${show("sales")}`}>
                 <CardHeader title="Sales" />
                 <p className="text-sm text-dash-muted">
                   {loading && !data ? "Loading..." : "Sales show here once Google Analytics is connected and reports visits from Google search."}
@@ -698,7 +698,7 @@ export function DashboardView() {
             )}
 
             {ga?.data?.funnel && (
-              <Card id="shopping-steps" className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
+              <Card id="shopping-steps" className={`lg:col-span-2 ${show("sales")}`}>
                 <CardHeader title="Shopping steps" href={ga.openUrl} linkLabel="Open GA" />
                 <ul className="space-y-3">
                   {ga.data.funnel.map((f, i, all) => {
@@ -892,7 +892,7 @@ function QueriesCard({ data, openUrl, loading }: {
   );
 
   return (
-    <Card id="queries" className="lg:col-span-2 2xl:col-span-1">
+    <Card id="queries">
       <CardHeader title="Top Search Queries" href={openUrl} linkLabel="Open GSC">
         {tabs}
       </CardHeader>
