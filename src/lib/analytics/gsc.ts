@@ -62,13 +62,22 @@ export async function fetchGsc(auth: GoogleAuth, site: string, ranges: PeriodRan
     }
   );
 
-  const [[cur], [prev], daily, queries, pages, hourly] = await Promise.all([
+  // Extra splits: a failure is logged and leaves the main report whole.
+  const extra = (dimensions: string[]) =>
+    query(ranges.current, dimensions, 50).catch((e) => {
+      console.error(`gsc ${dimensions[0]} split failed`, e instanceof Error ? e.message : e);
+      return [] as GscRow[];
+    });
+
+  const [[cur], [prev], daily, queries, pages, hourly, deviceRows, appearanceRows] = await Promise.all([
     query(ranges.current, []),
     query(ranges.previous, []),
     query(ranges.current, ["date"], 500),
     query(ranges.current, ["query"]),
     query(ranges.current, ["page"]),
     freshRows,
+    extra(["device"]),
+    extra(["searchAppearance"]),
   ]);
 
   const dailyMap = new Map(daily.map((r) => [r.keys![0], r]));
@@ -98,7 +107,55 @@ export async function fetchGsc(auth: GoogleAuth, site: string, ranges: PeriodRan
       impressions: r.impressions,
     })),
     fresh: summarizeHourly(hourly),
+    devices: deviceSplit(deviceRows),
+    appearances: appearanceList(appearanceRows),
   };
+}
+
+const DEVICE_NAMES: Record<string, string> = { MOBILE: "Mobile", DESKTOP: "Desktop", TABLET: "Tablet" };
+
+/** Clicks, impressions, CTR (percent) and position per device, most clicks first. */
+export function deviceSplit(rows: GscRow[]) {
+  return rows
+    .filter((r) => r.keys?.[0])
+    .map((r) => ({
+      device: DEVICE_NAMES[r.keys![0].toUpperCase()] ?? plainName(r.keys![0]),
+      clicks: r.clicks,
+      impressions: r.impressions,
+      ctr: r.ctr * 100,
+      position: r.position,
+    }))
+    .sort((a, b) => b.clicks - a.clicks || b.impressions - a.impressions);
+}
+
+const APPEARANCE_NAMES: Record<string, string> = {
+  PRODUCT_SNIPPETS: "Product details",
+  MERCHANT_LISTINGS: "Shopping listings",
+  REVIEW_SNIPPET: "Review stars",
+  FAQ_RICH_RESULTS: "FAQ",
+  VIDEO: "Video",
+  RECIPE_RICH_RESULTS: "Recipe",
+  RICHCARD: "Rich card",
+  AMP_BLUE_LINK: "AMP",
+  TRANSLATED_RESULT: "Translated result",
+};
+
+/** Each way the site's results showed in Google, most impressions first. */
+export function appearanceList(rows: GscRow[]) {
+  return rows
+    .filter((r) => r.keys?.[0])
+    .map((r) => ({
+      type: APPEARANCE_NAMES[r.keys![0].toUpperCase()] ?? plainName(r.keys![0]),
+      clicks: r.clicks,
+      impressions: r.impressions,
+    }))
+    .sort((a, b) => b.impressions - a.impressions || b.clicks - a.clicks);
+}
+
+/** "SOME_GOOGLE_NAME" as "Some google name": plain words, no underscores. */
+function plainName(key: string) {
+  const words = key.replace(/[_\s-]+/g, " ").trim().toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** Totals for the 24 hours before `now`, or null when Google reported none in that time. */

@@ -527,6 +527,30 @@ export function DashboardView() {
                         { label: "Impressions", color: COPPER, values: gsc.data.daily.map((d) => d.impressions), axis: "right" },
                       ]}
                     />
+                    <div className="mt-5 grid grid-cols-1 gap-5 border-t border-dash-line pt-4 md:grid-cols-2">
+                      <div className="min-w-0">
+                        <h3 className="mb-2 font-serif text-lg">By device</h3>
+                        <Table
+                          head={["Device", "Clicks", "CTR", "Position"]}
+                          rows={(gsc.data.devices ?? []).map((d) => ({
+                            cells: [d.device, formatNumber(d.clicks), formatPct(d.ctr), d.impressions > 0 ? d.position.toFixed(1) : "n/a"],
+                            values: [d.device, d.clicks, d.ctr, d.position],
+                          }))}
+                          empty="No device data for this period yet."
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <h3 className="mb-2 font-serif text-lg">Rich results</h3>
+                        <Table
+                          head={["Shown as", "Clicks", "Impressions"]}
+                          rows={(gsc.data.appearances ?? []).map((a) => ({
+                            cells: [a.type, formatNumber(a.clicks), formatNumber(a.impressions)],
+                            values: [a.type, a.clicks, a.impressions],
+                          }))}
+                          empty="No rich results yet. Product details, reviews and FAQs on your pages can earn them."
+                        />
+                      </div>
+                    </div>
                   </>
                 )
               )}

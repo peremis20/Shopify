@@ -51,6 +51,10 @@ export interface GscData {
   topPages: { page: string; clicks: number; impressions: number }[];
   /** Early hourly numbers for the last 24 hours (Google may still revise them). Null when Google has none yet. */
   fresh?: GscFresh | null;
+  /** Search traffic split by device, biggest first. */
+  devices?: { device: string; clicks: number; impressions: number; ctr: number; position: number }[];
+  /** How results showed in Google (rich results like product details or FAQs), biggest first. */
+  appearances?: { type: string; clicks: number; impressions: number }[];
 }
 
 export interface GscFresh {
