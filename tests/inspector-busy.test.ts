@@ -18,4 +18,6 @@ test("key or access problems still count as failures", () => {
   assert.equal(onlyBusyAi("Groq didn't accept the API key. Rate limit exceeded on Mistral."), false);
   assert.equal(onlyBusyAi("The store connection was denied."), false);
   assert.equal(onlyBusyAi("Shopify returned 500."), false);
+  assert.equal(onlyBusyAi("Shopify is busy right now, try again later."), false);
+  assert.equal(onlyBusyAi("Order 14290 could not be read."), false);
 });

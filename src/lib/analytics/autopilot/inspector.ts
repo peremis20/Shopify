@@ -372,7 +372,8 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   return problems;
 }
 
-const BUSY_AI = /rate limit|resting until|busy right now|high demand|overloaded|try again later|429/i;
+const BUSY_AI = /rate limit|resting until|busy right now|high demand|overloaded|try again later|\b429\b/i;
+const AI_NAME = /GitHub Models|Groq|Gemini|Mistral|Cerebras|Claude|github|gemini|mistral|groq|cerebras/i;
 
 /**
  * A run that failed only because free AI services were busy or at their limit for a while (the next run tries again),
@@ -381,5 +382,5 @@ const BUSY_AI = /rate limit|resting until|busy right now|high demand|overloaded|
  */
 export function onlyBusyAi(summary: string): boolean {
   const rest = summary.replace(/GitHub Models answered "OK" with no reply[^.]*\./gi, "");
-  return BUSY_AI.test(rest) && !/key|access|renew|denied|invalid|unauthori[sz]ed|billing/i.test(rest);
+  return BUSY_AI.test(rest) && AI_NAME.test(rest) && !/key|access|renew|denied|invalid|unauthori[sz]ed|billing/i.test(rest);
 }
