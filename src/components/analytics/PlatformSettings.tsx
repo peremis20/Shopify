@@ -135,7 +135,14 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-opr", "Open PageRank key (site authority on page one)", oprKey, setOprKey, has?.hasOpr)}
-        {input("pf-ke", "Keywords Everywhere API key (what rivals rank for and who links to them)", keKey, setKeKey, has?.hasKe)}
+        {input("pf-ke", "Keywords Everywhere API key (rival searches and links, related searches, traffic estimates, backup search volumes)", keKey, setKeKey, has?.hasKe)}
+        {has?.hasKe && (has.keLeft != null || has.keSpent != null) && (
+          <p className="text-xs text-dash-muted">
+            Keywords Everywhere:{" "}
+            {has.keLeft != null ? `${has.keLeft.toLocaleString()} credits left on your plan` : "credits left unknown"}
+            {has.keSpent != null && `, ${has.keSpent.toLocaleString()} of ${(has.keCredits ?? 3000).toLocaleString()} used by DashPatrol this month`}.
+          </p>
+        )}
         {input("pf-resend", "Email key (resend.com) for owner reports and alerts", resendKey, setResendKey, has?.hasEmail)}
         {input("pf-from", "Email sender, e.g. DashPatrol <alerts@dashpatrol.com>", alertsFrom, setAlertsFrom, has?.hasEmail, false)}
         <div className="grid gap-3 sm:grid-cols-2">

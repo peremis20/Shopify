@@ -6,6 +6,10 @@ import { report } from "./status";
  * Keywords Everywhere (api.keywordseverywhere.com): real competitor data Google's own tools don't give.
  * - Domain keywords: the searches a rival site ranks for, with its position (2 credits per keyword).
  * - Unique domain backlinks: the sites that link to a rival, one link per site (5 credits per link).
+ * - URL keywords: the searches one rival page ranks for (2 credits per keyword).
+ * - Related keywords and "people also search for": more searches around a topic (2 credits per keyword).
+ * - Keyword data: Keyword Planner volumes, CPC and a 12 month trend, used when Keyword Planner itself isn't working (1 credit per keyword).
+ * - Domain traffic: a rival's estimated monthly Google visits (2 credits per domain).
  * Both are public facts about a public site, so they sit in the shared cache for 30 days, and they are only ever asked
  * about rivals that aren't other customers (the callers filter those out first). Credits are capped each month.
  */
@@ -114,7 +118,7 @@ async function store(key: string, data: unknown): Promise<void> {
  * One paid call, within the monthly credit limit. `cost` is the most it can spend; returns null (and says why on the
  * status board) when the key is missing, the limit is reached or the call fails, so callers carry on without it.
  */
-async function call(path: string, params: Record<string, string | number>, cost: number): Promise<unknown[] | null> {
+async function call(path: string, params: Record<string, string | number | string[]>, cost: number): Promise<unknown[] | null> {
   const k = await keKey();
   if (!k) return null;
   const used = await creditsUsed();
@@ -126,7 +130,9 @@ async function call(path: string, params: Record<string, string | number>, cost:
   // a reached limit is thrown, so the Inspector and the caller see it rather than an empty answer.
   const { spend, currentSite } = await import("./usage");
   if (currentSite()) await spend("search");
-  const body = new URLSearchParams(Object.entries(params).map(([a, b]) => [a, String(b)]));
+  const body = new URLSearchParams(
+    Object.entries(params).flatMap(([a, b]) => (Array.isArray(b) ? b.map((v) => [`${a}[]`, v]) : [[a, String(b)]])),
+  );
   const res = await fetch(`${API}/${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${k.key}`, Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded" },
@@ -154,11 +160,7 @@ export async function domainKeywords(domain: string, num = 30): Promise<DomainKe
   if (hit) return hit;
   const rows = await call("get_domain_keywords", { domain: d, country: "us", num }, num * 2);
   if (!rows) return [];
-  const list = rows
-    .map((r) => r as { keyword?: string; estimated_monthly_traffic?: number; serp_position?: number })
-    .filter((r) => typeof r.keyword === "string" && r.keyword.trim())
-    .map((r) => ({ keyword: String(r.keyword).trim().toLowerCase(), traffic: Number(r.estimated_monthly_traffic ?? 0) || 0, position: Number(r.serp_position ?? 0) || 0 }))
-    .sort((a, b) => b.traffic - a.traffic);
+  const list = rankedKeywords(rows);
   await store(key, list);
   return list;
 }
@@ -177,4 +179,144 @@ export async function rivalBacklinks(domain: string, num = 15): Promise<Backlink
     .map((r) => ({ sourceUrl: String(r.url_source), sourceDomain: clean(String(r.domain_source)), targetUrl: String(r.url_target ?? ""), anchor: String(r.anchor_text ?? "").slice(0, 120) }));
   await store(key, list);
   return list;
+}
+
+/** The searches one rival page ranks for in the US, most traffic first. */
+export async function urlKeywords(url: string, num = 20): Promise<DomainKeyword[]> {
+  if (!/^https?:\/\//.test(url)) return [];
+  const key = `ke:uk:${url}`;
+  const hit = await cached<DomainKeyword[]>(key);
+  if (hit) return hit;
+  const rows = await call("get_url_keywords", { url, country: "us", num }, num * 2);
+  if (!rows) return [];
+  const list = rankedKeywords(rows);
+  await store(key, list);
+  return list;
+}
+
+/** Keyword rows (keyword, estimated traffic, position) in plain form, most traffic first. */
+export function rankedKeywords(rows: unknown[]): DomainKeyword[] {
+  return rows
+    .map((r) => r as { keyword?: string; estimated_monthly_traffic?: number; serp_position?: number })
+    .filter((r) => typeof r.keyword === "string" && r.keyword.trim())
+    .map((r) => ({ keyword: String(r.keyword).trim().toLowerCase(), traffic: Number(r.estimated_monthly_traffic ?? 0) || 0, position: Number(r.serp_position ?? 0) || 0 }))
+    .sort((a, b) => b.traffic - a.traffic);
+}
+
+async function keywordList(path: "get_related_keywords" | "get_pasf_keywords", tag: string, keyword: string, num: number): Promise<string[]> {
+  const kw = keyword.trim().toLowerCase();
+  if (!kw) return [];
+  const key = `ke:${tag}:${kw}`;
+  const hit = await cached<string[]>(key);
+  if (hit) return hit;
+  const rows = await call(path, { keyword: kw, num }, num * 2);
+  if (!rows) return [];
+  const list = [...new Set(rows.filter((r): r is string => typeof r === "string").map((r) => r.trim().toLowerCase()).filter(Boolean))];
+  await store(key, list);
+  return list;
+}
+
+/** More searches around a topic. */
+export const relatedKeywords = (keyword: string, num = 10) => keywordList("get_related_keywords", "rk", keyword, num);
+/** What people search for next after a topic ("people also search for"). */
+export const alsoSearched = (keyword: string, num = 10) => keywordList("get_pasf_keywords", "pasf", keyword, num);
+
+export interface KeKeywordData {
+  keyword: string;
+  monthlySearches: number;
+  cpc: number | null;
+  competition: number | null;
+  /** Last 12 months, oldest first. */
+  trend: { month: string; searches: number }[];
+}
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** Keyword data rows in plain form; a missing trend stays empty, never guessed. */
+export function keywordDataRows(rows: unknown[]): KeKeywordData[] {
+  return rows
+    .map((r) => r as { keyword?: string; vol?: number; cpc?: { value?: string }; competition?: number; trend?: { month?: string; year?: number; value?: number }[] })
+    .filter((r) => typeof r.keyword === "string" && r.keyword.trim())
+    .map((r) => {
+      const cpc = r.cpc?.value != null && String(r.cpc.value).trim() !== "" ? Number(r.cpc.value) : NaN;
+      return {
+        keyword: String(r.keyword).trim().toLowerCase(),
+        monthlySearches: Number(r.vol ?? 0) || 0,
+        cpc: Number.isFinite(cpc) ? cpc : null,
+        competition: typeof r.competition === "number" ? r.competition : null,
+        trend: (r.trend ?? [])
+          .filter((t) => t.month && t.year && MONTHS.includes(t.month))
+          .map((t) => ({ month: `${t.year}-${String(MONTHS.indexOf(t.month!) + 1).padStart(2, "0")}`, searches: Number(t.value ?? 0) || 0 }))
+          .sort((a, b) => a.month.localeCompare(b.month)),
+      };
+    });
+}
+
+/**
+ * Keyword Planner numbers through Keywords Everywhere, for up to 100 searches (US, USD). Each search is kept in the
+ * shared cache, since monthly volumes are public facts, so a search is only paid for once a month.
+ */
+export async function keywordData(keywords: string[]): Promise<KeKeywordData[]> {
+  const list = [...new Set(keywords.map((k) => k.trim().toLowerCase()).filter(Boolean))].slice(0, 100);
+  if (!list.length) return [];
+  const out: KeKeywordData[] = [];
+  const missing: string[] = [];
+  for (const k of list) {
+    const hit = await cached<KeKeywordData>(`ke:kd:${k}`);
+    if (hit) out.push(hit);
+    else missing.push(k);
+  }
+  if (missing.length) {
+    const rows = await call("get_keyword_data", { kw: missing, country: "us", currency: "usd", dataSource: "gkp" }, missing.length);
+    for (const d of keywordDataRows(rows ?? [])) {
+      out.push(d);
+      await store(`ke:kd:${d.keyword}`, d);
+    }
+  }
+  return out;
+}
+
+/** A rival domain's estimated monthly Google visits (US) and how many searches it ranks for in the top 30. */
+export async function domainTraffic(domain: string): Promise<{ traffic: number; keywords: number } | null> {
+  const d = clean(domain);
+  const key = `ke:dt:${d}`;
+  const hit = await cached<{ traffic: number; keywords: number }>(key);
+  if (hit) return hit;
+  const rows = await call("get_domain_traffic_metrics", { domains: [d], country: "us" }, 2);
+  const r = rows?.[0] as { estimated_monthly_traffic?: number; total_ranking_keywords?: number } | undefined;
+  if (!r) return null;
+  const out = { traffic: Number(r.estimated_monthly_traffic ?? 0) || 0, keywords: Number(r.total_ranking_keywords ?? 0) || 0 };
+  await store(key, out);
+  return out;
+}
+
+/** Credits left on the Keywords Everywhere plan (free to ask), or null when there's no key or it can't be read. */
+let leftCache: { at: number; n: number | null } | null = null;
+export async function creditsLeft(): Promise<number | null> {
+  // Asked at most every 10 minutes, so the settings page stays quick.
+  if (leftCache && Date.now() - leftCache.at < 10 * 60_000) return leftCache.n;
+  const n = await readCreditsLeft();
+  leftCache = { at: Date.now(), n };
+  return n;
+}
+
+async function readCreditsLeft(): Promise<number | null> {
+  const k = await keKey();
+  if (!k) return null;
+  const res = await fetch(`${API}/account/credits`, {
+    headers: { Authorization: `Bearer ${k.key}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => null);
+  if (!res?.ok) {
+    console.warn(`keywords everywhere credits check failed: ${res ? res.status : "no answer"}`);
+    return null;
+  }
+  const body = (await res.json().catch(() => null)) as unknown;
+  const n = Array.isArray(body) ? Number(body[0]) : Number((body as { credits?: number } | null)?.credits);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Credits DashPatrol has spent this month, against its own monthly limit. */
+export async function creditsSpent(): Promise<number> {
+  return creditsUsed();
 }

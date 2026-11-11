@@ -7,7 +7,7 @@ import { cachedSerp, fetchSerp } from "./serp";
 import { faithAllowed, isBig, readSiteKeywords, topicWords } from "./site-keywords";
 import { readTargets } from "./targets";
 import { report } from "./status";
-import { domainKeywords } from "./keywords-everywhere";
+import { alsoSearched, domainKeywords, keywordData, relatedKeywords, urlKeywords } from "./keywords-everywhere";
 import { nullUnlessLimit, SpendingLimitReached } from "./usage";
 
 /**
@@ -38,6 +38,8 @@ export interface IdeaReport {
 const TARGETING = { geo: "2840", language: "1000" };
 const SEEDS = 5;
 const COMPETITOR_PAGES = 3;
+/** Topics expanded through Keywords Everywhere each run (about 40 credits each). */
+const KE_SEEDS = 3;
 const KEEP = 25;
 const MIN_SEARCHES = 20;
 const key = (accountId: string) => `ideas:${accountId}`;
@@ -147,10 +149,27 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
       competitorPages.push({ url: rival.link, from: rival.domain });
   }
 
+  // More searches around the site's biggest topics (Keywords Everywhere related searches and "people also search for").
+  for (const seed of seeds.slice(0, KE_SEEDS)) {
+    const [rel, next] = await Promise.all([
+      relatedKeywords(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])),
+      alsoSearched(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])),
+    ]);
+    for (const r of [...rel, ...next]) {
+      const k = asSearch(r);
+      if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "related", from: seed });
+    }
+  }
+
   // What the rivals actually rank for (Keywords Everywhere), when its key is set: the clearest competitor gap.
+  // The whole site first, then the exact page that beat this site on Google.
   for (const page of competitorPages) {
     const brands = [page.from.replace(/^www\./, "").split(".")[0], ours.split(".")[0]].filter((b) => b.length > 3);
-    for (const r of (await domainKeywords(page.from, 30).catch((e) => (nullUnlessLimit(e), []))).slice(0, 30)) {
+    const [site, onPage] = await Promise.all([
+      domainKeywords(page.from, 30).catch((e) => (nullUnlessLimit(e), [])),
+      urlKeywords(page.url, 20).catch((e) => (nullUnlessLimit(e), [])),
+    ]);
+    for (const r of [...site.slice(0, 30), ...onPage]) {
       const k = asSearch(r.keyword);
       if (brands.some((b) => k.replace(/\s+/g, "").includes(b))) continue;
       if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "competitor", from: page.from });
@@ -159,14 +178,24 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
 
   // Real monthly searches for every related search, question and rival search, in one call.
   let plannerOk = true;
+  let viaKe = false;
   const volumes = found.size ? await keywordVolumes({ ...TARGETING, keywords: [...found.keys()] }).catch(() => ((plannerOk = false), [])) : [];
   for (const v of volumes) {
     const idea = found.get(v.keyword.toLowerCase());
     if (idea) idea.monthlySearches = v.avgMonthlySearches ?? 0;
   }
+  // Keyword Planner down: the same Keyword Planner numbers through Keywords Everywhere, for up to 100 searches.
+  if (!plannerOk && found.size) {
+    const backup = await keywordData([...found.keys()]).catch((e) => (nullUnlessLimit(e), []));
+    for (const v of backup) {
+      const idea = found.get(asSearch(v.keyword));
+      if (idea) idea.monthlySearches = v.monthlySearches;
+    }
+    if (backup.length) plannerOk = viaKe = true;
+  }
   // The competitor gap: what Keyword Planner says those pages are about, that this site doesn't cover yet.
   const label = (d: string) => d.replace(/^www\./, "").split(".")[0];
-  for (const page of plannerOk ? competitorPages : []) {
+  for (const page of plannerOk && !viaKe ? competitorPages : []) {
     const ideas = await keywordIdeas({ ...TARGETING, keywords: [], url: page.url }).catch(() => []);
     // A search for a brand (theirs or ours) is someone looking for that site, not a topic to write about.
     const brands = [label(page.from), label(ourDomain)].filter((b) => b.length > 3);
@@ -179,18 +208,19 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
 
   const ideas = [...found.values()]
     // Without Keyword Planner nothing can be measured, so nothing counts as an idea (never a guessed volume).
-    .filter((i) => plannerOk && (i.monthlySearches ?? 0) >= MIN_SEARCHES)
+    .filter((i) => plannerOk && i.monthlySearches !== null && i.monthlySearches >= MIN_SEARCHES)
     .sort((a, b) => (b.monthlySearches ?? -1) - (a.monthlySearches ?? -1))
     .slice(0, KEEP);
   const kept = new Set(ideas.map((i) => i.keyword));
   const faq = questions.filter((q) => !kept.has(asSearch(q))).slice(0, 10);
   const by = (s: SearchIdea["source"]) => ideas.filter((i) => i.source === s).length;
   const note = ideas.length
-    ? `${ideas.length} new searches found (${by("related")} related, ${by("question")} questions, ${by("competitor")} from competitor pages)${plannerOk ? "" : "; monthly searches unknown because Keyword Planner isn't working"}.`
+    ? `${ideas.length} new searches found (${by("related")} related, ${by("question")} questions, ${by("competitor")} from competitor pages)${viaKe ? `; monthly searches from Keywords Everywhere because Keyword Planner isn't working${found.size > 100 ? ` (only 100 of ${found.size} searches could be measured)` : ""}` : ""}.`
     : plannerOk
       ? `No new searches with enough monthly searches this week (${seeds.length} topics checked).`
       : "Keyword Planner isn't working, so no search could be measured this week.";
   if (!plannerOk) void report("idea-finder", false, "Keyword Planner couldn't measure the searches found.");
+  else if (viaKe) void report("idea-finder", false, "Keyword Planner isn't working; this week's searches were measured through Keywords Everywhere.");
   else void report("idea-finder", true);
   return save(accountId, { at: new Date().toISOString(), ideas, questions: faq, note });
 }

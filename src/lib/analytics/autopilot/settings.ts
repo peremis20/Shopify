@@ -72,7 +72,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; keLeft: number | null; keSpent: number | null; hasShopifyApp: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -225,7 +225,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, ...(await keCreditInfo(Boolean(platform.keKey))), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret) }
       : undefined,
   };
 }
@@ -237,4 +237,12 @@ export async function encryptShopTokens(tokens: object): Promise<string> {
 export async function decryptShopTokens<T>(enc: string): Promise<T | null> {
   const json = decrypt(enc, await tokenSecret());
   return json ? (JSON.parse(json) as T) : null;
+}
+
+/** Credits left on the Keywords Everywhere plan and spent this month, for the admin's settings. */
+async function keCreditInfo(hasKey: boolean): Promise<{ keLeft: number | null; keSpent: number | null }> {
+  if (!hasKey) return { keLeft: null, keSpent: null };
+  const ke = await import("./keywords-everywhere");
+  const [keLeft, keSpent] = await Promise.all([ke.creditsLeft().catch(() => null), ke.creditsSpent().catch(() => null)]);
+  return { keLeft, keSpent };
 }

@@ -6,7 +6,7 @@ import { readAuthorityHistory, type Rival } from "./authority";
 import { NOT_PROSPECTS, readProspects, upsertProspects, type Prospect } from "./backlinks";
 import { clientListKnown, otherClient } from "./clients";
 import { fetchSerp } from "./serp";
-import { keReady, rivalBacklinks } from "./keywords-everywhere";
+import { domainTraffic, keReady, rivalBacklinks } from "./keywords-everywhere";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
 import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, type AuthorityMove } from "./writer";
@@ -142,7 +142,14 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
       ? `Site strength (Open PageRank, 0 to 10): ${hist[hist.length - 1].score}${hist.length > 1 ? `, was ${hist[0].score} on ${hist[0].day}` : ""}.`
       : "Site strength: not measured yet."
   );
-  if (rivals.length) lines.push("Sites beating it on its searches: " + rivals.map((r) => `${r.domain} (strength ${r.authority ?? "unknown"}, ahead on ${r.beats} searches)`).join("; "));
+  // Estimated Google visits a month for each rival (Keywords Everywhere), so the plan knows how big each one really is.
+  const traffic = new Map<string, { traffic: number; keywords: number } | null>();
+  if (realLinks) for (const r of rivals) traffic.set(r.domain, await domainTraffic(r.domain).catch((e) => (nullUnlessLimit(e), null)));
+  const size = (d: string) => {
+    const t = traffic.get(d);
+    return t ? `, about ${t.traffic} Google visits a month from ${t.keywords} searches (Keywords Everywhere estimate)` : "";
+  };
+  if (rivals.length) lines.push("Sites beating it on its searches: " + rivals.map((r) => `${r.domain} (strength ${r.authority ?? "unknown"}, ahead on ${r.beats} searches${size(r.domain)})`).join("; "));
   if (studied.length) lines.push("Pages mentioning those competitors but not this site, found this week: " + studied.map((s) => `${s.domain}: ${s.found}`).join("; "));
   const list = await readProspects(accountId).catch(() => null);
   const ps = list?.prospects ?? [];
