@@ -155,7 +155,7 @@ export function ruleProblems(input: {
   return out;
 }
 
-async function shapeOf(accountId: string, report: WeeklyReportData | null): Promise<Shape> {
+async function shapeOf(accountId: string, report: WeeklyReportData | null, conn: Connection | null): Promise<Shape> {
   const [counts] = await sql`
     SELECT
       (SELECT count(*) FROM insights_tracked_keywords t JOIN insights_keyword_lists l ON l.id = t.list_id WHERE l.account_id = ${accountId}) AS keywords,
@@ -171,7 +171,8 @@ async function shapeOf(accountId: string, report: WeeklyReportData | null): Prom
     plan: Boolean(strategy && Date.now() - Date.parse(strategy.at) < 8 * DAY && strategy.moves.length),
     backlinks: Boolean(bl?.found),
     keywords: Number(counts?.keywords ?? 0) > 0,
-    pages: Number(counts?.pages ?? 0) > 0,
+    // A Shopify store with Search Console has its pages read through Shopify, so the website reader rightly skips it.
+    pages: Number(counts?.pages ?? 0) > 0 || (Boolean(conn?.gscSiteUrl) && Boolean((await readAccountAutopilot(accountId).catch(() => null))?.shopTokenEnc)),
     ranks: Number(counts?.ranks ?? 0) > 0,
     business: Boolean(profile?.about),
     changes: Number(counts?.changes ?? 0) > 0,
@@ -247,7 +248,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
     // Built as the platform's own check: it isn't counted against the site's monthly limits.
     const report = await asPlatform(() => within(weeklyReportData(accountId), 60_000, "The Report took over a minute to build.")).catch((e) => ((reportError = (e as Error).message), null));
     const reportMs = Date.now() - started;
-    const shape = await shapeOf(accountId, report);
+    const shape = await shapeOf(accountId, report, conn);
     const age = await ageOf(accountId);
     const peerRows = await sql`SELECT key, value FROM insights_settings WHERE key LIKE 'app_check:%' AND key <> ${KEY(accountId)}`.catch(() => [] as { key: string; value: string }[]);
     const peers = peerRows.flatMap((r) => {

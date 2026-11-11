@@ -1825,6 +1825,14 @@ Return JSON "supported": true only if the text clearly shows this, false if it i
  * customer and a tester, and lists what looks broken, empty without a reason, contradictory or confusing. The first AI
  * then checks each point against the same data and drops anything the data doesn't show, so nothing guessed counts.
  */
+/** What the customer view check must not report as broken: these numbers measure different things on purpose. */
+const VIEW_FACTS = [
+  "report.visitors is the Strategist's estimate of Google visitors a month at its last plan; report.totals.visits is every channel's visits this week from Google Analytics. They measure different things and differ.",
+  "report.totals.revenue is revenue Google Analytics tracked, which is 0 when the store doesn't send sales to Google Analytics; report.shopify is the store's own orders. Shopify sales with Analytics revenue at 0 is that setup, not a broken total.",
+  "Backlink outreach emails are sent by the owner, never by the app, so 0 emailed with sites found is normal. report.backlinks.fromLinks is visits from sites already linking, not the list of sites found.",
+  "Moves the Strategist or the Authority Coach drop after their critic's check were rightly dropped as unsupported.",
+].map((f) => `- ${f}`).join("\n");
+
 export async function reviewCustomerView(ai: AiProvider, view: string, usualSections: string[]): Promise<{ text: string; fix: string }[]> {
   const schema = {
     type: "object",
@@ -1841,6 +1849,9 @@ ${view}
 
 Sections that other sites on the app usually have filled by this age: ${usualSections.join(", ") || "(unknown)"}
 
+How the app is meant to work (never a problem by itself):
+${VIEW_FACTS}
+
 List each real problem: text (one short plain sentence a person understands), fix (what should change in the app or which agent should act), evidence (the exact field and value in the JSON that shows it). Fields named in "shortenedByChecker" were cut by the checker to fit, not by the app: never report them. Only problems the JSON proves; a site that is simply new or small is not a problem when the page says so. Leave out anything already listed in ruleFindings. At most 5. No hyphens or dashes. Return an empty list when nothing is wrong.`,
     schema
   );
@@ -1849,7 +1860,10 @@ List each real problem: text (one short plain sentence a person understands), fi
   // The first AI confirms each point against the data before it counts; never the reviewer's own provider, so the check stays independent.
   const checked = await askJson<{ keep: boolean[] }>(
     { ...ai, site: undefined, backups: (ai.backups ?? []).filter((b) => b.kind !== reviewer.kind) },
-    `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, about a field named in "shortenedByChecker" (cut by the checker, not the app), or just a new or small site that the page already explains.
+    `Another AI reviewed a customer's view of an app and reported the problems below. For each, answer true only if the JSON clearly shows it is real, false if it is guessed, wrong, only the app working as described below, about a field named in "shortenedByChecker" (cut by the checker, not the app), or just a new or small site that the page already explains.
+
+How the app is meant to work:
+${VIEW_FACTS}
 
 JSON:
 ${view}

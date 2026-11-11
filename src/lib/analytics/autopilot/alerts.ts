@@ -204,6 +204,8 @@ export interface WeeklyReportData {
   visitors: { value: number; goal: number; at: string } | null;
   focus: string | null;
   plan: string[];
+  /** Why the plan is empty when one was written, in plain words. */
+  planNote?: string | null;
   /** "none": Google Analytics isn't connected; "error": it couldn't be read (left out, never guessed). */
   traffic: "none" | "error" | { name: string; now: ChannelResult; before: ChannelResult }[];
   /** Every channel added up (the chart shows the top six). */
@@ -250,6 +252,11 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     // One sentence only, the biggest opportunity when the Strategist named one: the page shows numbers, not paragraphs.
     focus: fresh?.assessment ? polish(((ss) => ss.find((x) => /opportunit/i.test(x)) ?? ss[0])(fresh.assessment.split(/(?<=\.)\s+/))) : null,
     plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map((m) => polish(m.action)) : [],
+    planNote: fresh && fresh.checked === false
+      ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
+      : fresh && !fresh.moves.some((m) => m.kept)
+        ? "The second AI check found no move this week backed by the data, so none are planned."
+        : null,
     traffic: results === null ? "none" : !results ? "error" : results.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 6).map((c) => ({ ...c, name: c.name.replace(/\s*[-–—]\s*/g, " ") })),
     totals: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })

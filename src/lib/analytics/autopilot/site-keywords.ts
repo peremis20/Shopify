@@ -53,7 +53,7 @@ const SERP_CHECKS = 20;
 
 /** Big publishers and marketplaces: hard to outrank for a small site. */
 const BIG =
-  /(^|\.)(healthline|webmd|mayoclinic|clevelandclinic|medicalnewstoday|verywellhealth|verywellmind|verywellfit|hopkinsmedicine|health\.harvard|everydayhealth|health|prevention|menshealth|womenshealth|eatingwell|forbes|nytimes|amazon|walmart|target|wikipedia|youtube|reddit|quora|pinterest|facebook|instagram|tiktok|cdc|nih|ncbi\.nlm\.nih|medlineplus|fda)\.(com|org|gov|edu|net)$|\.gov$|\.edu$/;
+  /(^|\.)(healthline|webmd|mayoclinic|clevelandclinic|medicalnewstoday|verywellhealth|verywellmind|verywellfit|hopkinsmedicine|health\.harvard|everydayhealth|health|prevention|menshealth|womenshealth|eatingwell|forbes|nytimes|amazon|walmart|target|wikipedia|youtube|reddit|quora|pinterest|facebook|instagram|tiktok|google|apple|microsoft|linkedin|twitter|x|github|medium|yelp|ebay|etsy|cdc|nih|ncbi\.nlm\.nih|medlineplus|fda)\.(com|org|gov|edu|net)$|\.gov$|\.edu$/;
 export const isBig = (domain: string) => BIG.test(domain);
 
 /** How many page one results are smaller sites, and whether this site is already there. */

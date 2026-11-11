@@ -167,7 +167,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
       {/* Plan */}
       <Card>
         <CardHeader title="This week's plan" />
-        {data.plan.length === 0 && <Empty text="The Strategist writes the plan with the next weekly run." />}
+        {data.plan.length === 0 && <Empty text={data.planNote || "The Strategist writes the plan with the next weekly run."} />}
         <ol className="space-y-1.5">
             {data.plan.map((m, i) => (
               <li key={i} className="flex gap-2 text-sm">
