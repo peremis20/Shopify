@@ -35,6 +35,20 @@ export interface GaData {
   searchLandingPages?: { path: string; sessions: number; keyEvents: number; orders: number; revenue: number }[] | null;
   /** People on the site in the last 30 minutes. Null when GA can't report it or the tag is shared with other sites. */
   realtime?: { activeUsers: number; topScreens: { name: string; users: number }[]; at: string } | null;
+  /** Visits by device, country and new vs returning, biggest first. Null when GA can't report them. */
+  devices?: GaSplit[] | null;
+  countries?: GaSplit[] | null;
+  visitorTypes?: GaSplit[] | null;
+  /** People who reached each shopping step. Null when the site sends no shopping events. */
+  funnel?: { step: string; users: number }[] | null;
+}
+
+export interface GaSplit {
+  name: string;
+  sessions: number;
+  /** Percent of sessions that were engaged. */
+  engagementRate: number;
+  orders: number;
 }
 
 export interface GscData {

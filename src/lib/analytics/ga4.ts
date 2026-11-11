@@ -1,6 +1,6 @@
 import { googleRequest, type GoogleAuth } from "./google-auth";
 import { listDates, pctChange } from "./dates";
-import type { Delta, GaData, PeriodRanges } from "./types";
+import type { Delta, GaData, GaSplit, PeriodRanges } from "./types";
 
 interface Ga4Row {
   dimensionValues?: { value: string }[];
@@ -142,7 +142,17 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
       filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { matchType: "EXACT", value: "Organic Search" } },
     }),
   }).catch(() => null);
-  const [landing, realtime] = await Promise.all([
+  const split = (dimension: string, limit: number, what: string) =>
+    googleRequest<Ga4Report>(auth, url, {
+      dateRanges: [current],
+      dimensions: [{ name: dimension }],
+      metrics: [{ name: "sessions" }, { name: "engagementRate" }, { name: "ecommercePurchases" }],
+      dimensionFilter: hosts,
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit,
+    }).then(splitRows, (e) => logged(what, e));
+
+  const [landing, realtime, devices, countries, visitorTypes, funnel] = await Promise.all([
     // Where Google search visitors land, and the leads and sales each page brings.
     googleRequest<Ga4Report>(auth, url, {
       dateRanges: [current],
@@ -155,6 +165,17 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
       limit: 10,
     }).catch((e) => logged("landing pages", e)),
     fetchRealtime(auth, id, excludeHosts.length > 0),
+    split("deviceCategory", 5, "devices"),
+    split("country", 10, "countries"),
+    split("newVsReturning", 5, "new vs returning"),
+    googleRequest<Ga4Report>(auth, url, {
+      dateRanges: [current],
+      dimensions: [{ name: "eventName" }],
+      metrics: [{ name: "totalUsers" }],
+      dimensionFilter: allOf(hosts, {
+        filter: { fieldName: "eventName", inListFilter: { values: FUNNEL_STEPS.map((s) => s.event) } },
+      }),
+    }).then(funnelSteps, (e) => logged("shopping funnel", e)),
   ]);
 
   const salesRow = (name: string) => sales?.rows?.find((r) => r.dimensionValues?.[0]?.value === name);
@@ -207,6 +228,10 @@ export async function fetchGa4(auth: GoogleAuth, id: string, ranges: PeriodRange
     })),
     searchLandingPages: landing ? landingRows(landing) : null,
     realtime,
+    devices,
+    countries,
+    visitorTypes,
+    funnel,
     topPages: (pages.rows ?? []).map((r) => ({
       path: r.dimensionValues![0].value,
       views: num(r, 0),
@@ -259,4 +284,38 @@ async function fetchRealtime(auth: GoogleAuth, id: string, sharedTag: boolean) {
       .filter((r) => r.name && r.name !== "(not set)"),
     at: new Date().toISOString(),
   };
+}
+
+const SPLIT_NAMES: Record<string, string> = {
+  mobile: "Mobile",
+  desktop: "Desktop",
+  tablet: "Tablet",
+  smart_tv: "TV",
+  new: "New visitors",
+  returning: "Returning visitors",
+};
+
+/** A GA4 split as plain rows; "(not set)" and empty names are left out, rates become percents. */
+export function splitRows(report: Ga4Report): GaSplit[] {
+  return (report.rows ?? [])
+    .map((r) => {
+      const raw = r.dimensionValues?.[0]?.value ?? "";
+      return { name: SPLIT_NAMES[raw.toLowerCase()] ?? raw, sessions: num(r, 0), engagementRate: num(r, 1) * 100, orders: num(r, 2) };
+    })
+    .filter((r) => r.name && r.name !== "(not set)")
+    .sort((a, b) => b.sessions - a.sessions);
+}
+
+const FUNNEL_STEPS = [
+  { event: "view_item", step: "Viewed a product" },
+  { event: "add_to_cart", step: "Added to cart" },
+  { event: "begin_checkout", step: "Started checkout" },
+  { event: "purchase", step: "Bought" },
+];
+
+/** People per shopping step in order, or null when the site sends no product views. */
+export function funnelSteps(report: Ga4Report) {
+  const users = new Map((report.rows ?? []).map((r) => [r.dimensionValues?.[0]?.value, num(r, 0)]));
+  if (!users.get("view_item")) return null;
+  return FUNNEL_STEPS.map((s) => ({ step: s.step, users: users.get(s.event) ?? 0 }));
 }

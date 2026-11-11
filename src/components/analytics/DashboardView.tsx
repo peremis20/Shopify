@@ -617,6 +617,59 @@ export function DashboardView() {
                 />
               </Card>
             )}
+
+            {ga?.data && (ga.data.devices || ga.data.countries || ga.data.visitorTypes) && (
+              <Card id="who-visits" className="lg:col-span-2 2xl:col-span-3">
+                <CardHeader title="Who visits" href={ga.openUrl} linkLabel="Open GA" />
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                  {([
+                    ["Device", ga.data.devices],
+                    ["Country", ga.data.countries],
+                    ["Visitor", ga.data.visitorTypes],
+                  ] as const).map(([label, list]) =>
+                    list ? (
+                      <div key={label} className="min-w-0">
+                        <Table
+                          head={[label, "Visits", "Engaged", "Sales"]}
+                          rows={list.map((r) => ({
+                            cells: [r.name, formatNumber(r.sessions), formatPct(r.engagementRate), formatNumber(r.orders)],
+                            values: [r.name, r.sessions, r.engagementRate, r.orders],
+                          }))}
+                          empty="No visits in this period yet."
+                        />
+                      </div>
+                    ) : null
+                  )}
+                </div>
+              </Card>
+            )}
+
+            {ga?.data?.funnel && (
+              <Card id="shopping-steps" className="lg:col-span-2 2xl:col-span-3">
+                <CardHeader title="Shopping steps" href={ga.openUrl} linkLabel="Open GA" />
+                <ul className="space-y-3">
+                  {ga.data.funnel.map((f, i, all) => {
+                    const top = all[0].users || 1;
+                    const prev = i ? all[i - 1].users : 0;
+                    return (
+                      <li key={f.step} className="min-w-0">
+                        <div className="mb-1 flex flex-col text-sm sm:flex-row sm:items-baseline sm:justify-between sm:gap-3">
+                          <span className="truncate text-dash-ink">{f.step}</span>
+                          <span className="tabular-nums text-dash-muted">
+                            {formatNumber(f.users)} people
+                            {i > 0 && prev > 0 && f.users <= prev && <>, {formatPct((f.users / prev) * 100)} of the step before</>}
+                          </span>
+                        </div>
+                        <div className="h-2 rounded bg-dash-line">
+                          <div className="h-2 rounded bg-dash-green" style={{ width: `${Math.min(100, (f.users / top) * 100)}%` }} />
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <p className="mt-3 text-xs text-dash-muted">People who did each step in this period, not always in this order.</p>
+              </Card>
+            )}
           </div>
 
           <Autopilot
