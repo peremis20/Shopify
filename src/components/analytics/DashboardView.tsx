@@ -36,12 +36,36 @@ const RANGE_STORAGE_KEY = "insights.range";
 const MODE_STORAGE_KEY = "insights.view";
 const SEEN_STORAGE_KEY = "insights.seen";
 
+type AdvTab = "overview" | "search" | "visitors" | "sales" | "autopilot";
+
+const ADV_TABS: { id: AdvTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "search", label: "Search" },
+  { id: "visitors", label: "Visitors" },
+  { id: "sales", label: "Sales" },
+  { id: "autopilot", label: "Autopilot" },
+];
+
+/** Which tab holds each menu item's card. */
+const TAB_OF: Record<string, AdvTab> = {
+  overview: "overview",
+  apps: "overview",
+  analytics: "visitors",
+  pages: "visitors",
+  "search-console": "search",
+  queries: "search",
+  keywords: "search",
+  autopilot: "autopilot",
+};
+
 export function DashboardView() {
   const [range, setRange] = useState<RangeKey>("28d");
   const [data, setData] = useState<OverviewResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState<string | null>(null);
   const [active, setActive] = useState("overview");
+  const [tab, setTab] = useState<AdvTab>("overview");
+  const show = (t: AdvTab) => (tab === t ? "" : "hidden");
   // Simple (the default): a home screen and six places. Advanced: every section on one page.
   const [mode, setMode] = useState<"simple" | "advanced">("simple");
   const [page, setPage] = useState<SimplePage>("home");
@@ -183,7 +207,9 @@ export function DashboardView() {
   function navigate(id: string) {
     setActive(id);
     setMenuOpen(false);
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // The menu item's tab first, then the card itself once it shows.
+    setTab(TAB_OF[id] ?? tab);
+    setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   function showFirstChange() {
@@ -424,10 +450,26 @@ export function DashboardView() {
           )}
 
           {mode === "advanced" && (<>
+          {/* Tabs keep the Advanced view to a few cards at a time. */}
+          <div role="tablist" aria-label="Advanced view" className="-mx-1 mb-5 flex gap-1 overflow-x-auto px-1 pb-1">
+            {ADV_TABS.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={tab === t.id}
+                onClick={() => setTab(t.id)}
+                className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-semibold transition ${tab === t.id ? "bg-dash-green text-white" : "bg-dash-card text-dash-ink hover:bg-dash-line"}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className={show("overview")}>
           <Scorecard />
           <WeeklyReport />
+          </div>
           {/* KPI row */}
-          <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <div className={`mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 ${show("overview")}`}>
             <Kpi
               icon={<UsersIcon className="h-5 w-5" />}
               label="Total Users"
@@ -462,8 +504,8 @@ export function DashboardView() {
           </div>
 
           {/* GA + GSC charts */}
-          <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <Card id="analytics">
+          <div className="grid grid-cols-1 gap-5">
+            <Card id="analytics" className={show("visitors")}>
               <CardHeader title="Google Analytics" icon={<GaLogo />} href={ga?.openUrl} linkLabel="Open GA">
               </CardHeader>
               {!ga || (loading && !data) ? (
@@ -502,7 +544,7 @@ export function DashboardView() {
               )}
             </Card>
 
-            <Card id="search-console">
+            <Card id="search-console" className={show("search")}>
               <CardHeader title="Google Search Console" icon={<GscLogo />} href={gsc?.openUrl} linkLabel="Open GSC" />
               {!gsc || (loading && !data) ? (
                 <Skeleton className="h-[300px]" />
@@ -567,7 +609,7 @@ export function DashboardView() {
 
           {/* Channels, pages, queries */}
           <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2 2xl:grid-cols-[0.9fr_1fr_1.2fr]">
-            <Card>
+            <Card className={show("visitors")}>
               <CardHeader title="Top Traffic Channels" />
               {ga?.data ? (
                 <DonutChart
@@ -580,7 +622,7 @@ export function DashboardView() {
               )}
             </Card>
 
-            <Card id="pages">
+            <Card id="pages" className={show("visitors")}>
               <CardHeader title="Top Pages" href={ga?.openUrl} linkLabel="Open GA" />
               {ga?.data ? (
                 <Table
@@ -596,10 +638,12 @@ export function DashboardView() {
               )}
             </Card>
 
-            <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
+            <div className={`lg:col-span-2 2xl:col-span-3 ${show("search")}`}>
+              <QueriesCard data={gsc?.data ?? null} openUrl={gsc?.openUrl} loading={loading} />
+            </div>
 
             {ga?.data?.searchLandingPages && (
-              <Card id="search-landing" className="lg:col-span-2 2xl:col-span-3">
+              <Card id="search-landing" className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
                 <CardHeader title="Where Google visitors land" href={ga.openUrl} linkLabel="Open GA" />
                 <Table
                   head={["Page", "Visits", "Key actions", "Sales", "Revenue"]}
@@ -619,7 +663,7 @@ export function DashboardView() {
             )}
 
             {ga?.data && (ga.data.devices || ga.data.countries || ga.data.visitorTypes) && (
-              <Card id="who-visits" className="lg:col-span-2 2xl:col-span-3">
+              <Card id="who-visits" className={`lg:col-span-2 2xl:col-span-3 ${show("visitors")}`}>
                 <CardHeader title="Who visits" href={ga.openUrl} linkLabel="Open GA" />
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
                   {([
@@ -644,8 +688,17 @@ export function DashboardView() {
               </Card>
             )}
 
+            {!ga?.data?.searchLandingPages && !ga?.data?.funnel && (
+              <Card className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
+                <CardHeader title="Sales" />
+                <p className="text-sm text-dash-muted">
+                  {loading && !data ? "Loading..." : "Sales show here once Google Analytics is connected and reports visits from Google search."}
+                </p>
+              </Card>
+            )}
+
             {ga?.data?.funnel && (
-              <Card id="shopping-steps" className="lg:col-span-2 2xl:col-span-3">
+              <Card id="shopping-steps" className={`lg:col-span-2 2xl:col-span-3 ${show("sales")}`}>
                 <CardHeader title="Shopping steps" href={ga.openUrl} linkLabel="Open GA" />
                 <ul className="space-y-3">
                   {ga.data.funnel.map((f, i, all) => {
@@ -672,13 +725,16 @@ export function DashboardView() {
             )}
           </div>
 
+          <div className={show("autopilot")}>
           <Autopilot
             connected={connection?.mode === "oauth"}
             admin={data?.account?.admin ?? false}
             autoPreview={previewRequested}
             onAutoPreviewDone={() => setPreviewRequested(false)}
           />
+          </div>
 
+          <div className={show("search")}>
           <RankHealth connected={connection?.mode === "oauth"} />
 
           <KeywordResearch
@@ -687,12 +743,15 @@ export function DashboardView() {
             range={range}
             onChanged={() => load(range, true)}
           />
+          </div>
 
+          <div className={show("overview")}>
           <ConnectedApps
             integrations={data?.integrations ?? []}
             admin={data?.account?.admin ?? false}
             onSetup={(id) => (id === "keywords" ? navigate("keywords") : setSettingsOpen(true))}
           />
+          </div>
           </>)}
         </div>
       </main>
