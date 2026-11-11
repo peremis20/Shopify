@@ -666,10 +666,9 @@ async function holdPlan(ctx: Ctx, runId: string, plan: Plan, w: SiteWriter): Pro
   const resourceType = ctx.site.mode === "snippet" ? "snippet" : page.type;
   const base = { accountId: ctx.accountId, runId, pageUrl: op.page, resourceType, resourceId: page.id, query: op.query, reason: improvement.reason, op };
   const can = async (field: ChangeField, id: string) => !w.supports || (await w.supports(field, id).catch(() => false));
-  // A newer set for the same page replaces any still waiting, so the owner never approves two versions of one change.
-  await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Replaced by a newer change for this page.'
-    WHERE account_id = ${ctx.accountId} AND status = 'suggested' AND resource_type <> 'site' AND page_url = ${op.page}`;
   const hold = async (field: ChangeField, before: string | null, after: string, targetId?: string) => {
+    // A newer version replaces the one still waiting for this page, so the owner never approves two of the same change.
+    await replaceWaiting(ctx.accountId, op.page, field);
     await logChange({ ...base, field, before, after, status: "suggested", targetId, note: OWNER_APPROVAL });
     done.push(field);
   };
@@ -690,16 +689,8 @@ async function holdPlan(ctx: Ctx, runId: string, plan: Plan, w: SiteWriter): Pro
     if (await can("content", page.id)) await hold("content", blockId, wrap(blockId, improvement.contentSectionHtml));
     else await fix("content", null, improvement.contentSectionHtml);
   }
-  // Structured data built from the page as it will be, approved with the rest.
-  if (page.type === "article" || page.type === "page") {
-    const body = improvement.contentSectionHtml ? `${page.body}\n${improvement.contentSectionHtml}` : page.body;
-    const schema = await schemaFor(ctx, { ...page, metaDescription: improvement.metaDescription || page.metaDescription }, body).catch(() => null);
-    if (schema) {
-      const blockId = `${runId}-schema`;
-      if (await can("schema", page.id)) await hold("schema", blockId, wrap(blockId, schema));
-      else await fix("schema", null, schema);
-    }
-  }
+  // Structured data is built when the owner approves a section, from the page as it really is then (approveChange),
+  // so it never describes text that isn't live.
   const source = cand.inferred ? undefined : await linkSource(ctx, cand, page).catch(() => undefined);
   if (source) {
     const sentence = await writeInternalLink(ctx.ai, source, { path: new URL(op.page).pathname, query: op.query, title: page.title });
@@ -710,6 +701,12 @@ async function holdPlan(ctx: Ctx, runId: string, plan: Plan, w: SiteWriter): Pro
     }
   }
   return done;
+}
+
+/** Skips what still waits for the owner's approval for this page and field, when a newer version replaces it. */
+async function replaceWaiting(accountId: string, pageUrl: string, field: ChangeField): Promise<void> {
+  await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Replaced by a newer change for this page.'
+    WHERE account_id = ${accountId} AND status = 'suggested' AND resource_type <> 'site' AND page_url = ${pageUrl} AND field = ${field}`;
 }
 
 /** The owner approved a change that waited for them: it is written to the site now and measured from today. */
@@ -757,16 +754,32 @@ export async function approveChange(accountId: string, id: string): Promise<void
     else if (name === "UnpublishedDraft") throw new Error("This page has unpublished edits of your own. Publish or discard them, then approve again.");
     else throw err;
   }
-  // Measured from today, against where the search ranks today.
-  const [rank] = c.query
-    ? await sql`SELECT position FROM insights_rank_daily WHERE account_id = ${accountId} AND query = ${c.query} AND position IS NOT NULL ORDER BY checked_on DESC LIMIT 1`.catch(() => [] as Row[])
-    : [];
-  await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = ${note}, before_value = ${before},
-      baseline_position = COALESCE(${rank?.position ?? null}::numeric, baseline_position)
-    WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested'`;
-  // Tell Google about the change now instead of waiting for its next visit.
+  // Measured from today: the same Search Console reading the measurement compares against, taken now.
   const conn = await getConnection(accountId).catch(() => null);
+  const now = conn?.gscSiteUrl && c.query ? await positionFor(conn, String(c.query), String(c.page_url)).catch(() => null) : null;
+  await sql`UPDATE insights_autopilot_changes SET status = 'applied', created_at = now(), note = ${note}, before_value = ${before},
+      baseline_position = ${now ? now.position : OFF_PAGE_ONE}, baseline_clicks = ${now ? now.clicks : 0}, baseline_impressions = ${now ? now.impressions : 0}
+    WHERE id = ${id} AND account_id = ${accountId} AND status = 'suggested'`;
+  // A section that went live gets structured data built from the page as it is now.
+  if (c.field === "content" && (type === "article" || type === "page")) await addSchema(accountId, site!, w, String(c.page_url), type, String(c.resource_id), String(c.query ?? "")).catch((e) => console.error(`schema after approval not added: ${(e as Error).message}`));
+  // Tell Google about the change now instead of waiting for its next visit.
   if (conn) await askGoogleToRecrawl(conn).catch(() => null);
+}
+
+/** Structured data for a page whose approved section is now live, built from its real body, logged like any change. */
+async function addSchema(accountId: string, site: SiteAccess, w: SiteWriter, pageUrl: string, type: "article" | "page", id: string, query: string): Promise<void> {
+  if (w.supports && !(await w.supports("schema", id).catch(() => false))) return;
+  const page = await site.resolve(pageUrl);
+  if (!page) return;
+  const body = await w.getBody(type, id);
+  const [live, name] = await Promise.all([liveHtml(page.url), site.name().catch(() => new URL(pageUrl).hostname)]);
+  const schema = buildSchema(page, body, live, name);
+  if (!schema) return;
+  const blockId = `approved-${Date.now()}-schema`;
+  const block = wrap(blockId, schema);
+  if (w.setSchema) await w.setSchema(type, id, block);
+  else await w.setBodyIfUnchanged(type, id, body, `${withoutAutopilotSchema(body)}\n${block}`);
+  await logChange({ accountId, runId: null, pageUrl, resourceType: type, resourceId: id, query, field: "schema", before: blockId, after: block, reason: "Structured data built from the page after you approved its new section.", status: "applied" });
 }
 
 async function applyPlan(ctx: Ctx, runId: string, plan: Plan): Promise<string[]> {
@@ -1447,8 +1460,7 @@ async function rescueSome(
       const reason = "Index rescue: Google crawled this page but left it out of its index, so a substantial new section was added to make it more useful and distinct.";
       // With the owner as the check, the section waits for their approval instead of going live.
       if (!hasSecondAi(baseAi)) {
-        await sql`UPDATE insights_autopilot_changes SET status = 'skipped', note = 'Replaced by a newer change for this page.'
-          WHERE account_id = ${accountId} AND status = 'suggested' AND resource_type <> 'site' AND page_url = ${url}`;
+        await replaceWaiting(accountId, url, "content");
         await logChange({
           accountId,
           runId: null,

@@ -1556,7 +1556,7 @@ export const ownerApproves = <T>(ai: AiProvider | null | undefined, work: () => 
 const orOwner = <T>(p: Promise<T>, pass: T): Promise<T> => p.catch((e) => (e instanceof OwnerChecks ? pass : Promise.reject(e)));
 
 export const NO_SECOND_AI =
-  "A second AI from another service has to check this work, and only one AI service is set up. Add a Claude key in Platform keys and it goes ahead on its own; until then, changes wait for your approval.";
+  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for the other service (Claude or Groq) in Platform keys and it goes ahead on its own; until then, changes wait for your approval.";
 
 /**
  * The reviewer: another AI service, with the other services as backups. The writer's own service never checks its

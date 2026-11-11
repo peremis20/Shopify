@@ -451,8 +451,9 @@ function FixList({
         {waiting && waiting < fixes.length ? `To approve (${waiting}) and to paste in (${fixes.length - waiting})` : waiting ? `To approve (${waiting})` : `Fix list (${fixes.length})`}
       </p>
       <p className="mb-3 text-dash-muted">
-        {waiting ? "Read each change. Approve puts it live on your site; Skip leaves your page as it is. " : ""}
-        {waiting < fixes.length ? "Paste the others in yourself, then mark them done." : ""}
+        {waiting
+          ? `Read each change. Approve puts it live on your site; Skip leaves your page as it is.${waiting < fixes.length ? " Paste the others in yourself, then mark them done." : ""}`
+          : "Paste each one in, then mark it done. Biggest wins first: titles and descriptions take a minute each."}
       </p>
       <ul className="space-y-3">
         {fixes.map((f) => (
