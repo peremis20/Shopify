@@ -254,7 +254,10 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       });
     }
     const failed = runs.find((r) => /fail|error/i.test(String(r.status)));
-    if (failed && runs[0] === failed && !(AI_CAUSE.test(String(failed.summary ?? "")) && aiFixedSince(String(failed.finished_at)))) {
+    // Free AI services that were only busy or at their limit for a while: the next run tries again, so one such run
+    // isn't news. Three failed runs in a row are, whatever the reason.
+    const allFailed = runs.length >= 3 && runs.slice(0, 3).every((r) => /fail|error/i.test(String(r.status)));
+    if (failed && runs[0] === failed && !(onlyBusyAi(String(failed.summary ?? "")) && !allFailed) && !(AI_CAUSE.test(String(failed.summary ?? "")) && aiFixedSince(String(failed.finished_at)))) {
       problems.push({ id: "autopilot:failed", text: "The last autopilot run failed.", fix: String(failed.summary ?? "The next run will try again.").slice(0, 300), who: "watching", platform: true });
     }
   }
@@ -367,4 +370,16 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
     INSERT INTO insights_settings (key, value) VALUES (${`inspect:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), problems })})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`.catch(() => undefined);
   return problems;
+}
+
+const BUSY_AI = /rate limit|resting until|busy right now|high demand|overloaded|try again later|429/i;
+
+/**
+ * A run that failed only because free AI services were busy or at their limit for a while (the next run tries again),
+ * not because of a key, access or anything a person must fix. GitHub Models' empty reply is left out: its token is a
+ * known, separate item for the owner.
+ */
+export function onlyBusyAi(summary: string): boolean {
+  const rest = summary.replace(/GitHub Models answered "OK" with no reply[^.]*\./gi, "");
+  return BUSY_AI.test(rest) && !/key|access|renew|denied|invalid|unauthori[sz]ed|billing/i.test(rest);
 }
