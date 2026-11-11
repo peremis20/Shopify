@@ -184,10 +184,20 @@ export async function rivalBacklinks(domain: string, num = 15): Promise<Backlink
 /** The searches one rival page ranks for in the US, most traffic first. */
 export async function urlKeywords(url: string, num = 20): Promise<DomainKeyword[]> {
   if (!/^https?:\/\//.test(url)) return [];
-  const key = `ke:uk:${url}`;
+  // The same page with tracking tags or a different anchor is one cache entry, so it is paid for once.
+  let page = url;
+  try {
+    const u = new URL(url);
+    u.hash = "";
+    for (const k of [...u.searchParams.keys()]) if (/^(utm_|gclid|fbclid|srsltid)/i.test(k)) u.searchParams.delete(k);
+    page = u.toString();
+  } catch {
+    return [];
+  }
+  const key = `ke:uk:${page}`;
   const hit = await cached<DomainKeyword[]>(key);
   if (hit) return hit;
-  const rows = await call("get_url_keywords", { url, country: "us", num }, num * 2);
+  const rows = await call("get_url_keywords", { url: page, country: "us", num }, num * 2);
   if (!rows) return [];
   const list = rankedKeywords(rows);
   await store(key, list);

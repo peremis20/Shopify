@@ -38,8 +38,10 @@ export interface IdeaReport {
 const TARGETING = { geo: "2840", language: "1000" };
 const SEEDS = 5;
 const COMPETITOR_PAGES = 3;
-/** Topics expanded through Keywords Everywhere each run (about 40 credits each). */
+/** Topics expanded through Keywords Everywhere each run (20 to 40 credits each, cached 30 days for every site). */
 const KE_SEEDS = 3;
+/** New searches from one paid source that make the next paid source for the same topic unneeded. */
+const ENOUGH_NEW = 5;
 const KEEP = 25;
 const MIN_SEARCHES = 20;
 const key = (accountId: string) => `ideas:${accountId}`;
@@ -151,25 +153,26 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
 
   // More searches around the site's biggest topics (Keywords Everywhere related searches and "people also search for").
   for (const seed of seeds.slice(0, KE_SEEDS)) {
-    const [rel, next] = await Promise.all([
-      relatedKeywords(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])),
-      alsoSearched(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])),
-    ]);
-    for (const r of [...rel, ...next]) {
-      const k = asSearch(r);
-      if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "related", from: seed });
-    }
+    // "People also search for" is only bought when related searches didn't already bring enough new ones.
+    let added = 0;
+    const add = (list: string[]) => {
+      for (const r of list) {
+        const k = asSearch(r);
+        if (usable(k) && !found.has(k)) (found.set(k, { keyword: k, monthlySearches: null, source: "related", from: seed }), added++);
+      }
+    };
+    add(await relatedKeywords(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])));
+    if (added < ENOUGH_NEW) add(await alsoSearched(seed, 10).catch((e) => (nullUnlessLimit(e), [] as string[])));
   }
 
   // What the rivals actually rank for (Keywords Everywhere), when its key is set: the clearest competitor gap.
   // The whole site first, then the exact page that beat this site on Google.
   for (const page of competitorPages) {
     const brands = [page.from.replace(/^www\./, "").split(".")[0], ours.split(".")[0]].filter((b) => b.length > 3);
-    const [site, onPage] = await Promise.all([
-      domainKeywords(page.from, 30).catch((e) => (nullUnlessLimit(e), [])),
-      urlKeywords(page.url, 20).catch((e) => (nullUnlessLimit(e), [])),
-    ]);
-    for (const r of [...site.slice(0, 30), ...onPage]) {
+    // The page that beat this site first; the whole site only when that page ranks for too few searches to learn from.
+    const onPage = await urlKeywords(page.url, 20).catch((e) => (nullUnlessLimit(e), []));
+    const site = onPage.length < ENOUGH_NEW ? await domainKeywords(page.from, 30).catch((e) => (nullUnlessLimit(e), [])) : [];
+    for (const r of [...onPage, ...site.slice(0, 30)]) {
       const k = asSearch(r.keyword);
       if (brands.some((b) => k.replace(/\s+/g, "").includes(b))) continue;
       if (usable(k) && !found.has(k)) found.set(k, { keyword: k, monthlySearches: null, source: "competitor", from: page.from });
