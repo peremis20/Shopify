@@ -84,6 +84,15 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${PLATFORM_KEY}`;
     const json = row?.value ? decrypt(row.value, await tokenSecret()) : null;
     if (json) stored = JSON.parse(json);
+    // Keys for AI services the app no longer uses (Mistral, Cerebras, GitHub Models, Gemini) are deleted from the
+    // stored settings the first time they're read, so no unused secret is kept.
+    const retired = (["mistralKey", "cerebrasKey", "githubModelsKey", "geminiKey"] as const).filter((k) => stored[k]);
+    if (retired.length) {
+      for (const k of retired) delete stored[k];
+      await sql`UPDATE insights_settings SET value = ${encrypt(JSON.stringify(stored), await tokenSecret())}, updated_at = now() WHERE key = ${PLATFORM_KEY}`.catch(
+        (e) => console.error(`retired AI keys not removed: ${(e as Error).message}`),
+      );
+    }
     // The sender address isn't a secret, so it may also be set as a plain row (used when it's set up for the owner).
     if (!stored.alertsFrom) {
       const [from] = await sql`SELECT value FROM insights_settings WHERE key = 'alerts_from'`.catch(() => []);

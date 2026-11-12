@@ -1248,11 +1248,7 @@ export const savePlatform = (req: Request) =>
     const str = (k: string) => (typeof b[k] === "string" ? b[k] : undefined);
     await savePlatformSettings({
       anthropicKey: str("anthropicKey"),
-      geminiKey: str("geminiKey"),
       groqKey: str("groqKey"),
-      mistralKey: str("mistralKey"),
-      cerebrasKey: str("cerebrasKey"),
-      githubModelsKey: str("githubModelsKey"),
       serperKey: str("serperKey"),
       pagespeedKey: str("pagespeedKey"),
       oprKey: str("oprKey"),
