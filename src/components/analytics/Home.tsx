@@ -562,7 +562,11 @@ function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo
                     <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1E5B36] text-sm font-semibold text-white">{i + 1}</span>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-dash-ink">{m.action}</p>
-                      <p className="text-xs text-dash-muted">{m.why}{m.done ? ` ${m.done}` : ""}</p>
+                      <p className="text-xs text-dash-muted">
+                        {/* Says who does the step, so a plan line never reads like a job for the owner. */}
+                        <span className="font-semibold text-dash-ink">{m.byAgent ? "The autopilot does this. " : m.kind === "outreach" ? "The autopilot drafts it, you send it. " : ""}</span>
+                        {m.done ?? m.why}
+                      </p>
                       {m.evidence && <p className="text-[11px] text-dash-muted">Based on: {m.evidence}</p>}
                     </div>
                     {m.kind === "hold" ? (

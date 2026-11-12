@@ -4,7 +4,7 @@ import { accountsDueForIdeas, markIdeasTried, runIdeaFinder } from "./autopilot/
 import { accountsDueForBrokenLinks, markBrokenLinksChecked, runBrokenLinks } from "./autopilot/broken-links";
 import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
-import { accountsDueForStrategy, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
+import { accountsDueForStrategy, liveStatus, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
 import { accountsDueForDrafts, accountsDueForLinkCheck, checkWonLinks, findProspects, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
@@ -1021,6 +1021,8 @@ export const strategyReport = (req: Request) =>
       }
       report = made;
     }
+    // Shown with what the agents have done since it was written, not the note from the day it was planned.
+    if (report) report = liveStatus(report, await readTargets(account.id).catch(() => []));
     return json({ report });
   });
 

@@ -34,7 +34,8 @@ import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type Stra
 export interface StrategyReport {
   at: string;
   assessment: string;
-  moves: (StrategyMove & { kept: boolean; challenge: string; done: string | null })[];
+  /** byAgent: set when the live status shows an agent is carrying the move out (see liveStatus). */
+  moves: (StrategyMove & { kept: boolean; challenge: string; done: string | null; byAgent?: boolean })[];
   /** Google visitors in the last 28 days, when Search Console is connected. */
   visitors: number | null;
   /** Sales from Google visitors in the last 28 days (Google Analytics ecommerce), when tracked. */
@@ -56,6 +57,43 @@ export async function readStrategy(accountId: string): Promise<StrategyReport | 
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
   return row?.value ? (JSON.parse(row.value) as StrategyReport) : null;
+}
+
+/**
+ * What the agents have done since the plan was written, read live for each kept move that names a search: the article
+ * that went live, the existing page now being improved for it, or that it waits for the weekly article. The saved
+ * note is only kept when nothing newer is known. Pure, so it can be tested.
+ */
+export function liveStatus(
+  report: StrategyReport,
+  targets: { keyword: string; page: string | null; role?: string; pillar?: boolean; winnable?: boolean | null; article?: { url: string | null; live: boolean } }[],
+): StrategyReport {
+  const path = (u: string) => {
+    try {
+      return new URL(u).pathname || "/";
+    } catch {
+      return u;
+    }
+  };
+  return {
+    ...report,
+    moves: report.moves.map((m) => {
+      const k = m.keyword?.trim().toLowerCase();
+      if (!m.kept || !k || !["target", "cluster", "fix"].includes(m.kind)) return m;
+      const t = targets.find((x) => x.keyword === k);
+      if (!t) return m;
+      const live = { ...m, byAgent: true };
+      if (t.article?.live && t.article.url) return { ...live, done: `Done: the autopilot published it at ${path(t.article.url)}.` };
+      // A draft waiting for approval, or one taken down: the saved note already says what happened.
+      if (t.article) return m;
+      // Broad searches only back up the specific ones; the agents don't aim a page or an article at them directly.
+      if (t.role === "support" && !t.pillar) return m;
+      if (t.page && path(t.page) !== "/") return { ...live, done: `In progress: your page ${path(t.page)} already covers this search, so the autopilot improves that page instead of writing a new one.` };
+      if (t.page) return { ...live, done: "In progress: the autopilot is improving your home page for this search." };
+      if (t.winnable === false && !t.pillar) return m;
+      return { ...live, done: "Queued: the autopilot writes this article (one new article a week per site)." };
+    }),
+  };
 }
 
 export const strategyDue = (r: StrategyReport | null) => !r || Date.now() - Date.parse(r.at) > WEEK;
