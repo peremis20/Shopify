@@ -5,6 +5,17 @@ import type { Prospect, ProspectList, ProspectStatus } from "@/lib/analytics/aut
 import type { AuthorityPlan } from "@/lib/analytics/autopilot/authority-coach";
 import { api } from "./seo-ui";
 import { Skeleton } from "./ui";
+import { goToGoogle } from "./Onboarding";
+
+export interface GmailState {
+  connected: boolean;
+  email: string | null;
+  sentToday: number;
+  cap: number;
+}
+
+/** One plain address, the same check the server makes before sending. */
+export const oneAddress = (to: string | null | undefined) => /^[^\s@,;<>()"']+@[^\s@,;<>()"'.]+(\.[^\s@,;<>()"'.]+)+$/.test((to ?? "").trim());
 
 const KIND: Record<Prospect["kind"], { label: string; hint: string }> = {
   mention: { label: "Mentions you", hint: "Already names your brand. Ask them to add a link." },
@@ -43,14 +54,23 @@ export function Backlinks() {
     }
   }
   const [plan, setPlan] = useState<AuthorityPlan | null>(null);
+  const [gmail, setGmail] = useState<GmailState | null>(null);
+  const [sentNote, setSentNote] = useState<string | null>(null);
   useEffect(() => {
     load();
+    api<GmailState>("/api/seo/gmail").then(setGmail).catch(() => setGmail(null));
     api<{ plan: AuthorityPlan | null }>("/api/seo/authority-plan").then((d) => setPlan(d.plan)).catch(() => setPlan(null));
   }, []);
 
   async function mark(url: string, status: ProspectStatus) {
     setList((cur) => (cur ? { ...cur, prospects: cur.prospects.map((p) => (p.url === url ? { ...p, status } : p)) } : cur));
     await api("/api/seo/backlinks", { url, status }).catch(() => undefined);
+  }
+
+  async function stopGmail() {
+    if (!window.confirm("Stop sending from your Gmail? You can still use Open in my email.")) return;
+    await api("/api/seo/gmail/disconnect", {}).catch(() => undefined);
+    setGmail((g) => (g ? { ...g, connected: false, email: null } : g));
   }
 
   if (loading && !list) return <Skeleton className="h-40" />;
@@ -87,16 +107,34 @@ export function Backlinks() {
       </div>
       {ready > 0 && view === "open" && (
         <p className="mb-3 rounded-lg bg-[#EEF5EF] px-3 py-2 text-sm text-dash-ink">
-          {ready === 1 ? "1 email is" : `${ready} emails are`} written and ready. Read each one, click Edit to change it, then Open in my email to send it, and mark I emailed them. New ones are written each week.
+          {ready === 1 ? "1 email is" : `${ready} emails are`} written and ready. Read each one, click Edit to change it, then {gmail?.connected ? "Send it from your Gmail, or use Open in my email and mark I emailed them" : "Open in my email to send it, and mark I emailed them"}. New ones are written each week.
         </p>
       )}
+      {gmail?.connected && (
+        <p className="mb-3 text-xs text-dash-muted">
+          Sending from {gmail.email}. {gmail.sentToday} of {gmail.cap} sent today.{" "}
+          <button onClick={stopGmail} className="font-semibold text-dash-green hover:underline">Stop sending from Gmail</button>
+        </p>
+      )}
+      {sentNote && <p className="mb-3 rounded-lg bg-[#EEF5EF] px-3 py-2 text-sm font-semibold text-dash-up">{sentNote}</p>}
       {error && <p className="mb-3 text-sm text-dash-down">{error}</p>}
       {shown.length === 0 ? (
         <p className="py-6 text-center text-sm text-dash-muted">{view === "open" ? "Nothing to do here right now. New sites are added each week." : "None yet."}</p>
       ) : (
         <ul className="divide-y divide-dash-line/70">
           {shown.map((p) => (
-            <ProspectRow key={p.url} p={p} onMark={mark} />
+            <ProspectRow
+              key={p.url}
+              p={p}
+              onMark={mark}
+              gmail={gmail}
+              onSent={(next, sent, note) => {
+                setSentNote(note);
+                if (next) setList(next);
+                else setList((cur) => (cur ? { ...cur, prospects: cur.prospects.map((x) => (x.url === p.url && x.status === "new" ? { ...x, status: "contacted" } : x)) } : cur));
+                setGmail((g) => (g ? { ...g, sentToday: sent } : g));
+              }}
+            />
           ))}
         </ul>
       )}
@@ -104,7 +142,7 @@ export function Backlinks() {
   );
 }
 
-function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: ProspectStatus) => void }) {
+function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: string, s: ProspectStatus) => void; gmail: GmailState | null; onSent: (list: ProspectList | null, sentToday: number, note: string) => void }) {
   const [email, setEmail] = useState<{ subject: string; body: string; to?: string | null; at?: string } | null>(p.status === "new" ? (p.draft ?? null) : null);
   // A draft written after this row first showed (the weekly Outreach Drafter) is loaded in when the list reloads.
   const draftAt = p.status === "new" ? p.draft?.at : undefined;
@@ -116,6 +154,30 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [allowInfo, setAllowInfo] = useState(false);
+
+  async function send() {
+    if (!email) return;
+    const to = (email.to ?? "").trim();
+    setErr(null);
+    if (!oneAddress(to)) {
+      setEditing(true);
+      setErr("Put one email address in To, like name@example.com.");
+      return;
+    }
+    if (!window.confirm(`Send this email to ${to} from your Gmail (${gmail?.email ?? "your account"})?\n\nSubject: ${email.subject}`)) return;
+    setSending(true);
+    try {
+      const out = await api<{ to: string; sentToday: number; list: ProspectList | null }>("/api/seo/gmail/send", { url: p.url, to, subject: email.subject, body: email.body });
+      setEditing(false);
+      onSent(out.list, out.sentToday, `Sent to ${out.to} from your Gmail. It's in your Gmail Sent folder, and the site moved to Emailed.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "It wasn't sent. Try again, or use Open in my email.");
+    } finally {
+      setSending(false);
+    }
+  }
 
   async function write() {
     setBusy(true);
@@ -211,8 +273,37 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
             >
               Open in my email
             </a>
+            {p.status === "new" && gmail?.connected && (
+              <button
+                onClick={send}
+                disabled={sending || gmail.sentToday >= gmail.cap}
+                title={gmail.sentToday >= gmail.cap ? `${gmail.cap} sent today, the most allowed` : `Sends this one email from ${gmail.email}`}
+                className="rounded-full bg-dash-ink px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+              >
+                {sending ? "Sending..." : "Send from my Gmail"}
+              </button>
+            )}
+            {p.status === "new" && gmail && !gmail.connected && (
+              <button onClick={() => setAllowInfo(!allowInfo)} className="rounded-full border border-dash-line bg-white px-3 py-1 text-xs font-semibold text-dash-ink">
+                Send from my Gmail
+              </button>
+            )}
             <button onClick={copy} className="text-xs font-semibold text-dash-green hover:underline">{copied ? "Copied" : "Copy email"}</button>
           </div>
+          {allowInfo && gmail && !gmail.connected && (
+            <div className="mt-2 rounded-lg bg-white p-3 text-xs text-dash-ink">
+              <p>
+                To send with one click, allow the app to send email from your Gmail. It only sends when you click Send, one email at a time, at most {gmail.cap} a day.
+                It can&apos;t read your email. Pick the same Google account you connected to the app. Your Search Console and Analytics stay connected as they are.
+              </p>
+              <p className="mt-1 text-dash-muted">
+                Google may show a warning that the app isn&apos;t verified yet. That&apos;s normal while Google reviews it. If you&apos;d rather not, keep using Open in my email.
+              </p>
+              <button onClick={() => goToGoogle("gmail").catch((e) => setErr(e instanceof Error ? e.message : "Couldn't open Google"))} className="mt-2 rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white">
+                Allow sending from Gmail
+              </button>
+            </div>
+          )}
           {!email.to && <p className="mt-2 text-xs text-dash-muted">No email address shown on their site. Add one under Edit, or use their contact form and paste the message there.</p>}
         </div>
       )}

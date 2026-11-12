@@ -18,7 +18,7 @@ import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
-import { currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
@@ -64,6 +64,7 @@ import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
+import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import {
   explainAdsError,
@@ -181,14 +182,19 @@ export async function authStart(req: Request): Promise<Response> {
   const asked = new URL(req.url).searchParams.get("purpose");
   // "setup" adds the permissions "Set it up for me" needs, on top of what was already granted.
   // "recrawl" adds only permission to manage Search Console, so the app can ask Google to look at changed pages sooner.
-  const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : asked === "recrawl" ? "recrawl" : "signin";
+  // "gmail" is the optional "Allow sending from Gmail" step: its own token with only permission to send, kept apart.
+  const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : asked === "recrawl" ? "recrawl" : asked === "gmail" ? "gmail" : "signin";
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
   const ticket = new URL(req.url).searchParams.get("link");
   const linked = purpose !== "ads" && readLinkTicket(ticket) ? `link~${ticket}` : purpose;
-  const state = `${linked}.${crypto.randomBytes(16).toString("hex")}`;
+  // Sending from Gmail is always for an account already signed in, through a link ticket.
+  if (purpose === "gmail" && !linked.startsWith("link~")) {
+    return redirect(`${appOrigin(req)}/analytics?auth_error=Please+start+again+from+Backlinks`);
+  }
+  const state = `${purpose === "gmail" ? "gmail~" : ""}${linked}.${crypto.randomBytes(16).toString("hex")}`;
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.search = new URLSearchParams({
     client_id: client.id,
@@ -200,9 +206,12 @@ export async function authStart(req: Request): Promise<Response> {
         ? [...OAUTH_SCOPES, ...SETUP_SCOPES]
         : purpose === "recrawl"
           ? [...OAUTH_SCOPES, "https://www.googleapis.com/auth/webmasters"]
-          : OAUTH_SCOPES
+          : purpose === "gmail"
+            ? GMAIL_OAUTH_SCOPES
+            : OAUTH_SCOPES
     ).join(" "),
-    include_granted_scopes: "true",
+    // The Gmail token carries only permission to send, never the Search Console and Analytics access.
+    ...(purpose === "gmail" ? {} : { include_granted_scopes: "true" }),
     access_type: "offline",
     prompt: "consent",
     state,
@@ -229,8 +238,15 @@ export async function authCallback(req: Request): Promise<Response> {
   }
 
   try {
-    const { refreshToken, email } = await exchangeAuthCode(code, redirectUri(req));
+    const { refreshToken, email, scope } = await exchangeAuthCode(code, redirectUri(req));
     if (!refreshToken || !email) throw new Error("Google didn't return the needed access. Please try again.");
+
+    const gmail = state.startsWith("gmail~");
+    if (gmail && !scope.split(" ").includes(GMAIL_SEND_SCOPE)) {
+      // The owner unticked sending on Google's screen: nothing is saved. Not revoked, since on the same
+      // Google account that could also end the Search Console and Analytics access.
+      return back({ auth_error: "Sending from Gmail was not allowed. Nothing changed." });
+    }
 
     if (state.startsWith("ads.")) {
       if (!(await currentAccount(req))?.admin) throw new Error("Only the platform owner can connect Google Ads.");
@@ -238,8 +254,10 @@ export async function authCallback(req: Request): Promise<Response> {
       return back({ connected: "ads" });
     }
 
-    const link = state.startsWith("link~") ? readLinkTicket(state.slice(5, state.lastIndexOf(".")), LINK_FINISH_MS) : null;
-    if (state.startsWith("link~") && !link) throw new Error("The link from Shopify expired. Please try again from the app.");
+    const linkState = gmail ? state.slice(6) : state;
+    const link = linkState.startsWith("link~") ? readLinkTicket(linkState.slice(5, linkState.lastIndexOf(".")), LINK_FINISH_MS) : null;
+    if (linkState.startsWith("link~") && !link) throw new Error("The link from Shopify expired. Please try again from the app.");
+    if (gmail && !link) throw new Error("Please start again from Backlinks.");
     if (link) {
       // A ticket only attaches Google to the account it was made for, in a browser that isn't signed in to another account,
       // and once: a link someone else sends can't capture this browser's Google connection for their account.
@@ -248,6 +266,17 @@ export async function authCallback(req: Request): Promise<Response> {
       if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
       if (link.session && !here) throw new Error("Please sign in again, then connect Google from the app.");
       if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
+    }
+    if (gmail && link) {
+      // Only the owner's own Google account: the one this account signs in or connected Google with.
+      // So a link someone else sends can't put a stranger's Gmail on their account.
+      const [owner, main] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null)]);
+      if (!sameOwner(email, [owner, main?.email])) {
+        throw new Error("Use the same Google account you connected to the app to send from Gmail.");
+      }
+      // Saved on its own: the Search Console and Analytics connection is left as it was.
+      await saveGmail(link.accountId, { refreshToken, email });
+      return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
     }
     const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
@@ -275,6 +304,8 @@ export async function disconnect(req: Request): Promise<Response> {
     const conn = await getConnection(account.id);
     if (conn) await revokeToken(conn.refreshToken);
     await deleteConnection(account.id);
+    // Sending from Gmail ends with the Google connection.
+    await removeGmail(account.id, conn?.email).catch((e) => console.error(`gmail removal failed: ${message(e)}`));
     return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
   });
 }
@@ -531,7 +562,7 @@ export const googleLinkStart = (req: Request) =>
     const embedded = Boolean(req.headers.get("authorization"));
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
     const asked = new URL(req.url).searchParams.get("purpose");
-    const purpose = asked === "setup" || asked === "recrawl" ? `&purpose=${asked}` : "";
+    const purpose = asked === "setup" || asked === "recrawl" || asked === "gmail" ? `&purpose=${asked}` : "";
     // Made from a signed in browser: only that browser's session can finish it.
     const session = (await currentAccount(req).catch(() => null))?.id === account.id;
     return json({ url: `${appOrigin(req)}/api/auth/google/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session))}${purpose}` });
@@ -860,6 +891,39 @@ async function composeOutreach(accountId: string, p: Prospect): Promise<Outreach
   }));
   return { subject: email.subject, body: email.body, to: await contactP, at: new Date().toISOString() };
 }
+
+/** Whether sending from the owner's Gmail is allowed, from which address, and how many were sent in the last day. */
+export const gmailStatus = (req: Request) =>
+  withAccount(req, async (account) => {
+    const link = await getGmail(account.id).catch(() => null);
+    return json({ connected: Boolean(link), email: link?.email ?? null, sentToday: link ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP });
+  });
+
+/** Sends one outreach email from the owner's Gmail. Only ever called by the owner's own Send click. */
+export const gmailSendEmail = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = (await req.json().catch(() => ({}))) as { url?: string; to?: unknown; subject?: unknown; body?: unknown };
+    const list = await readProspects(account.id);
+    const p = list?.prospects.find((x) => x.url === b.url);
+    if (!p) return json({ error: "That site isn't on the list anymore." }, 404);
+    if (p.status !== "new") return json({ error: "This site is no longer in To do, so it wasn't sent." }, 409);
+    const out = await sendOneEmail(account.id, { prospectUrl: p.url, to: b.to, subject: b.subject, body: b.body });
+    if (!out.ok) return json({ error: out.error }, out.status);
+    // Sent, so the site moves to Emailed on its own; the sent text is kept as its email.
+    await saveDrafts(account.id, new Map([[p.url, { subject: String(b.subject).trim(), body: String(b.body).trim(), to: out.to, at: new Date().toISOString() }]]))
+      .catch((e) => console.error(`sent email couldn't be kept on the site: ${message(e)}`));
+    // When the mark can't be saved, the browser moves the row itself (list null) and the failure is logged.
+    const updated = await setProspectStatus(account.id, p.url, "contacted").catch((e) => (console.error(`sent site couldn't be marked emailed: ${message(e)}`), null));
+    return json({ ok: true, to: out.to, from: out.from, sentToday: out.sentToday, cap: DAILY_SEND_CAP, list: updated });
+  });
+
+/** Stops sending from Gmail (Google's permission is withdrawn too). */
+export const gmailDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    const conn = await getConnection(account.id).catch(() => null);
+    await removeGmail(account.id, conn?.email);
+    return json({ ok: true });
+  });
 
 export const backlinkEmail = (req: Request) =>
   withAccount(req, async (account) => {

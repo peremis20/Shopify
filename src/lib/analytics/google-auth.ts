@@ -170,7 +170,7 @@ export async function exchangeAuthCode(code: string, redirectUri: string) {
       /* email is only used for display */
     }
   }
-  return { refreshToken: body.refresh_token, email };
+  return { refreshToken: body.refresh_token, email, scope: body.scope ?? "" };
 }
 
 export async function revokeToken(token: string): Promise<void> {

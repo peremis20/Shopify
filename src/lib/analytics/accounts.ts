@@ -66,3 +66,10 @@ export async function currentAccount(req: Request): Promise<Account | null> {
   const [row] = await sql`SELECT id, email FROM insights_accounts WHERE id = ${id}`;
   return row ? { id: row.id!, email: row.email!, admin: isAdminEmail(row.email!) } : null;
 }
+
+/** The email an account signs in with, or null. */
+export async function accountEmail(id: string): Promise<string | null> {
+  await ensureSchema();
+  const [row] = await sql`SELECT email FROM insights_accounts WHERE id = ${id}`;
+  return row?.email ?? null;
+}
