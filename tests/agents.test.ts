@@ -195,6 +195,6 @@ test("contact finder: hidden addresses are read back", () => {
 import { noPlaceholders } from "../src/lib/analytics/autopilot/writer";
 
 test("outreach: no template gaps reach the owner", () => {
-  assert.equal(noPlaceholders("Hi [Name],\n\nThanks."), "Hi there,\n\nThanks.");
-  assert.equal(noPlaceholders("Thank you, [Your Name]"), "Thank you,");
+  assert.equal(noPlaceholders("Hi [Name],\n\nThanks."), "Hello,\n\nThanks.");
+  assert.equal(noPlaceholders("Dear [First Name],\nI read your page. See [Link] here.\nBest"), "Hello,\nI read your page.\nBest");
 });
