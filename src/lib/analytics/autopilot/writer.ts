@@ -379,6 +379,18 @@ const plainText = (html: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+/** Claude's structured output needs every object to say it takes no other fields; added here so each schema stays simple. */
+export function closedSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(closedSchema);
+  if (!schema || typeof schema !== "object") return schema;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    out[k] = k === "properties" && v && typeof v === "object" ? Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([pk, pv]) => [pk, closedSchema(pv)])) : closedSchema(v);
+  }
+  if (out.type === "object" || (Array.isArray(out.type) && out.type.includes("object"))) out.additionalProperties = false;
+  return out;
+}
+
 async function askClaude<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>, light = false): Promise<T> {
   const client = new Anthropic({ apiKey });
   const response = await client.beta.messages.create({
@@ -386,7 +398,7 @@ async function askClaude<T>(apiKey: string, system: string, prompt: string, sche
     max_tokens: 16000,
     // Haiku has no server side fallback; a refusal there is reported like any other.
     ...(light ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }),
-    output_config: { effort: light ? "low" : "medium", format: { type: "json_schema", schema } },
+    output_config: { effort: light ? "low" : "medium", format: { type: "json_schema", schema: closedSchema(schema) as Record<string, unknown> } },
     // The writing rules are the same on every call for a site, so they're cached and billed at a tenth after the first.
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: prompt }],
