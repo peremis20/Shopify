@@ -198,3 +198,11 @@ test("outreach: no template gaps reach the owner", () => {
   assert.equal(noPlaceholders("Hi [Name],\n\nThanks."), "Hello,\n\nThanks.");
   assert.equal(noPlaceholders("Dear [First Name],\nI read your page. See [Link] here.\nBest"), "Hello,\nI read your page.\nBest");
 });
+
+import { detectPlatform } from "../src/lib/analytics/site-crawl";
+
+test("platform: a page that only mentions wp-content is not WordPress", () => {
+  assert.equal(detectPlatform('<p>See <a href="https://other.com/wp-content/x.pdf">this</a></p>'), "custom");
+  assert.equal(detectPlatform('<link rel="stylesheet" href="/wp-content/themes/a/style.css">'), "wordpress");
+  assert.equal(detectPlatform('<script src="https://site.org/wp-includes/js/x.js"></script>'), "wordpress");
+});
