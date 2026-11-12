@@ -321,7 +321,10 @@ export async function accountsDueForStrategy(limit: number): Promise<string[]> {
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'strategy:' || a.account_id
     LEFT JOIN insights_settings f ON f.key = 'strategy_tried:' || a.account_id
-    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
+        -- A plan whose second AI check failed (service down, no credit) is planned again after 6 hours, so it isn't
+        -- left unacted on for the rest of the week.
+        OR (s.value::jsonb ->> 'checked' = 'false' AND s.updated_at < now() - interval '6 hours'))
       -- A site whose plan failed waits 6 hours before trying again, so it can't hold up the others.
       AND (f.updated_at IS NULL OR f.updated_at < now() - interval '6 hours')
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;

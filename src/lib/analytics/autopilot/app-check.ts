@@ -73,7 +73,7 @@ const READY_DAYS: Record<Section, number> = { visits: 7, plan: 8, backlinks: 5, 
 interface Saved {
   at: string;
   /** Each section's last repair and how many in a row didn't fill it, so a repair that doesn't work is escalated, not repeated. */
-  repairs?: Partial<Record<Section, { at: string; tries: number }>>;
+  repairs?: Partial<Record<Section, { at: string; tries: number; failed?: boolean }>>;
   aiAt: string | null;
   shape: Shape;
   age: number;
@@ -276,7 +276,8 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
         p.fix = `An agent was put back to work on it ${last.tries} times without result, so the code repair agent looks at the cause.`;
         continue;
       }
-      if (last && Date.now() - Date.parse(last.at) < (s === "backlinks" ? 7 : 1) * DAY) {
+      // A try that failed (an AI or search service down) is retried a day later, not after the weekly wait.
+      if (last && Date.now() - Date.parse(last.at) < (s === "backlinks" && !last.failed ? 7 : 1) * DAY) {
         p.fix = "An agent was put back to work on it recently; if it stays empty, the code repair agent looks at the cause.";
         continue;
       }
@@ -284,7 +285,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
       const did = await repairSection(accountId, s, conn, shape).catch((e) => ((failed = true), console.error(`app check repair of ${s} failed: ${(e as Error).message}`), null));
       // A failed attempt counts as a try (retried after the wait); one whose conditions don't hold is not recorded, so
       // it is checked afresh next time (a key added, a domain set).
-      if (did || failed) repairs[s] = { at: new Date().toISOString(), tries: (last?.tries ?? 0) + 1 };
+      if (did || failed) repairs[s] = { at: new Date().toISOString(), tries: (last?.tries ?? 0) + 1, ...(failed ? { failed: true } : {}) };
       if (did === "not-stalled") p.id = "";
       else if (did) {
         p.who = "repaired";
