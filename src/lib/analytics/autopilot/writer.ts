@@ -13,7 +13,8 @@ import type { StoreResource } from "./shopify";
  * matching a schema, and all HTML is cleaned before it reaches the store.
  */
 
-const MODEL = "claude-opus-5-5";
+// Sonnet writes: nearly the same quality for articles at about half the cost; the check comes from another provider (Groq).
+const MODEL = "claude-sonnet-5-5";
 
 /** The position a search gets when the daily rank check no longer finds it in the range it reads (not a measurement). */
 export const UNRANKED_POSITION = 25;
