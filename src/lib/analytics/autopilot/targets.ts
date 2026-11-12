@@ -198,8 +198,7 @@ export async function saveTarget(accountId: string, target: Target): Promise<voi
 }
 
 /**
- * Targets saved before the site's pages were read (or before a page about them existed) have no page, or only the
- * home page or a collection. Each time the
+ * Targets saved before the site's pages were read (or before a page about them existed) have no page. Each time the
  * pages are read again, those are matched to a page now on the site that is clearly about them, so the autopilot
  * improves that page instead of writing a second article on the same topic. Only articles and product pages count
  * (never the home page or a collection), every word of the search must be there, and a page serves one topic.
@@ -210,9 +209,8 @@ export async function matchTargetPages(accountId: string): Promise<number> {
   const key = (u: string) => new URL(u).pathname.replace(/\/$/, "");
   let matched = 0;
   for (const t of await readTargets(accountId)) {
-    // A target aimed at the home page or a collection is moved to a page clearly about it, when there is one.
-    const loose = (u: string | null) => !u || key(u) === "" || /\/collections\//.test(new URL(u).pathname);
-    if (!loose(t.page) || t.article) continue;
+    // A page already set (often the one Search Console shows ranking) is never changed here.
+    if (t.page || t.article) continue;
     const want = [...topicWords(t.keyword)];
     if (!want.length) continue;
     const latest = await readTargets(accountId);
@@ -230,7 +228,7 @@ export async function matchTargetPages(accountId: string): Promise<number> {
     });
     // Re-read just before saving and set only the page, so a change made meanwhile is never lost.
     const now = latest.find((o) => o.keyword === t.keyword);
-    if (!fit || !now || now.page !== t.page || now.article) continue;
+    if (!fit || !now || now.page || now.article) continue;
     await saveTarget(accountId, { ...now, page: fit.url });
     matched++;
   }
