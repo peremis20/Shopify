@@ -1153,6 +1153,13 @@ export function fixBrand(text: string, brand: string | null | undefined, keep: s
     .join("");
 }
 
+/** A template gap like "[Name]" never reaches the owner: the greeting becomes "Hi there," and any other gap is dropped. */
+export function noPlaceholders(text: string): string {
+  return text
+    .replace(/^(\s*)(hi|hello|dear)\s*\[[^\]\n]{1,30}\],?/i, (_m, sp: string, word: string) => `${sp}${word[0].toUpperCase()}${word.slice(1).toLowerCase()} there,`)
+    .replace(/\s*\[(?:name|first name|their name|your name|recipient|website|site name)\]/gi, "");
+}
+
 export async function writeOutreach(
   ai: AiProvider,
   p: {
@@ -1186,10 +1193,18 @@ export async function writeOutreach(
         : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only, and don't mention links at all.`;
   // What the business offers is a known fact for the writer and for the second AI's check alike.
   const given = `${p.sells ? `What ${p.ourBrand ?? p.ourSite} offers: ${p.sells}. Keep the email about how that fits their page and readers; never invent products, services or offers beyond this.\n` : ""}${ask}`;
-  const prompt = `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
+  const prompt = `Write an outreach email (under 160 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${given}
-Write it as a polished, professional business email from a real person: courteous and warm, clear and confident, no flattery, no hype, no slang, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Shape: a greeting line ("Hello," or "Hi there,"), then two or three short paragraphs separated by a blank line (who you are and why their page, the offer, a simple polite ask), then a closing line ("Best regards," or "Kind regards,") and the sign off on its own lines: "The ${p.ourBrand ?? p.ourSite} team" and then ${p.ourSite}. Mention their page by name so they know it was read. Spell the brand exactly ${p.ourBrand ?? p.ourSite}, and write product and ingredient names with normal capitals (for example Magnesium L Threonate).
+The owner's own style, to follow closely: build a relationship and trust first, ask for little. Warm, sincere, professional, never pushy, no hype, no slang, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Short paragraphs, each separated by a blank line, in this order:
+1. "Hi there," on its own line.
+2. One sentence on their page (name it) and what you appreciate about the work they share with their readers.
+3. "I'm reaching out from ${p.ourBrand ?? p.ourSite}," and one sentence on what the business cares about, from what it offers.
+4. The offer or the reason for writing (below), and when there is a page to offer, its address on its own line.
+5. A gentle ask that fits the offer: for a page, whether they would consider sharing it as an additional resource for their readers; for an article, episode or answer idea, whether they would be open to it.
+6. One sentence that you would welcome building a relationship with them and supporting each other's audiences.
+7. "Thank you for your time." Then "Best regards," and the sign off on its own lines: "The ${p.ourBrand ?? p.ourSite} team" and ${p.ourSite}.
+Never write a placeholder like [Name]. Spell the brand exactly ${p.ourBrand ?? p.ourSite}, and write product and ingredient names with normal capitals (for example Magnesium L Threonate).
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
 Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`;
   const schema = {
@@ -1206,7 +1221,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
     // The brand is spelled exactly as the owner set it, whatever the AI typed.
-    const body = safeEmailText(fixBrand(out.body ?? "", p.ourBrand, [p.siteName, p.pageTitle]), keep, urls);
+    const body = safeEmailText(fixBrand(noPlaceholders(out.body ?? ""), p.ourBrand, [p.siteName, p.pageTitle]), keep, urls);
     const subject = safeEmailText(fixBrand(out.subject ?? "", p.ourBrand, [p.siteName, p.pageTitle]), keep, urls);
     if (!body.text || body.dropped > body.total / 3) {
       reasons.push(`the safety filter removed ${body.dropped} of ${body.total} sentences`);
@@ -1218,7 +1233,7 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
       reasons.push(`the checking AI turned it down${r.why ? `: ${r.why}` : ""}`);
       continue;
     }
-    const rb = r.body ? safeEmailText(fixBrand(r.body, p.ourBrand, [p.siteName, p.pageTitle]), keep, urls) : null;
+    const rb = r.body ? safeEmailText(fixBrand(noPlaceholders(r.body), p.ourBrand, [p.siteName, p.pageTitle]), keep, urls) : null;
     const rs = r.subject ? safeEmailText(fixBrand(r.subject, p.ourBrand, [p.siteName, p.pageTitle]), keep, urls) : null;
     // The reviewer's version must still carry every link the first draft gave (the page to offer, the dead link).
     const links = [p.ourPage, p.brokenLink, p.pageUrl].filter((u): u is string => Boolean(u) && body.text.includes(u!));
@@ -1745,7 +1760,7 @@ Body:
 ${email.body}
 """
 ok: false if it claims anything beyond the known facts above (credentials, results, numbers), sounds like a template or spam, pushes too hard, or would embarrass the owner.
-If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Under 120 words, plain text, no hyphens or dashes, no exclamation marks. Also return "why": one plain sentence on what is wrong when ok is false (empty when ok).`,
+If you can make it more likely to get a kind reply without adding any new facts, return the improved subject and body; otherwise return them unchanged. Keep its shape: the greeting, short paragraphs with blank lines, the line about building a relationship, the thank you and the sign off. Under 160 words, plain text, no hyphens or dashes, no exclamation marks. Also return "why": one plain sentence on what is wrong when ok is false (empty when ok).`,
     {
       type: "object",
       properties: { ok: { type: "boolean" }, subject: { type: "string" }, body: { type: "string" }, why: { type: "string" } },

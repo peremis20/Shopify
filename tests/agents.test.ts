@@ -191,3 +191,10 @@ test("contact finder: hidden addresses are read back", () => {
   // Plain sentences never become addresses.
   assert.doesNotMatch(revealEmails("Order online at peremis.com today"), /@/);
 });
+
+import { noPlaceholders } from "../src/lib/analytics/autopilot/writer";
+
+test("outreach: no template gaps reach the owner", () => {
+  assert.equal(noPlaceholders("Hi [Name],\n\nThanks."), "Hi there,\n\nThanks.");
+  assert.equal(noPlaceholders("Thank you, [Your Name]"), "Thank you,");
+});
