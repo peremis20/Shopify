@@ -171,8 +171,8 @@ async function shapeOf(accountId: string, report: WeeklyReportData | null, conn:
     plan: Boolean(strategy && Date.now() - Date.parse(strategy.at) < 8 * DAY && strategy.moves.length),
     backlinks: Boolean(bl?.found),
     keywords: Number(counts?.keywords ?? 0) > 0,
-    // A Shopify store with Search Console has its pages read through Shopify, so the website reader rightly skips it.
-    pages: Number(counts?.pages ?? 0) > 0 || (Boolean(conn?.gscSiteUrl) && Boolean((await readAccountAutopilot(accountId).catch(() => null))?.shopTokenEnc)),
+    // Every site has its public pages read, Shopify stores too: an empty list means the reader isn't working.
+    pages: Number(counts?.pages ?? 0) > 0,
     ranks: Number(counts?.ranks ?? 0) > 0,
     business: Boolean(profile?.about),
     changes: Number(counts?.changes ?? 0) > 0,
