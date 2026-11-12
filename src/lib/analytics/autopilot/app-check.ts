@@ -312,7 +312,12 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
     let aiAt = saved?.aiAt ?? null;
     if (report && (!aiAt || Date.now() - Date.parse(aiAt) > DAY || opts.force)) {
       const ai = aiProvider(await readPlatformSettings());
-      // It needs two AI services to find and confirm; with one, only the rule checks run (no noise from a missing checker).
+      // It needs two AI services to find and confirm; with one, only the rule checks run, and findings from an earlier
+      // review are dropped instead of being shown for good with nothing left to recheck them.
+      if (!hasSecondAi(ai)) {
+        aiProblems = [];
+        aiAt = null;
+      }
       if (ai && hasSecondAi(ai)) {
         const [profile, auto, strategy] = await Promise.all([readProfile(accountId).catch(() => null), readAccountAutopilot(accountId).catch(() => null), readStrategy(accountId).catch(() => null)]);
         const view = {
