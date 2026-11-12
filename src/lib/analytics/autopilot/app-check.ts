@@ -75,6 +75,8 @@ interface Saved {
   /** Each section's last repair and how many in a row didn't fill it, so a repair that doesn't work is escalated, not repeated. */
   repairs?: Partial<Record<Section, { at: string; tries: number; failed?: boolean }>>;
   aiAt: string | null;
+  /** When the AI review last ran, worked or not, so a failing AI isn't retried (and paid for) every hour. */
+  aiTriedAt?: string | null;
   shape: Shape;
   age: number;
   problems: Problem[];
@@ -308,10 +310,14 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
       });
     }
 
-    // Once a day: a second AI reads the whole view like a customer would, and the first confirms each point.
+    // Every 3 days (the rule checks above run every hour for free): a second AI reads the whole view like a customer
+    // would, and the first confirms each point. A failed try waits a day before the next, so it can't spend every hour.
     let aiProblems = saved?.aiProblems ?? [];
     let aiAt = saved?.aiAt ?? null;
-    if (report && (!aiAt || Date.now() - Date.parse(aiAt) > DAY || opts.force)) {
+    let aiTriedAt = saved?.aiTriedAt ?? null;
+    const since = (t: string | null) => (t ? Date.now() - Date.parse(t) : Infinity);
+    if (report && ((since(aiAt) > 3 * DAY && since(aiTriedAt) > DAY) || opts.force)) {
+      aiTriedAt = new Date().toISOString();
       const ai = aiProvider(await readPlatformSettings());
       // It needs two AI services to find and confirm; with one, only the rule checks run, and findings from an earlier
       // review are dropped instead of being shown for good with nothing left to recheck them.
@@ -332,7 +338,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
           ruleFindings: problems.map((p) => p.text),
         };
         const usual = (Object.keys(READY_DAYS) as Section[]).filter((s) => peers.filter((p) => p.age >= READY_DAYS[s]).some((p) => p.shape[s]));
-        // A busy or failed AI keeps yesterday's findings and tries again next pass; its outage shows on the status board.
+        // A busy or failed AI keeps the earlier findings and tries again a day later; its outage shows on the status board.
         const issues = await asPlatform(() => within(reviewCustomerView(ai, fitView(view), usual.map((s) => SECTION_NAME[s])), 150_000, "The customer view review took too long.")).catch(
           (e) => (console.error(`app check AI review failed: ${(e as Error).message}`), null)
         );
@@ -347,7 +353,7 @@ export async function appCheck(accountId: string, conn: Connection | null, opts:
       }
     }
     // A shape read from a failed Report isn't the site's real one, so other sites keep comparing with the last good one.
-    const next: Saved = { at: new Date().toISOString(), aiAt, shape: report || !saved?.shape ? shape : saved.shape, age, problems, aiProblems, repairs };
+    const next: Saved = { at: new Date().toISOString(), aiAt, aiTriedAt, shape: report || !saved?.shape ? shape : saved.shape, age, problems, aiProblems, repairs };
     await sql`INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(next)})
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
     return [...problems, ...aiProblems];
