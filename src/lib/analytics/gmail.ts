@@ -1,5 +1,5 @@
 import { ensureSchema, sql } from "./db";
-import { GoogleApiError, googleRequest, revokeToken } from "./google-auth";
+import { GoogleApiError, googleRequest, hasScope, revokeToken } from "./google-auth";
 import { tokenSecret } from "./oauth-client";
 import { decrypt, encrypt } from "./secrets";
 
@@ -181,6 +181,12 @@ export async function sendOneEmail(
   return { ok: true, to, from: link.email, sentToday: await sentToday(accountId) };
 }
 
-function gmailSend(link: GmailLink, raw: string) {
-  return googleRequest<{ id?: string }>({ kind: "oauth", refreshToken: link.refreshToken }, "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw });
+async function gmailSend(link: GmailLink, raw: string) {
+  const auth = { kind: "oauth" as const, refreshToken: link.refreshToken };
+  // Access is fetched first, so a failure there is known to have sent nothing.
+  const allowed = await hasScope(auth, GMAIL_SEND_SCOPE).catch((e) => {
+    throw new Error(/^Google (access|sign in)/.test((e as Error).message) ? (e as Error).message : `Google sign in failed: ${(e as Error).message}`);
+  });
+  if (!allowed) throw new Error("Google access has no permission to send.");
+  return googleRequest<{ id?: string }>(auth, "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", { raw });
 }

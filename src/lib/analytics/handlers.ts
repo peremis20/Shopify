@@ -917,7 +917,7 @@ export const gmailSendEmail = (req: Request) =>
     return json({ ok: true, to: out.to, from: out.from, sentToday: out.sentToday, cap: DAILY_SEND_CAP, list: updated });
   });
 
-/** Stops sending from Gmail (Google's permission is withdrawn too). */
+/** Stops sending from Gmail: the saved access is deleted (see removeGmail for when Google is told too). */
 export const gmailDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
     const conn = await getConnection(account.id).catch(() => null);

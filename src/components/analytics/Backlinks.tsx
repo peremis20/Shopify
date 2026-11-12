@@ -68,7 +68,7 @@ export function Backlinks() {
   }
 
   async function stopGmail() {
-    if (!window.confirm("Stop sending from your Gmail? You can still use Open in my email.")) return;
+    if (!window.confirm("Stop sending from your Gmail? You can still use Open in my email. To remove the permission fully, also remove the app in your Google account settings.")) return;
     await api("/api/seo/gmail/disconnect", {}).catch(() => undefined);
     setGmail((g) => (g ? { ...g, connected: false, email: null } : g));
   }
