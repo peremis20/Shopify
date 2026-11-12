@@ -116,7 +116,7 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
               onClick={async () => {
                 clearApiCache();
                 await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
-                window.location.href = "/analytics";
+                window.location.href = /^app\./i.test(window.location.host) ? `https://${window.location.host.slice(4)}/` : "/analytics";
               }}
               className="mt-2 text-sm font-semibold text-[#C6F432] hover:underline"
             >

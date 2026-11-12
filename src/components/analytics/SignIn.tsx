@@ -38,6 +38,12 @@ export function SignInScreen({ error }: { error?: string | null }) {
     const h = window.location.host;
     if (/^app\./i.test(h)) setHome(`https://${h.slice(4)}`);
   }, []);
+  // On the public address, signing in happens on the website's own sign in page, so visitors see one design.
+  // This screen stays for errors, the owner's first setup, and any other address.
+  useEffect(() => {
+    // Never inside Shopify admin (an embedded frame), where sign in works through the store instead.
+    if (home && available === true && !error && window.top === window.self) window.location.replace(`${home}/sign-in.html`);
+  }, [home, available, error]);
   const jakarta = { fontFamily: '"Plus Jakarta Sans", Inter, system-ui, sans-serif' };
   const links: [string, string][] = [["Benefits", "#benefits"], ["Features", "#see"], ["How It Works", "#how"], ["Savings", "#calc"], ["FAQ", "#faq"]];
 

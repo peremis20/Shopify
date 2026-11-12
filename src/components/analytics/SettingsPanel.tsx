@@ -70,7 +70,7 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
   async function signOut() {
     clearApiCache();
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
-    window.location.href = "/analytics";
+    window.location.href = /^app\./i.test(window.location.host) ? `https://${window.location.host.slice(4)}/` : "/analytics";
   }
 
   return (
