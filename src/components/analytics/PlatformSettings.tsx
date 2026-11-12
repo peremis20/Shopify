@@ -14,12 +14,8 @@ export function PlatformForm({ settings, onSaved }: {
 }) {
   const [origin, setOrigin] = useState("https://your-app");
   const [anthropicKey, setAnthropicKey] = useState("");
-  const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
-  const [mistralKey, setMistralKey] = useState("");
-  const [cerebrasKey, setCerebrasKey] = useState("");
   const [serperKey, setSerperKey] = useState("");
-  const [githubKey, setGithubKey] = useState("");
   const [pagespeedKey, setPagespeedKey] = useState("");
   const [oprKey, setOprKey] = useState("");
   const [keKey, setKeKey] = useState("");
@@ -43,12 +39,8 @@ export function PlatformForm({ settings, onSaved }: {
     try {
       const d = await api<{ settings: AutopilotSettingsView; claudeError?: string }>("/api/autopilot/platform", {
         anthropicKey,
-        geminiKey,
         groqKey,
-        mistralKey,
-        cerebrasKey,
         serperKey,
-        githubModelsKey: githubKey,
         pagespeedKey,
         oprKey,
         keKey,
@@ -61,12 +53,8 @@ export function PlatformForm({ settings, onSaved }: {
         shopifyClientSecret: clientSecret,
       });
       setAnthropicKey("");
-      setGeminiKey("");
       setGroqKey("");
-      setMistralKey("");
-      setCerebrasKey("");
       setSerperKey("");
-      setGithubKey("");
       setPagespeedKey("");
       setOprKey("");
       setKeKey("");

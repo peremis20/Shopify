@@ -85,11 +85,12 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     const json = row?.value ? decrypt(row.value, await tokenSecret()) : null;
     if (json) stored = JSON.parse(json);
     // Keys for AI services the app no longer uses (Mistral, Cerebras, GitHub Models, Gemini) are deleted from the
-    // stored settings the first time they're read, so no unused secret is kept.
+    // stored settings the first time they're read, so no unused secret is kept. The write only applies if nobody saved
+    // in between, so a fresh save is never overwritten.
     const retired = (["mistralKey", "cerebrasKey", "githubModelsKey", "geminiKey"] as const).filter((k) => stored[k]);
     if (retired.length) {
       for (const k of retired) delete stored[k];
-      await sql`UPDATE insights_settings SET value = ${encrypt(JSON.stringify(stored), await tokenSecret())}, updated_at = now() WHERE key = ${PLATFORM_KEY}`.catch(
+      await sql`UPDATE insights_settings SET value = ${encrypt(JSON.stringify(stored), await tokenSecret())}, updated_at = now() WHERE key = ${PLATFORM_KEY} AND value = ${row.value}`.catch(
         (e) => console.error(`retired AI keys not removed: ${(e as Error).message}`),
       );
     }
@@ -101,11 +102,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
   }
   return {
     anthropicKey: process.env.ANTHROPIC_API_KEY || stored.anthropicKey,
-    geminiKey: process.env.GEMINI_API_KEY || stored.geminiKey,
     groqKey: process.env.GROQ_API_KEY || stored.groqKey,
-    mistralKey: process.env.MISTRAL_API_KEY || stored.mistralKey,
-    cerebrasKey: process.env.CEREBRAS_API_KEY || stored.cerebrasKey,
-    githubModelsKey: process.env.GITHUB_MODELS_TOKEN || stored.githubModelsKey,
     serperKey: process.env.SERPER_API_KEY || stored.serperKey,
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
     oprKey: process.env.OPR_API_KEY || stored.oprKey,
