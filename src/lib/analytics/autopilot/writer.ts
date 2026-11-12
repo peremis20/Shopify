@@ -15,6 +15,12 @@ import type { StoreResource } from "./shopify";
 
 // Sonnet writes: nearly the same quality for articles at about half the cost; the check comes from another provider (Groq).
 const MODEL = "claude-sonnet-5-5";
+/**
+ * Simple yes or no checks and reading facts off a page (site type, business details, whether a statement is on the
+ * page, which backlink sites fit) don't need the writing model: they run on Haiku, about 20 times cheaper. Writing,
+ * content checks, plans and the customer view review stay on Sonnet.
+ */
+const LIGHT_MODEL = "claude-haiku-5-5";
 
 /** The position a search gets when the daily rank check no longer finds it in the range it reads (not a measurement). */
 export const UNRANKED_POSITION = 25;
@@ -373,15 +379,16 @@ const plainText = (html: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-async function askClaude<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askClaude<T>(apiKey: string, system: string, prompt: string, schema: Record<string, unknown>, light = false): Promise<T> {
   const client = new Anthropic({ apiKey });
   const response = await client.beta.messages.create({
-    model: MODEL,
+    model: light ? LIGHT_MODEL : MODEL,
     max_tokens: 16000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    output_config: { effort: "medium", format: { type: "json_schema", schema } },
-    system,
+    // Haiku has no server side fallback; a refusal there is reported like any other.
+    ...(light ? {} : { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }),
+    output_config: { effort: light ? "low" : "medium", format: { type: "json_schema", schema } },
+    // The writing rules are the same on every call for a site, so they're cached and billed at a tenth after the first.
+    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -713,12 +720,12 @@ async function askChat<T>(svc: ChatService, apiKey: string, system: string, prom
   throw new Error(`${svc.name} couldn't write this change right now. (${tried.join("; ")})`);
 }
 
-function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>): Promise<T> {
+function askOne<T>(ai: AiProvider, system: string, prompt: string, schema: Record<string, unknown>, light = false): Promise<T> {
   if (ai.kind === "groq") return askChat<T>(GROQ, ai.key, system, prompt, schema);
   if (ai.kind === "mistral") return askChat<T>(MISTRAL, ai.key, system, prompt, schema);
   if (ai.kind === "cerebras") return askChat<T>(CEREBRAS, ai.key, system, prompt, schema);
   if (ai.kind === "github") return askChat<T>(GITHUB, ai.key, system, prompt, schema);
-  return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema);
+  return ai.kind === "gemini" ? askGemini<T>(ai.key, system, prompt, schema) : askClaude<T>(ai.key, system, prompt, schema, light);
 }
 
 /**
@@ -781,7 +788,7 @@ export async function endRest(kinds: string[]): Promise<void> {
 }
 
 /** Asks the main AI, and each backup in turn if it fails. */
-async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>): Promise<T> {
+async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string, unknown>, light = false): Promise<T> {
   // Counted against the site being worked on; past its monthly limit this throws and the work waits.
   await spend("ai");
   const errors: string[] = [];
@@ -794,7 +801,7 @@ async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string,
       continue;
     }
     try {
-      const out = await askOne<T>(one, system, prompt, schema);
+      const out = await askOne<T>(one, system, prompt, schema, light);
       // Remembered for this run's work, so the service that wrote is never picked to check it.
       if (ai.role !== "review") noteWriter(ai, one.kind);
       void report(part, true);
@@ -1846,7 +1853,7 @@ Return in "keep" the numbers of the sites worth contacting: a real site or publi
       type: "object",
       properties: { keep: { type: "array", items: { type: "integer" } } },
       required: ["keep"],
-    }
+    }, true
   );
   const keep = new Set((out.keep ?? []).map(Number));
   return { keep: prospects.map((_, i) => keep.has(i)) };
@@ -1896,7 +1903,7 @@ Which of these kinds of site is it? Judge only from what the text shows the site
 ${list}
 
 Return JSON "types": up to four ids from the list, the best fit first, only ones the text clearly supports. Use "other_business" only when nothing else fits. An empty list is fine when the text doesn't make it clear.`,
-    { type: "object", properties: { types: { type: "array", items: { type: "string", enum: ids } } }, required: ["types"] },
+    { type: "object", properties: { types: { type: "array", items: { type: "string", enum: ids } } }, required: ["types"] }, true,
   );
   const picked = (out.types ?? []).filter((t, i, a) => ids.includes(t) && a.indexOf(t) === i).slice(0, 4);
   if (!picked.length) return { types: [], rejected: null };
@@ -1912,7 +1919,7 @@ ${pagesText.slice(0, 12000)}
 
 Statement: this website is a "${best.label}" site (${best.group}).
 Return JSON "supported": true only if the text clearly shows this, false if it is a guess or the text points elsewhere.`,
-    { type: "object", properties: { supported: { type: "boolean" } }, required: ["supported"] },
+    { type: "object", properties: { supported: { type: "boolean" } }, required: ["supported"] }, true,
   ))(), { supported: true });
   return check.supported === true ? { types: picked, rejected: null } : { types: picked.slice(1), rejected: picked[0] };
 }
@@ -1990,7 +1997,7 @@ Describe the business only from what this text says. Return JSON with:
 "tone": how its writing sounds (a few words, like "warm and plain" or "clinical and precise"),
 "location": where it serves (a city, a country, or "online"), only if stated.
 Leave a field as an empty string when the text doesn't say it. Never guess or invent. No hyphens or dashes.`,
-    ABOUT_SCHEMA,
+    ABOUT_SCHEMA, true,
   );
   const fields = Object.fromEntries(Object.keys(ABOUT_SCHEMA.properties).map((k) => [k, polish(String(out[k] ?? "").trim())])) as Record<string, string>;
   const filled = Object.entries(fields).filter(([k, v]) => v && k !== "tone");
@@ -2008,7 +2015,7 @@ Statements:
 ${filled.map(([k, v], i) => `${i + 1}. (${k}) ${v}`).join("\n")}
 
 Return JSON "supported": one true or false per statement, in order.`,
-    { type: "object", properties: { supported: { type: "array", items: { type: "boolean" } } }, required: ["supported"] },
+    { type: "object", properties: { supported: { type: "array", items: { type: "boolean" } } }, required: ["supported"] }, true,
   ))(), { supported: filled.map(() => true) });
   filled.forEach(([k], i) => {
     if (check.supported?.[i] !== true) fields[k] = "";
