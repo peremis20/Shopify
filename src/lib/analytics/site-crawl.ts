@@ -19,7 +19,12 @@ export function detectPlatform(html: string): Platform {
   const gen = /<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)/i.exec(h)?.[1]?.toLowerCase() ?? "";
   if (/cdn\.shopify\.com|Shopify\.theme/.test(h)) return "shopify";
   // Only the site's own files count: an article that merely mentions or links another site's wp-content isn't WordPress.
-  if (gen.includes("wordpress") || /<(?:link|script|img)\b[^>]+(?:src|href)=["'](?:\/|https?:\/\/[^"'\/]*)?\/?wp-(?:content|includes)\//i.test(h)) return "wordpress";
+  if (
+    gen.includes("wordpress") ||
+    /<link\b[^>]+rel=["']?https:\/\/api\.w\.org\/?["']?/i.test(h) ||
+    /<(?:link|script|img)\b[^>]+(?:src|href|data-src)=["']?[^"'\s>]*\/?wp-(?:content|includes)\//i.test(h)
+  )
+    return "wordpress";
   if (gen.includes("wix") || /static\.wixstatic\.com|wix-bolt|_wixCssImports/.test(h)) return "wix";
   if (gen.includes("squarespace") || /static1\.squarespace\.com|Static\.SQUARESPACE_CONTEXT/.test(h)) return "squarespace";
   if (gen.includes("webflow") || /data-wf-site|assets\.website-files\.com|cdn\.prod\.website-files\.com/.test(h)) return "webflow";

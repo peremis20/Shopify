@@ -206,3 +206,9 @@ test("platform: a page that only mentions wp-content is not WordPress", () => {
   assert.equal(detectPlatform('<link rel="stylesheet" href="/wp-content/themes/a/style.css">'), "wordpress");
   assert.equal(detectPlatform('<script src="https://site.org/wp-includes/js/x.js"></script>'), "wordpress");
 });
+
+test("platform: WordPress in a subfolder, protocol relative or with the api link is still found", () => {
+  assert.equal(detectPlatform('<link rel="stylesheet" href="https://ex.com/blog/wp-content/a.css">'), "wordpress");
+  assert.equal(detectPlatform('<script src="//ex.com/wp-includes/js/x.js"></script>'), "wordpress");
+  assert.equal(detectPlatform('<link rel="https://api.w.org/" href="https://ex.com/wp-json/">'), "wordpress");
+});
