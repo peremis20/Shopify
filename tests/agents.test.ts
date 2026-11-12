@@ -177,6 +177,9 @@ test("outreach: the brand is spelled as set, other words are left alone", () => 
   assert.equal(fixBrand("I run Perimis, a supplement brand.\nPerimis", "Peremis"), "I run Peremis, a supplement brand.\nPeremis");
   assert.equal(fixBrand("The premise is simple.", "Peremis"), "The premise is simple.");
   assert.equal(fixBrand("A nice day", "Nike"), "A nice day");
+  // Links and domains are never touched, nor real words at the start of a sentence or plurals.
+  assert.equal(fixBrand("Our guide at https://peremis.com/blogs/sleep covers it. peremis.com", "Peremis"), "Our guide at https://peremis.com/blogs/sleep covers it. peremis.com");
+  assert.equal(fixBrand("Blood sugar matters. Flowers bloom. Blooms fade.", "Bloom"), "Blood sugar matters. Flowers bloom. Blooms fade.");
 });
 
 test("contact finder: hidden addresses are read back", () => {
@@ -185,4 +188,6 @@ test("contact finder: hidden addresses are read back", () => {
   assert.equal(decodeCfEmail(hex), "hi@x.co");
   assert.match(revealEmails(`<a data-cfemail="${hex}">[email protected]</a>`), /hi@x\.co/);
   assert.match(revealEmails("editor [at] site [dot] com"), /editor@site\.com/);
+  // Plain sentences never become addresses.
+  assert.doesNotMatch(revealEmails("Order online at peremis.com today"), /@/);
 });

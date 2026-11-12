@@ -22,7 +22,8 @@ export function revealEmails(html: string): string {
   return html
     .replace(/data-cfemail="([0-9a-f]+)"/gi, (_m, hex: string) => ` ${decodeCfEmail(hex) ?? ""} `)
     .replace(/\/cdn-cgi\/l\/email-protection#([0-9a-f]+)/gi, (_m, hex: string) => ` ${decodeCfEmail(hex) ?? ""} `)
-    .replace(/&#64;|&#x40;|\s*(\[at\]|\(at\)|\{at\}| at )\s*(?=[a-z0-9-]+(\s*(\[dot\]|\(dot\)|\.| dot )\s*)[a-z]{2,})/gi, "@")
+    // Only the bracketed forms: a plain " at " would turn sentences like "shop at example.com" into fake addresses.
+    .replace(/&#64;|&#x40;|\s*(\[at\]|\(at\)|\{at\})\s*/gi, "@")
     .replace(/\s*(\[dot\]|\(dot\)|\{dot\})\s*/gi, ".");
 }
 const NOT_PEOPLE = /^(no-?reply|donotreply|mailer-daemon|postmaster|abuse|privacy|dmca|legal|unsubscribe)@/i;

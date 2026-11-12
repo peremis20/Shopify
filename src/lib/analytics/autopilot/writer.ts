@@ -1121,21 +1121,36 @@ If this search isn't a fit for this website's business, return an empty string f
 }
 
 /** A short, personal outreach email asking a site to link to this one. The owner sends it. */
-/** Words a letter or two off the brand name (a typo like "Perimis" for "Peremis") are written as the brand. */
-export function fixBrand(text: string, brand: string | null | undefined): string {
+/**
+ * A misspelled brand ("Perimis" for "Peremis") is written as the brand. Careful by design: only capitalized words of
+ * the same length, a letter off (two for long names), never at the start of a sentence (where real words are
+ * capitalized), never inside a link or a domain, and never another site's name.
+ */
+export function fixBrand(text: string, brand: string | null | undefined, keep: string[] = []): string {
   const b = brand?.trim();
-  // Short or common brand names would catch real words, so only longer single word brands are corrected.
   if (!b || /\s/.test(b) || b.length < 5) return text;
   const most = b.length >= 8 ? 2 : 1;
+  const others = new Set(keep.map((k) => k.toLowerCase()));
   const near = (w: string) => {
-    const a = w.toLowerCase(), c = b.toLowerCase();
-    if (a === c || Math.abs(a.length - c.length) > 1 || a[0] !== c[0]) return false;
-    const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(c.length).fill(0)]);
-    for (let j = 1; j <= c.length; j++) d[0][j] = j;
-    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= c.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === c[j - 1] ? 0 : 1));
-    return d[a.length][c.length] <= most;
+    if (w === b || w.length !== b.length || w[0] !== b[0] || others.has(w.toLowerCase())) return false;
+    let diff = 0;
+    for (let i = 0; i < w.length; i++) if (w[i].toLowerCase() !== b[i].toLowerCase()) diff++;
+    return diff > 0 && diff <= most;
   };
-  return text.replace(/[A-Za-z]+/g, (w) => (w.toLowerCase() === b.toLowerCase() ? b : near(w) ? b : w));
+  // Links and domains are left exactly as written.
+  return text
+    .split(/(https?:\/\/\S+|\b[\w-]+(?:\.[\w-]+)+\S*)/)
+    .map((part, n) =>
+      n % 2
+        ? part
+        : part.replace(/(^|[^A-Za-z])([A-Z][a-z]+)/g, (m, pre: string, w: string, at: number, all: string) => {
+            const before = all.slice(0, at + pre.length).replace(/[ \t]+$/, "");
+            const startsSentence = !before || /[.!?:\n]$/.test(before);
+            const ownLine = /^\s*$/.test(all.slice(at + pre.length + w.length).split("\n")[0] ?? "");
+            return near(w) && (!startsSentence || ownLine) ? `${pre}${b}` : m;
+          }),
+    )
+    .join("");
 }
 
 export async function writeOutreach(
@@ -1191,8 +1206,8 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
     // The brand is spelled exactly as the owner set it, whatever the AI typed.
-    const body = safeEmailText(fixBrand(out.body ?? "", p.ourBrand), keep, urls);
-    const subject = safeEmailText(fixBrand(out.subject ?? "", p.ourBrand), keep, urls);
+    const body = safeEmailText(fixBrand(out.body ?? "", p.ourBrand, [p.siteName, p.pageTitle]), keep, urls);
+    const subject = safeEmailText(fixBrand(out.subject ?? "", p.ourBrand, [p.siteName, p.pageTitle]), keep, urls);
     if (!body.text || body.dropped > body.total / 3) {
       reasons.push(`the safety filter removed ${body.dropped} of ${body.total} sentences`);
       continue;
@@ -1203,8 +1218,8 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
       reasons.push(`the checking AI turned it down${r.why ? `: ${r.why}` : ""}`);
       continue;
     }
-    const rb = r.body ? safeEmailText(fixBrand(r.body, p.ourBrand), keep, urls) : null;
-    const rs = r.subject ? safeEmailText(fixBrand(r.subject, p.ourBrand), keep, urls) : null;
+    const rb = r.body ? safeEmailText(fixBrand(r.body, p.ourBrand, [p.siteName, p.pageTitle]), keep, urls) : null;
+    const rs = r.subject ? safeEmailText(fixBrand(r.subject, p.ourBrand, [p.siteName, p.pageTitle]), keep, urls) : null;
     // The reviewer's version must still carry every link the first draft gave (the page to offer, the dead link).
     const links = [p.ourPage, p.brokenLink, p.pageUrl].filter((u): u is string => Boolean(u) && body.text.includes(u!));
     const keepsLinks = (t: string) => links.every((u) => t.includes(u));
