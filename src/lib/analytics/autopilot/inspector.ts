@@ -13,6 +13,19 @@ import { usageThisMonth } from "./usage";
 import { readAudit } from "./site-audit";
 import { appCheck } from "./app-check";
 
+/** An AI account with no money left: retrying never helps, so the owner is told exactly where to add credit. */
+const OUT_OF_CREDIT = /credit balance|purchase credits|insufficient[_ ](credit|funds|balance)|payment required|(^|status |\()402\b/i;
+const outOfCredit = (d: string) => {
+  // Errors from several AI services are joined, so the provider is read only from the words around the credit error.
+  const at = d.search(OUT_OF_CREDIT);
+  const near = d.slice(Math.max(0, at - 200), at + 200);
+  return /anthropic|claude/i.test(near) && !/groq/i.test(near)
+    ? "The Claude account is out of credit. Add credit at console.anthropic.com under Plans and Billing; it starts working again within the hour by itself."
+    : /groq/i.test(near) && !/anthropic|claude/i.test(near)
+      ? "The Groq account is out of credit. Add credit at console.groq.com; it starts working again within the hour by itself."
+      : "An AI account is out of credit. Add credit with that AI provider (Claude or Groq); it starts working again within the hour by itself.";
+};
+
 /**
  * The Inspector: the agent that checks on the others. Every hour it looks for
  * anything broken, stuck or quietly failing, repairs what an agent can repair
@@ -34,7 +47,7 @@ export interface Problem {
 
 const HOUR = 3_600_000;
 
-const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; workaround: string }> = {
+export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; workaround: string }> = {
   openpagerank: {
     name: "Open PageRank (site strength)",
     fix: (d) =>
@@ -61,9 +74,11 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
   ai: {
     name: "The writing AI",
     fix: (d) =>
-      !/accept the key|401|403|billing|quota|payment/i.test(d) && /busy|demand|empty|fetch failed/i.test(d)
-        ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. A key for one more service (Claude, Mistral, Cerebras or Groq) in Platform keys gives it another backup."
-        : "Every AI key failed. Check the keys and their billing in Platform keys.",
+      OUT_OF_CREDIT.test(d)
+        ? outOfCredit(d)
+        : !/accept the key|401|403|billing|quota|payment/i.test(d) && /busy|demand|empty|fetch failed/i.test(d)
+          ? "The AI services were busy or gave empty answers, so DashPatrol tries again 3 hours later by itself. Keys for both Claude and Groq in Platform keys give it a backup."
+          : "Every AI key failed. Check the keys and their billing in Platform keys.",
     workaround: "No new changes or articles are written until one works.",
   },
   email: {
@@ -85,7 +100,9 @@ const PART_FIX: Record<Part, { name: string; fix: (detail: string) => string; wo
     fix: (d) =>
       /only one ai service/i.test(d) || !d
         ? "Add a key from a second AI provider in Platform keys, so every change can be checked by a different AI."
-        : "The checking AI was busy or gave empty answers, so DashPatrol tries again by itself.",
+        : OUT_OF_CREDIT.test(d)
+          ? outOfCredit(d)
+          : "The checking AI was busy or gave empty answers, so DashPatrol tries again by itself.",
     workaround: "Page changes and new articles wait until it is added; plans are shown but not acted on.",
   },
   "share-kit": {
