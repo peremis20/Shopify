@@ -216,6 +216,11 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     const k = m.keyword?.trim().toLowerCase() ?? null;
     let kept = verdict.keep[i];
     let challenge = verdict.notes[i];
+    // A step no agent can act on: a fix is carried out through the search it names, so one without a search is dropped.
+    if (kept && m.kind === "fix" && !m.keyword?.trim()) {
+      kept = false;
+      challenge = "Dropped: it names no search to work on.";
+    }
     // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
     if (kept && !backedByFacts(m.evidence, facts)) {
       kept = false;

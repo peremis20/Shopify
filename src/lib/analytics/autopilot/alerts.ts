@@ -251,7 +251,17 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     visitors: fresh && fresh.visitors != null ? { value: Number(fresh.visitors), goal: Number(fresh.goal), at: fresh.at } : null,
     // One sentence only, the biggest opportunity when the Strategist named one: the page shows numbers, not paragraphs.
     focus: fresh?.assessment ? polish(((ss) => ss.find((x) => /opportunit/i.test(x)) ?? ss[0])(fresh.assessment.split(/(?<=\.)\s+/))) : null,
-    plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map((m) => polish(m.action)) : [],
+    // Each step names what it works on, so the owner can see which page or search it means.
+    plan:
+      fresh && fresh.checked !== false
+        ? fresh.moves
+            .filter((m) => m.kept)
+            .map((m) => {
+              const on = m.keyword ? `for "${m.keyword}"` : m.page ? `on ${(() => { try { return new URL(m.page!).pathname; } catch { return m.page; } })()}` : "";
+              const text = polish(m.action);
+              return on && !text.toLowerCase().includes((m.keyword ?? m.page ?? "").toLowerCase()) ? `${text} (${on})` : text;
+            })
+        : [],
     planNote: fresh && fresh.checked === false
       ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
       : fresh && !fresh.moves.some((m) => m.kept)
