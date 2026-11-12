@@ -87,7 +87,7 @@ export function Backlinks() {
       </div>
       {ready > 0 && view === "open" && (
         <p className="mb-3 rounded-lg bg-[#EEF5EF] px-3 py-2 text-sm text-dash-ink">
-          {ready === 1 ? "1 email is" : `${ready} emails are`} written and ready. Read each one, click Send to open it in your email, then mark I emailed them. New ones are written each week.
+          {ready === 1 ? "1 email is" : `${ready} emails are`} written and ready. Read each one, click Edit to change it, then Open in my email to send it, and mark I emailed them. New ones are written each week.
         </p>
       )}
       {error && <p className="mb-3 text-sm text-dash-down">{error}</p>}
@@ -115,6 +115,7 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   async function write() {
     setBusy(true);
@@ -172,21 +173,47 @@ function ProspectRow({ p, onMark }: { p: Prospect; onMark: (url: string, s: Pros
       {err && <p className="mt-2 text-xs text-dash-down">{err}</p>}
       {email && (
         <div className="mt-3 rounded-lg border border-dash-line bg-[#FBF8F2] p-3">
-          <p className="text-xs font-semibold text-dash-ink">Subject: {email.subject}</p>
-          <p className="mt-2 whitespace-pre-wrap break-words text-sm text-dash-ink">{email.body}</p>
-          <div className="mt-2 flex gap-3">
+          {editing ? (
+            <>
+              <label className="block text-xs font-semibold text-dash-ink">
+                To
+                <input
+                  value={email.to ?? ""}
+                  onChange={(e) => setEmail({ ...email, to: e.target.value })}
+                  placeholder="their email address"
+                  className="mt-1 w-full rounded-lg border border-dash-line bg-white px-2 py-1.5 text-sm font-normal"
+                />
+              </label>
+              <label className="mt-2 block text-xs font-semibold text-dash-ink">
+                Subject
+                <input value={email.subject} onChange={(e) => setEmail({ ...email, subject: e.target.value })} className="mt-1 w-full rounded-lg border border-dash-line bg-white px-2 py-1.5 text-sm font-normal" />
+              </label>
+              <label className="mt-2 block text-xs font-semibold text-dash-ink">
+                Message
+                <textarea value={email.body} onChange={(e) => setEmail({ ...email, body: e.target.value })} rows={9} className="mt-1 w-full rounded-lg border border-dash-line bg-white px-2 py-1.5 text-sm font-normal" />
+              </label>
+            </>
+          ) : (
+            <>
+              {email.to && <p className="text-xs text-dash-muted">To: {email.to}</p>}
+              <p className="text-xs font-semibold text-dash-ink">Subject: {email.subject}</p>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm text-dash-ink">{email.body}</p>
+            </>
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button onClick={() => setEditing(!editing)} className="rounded-full border border-dash-line bg-white px-3 py-1 text-xs font-semibold text-dash-ink">
+              {editing ? "Done editing" : "Edit"}
+            </button>
+            {/* Opens the owner's own email with everything filled in; without an address they type it there. */}
+            <a
+              href={`mailto:${/^[^\s@,;?&]+@[^\s@,;?&]+\.[^\s@,;?&]+$/.test((email.to ?? "").trim()) ? encodeURIComponent((email.to ?? "").trim()) : ""}?subject=${encodeURIComponent(email.subject)}&body=${encodeURIComponent(email.body)}`}
+              className="rounded-full bg-dash-green px-3 py-1 text-xs font-semibold text-white"
+            >
+              Open in my email
+            </a>
             <button onClick={copy} className="text-xs font-semibold text-dash-green hover:underline">{copied ? "Copied" : "Copy email"}</button>
-            {email.to ? (
-              <a
-                href={`mailto:${email.to}?subject=${encodeURIComponent(email.subject)}&body=${encodeURIComponent(email.body)}`}
-                className="text-xs font-semibold text-dash-green hover:underline"
-              >
-                Send to {email.to}
-              </a>
-            ) : (
-              <span className="text-xs text-dash-muted">No email shown on their site. Use their contact form, then send it from yours.</span>
-            )}
           </div>
+          {!email.to && <p className="mt-2 text-xs text-dash-muted">No email address shown on their site. Add one under Edit, or use their contact form and paste the message there.</p>}
         </div>
       )}
     </li>
