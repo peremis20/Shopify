@@ -79,12 +79,12 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
         <Stat label="Visits this week" value={traffic.length ? n(visits) : "None"} sub="all channels" />
         <Stat label="From Google this week" value={google ? n(google.now.sessions) : "None"} change={google ? [google.now.sessions, google.before.sessions] : undefined} />
         <Stat label="Leads and sales" value={data.totals ? n(leads) : "None"} sub={
-            !data.totals
-              ? "connect Google Analytics"
-              : sales > 0
-                ? `${n(sales)} in sales`
-                : shop && shop.revenue > 0
-                  ? `${n(shop.revenue)} ${shop.currency ?? ""} store sales in 28 days`
+            sales > 0
+              ? `${n(sales)} in sales`
+              : shop && shop.revenue > 0
+                ? `${shop.capped ? "over " : ""}${n(shop.revenue)}${shop.currency ? ` ${shop.currency}` : ""} store sales in ${shop.days ?? 28} days`
+                : !data.totals
+                  ? "connect Google Analytics"
                   : "key events"
           }
         />
@@ -114,7 +114,9 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
       <Card>
         <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 text-sm">
           <span className="font-semibold text-dash-ink">Goal: {n(goal)} Google visitors a month</span>
-          <span className="tabular-nums text-dash-muted">{data.visitors ? `${n(data.visitors.value)} Google visits in the last 28 days` : "Not measured yet"}</span>
+          <span className="tabular-nums text-dash-muted">{data.visitors
+              ? `${n(data.visitors.value)} Google clicks in the 28 days before ${new Date(data.visitors.at).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}`
+              : "Not measured yet"}</span>
         </div>
         <Bar value={data.visitors?.value ?? 0} max={goal} />
         <p className="mt-3 text-sm text-dash-ink">{data.focus || "The Strategist sets the focus with the next weekly plan."}</p>

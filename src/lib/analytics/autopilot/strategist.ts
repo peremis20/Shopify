@@ -286,6 +286,8 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
         }
       }
     }
+    // Held back only by this week's cap on new targets: picked up by next week's plan, not a step nobody acts on.
+    if (checked && kept && k && m.kind === "fix" && !done && added >= MAX_NEW_TARGETS) done = "Waits for next week: this week's new targets are full.";
     // Rescue: a page from the facts Google left out goes to the front of the Index rescue's queue.
     if (checked && kept && m.kind === "rescue") {
       const url = (m.page ?? "").trim();

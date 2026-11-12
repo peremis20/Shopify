@@ -129,7 +129,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     if (fresh.visitors != null) lines.push(`Visitors from Google, the 28 days before ${made}: ${fresh.visitors} (goal ${Number(fresh.goal).toLocaleString("en-US")} a month).`);
     if (fresh.assessment) lines.push("", `Where things stood on ${made}: ${polish(fresh.assessment)}`);
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
-    if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${polish(m.action)}`));
+    if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${planLine(m)}`));
   }
   // Read once for both sections: the site's own Google Analytics, never another site's.
   const conn = await getConnection(accountId).catch(() => null);
@@ -213,7 +213,15 @@ export interface WeeklyReportData {
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
-  shopify: { orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
+  shopify: { days?: number; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
+}
+
+/** One plan step as the owner reads it (page and email alike): it names the search or page it works on. */
+function planLine(m: { action: string; keyword: string | null; page?: string | null }): string {
+  const text = polish(m.action);
+  const named = m.keyword ?? (m.page ? (() => { try { return new URL(m.page).pathname; } catch { return m.page; } })() : null);
+  if (!named || text.toLowerCase().includes(named.toLowerCase())) return text;
+  return `${text} (${m.keyword ? `for "${named}"` : `on ${named}`})`;
 }
 
 /** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
@@ -251,17 +259,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     visitors: fresh && fresh.visitors != null ? { value: Number(fresh.visitors), goal: Number(fresh.goal), at: fresh.at } : null,
     // One sentence only, the biggest opportunity when the Strategist named one: the page shows numbers, not paragraphs.
     focus: fresh?.assessment ? polish(((ss) => ss.find((x) => /opportunit/i.test(x)) ?? ss[0])(fresh.assessment.split(/(?<=\.)\s+/))) : null,
-    // Each step names what it works on, so the owner can see which page or search it means.
-    plan:
-      fresh && fresh.checked !== false
-        ? fresh.moves
-            .filter((m) => m.kept)
-            .map((m) => {
-              const on = m.keyword ? `for "${m.keyword}"` : m.page ? `on ${(() => { try { return new URL(m.page!).pathname; } catch { return m.page; } })()}` : "";
-              const text = polish(m.action);
-              return on && !text.toLowerCase().includes((m.keyword ?? m.page ?? "").toLowerCase()) ? `${text} (${on})` : text;
-            })
-        : [],
+    plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map(planLine) : [],
     planNote: fresh && fresh.checked === false
       ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
       : fresh && !fresh.moves.some((m) => m.kept)
