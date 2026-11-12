@@ -222,7 +222,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-2" title="New articles for searches you picked with Rank for this that no page covers yet. For health sites, 2 or 3 a week is safest.">
+            <label className="flex items-center gap-2" title="New articles for searches you picked with Rank for this that no page covers yet, taking your topics in turn. 1 a week keeps AI costs low. For health sites, 3 a week is the most that is safe.">
               <span className="text-dash-muted">New articles per week</span>
               <select
                 id="ap-articles"

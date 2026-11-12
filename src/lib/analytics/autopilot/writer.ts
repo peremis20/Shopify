@@ -759,7 +759,7 @@ async function restingUntil(): Promise<Record<string, number>> {
   resting = { at: Date.now(), until };
   return until;
 }
-async function rest(kind: string, ms: number): Promise<void> {
+export async function rest(kind: string, ms: number): Promise<void> {
   const entry = { [kind]: Date.now() + ms };
   resting = { at: resting?.at ?? 0, until: { ...(resting?.until ?? {}), ...entry } };
   if (!hasDatabase()) return;
@@ -795,6 +795,8 @@ async function askJson<T>(ai: AiProvider, prompt: string, schema: Record<string,
     }
     try {
       const out = await askOne<T>(one, system, prompt, schema);
+      // Remembered for this run's work, so the service that wrote is never picked to check it.
+      if (ai.role !== "review") noteWriter(ai, one.kind);
       void report(part, true);
       return out;
     } catch (err) {
@@ -1605,26 +1607,65 @@ class OwnerChecks extends Error {
     super("The owner checks this before it goes live.");
   }
 }
-export const hasSecondAi = (ai: AiProvider | null | undefined): boolean => Boolean(ai && (ai.backups ?? []).some((o) => o.kind !== ai.kind));
-/** Runs work whose result the owner approves before it goes live; with a second AI set up, that AI checks it as usual. */
-export const ownerApproves = <T>(ai: AiProvider | null | undefined, work: () => Promise<T>): Promise<T> => (hasSecondAi(ai) ? work() : ownerReview.run(true, work));
+/**
+ * The services that wrote with this provider chain. Copies of a provider ({ ...ai, site }) share its backups list, so
+ * that list ties a run's writer and checker together; aiProvider makes a fresh one for each run or request.
+ */
+const wrote = new WeakMap<object, Set<string>>();
+const chainOf = (ai: AiProvider): object => ai.backups ?? ai;
+export function noteWriter(ai: AiProvider, kind: string) {
+  const set = wrote.get(chainOf(ai)) ?? new Set<string>();
+  set.add(kind);
+  wrote.set(chainOf(ai), set);
+}
+const restingNow = (kind: string) => (resting?.until[kind] ?? 0) > Date.now();
+
+/**
+ * Who may check work from this chain: another service than the one that writes it. The writer is the first service not
+ * resting (with Groq at its limit, Claude writes), and any service that already wrote in this chain is out too.
+ */
+export function checkersFor(ai: AiProvider): AiProvider[] {
+  const chain = [ai, ...(ai.backups ?? [])];
+  const writer = chain.find((o) => !restingNow(o.kind))?.kind ?? ai.kind;
+  const done = wrote.get(chainOf(ai));
+  return (ai.backups ?? []).filter((o) => o.kind !== ai.kind && o.kind !== writer && !done?.has(o.kind) && !restingNow(o.kind));
+}
+export const hasSecondAi = (ai: AiProvider | null | undefined): boolean => Boolean(ai && checkersFor(ai).length);
+/**
+ * Runs work whose result the owner approves before it goes live; with another service free to check it, that service
+ * checks it as usual. Which services are resting is read fresh first, so a writer at its limit is known.
+ */
+export const ownerApproves = async <T>(ai: AiProvider | null | undefined, work: () => Promise<T>): Promise<T> => {
+  if (ai) await restingUntil().catch(() => undefined);
+  return hasSecondAi(ai) ? work() : ownerReview.run(true, work);
+};
+/** Reads which services are resting, so hasSecondAi is current (it is synchronous and reads what was last loaded). */
+export const loadRests = (): Promise<unknown> => restingUntil().catch(() => undefined);
 /** The second AI's verdict, or `pass` when the owner is the check. */
 const orOwner = <T>(p: Promise<T>, pass: T): Promise<T> => p.catch((e) => (e instanceof OwnerChecks ? pass : Promise.reject(e)));
 
 export const NO_SECOND_AI =
-  "A second AI from another service has to check this work, and only one AI service is set up. Add a key for the other service (Claude or Groq) in Platform keys and it goes ahead on its own; until then, changes wait for your approval.";
+  "A second AI from another service has to check this work, and none is free: only one AI service is set up, or the other one wrote it while the first rests at its limit. With a key for both Claude and Groq in Platform keys it goes ahead on its own; until then, changes wait for your approval.";
 
 /**
  * The reviewer: another AI service, with the other services as backups. The writer's own service never checks its
  * own work, so with no other service this throws and the work waits (the error is seen, never hidden).
  */
 export function reviewerOf(ai: AiProvider, keepSite = true): AiProvider {
-  const others = (ai.backups ?? []).filter((o) => o.kind !== ai.kind);
+  // Never the service that wrote it (the first one not resting, or any that wrote in this chain).
+  const others = checkersFor(ai);
   // Work the owner approves before anything goes live: the owner is the second check.
   if (!others.length && ownerReview.getStore()) throw new OwnerChecks();
   if (!others.length) {
-    // On the status board, so the Inspector tells the platform owner that work is waiting for a second AI key.
-    void report("ai-review", false, "Only one AI service is set up. A second one, from another provider, is needed to check the work before anything changes on a site.");
+    const single = !(ai.backups ?? []).some((o) => o.kind !== ai.kind);
+    // On the status board, so the Inspector tells the platform owner that work is waiting for a second AI.
+    void report(
+      "ai-review",
+      false,
+      single
+        ? "Only one AI service is set up. A second one, from another provider, is needed to check the work before anything changes on a site."
+        : "The other AI service wrote this work while the first one rests at its limit, and a service never checks its own work. It waits for the next run, which asks the owner to approve."
+    );
     throw new Error(NO_SECOND_AI);
   }
   // Marked working only when the checker really answers (askJson), so an outage is never hidden.

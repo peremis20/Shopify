@@ -199,6 +199,15 @@ export function ensureSchema(): Promise<void> {
       last_run_at timestamptz
     )`;
     await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS articles_per_week integer NOT NULL DEFAULT 3`;
+    // One new article a week by default, to keep AI use low; sites still on the old default of 3 move to 1 once.
+    await sql`ALTER TABLE insights_account_autopilot ALTER COLUMN articles_per_week SET DEFAULT 1`;
+    {
+      const [done] = await sql`SELECT key FROM insights_settings WHERE key = 'articles_default_1'`;
+      if (!done) {
+        await sql`UPDATE insights_account_autopilot SET articles_per_week = 1 WHERE articles_per_week = 3`;
+        await sql`INSERT INTO insights_settings (key, value) VALUES ('articles_default_1', '1') ON CONFLICT (key) DO NOTHING`;
+      }
+    }
     // Fair turns: when each site last got upkeep, a run attempt and an inspection, whether or not anything was done.
     await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS upkeep_tried_at timestamptz`;
     await sql`ALTER TABLE insights_account_autopilot ADD COLUMN IF NOT EXISTS run_tried_at timestamptz`;

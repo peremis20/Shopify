@@ -108,7 +108,7 @@ export function PlatformForm({ settings, onSaved }: {
         <ol className="list-decimal space-y-1.5 pl-5 marker:text-dash-muted">
           <li>
             <b>AI writer:</b> a Groq API key (console.groq.com, free tier) and later a Claude API key (console.anthropic.com).
-            With Groq alone, every change waits for your approval. With both, Claude writes and Groq checks the work, so it can go live on its own.
+            With Groq alone, every change waits for your approval. With both, Groq writes and Claude checks the work, so it can go live on its own. When Groq reaches its daily limit, Claude writes and you approve that work.
           </li>
           <li>
             <b>Google page one data (recommended):</b> a key from serper.dev (2,500 free searches). The autopilot uses it to

@@ -132,8 +132,10 @@ export async function savePlatformSettings(patch: PlatformSettings): Promise<voi
  */
 export function aiProvider(p: PlatformSettings): AiProvider | null {
   const all: AiProvider[] = [];
-  if (p.anthropicKey) all.push({ kind: "claude", key: p.anthropicKey });
+  // Groq writes first (it costs least) and Claude checks it; while Groq rests at its limit, Claude writes and the
+  // owner approves that work, since Claude never checks its own (reviewerOf).
   if (p.groqKey) all.push({ kind: "groq", key: p.groqKey });
+  if (p.anthropicKey) all.push({ kind: "claude", key: p.anthropicKey });
   // Only the services that proved reliable: the free Mistral, Cerebras, GitHub Models and Gemini plans ran out too
   // often to count on. With Groq alone, the owner approves the work in place of a second AI; Claude adds it back.
   return all.length ? { ...all[0], backups: all.slice(1) } : null;
@@ -160,7 +162,7 @@ export async function readAccountAutopilot(accountId: string): Promise<AccountAu
   return {
     enabled: yes(row?.enabled),
     maxPagesPerWeek: Number(row?.max_pages_per_week ?? 4),
-    articlesPerWeek: Number(row?.articles_per_week ?? 3),
+    articlesPerWeek: Number(row?.articles_per_week ?? 1),
     allowContent: row ? yes(row.allow_content) : true,
     emailAlerts: row?.email_alerts == null ? true : yes(row.email_alerts),
     shopDomain: row?.shop_domain ?? undefined,

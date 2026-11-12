@@ -11,7 +11,7 @@ import { writeNewArticle, type NewArticle } from "./writer";
 
 /**
  * New articles for searches no page on the site covers yet (picked with
- * "Rank for this"). At most the owner's weekly number (3 by default, spread
+ * "Rank for this"). At most the owner's weekly number (1 by default, spread
  * at least a day apart), since a burst of new pages on a health site looks
  * like mass produced content to Google. The article is planned from
  * Google page one, written and checked like every other change, then:
@@ -54,6 +54,42 @@ async function markWritten(accountId: string): Promise<void> {
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${LAST(accountId)}, ${String(Date.now())})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
+
+/** The topic an article belongs to: its cluster from the site's own keyword data, else its own search. */
+export const topicOf = (t: { cluster?: string; keyword: string }) => (t.cluster ?? t.keyword).trim().toLowerCase();
+
+const TURNS = (accountId: string) => `newarticle_turns:${accountId}`;
+async function readTurns(accountId: string): Promise<Record<string, number>> {
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${TURNS(accountId)}`;
+  try {
+    return row?.value ? (JSON.parse(row.value) as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+async function saveTurn(accountId: string, turns: Record<string, number>, topic: string): Promise<void> {
+  const next = { ...turns, [topic]: Date.now() };
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${TURNS(accountId)}, ${JSON.stringify(next)})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+}
+
+/**
+ * The next article, taking topics in turn: the topic last written longest ago (never written first), and within it
+ * the best search in the order given. Generic: topics come from each site's own keyword clusters.
+ */
+export function pickByTurn<T extends { cluster?: string; keyword: string }>(due: T[], turns: Record<string, number>): T | undefined {
+  let best: T | undefined;
+  let bestAt = Infinity;
+  for (const t of due) {
+    const at = turns[topicOf(t)] ?? 0;
+    if (at < bestAt) {
+      best = t;
+      bestAt = at;
+    }
+  }
+  return best;
 }
 
 /** Trusted health sources: government, universities, and major medical centers and journals.
@@ -107,10 +143,13 @@ export async function nextNewArticle(opts: {
         easeRank(a.difficulty) - easeRank(b.difficulty) ||
         b.monthlySearches - a.monthlySearches
     );
-  const target = due[0];
+  // Each of the site's topics gets its turn: the topic written longest ago (or never) goes next.
+  const turns = await readTurns(accountId);
+  const target = pickByTurn(due, turns);
   if (!target) return null;
   // One try a day even if the writer gives up, so a hard search doesn't use up every run.
   await markWritten(accountId);
+  await saveTurn(accountId, turns, topicOf(target)).catch((e) => console.error(`article topic turn not saved: ${(e as Error).message}`));
 
   const comp = await analyzeCompetition(opts.platform.serperKey, accountId, target.keyword, opts.ourDomain);
   const own = await site.articles().catch(() => []);
