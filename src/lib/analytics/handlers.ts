@@ -1424,6 +1424,15 @@ export const revertAutopilot = (req: Request) =>
   });
 
 /** Called by the scheduled trigger: runs a few customers whose daily run is due. */
+/**
+ * Marks the hourly run finished. Its start time is kept, so the next run may start 40 minutes after this one
+ * started and no sooner: a call that only pretends to be the scheduler can't make the agents run over and over.
+ */
+const finishTick = () =>
+  sql`UPDATE insights_settings SET value = 'done:' || value WHERE key = 'tick_lock' AND value NOT LIKE 'done:%'`.catch(
+    (e) => console.error(`tick lock not marked finished: ${message(e)}`),
+  );
+
 export async function autopilotTick(): Promise<Response> {
   const results: string[] = [];
   // Sabbath rest: nothing runs from Friday sundown to Saturday sundown.
@@ -1437,7 +1446,8 @@ export async function autopilotTick(): Promise<Response> {
   const [lock] = await sql`
     INSERT INTO insights_settings (key, value) VALUES ('tick_lock', ${new Date().toISOString()})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-    WHERE insights_settings.updated_at < now() - interval '50 minutes'
+    WHERE (insights_settings.value LIKE 'done:%' AND insights_settings.updated_at < now() - interval '40 minutes')
+       OR insights_settings.updated_at < now() - interval '50 minutes'
     RETURNING key`.catch((e) => (console.error(`tick lock not taken: ${message(e)}`), [{ key: "tick_lock" }]));
   if (!lock) {
     console.log("autopilot tick: the previous run is still going, this one is skipped");
@@ -1621,13 +1631,13 @@ export async function autopilotTick(): Promise<Response> {
     if (late()) results.push("time budget used, the rest waits for the next hour");
     console.log(`autopilot tick: ${results.join(" | ") || "nothing due"}`);
     await heartbeatEnd(beat, null);
-    await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
+    await finishTick();
     // Only a count: the details stay in the logs, so the response tells a caller nothing about any site.
     return json({ ok: true, count: results.length });
   } catch (err) {
     console.error(`autopilot tick failed: ${message(err)}`);
     await heartbeatEnd(beat, message(err));
-    await sql`DELETE FROM insights_settings WHERE key = 'tick_lock'`.catch(() => undefined);
+    await finishTick();
     return json({ ok: false }, 500);
   }
 }
@@ -1666,7 +1676,10 @@ export async function shopifyCallback(req: Request): Promise<Response> {
   if (!account) return back({ shopify_error: "Please sign in, then connect your store again." });
   const shop = normalizeShopDomain(params.get("shop") ?? "");
   const code = params.get("code");
-  if (!shop || !code || params.get("state") !== readCookie(req, SHOPIFY_STATE_COOKIE) || !(await verifyCallbackHmac(params))) {
+  // The state must be the one this browser was given at install: without it, someone could link their own store
+  // to another person's account by sending them a callback link.
+  const state = params.get("state");
+  if (!shop || !code || !state || state !== readCookie(req, SHOPIFY_STATE_COOKIE) || !(await verifyCallbackHmac(params))) {
     return back({ shopify_error: "The connection link expired or was invalid. Please try again." });
   }
   try {

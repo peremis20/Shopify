@@ -1,5 +1,6 @@
 import { ensureSchema, sql } from "./db";
 import { PLATFORM_LABEL, type Platform } from "./fix-guides";
+import { publicFetch } from "./profile";
 
 /**
  * Reads any website the way a search engine does: its sitemap, then each
@@ -34,7 +35,8 @@ const UA = "Mozilla/5.0 (compatible; SiteReader/1.0; +https://search.google.com)
 
 async function get(url: string, timeoutMs = 12_000): Promise<{ ok: boolean; status: number; text: string; url: string }> {
   try {
-    const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xml;q=0.9,*/*;q=0.8" }, redirect: "follow", signal: AbortSignal.timeout(timeoutMs) });
+    // Every address and redirect must be a public website: a sitemap can list any address, including private ones.
+    const res = await publicFetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xml;q=0.9,*/*;q=0.8" }, signal: AbortSignal.timeout(timeoutMs) });
     return { ok: res.ok, status: res.status, text: res.ok ? await res.text() : "", url: res.url || url };
   } catch {
     return { ok: false, status: 0, text: "", url };

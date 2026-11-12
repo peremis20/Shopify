@@ -1,3 +1,4 @@
+import { publicFetch } from "./profile";
 import { readAccountAutopilot, readPlatformSettings } from "./autopilot/settings";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { getConnection, saveConnection, type Connection } from "./connection";
@@ -89,7 +90,7 @@ async function setAppData(store: StoreAccess, ownerId: string, values: Record<st
 
 /** Whether the live home page already shows a tag (the embed is on and the page has refreshed). */
 async function pageShows(url: string, needle: string): Promise<boolean> {
-  const html = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteSetup/1.0)" }, redirect: "follow" })
+  const html = await publicFetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteSetup/1.0)" } })
     .then((r) => (r.ok ? r.text() : ""))
     .catch(() => "");
   return html.includes(needle);
@@ -103,7 +104,7 @@ async function embedUrl(store: StoreAccess): Promise<string> {
 
 /** The address the site really answers on (with or without www), as Search Console wants it. */
 async function liveSiteUrl(domain: string): Promise<string> {
-  const res = await fetch(`https://${domain}/`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteSetup/1.0)" }, redirect: "follow", signal: AbortSignal.timeout(12_000) }).catch(
+  const res = await publicFetch(`https://${domain}/`, { headers: { "User-Agent": "Mozilla/5.0 (compatible; SiteSetup/1.0)" }, signal: AbortSignal.timeout(12_000) }).catch(
     () => null
   );
   const final = res?.url ? new URL(res.url) : new URL(`https://${domain}/`);

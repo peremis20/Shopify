@@ -1,3 +1,4 @@
+import { publicFetch } from "../profile";
 import type { StoreResource } from "./shopify";
 
 /**
@@ -88,6 +89,6 @@ export function buildSchema(page: StoreResource, body: string, liveHtml: string,
 
 /** The published page's HTML, for structured data the theme adds. Empty if it can't be read. */
 export async function liveHtml(url: string): Promise<string> {
-  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; InsightsSEO/1.0)" }, signal: AbortSignal.timeout(10000) }).catch(() => null);
+  const res = await publicFetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; InsightsSEO/1.0)" }, signal: AbortSignal.timeout(10000) }).catch(() => null);
   return res?.ok ? (await res.text().catch(() => "")).slice(0, 3_000_000) : "";
 }

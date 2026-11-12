@@ -103,7 +103,12 @@ export async function embeddedAccount(req: Request): Promise<Account | null> {
 
 // ---------- linking Google from inside Shopify ----------
 
-const linkKey = () => crypto.createHmac("sha256", process.env.SESSION_SECRET ?? "").update("google-link").digest();
+const linkKey = () => {
+  // Never signed with an empty key: without the server secret, no link can be made or trusted.
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) throw new Error("SESSION_SECRET is not set on the server.");
+  return crypto.createHmac("sha256", secret).update("google-link").digest();
+};
 
 /** How long a ticket can be opened after it is made (the app opens it at once), and how long Google consent may take after that. */
 const LINK_OPEN_MS = 3 * 60_000;
