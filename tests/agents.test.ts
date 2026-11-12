@@ -169,3 +169,20 @@ test("one AI service: the owner is the second check for work they approve, nothi
   // Anywhere else it still stops the work.
   await assert.rejects(() => reviewProspects(groq, "me.com", prospects), /second AI/);
 });
+
+import { fixBrand } from "../src/lib/analytics/autopilot/writer";
+import { decodeCfEmail, revealEmails } from "../src/lib/analytics/autopilot/contact-finder";
+
+test("outreach: the brand is spelled as set, other words are left alone", () => {
+  assert.equal(fixBrand("I run Perimis, a supplement brand.\nPerimis", "Peremis"), "I run Peremis, a supplement brand.\nPeremis");
+  assert.equal(fixBrand("The premise is simple.", "Peremis"), "The premise is simple.");
+  assert.equal(fixBrand("A nice day", "Nike"), "A nice day");
+});
+
+test("contact finder: hidden addresses are read back", () => {
+  // "hi@x.co" XORed with key 0x2a
+  const hex = "2a" + [..."hi@x.co"].map((c) => (c.charCodeAt(0) ^ 0x2a).toString(16).padStart(2, "0")).join("");
+  assert.equal(decodeCfEmail(hex), "hi@x.co");
+  assert.match(revealEmails(`<a data-cfemail="${hex}">[email protected]</a>`), /hi@x\.co/);
+  assert.match(revealEmails("editor [at] site [dot] com"), /editor@site\.com/);
+});

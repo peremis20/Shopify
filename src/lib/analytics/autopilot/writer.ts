@@ -1121,6 +1121,23 @@ If this search isn't a fit for this website's business, return an empty string f
 }
 
 /** A short, personal outreach email asking a site to link to this one. The owner sends it. */
+/** Words a letter or two off the brand name (a typo like "Perimis" for "Peremis") are written as the brand. */
+export function fixBrand(text: string, brand: string | null | undefined): string {
+  const b = brand?.trim();
+  // Short or common brand names would catch real words, so only longer single word brands are corrected.
+  if (!b || /\s/.test(b) || b.length < 5) return text;
+  const most = b.length >= 8 ? 2 : 1;
+  const near = (w: string) => {
+    const a = w.toLowerCase(), c = b.toLowerCase();
+    if (a === c || Math.abs(a.length - c.length) > 1 || a[0] !== c[0]) return false;
+    const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(c.length).fill(0)]);
+    for (let j = 1; j <= c.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= c.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === c[j - 1] ? 0 : 1));
+    return d[a.length][c.length] <= most;
+  };
+  return text.replace(/[A-Za-z]+/g, (w) => (w.toLowerCase() === b.toLowerCase() ? b : near(w) ? b : w));
+}
+
 export async function writeOutreach(
   ai: AiProvider,
   p: {
@@ -1151,13 +1168,13 @@ export async function writeOutreach(
       ? `Their page mentions ${p.ourBrand ?? p.ourSite}. Thank them, and ask kindly whether they would add a link to ${p.ourSite} where it is mentioned, so their readers can find it.`
       : p.kind === "resource"
         ? `Their page lists helpful links about ${p.topic}. Suggest ${p.ourPage ?? p.ourSite} as one more for their readers, saying in one sentence what it covers.`
-        : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only: never ask for a link in return for the article.`;
+        : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only, and don't mention links at all.`;
   // What the business offers is a known fact for the writer and for the second AI's check alike.
   const given = `${p.sells ? `What ${p.ourBrand ?? p.ourSite} offers: ${p.sells}. Keep the email about how that fits their page and readers; never invent products, services or offers beyond this.\n` : ""}${ask}`;
   const prompt = `Write a short outreach email (under 120 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${given}
-Sound like a real person writing one email, not a template: plain and friendly, no flattery, no hype, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Mention their page by name so they know it was read. Leave the sign off as the brand name only.
+Write it as a polished, professional business email from a real person: courteous and warm, clear and confident, no flattery, no hype, no slang, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Shape: a greeting line ("Hello," or "Hi there,"), then two or three short paragraphs separated by a blank line (who you are and why their page, the offer, a simple polite ask), then a closing line ("Best regards," or "Kind regards,") and the sign off on its own lines: "The ${p.ourBrand ?? p.ourSite} team" and then ${p.ourSite}. Mention their page by name so they know it was read. Spell the brand exactly ${p.ourBrand ?? p.ourSite}, and write product and ingredient names with normal capitals (for example Magnesium L Threonate).
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
 Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`;
   const schema = {
@@ -1173,8 +1190,9 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
     const out = await askJson<{ subject: string; body: string }>(ai, prompt + feedback, schema);
     const keep = [p.ourBrand, p.ourSite, p.siteName].filter((x): x is string => Boolean(x && x.trim()));
     const urls = [p.pageUrl, p.ourPage ?? "", p.brokenLink ?? "", `https://${p.ourSite}`, `https://${p.ourSite}/`];
-    const body = safeEmailText(out.body ?? "", keep, urls);
-    const subject = safeEmailText(out.subject ?? "", keep, urls);
+    // The brand is spelled exactly as the owner set it, whatever the AI typed.
+    const body = safeEmailText(fixBrand(out.body ?? "", p.ourBrand), keep, urls);
+    const subject = safeEmailText(fixBrand(out.subject ?? "", p.ourBrand), keep, urls);
     if (!body.text || body.dropped > body.total / 3) {
       reasons.push(`the safety filter removed ${body.dropped} of ${body.total} sentences`);
       continue;
@@ -1185,8 +1203,8 @@ Return JSON with "subject" (under 8 words) and "body" (plain text with line brea
       reasons.push(`the checking AI turned it down${r.why ? `: ${r.why}` : ""}`);
       continue;
     }
-    const rb = r.body ? safeEmailText(r.body, keep, urls) : null;
-    const rs = r.subject ? safeEmailText(r.subject, keep, urls) : null;
+    const rb = r.body ? safeEmailText(fixBrand(r.body, p.ourBrand), keep, urls) : null;
+    const rs = r.subject ? safeEmailText(fixBrand(r.subject, p.ourBrand), keep, urls) : null;
     // The reviewer's version must still carry every link the first draft gave (the page to offer, the dead link).
     const links = [p.ourPage, p.brokenLink, p.pageUrl].filter((u): u is string => Boolean(u) && body.text.includes(u!));
     const keepsLinks = (t: string) => links.every((u) => t.includes(u));

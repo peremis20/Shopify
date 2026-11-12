@@ -6,7 +6,25 @@ import { readCapped, safeFetch } from "./broken-links";
  * the site's home, contact and about pages. Only addresses printed on the site count (never a guessed info@), and the
  * site's own domain is preferred. A public fact about a public site, so it is kept for 30 days in the shared cache.
  */
-const PAGES = ["", "/contact", "/contact-us", "/about", "/about-us", "/write-for-us"];
+const PAGES = ["", "/contact", "/contact-us", "/pages/contact", "/about", "/about-us", "/write-for-us", "/contribute", "/advertise", "/team", "/privacy-policy", "/privacy"];
+
+/** Cloudflare hides printed addresses as data-cfemail="hex" (a one byte key, then the address XORed with it). */
+export function decodeCfEmail(hex: string): string | null {
+  if (!/^[0-9a-f]{4,}$/i.test(hex) || hex.length % 2) return null;
+  const key = parseInt(hex.slice(0, 2), 16);
+  let out = "";
+  for (let i = 2; i < hex.length; i += 2) out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16) ^ key);
+  return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(out) ? out : null;
+}
+
+/** Text with the usual ways sites hide a printed address turned back into plain addresses. */
+export function revealEmails(html: string): string {
+  return html
+    .replace(/data-cfemail="([0-9a-f]+)"/gi, (_m, hex: string) => ` ${decodeCfEmail(hex) ?? ""} `)
+    .replace(/\/cdn-cgi\/l\/email-protection#([0-9a-f]+)/gi, (_m, hex: string) => ` ${decodeCfEmail(hex) ?? ""} `)
+    .replace(/&#64;|&#x40;|\s*(\[at\]|\(at\)|\{at\}| at )\s*(?=[a-z0-9-]+(\s*(\[dot\]|\(dot\)|\.| dot )\s*)[a-z]{2,})/gi, "@")
+    .replace(/\s*(\[dot\]|\(dot\)|\{dot\})\s*/gi, ".");
+}
 const NOT_PEOPLE = /^(no-?reply|donotreply|mailer-daemon|postmaster|abuse|privacy|dmca|legal|unsubscribe)@/i;
 const NOT_EMAILS = /\.(png|jpe?g|gif|webp|svg|css|js)$|@(example|sentry|wixpress|domain|email)\.|@\d+x\./i;
 
@@ -29,7 +47,7 @@ export async function findContactEmail(pageUrl: string, domain: string): Promise
     const res = await safeFetch(href, "GET", Math.min(5000, left)).catch(() => null);
     if (!res || res === "unresolved" || !res.ok || !/html/i.test(res.headers.get("content-type") ?? "")) continue;
     loaded++;
-    const html = (await readCapped(res, 400_000).catch(() => "")).replace(/&#64;|&#x40;|\s*(\[at\]|\(at\))\s*/gi, "@");
+    const html = revealEmails(await readCapped(res, 400_000).catch(() => ""));
     for (const m of html.matchAll(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi)) {
       const e = m[0].toLowerCase().replace(/\.$/, "");
       if (NOT_PEOPLE.test(e) || NOT_EMAILS.test(e)) continue;
