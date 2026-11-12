@@ -197,6 +197,46 @@ export async function saveTarget(accountId: string, target: Target): Promise<voi
   await saveTargets(accountId, all.map((t) => (t.keyword === target.keyword ? target : t)));
 }
 
+/**
+ * Targets saved before the site's pages were read (or before a page about them existed) have no page, or only the
+ * home page or a collection. Each time the
+ * pages are read again, those are matched to a page now on the site that is clearly about them, so the autopilot
+ * improves that page instead of writing a second article on the same topic. Only articles and product pages count
+ * (never the home page or a collection), every word of the search must be there, and a page serves one topic.
+ * Targets that ever had an article (live, taken down or undone) are left alone. Returns how many were matched.
+ */
+export async function matchTargetPages(accountId: string): Promise<number> {
+  const pages = (await sitePages(accountId)).filter((p) => !p.noindex && (isPostUrl(p.url) || /\/products\//.test(new URL(p.url).pathname)));
+  const key = (u: string) => new URL(u).pathname.replace(/\/$/, "");
+  let matched = 0;
+  for (const t of await readTargets(accountId)) {
+    // A target aimed at the home page or a collection is moved to a page clearly about it, when there is one.
+    const loose = (u: string | null) => !u || key(u) === "" || /\/collections\//.test(new URL(u).pathname);
+    if (!loose(t.page) || t.article) continue;
+    const want = [...topicWords(t.keyword)];
+    if (!want.length) continue;
+    const latest = await readTargets(accountId);
+    // A page already aimed at another search is shared only when the two are the same topic (one search's words all
+    // in the other's), like "magnesium threonate benefits" and "magnesium l threonate".
+    const same = (o: Target) => {
+      const theirs = topicWords(o.keyword);
+      return want.every((w) => theirs.has(w)) || [...theirs].every((w) => want.includes(w));
+    };
+    const taken = new Set(latest.filter((o) => o.page && !same(o)).map((o) => key(o.page!)));
+    const fit = pages.find((p) => {
+      if (taken.has(key(p.url))) return false;
+      const have = topicWords(`${p.h1 ?? ""} ${p.title ?? ""} ${new URL(p.url).pathname.replace(/[-/]/g, " ")}`);
+      return want.every((w) => have.has(w));
+    });
+    // Re-read just before saving and set only the page, so a change made meanwhile is never lost.
+    const now = latest.find((o) => o.keyword === t.keyword);
+    if (!fit || !now || now.page !== t.page || now.article) continue;
+    await saveTarget(accountId, { ...now, page: fit.url });
+    matched++;
+  }
+  return matched;
+}
+
 export async function removeTarget(accountId: string, keyword: string): Promise<void> {
   const k = keyword.trim().toLowerCase();
   await saveTargets(accountId, (await readTargets(accountId)).filter((t) => t.keyword !== k));

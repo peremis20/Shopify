@@ -24,7 +24,7 @@ import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopi
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
 import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
-import { addTarget, readTargets, removeTarget } from "./autopilot/targets";
+import { addTarget, matchTargetPages, readTargets, removeTarget } from "./autopilot/targets";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
@@ -1371,14 +1371,17 @@ async function runOverlapScan(accountId: string, conn: Connection | null, force:
 /** Websites the app can't edit: read their pages from the sitemap (new and week-old pages, a batch a day). */
 async function readSite(accountId: string, force: boolean): Promise<number> {
   const [acct, conn] = await Promise.all([readAccountAutopilot(accountId), getConnection(accountId)]);
-  // Shopify stores are read through Shopify, unless there's no Search Console: then their pages feed the keyword targets.
-  if (acct.shopDomain && acct.shopTokenEnc && conn?.gscSiteUrl) return 0;
+  // Every site is read, Shopify stores too (they're edited through Shopify, but their public pages are what keyword
+  // targets are matched to, so an existing page is improved instead of a second article being written).
   const profile = await readProfile(accountId);
-  if (!profile.siteDomain) return 0;
+  const domain = profile.siteDomain || (acct.shopDomain && conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : null);
+  if (!domain) return 0;
   // Only a public website is read (never a local or internal address).
-  await assertPublicUrl(`https://${profile.siteDomain}/`);
-  const { read, platform } = await crawlSite(accountId, profile.siteDomain, force ? 25 : 60);
-  if (platform && platform !== profile.platform) await saveProfile(accountId, { platform });
+  await assertPublicUrl(`https://${domain}/`);
+  const { read, platform } = await crawlSite(accountId, domain, force ? 25 : 60);
+  // A connected Shopify store stays a Shopify store, whatever its public pages look like.
+  if (platform && platform !== profile.platform && !acct.shopDomain) await saveProfile(accountId, { platform });
+  if (read) await matchTargetPages(accountId).catch((e) => console.error(`target pages not matched: ${message(e)}`));
   return read;
 }
 
