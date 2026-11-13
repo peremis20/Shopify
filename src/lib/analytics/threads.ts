@@ -253,6 +253,7 @@ export async function freshLink(accountId: string): Promise<ThreadsLink | null> 
     const enc = encrypt(out.access_token, await tokenSecret());
     const expires = new Date(Date.now() + (Number(out.expires_in) || 60 * 86400) * 1000).toISOString();
     await sql`UPDATE insights_account_threads SET token_enc = ${enc}, expires_at = ${expires}, refreshed_at = now() WHERE account_id = ${accountId}`;
+    void report("threads", true);
     return { ...link, token: out.access_token, expiresAt: expires };
   } catch (e) {
     const msg = (e as Error).message;
@@ -334,6 +335,11 @@ export async function postToThreads(
   if (Date.parse(link.expiresAt) <= Date.now()) return { ok: false, status: 400, error: "The Threads connection ran out. Connect Threads again." };
   const text = threadsText(item);
   await schema();
+  // Also no more than the cap in any seven days, so a Sunday and a Monday can't both be full.
+  const [recent] = await sql`SELECT count(*) AS n FROM insights_threads_posts WHERE account_id = ${accountId} AND posted_at > now() - interval '7 days'`;
+  if (Number(recent?.n ?? 0) >= WEEKLY_POST_CAP) {
+    return { ok: false, status: 429, error: `${WEEKLY_POST_CAP} posts went to Threads in the last seven days, the most allowed. The next one goes out in a few days.` };
+  }
   const [slot] = await sql`
     INSERT INTO insights_threads_posts (account_id, change_id, text, by_whom) VALUES (${accountId}, ${item.changeId}, ${text}, ${by})
     ON CONFLICT (account_id, change_id) DO NOTHING RETURNING id, posted_at`;
