@@ -6,6 +6,7 @@ import { isJunkKeyword } from "./keyword-guard";
 import { fetchSerp } from "./serp";
 import { isBig, readSiteKeywords } from "./site-keywords";
 import { readTargets } from "./targets";
+import { readProfile } from "../profile";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { ownerApproves, reviewProspects } from "./writer";
 
@@ -110,21 +111,51 @@ async function save(accountId: string, list: ProspectList): Promise<void> {
 
 export const prospectsDue = (list: ProspectList | null) => !list || Date.now() - new Date(list.updatedAt).getTime() > WEEK;
 
-/** The site's topics to find links for: its main searches, Easy ones first. */
-async function topics(accountId: string): Promise<string[]> {
-  const [targets, kws] = await Promise.all([readTargets(accountId).catch(() => []), readSiteKeywords(accountId).catch(() => [])]);
-  const all = [
-    ...targets.filter((t) => t.role !== "support").sort((a, b) => (a.difficulty ?? 50) - (b.difficulty ?? 50)),
-    ...kws.filter((k) => k.role !== "support").sort((a, b) => (a.difficulty ?? 50) - (b.difficulty ?? 50)),
-  ].map((k) => k.keyword);
-  // Shorter topic phrases find more pages: keep the first three words.
-  const out: string[] = [];
-  for (const k of all) {
-    const t = k.split(/\s+/).slice(0, 3).join(" ");
-    if (!out.includes(t) && !isJunkKeyword(t)) out.push(t);
-    if (out.length >= 2) break;
+/** Little words that make a search phrase too exact to match anything ("website and seo"). */
+const GLUE = new Set("a an and the of for to in on at by with your you my me myself our we re s is are about all how what why do does can this that".split(" "));
+const stem = (w: string) => w.replace(/(ies)$/, "y").replace(/(?<=[a-z]{3})s$/, "");
+
+/**
+ * The two topics to look for link sites on: the site's own searches, cut to their meaning words, and when the business
+ * profile says what the site offers, only searches about that (so a stray search from a legal or FAQ page isn't used).
+ * The ones closest to what the business offers come first.
+ */
+export function pickTopics(keywords: { keyword: string; source: number }[], offer: string | null): string[] {
+  const offerWords = new Set((offer ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1 && !GLUE.has(w)).map(stem));
+  const scored: { t: string; words: string; score: number; source: number }[] = [];
+  for (const k of keywords) {
+    const words = k.keyword.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w && !GLUE.has(w)).slice(0, 3);
+    if (!words.length) continue;
+    const t = words.join(" ");
+    if (isJunkKeyword(t)) continue;
+    const score = words.filter((w) => offerWords.has(stem(w))).length;
+    if (offerWords.size && score === 0) continue;
+    // The same words in another order are the same topic.
+    const key = [...words].map(stem).sort().join(" ");
+    if (scored.some((x) => x.words === key)) continue;
+    scored.push({ t, words: key, score, source: k.source });
   }
-  return out;
+  return scored.sort((a, b) => b.score - a.score || a.source - b.source).slice(0, 2).map((x) => x.t);
+}
+
+async function topics(accountId: string): Promise<string[]> {
+  const [targets, kws, profile] = await Promise.all([
+    readTargets(accountId).catch(() => []),
+    readSiteKeywords(accountId).catch(() => []),
+    readProfile(accountId).catch(() => null),
+  ]);
+  const byEase = <T extends { difficulty?: number | null }>(a: T, b: T) => (a.difficulty ?? 50) - (b.difficulty ?? 50);
+  const all = [
+    ...targets.filter((t) => t.role !== "support").sort(byEase).map((k) => ({ keyword: k.keyword, source: 0 })),
+    ...kws.filter((k) => k.role !== "support").sort(byEase).map((k) => ({ keyword: k.keyword, source: 1 })),
+    ...kws.filter((k) => k.role === "support").map((k) => ({ keyword: k.keyword, source: 2 })),
+  ];
+  const a = profile?.about;
+  const offer = a ? [a.offer, a.audience].filter(Boolean).join(" ") : null;
+  const picked = offer ? pickTopics(all, offer) : [];
+  // A profile that matches none of the searches shouldn't leave the finder with nothing to look for. Support searches
+  // (often from legal or FAQ pages) count only when they match what the business offers.
+  return picked.length ? picked : pickTopics(all.filter((k) => k.source < 2), null);
 }
 
 /** Looks for new prospects on Google (about 7 searches), keeping what the owner already marked. */
