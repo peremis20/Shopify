@@ -6,8 +6,8 @@ import { threadsSignedUser } from "../src/lib/analytics/handlers";
 
 const kit = (x: string) => ({ linkedin: "", facebook: "", instagram: "", x, video: { hook: "", script: "", caption: "" } });
 
-test("threads: only permission to read the username and to post, and a small weekly cap", () => {
-  assert.deepEqual(THREADS_SCOPES, ["threads_basic", "threads_content_publish"]);
+test("threads: read the username, post, read and answer replies to its own posts, and search public posts, and a small weekly cap", () => {
+  assert.deepEqual(THREADS_SCOPES, ["threads_basic", "threads_content_publish", "threads_read_replies", "threads_manage_replies", "threads_keyword_search"]);
   assert.ok(WEEKLY_POST_CAP > 0 && WEEKLY_POST_CAP <= 5);
 });
 

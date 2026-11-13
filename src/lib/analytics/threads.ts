@@ -13,7 +13,7 @@ import { report } from "./autopilot/status";
  */
 
 const GRAPH = "https://graph.threads.net";
-export const THREADS_SCOPES = ["threads_basic", "threads_content_publish"];
+export const THREADS_SCOPES = ["threads_basic", "threads_content_publish", "threads_read_replies", "threads_manage_replies", "threads_keyword_search"];
 /** Threads' own limit for one post's text. */
 export const THREADS_MAX_CHARS = 500;
 /** Posts a site may make from here in seven days, so a feed never reads like a bot. */

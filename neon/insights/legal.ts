@@ -66,7 +66,7 @@ export const privacyHtml = () =>
 <li>If you click Allow, it may resubmit sitemaps already listed in your Search Console so Google looks at changed pages sooner.</li>
 </ul>
 <h2>Threads</h2>
-<p>If you connect Threads, DashPatrol reads your Threads username and posts short posts about your own new articles to your own Threads profile, only when you click Post to Threads or after you turn on automatic posting. It posts at most a few times a week and never reads your messages or other posts. Disconnect it any time from Share this week, or remove DashPatrol in your Threads settings under Website permissions; DashPatrol then deletes its stored Threads access.</p>
+<p>If you connect Threads, DashPatrol reads your Threads username and posts short posts about your own new articles to your own Threads profile, only when you click Post to Threads or after you turn on automatic posting. It posts at most a few times a week. It reads the replies to your posts so it can suggest helpful answers, and posts or hides a reply only when you approve it or turn on automatic replies. It searches public Threads posts on your topics to see what people ask about. It never reads your private messages. Disconnect it any time from Share this week, or remove DashPatrol in your Threads settings under Website permissions; DashPatrol then deletes its stored Threads access.</p>
 <h2>How we use it</h2>
 <ul>
 <li>Only to run DashPatrol for you: planning, improving pages, writing articles, tracking rankings and reporting results.</li>
