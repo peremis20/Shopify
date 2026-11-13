@@ -64,6 +64,7 @@ import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
+import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, removeThreadsUser, setThreadsAuto, threadsPosts, WEEKLY_POST_CAP } from "./threads";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import {
@@ -189,7 +190,7 @@ export async function authStart(req: Request): Promise<Response> {
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
   const ticket = new URL(req.url).searchParams.get("link");
-  const linked = purpose !== "ads" && readLinkTicket(ticket) ? `link~${ticket}` : purpose;
+  const linked = purpose !== "ads" && readLinkTicket(ticket)?.purpose === "google" ? `link~${ticket}` : purpose;
   // Sending from Gmail is always for an account already signed in, through a link ticket.
   if (purpose === "gmail" && !linked.startsWith("link~")) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Please+start+again+from+Backlinks`);
@@ -255,7 +256,8 @@ export async function authCallback(req: Request): Promise<Response> {
     }
 
     const linkState = gmail ? state.slice(6) : state;
-    const link = linkState.startsWith("link~") ? readLinkTicket(linkState.slice(5, linkState.lastIndexOf(".")), LINK_FINISH_MS) : null;
+    const ticketed = linkState.startsWith("link~") ? readLinkTicket(linkState.slice(5, linkState.lastIndexOf(".")), LINK_FINISH_MS) : null;
+    const link = ticketed?.purpose === "google" ? ticketed : null;
     if (linkState.startsWith("link~") && !link) throw new Error("The link from Shopify expired. Please try again from the app.");
     if (gmail && !link) throw new Error("Please start again from Backlinks.");
     if (link) {
@@ -1262,6 +1264,8 @@ export const savePlatform = (req: Request) =>
       searchMonthlyLimit: Number(b.searchMonthlyLimit) > 0 ? Number(b.searchMonthlyLimit) : undefined,
       shopifyClientId: str("shopifyClientId"),
       shopifyClientSecret: str("shopifyClientSecret"),
+      threadsAppId: str("threadsAppId"),
+      threadsAppSecret: str("threadsAppSecret"),
     });
     forgetOprKey();
     const p = await readPlatformSettings();
@@ -1780,4 +1784,185 @@ export async function shopifyWebhook(req: Request): Promise<Response> {
     await sql`UPDATE insights_account_autopilot SET shop_domain = NULL, shop_token_enc = NULL, enabled = false WHERE shop_domain = ${shop}`;
   }
   return new Response(null, { status: 200 });
+}
+
+// ---------- Threads ----------
+
+const THREADS_STATE_COOKIE = "insights_threads_state";
+const threadsRedirectUri = (req: Request) => `${appOrigin(req)}/api/auth/threads/callback`;
+
+async function threadsApp(): Promise<{ id: string; secret: string } | null> {
+  const p = await readPlatformSettings();
+  return p.threadsAppId && p.threadsAppSecret ? { id: p.threadsAppId, secret: p.threadsAppSecret } : null;
+}
+
+/** Whether Threads is connected for this site, its posts, and the automatic posting choice. */
+export const threadsStatus = (req: Request) =>
+  withAccount(req, async (account) => {
+    const configured = Boolean(await threadsApp());
+    const link = await freshLink(account.id).catch(() => null);
+    const expired = link ? Date.parse(link.expiresAt) <= Date.now() : false;
+    return json({
+      configured,
+      connected: Boolean(link) && !expired,
+      expired,
+      username: link?.username ?? null,
+      auto: link?.auto ?? false,
+      lastError: link?.lastError ?? null,
+      posts: link ? await threadsPosts(account.id) : [],
+      postedThisWeek: link ? await postsThisWeek(account.id) : 0,
+      cap: WEEKLY_POST_CAP,
+    });
+  });
+
+/** A Threads connect link tied to this account (opened at the top level, also from inside Shopify admin). */
+export const threadsLinkStart = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (!(await threadsApp())) return json({ error: "Threads isn't set up on DashPatrol yet." }, 400);
+    const acct = await readAccountAutopilot(account.id);
+    const embedded = Boolean(req.headers.get("authorization"));
+    const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
+    const session = (await currentAccount(req).catch(() => null))?.id === account.id;
+    return json({ url: `${appOrigin(req)}/api/auth/threads/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session, "threads"))}` });
+  });
+
+/** Sends the owner to Threads to allow posting. */
+export async function threadsAuthStart(req: Request): Promise<Response> {
+  const app = await threadsApp();
+  const ticket = new URL(req.url).searchParams.get("link");
+  if (!app || readLinkTicket(ticket)?.purpose !== "threads") return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent("Please start again from Share this week.")}`);
+  const state = `${ticket}.${crypto.randomBytes(16).toString("hex")}`;
+  return redirect(threadsAuthorizeUrl(app.id, threadsRedirectUri(req), state), tempCookie(req, THREADS_STATE_COOKIE, state, 900));
+}
+
+/** Threads redirects here: the token is kept for this account only. */
+export async function threadsAuthCallback(req: Request): Promise<Response> {
+  const params = new URL(req.url).searchParams;
+  const clear = tempCookie(req, THREADS_STATE_COOKIE, "", 0);
+  const state = params.get("state") ?? "";
+  const ticket = state.slice(0, state.lastIndexOf("."));
+  const ticketed = state && state === readCookie(req, THREADS_STATE_COOKIE) ? readLinkTicket(ticket, LINK_FINISH_MS) : null;
+  const link = ticketed?.purpose === "threads" ? ticketed : null;
+  const home = link?.returnTo || `${appOrigin(req)}/analytics`;
+  const back = (p: Record<string, string>) => redirect(`${home}${home.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
+  if (params.get("error")) return back({ auth_error: "Threads access was not allowed. Nothing changed." });
+  const code = params.get("code");
+  const app = await threadsApp();
+  if (!code || !link || !app) return back({ auth_error: "The Threads link expired. Please try again from Share this week." });
+  try {
+    const here = await currentAccount(req).catch(() => null);
+    if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Threads from inside that account instead.");
+    if (link.session && !here) throw new Error("Please sign in again, then connect Threads from the app.");
+    if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
+    const out = await exchangeThreadsCode(app, code, threadsRedirectUri(req));
+    // Kept aside until the person who just allowed it on Threads confirms the site, in this same browser:
+    // a link someone else sends can't quietly put a stranger's Threads profile on their site.
+    const id = await holdThreads(link.accountId, out, home);
+    const confirm = crypto.randomBytes(16).toString("hex");
+    const profile = await readProfile(link.accountId).catch(() => null);
+    const site = profile?.siteDomain || (await readAccountAutopilot(link.accountId).catch(() => null))?.shopDomain || "your site";
+    return threadsConfirmPage(req, { id, confirm, username: out.username, site }, clear, tempCookie(req, THREADS_CONFIRM_COOKIE, `${id}.${confirm}`, 900));
+  } catch (err) {
+    return back({ auth_error: message(err) });
+  }
+}
+
+const THREADS_CONFIRM_COOKIE = "insights_threads_confirm";
+
+function threadsConfirmPage(req: Request, p: { id: string; confirm: string; username: string; site: string }, ...cookies: string[]): Response {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Threads</title>
+<style>body{margin:0;background:#F7F3EC;color:#1F1D1A;font:16px/1.5 Inter,system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+main{max-width:460px;background:#fff;border:1px solid #E6E0D6;border-radius:16px;padding:24px}h1{font-size:20px;margin:0 0 12px}
+button{font:600 15px Inter,system-ui,sans-serif;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}.yes{background:#0F5A32;color:#fff}.no{background:#EFEAE1;color:#1F1D1A;margin-left:8px}</style></head>
+<body><main><h1>Post to Threads as @${escapeHtml(p.username)}?</h1>
+<p>DashPatrol will post about new articles from <strong>${escapeHtml(p.site)}</strong> to this Threads profile, only when you click Post to Threads or turn on automatic posting.</p>
+<p>If this isn't your site, click Cancel.</p>
+<form method="post" action="${appOrigin(req)}/api/auth/threads/confirm"><input type="hidden" name="id" value="${escapeHtml(p.id)}"><input type="hidden" name="confirm" value="${escapeHtml(p.confirm)}">
+<button class="yes" name="answer" value="yes">Connect</button><button class="no" name="answer" value="no">Cancel</button></form></main></body></html>`;
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY" });
+  cookies.forEach((c) => headers.append("Set-Cookie", c));
+  return new Response(html, { status: 200, headers });
+}
+
+/** The Connect or Cancel click on the confirm page, from the same browser that allowed it on Threads. */
+export async function threadsAuthConfirm(req: Request): Promise<Response> {
+  const form = await req.formData().catch(() => null);
+  const id = String(form?.get("id") ?? "");
+  const confirm = String(form?.get("confirm") ?? "");
+  const clear = tempCookie(req, THREADS_CONFIRM_COOKIE, "", 0);
+  const fallback = `${appOrigin(req)}/analytics`;
+  const go = (to: string, p: Record<string, string>) => redirect(`${to}${to.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
+  try {
+    const pending = id ? await readPending(id) : null;
+    if (!pending || !id || !confirm || readCookie(req, THREADS_CONFIRM_COOKIE) !== `${id}.${confirm}`) {
+      return go(fallback, { auth_error: "That Threads link expired. Please connect Threads again from Share this week." });
+    }
+    if (form?.get("answer") !== "yes") {
+      await dropPending(id);
+      return go(pending.returnTo || fallback, { auth_error: "Threads was not connected. Nothing changed." });
+    }
+    const to = await confirmPending(id);
+    if (!to) return go(fallback, { auth_error: "That Threads link expired. Please connect Threads again from Share this week." });
+    return go(to, { connected: "threads" });
+  } catch (err) {
+    return go(fallback, { auth_error: message(err) });
+  }
+}
+
+/** Posts one article's share post to Threads. Only the owner's click (or their own automatic posting choice) calls this. */
+export const threadsPost = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = (await req.json().catch(() => ({}))) as { changeId?: string };
+    const item = (await readShareKits(account.id)).find((i) => i.changeId === String(b.changeId ?? ""));
+    if (!item) return json({ error: "That article isn't on the list anymore." }, 404);
+    const out = await postToThreads(account.id, item, "owner");
+    if (!out.ok) return json({ error: out.error }, out.status);
+    return json({ ok: true, post: out.post, postedThisWeek: await postsThisWeek(account.id) });
+  });
+
+/** Turns automatic posting to Threads on or off for this site. */
+export const threadsSettings = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = (await req.json().catch(() => ({}))) as { auto?: unknown };
+    if (!(await getThreads(account.id))) return json({ error: "Connect Threads first." }, 400);
+    await setThreadsAuto(account.id, b.auto === true);
+    return json({ ok: true, auto: b.auto === true });
+  });
+
+/** Stops posting to Threads: the saved access is deleted. */
+export const threadsDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    await removeThreads(account.id);
+    return json({ ok: true });
+  });
+
+/** Meta's signed request: the Threads user it names, or null when the signature doesn't match the app secret. */
+export function threadsSignedUser(signed: string | null, secret: string): string | null {
+  const [sig, payload] = (signed ?? "").split(".");
+  if (!sig || !payload) return null;
+  const expected = Buffer.from(crypto.createHmac("sha256", secret).update(payload).digest("base64url"));
+  const given = Buffer.from(sig.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""));
+  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload.replace(/\+/g, "-").replace(/\//g, "_"), "base64url").toString("utf8")) as { user_id?: string | number };
+    return data.user_id != null ? String(data.user_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Meta calls this when someone removes DashPatrol from Threads, or asks for their data to be deleted. */
+export async function threadsRemoved(req: Request): Promise<Response> {
+  const app = await threadsApp().catch(() => null);
+  const form = await req.formData().catch(() => null);
+  const user = app ? threadsSignedUser(String(form?.get("signed_request") ?? ""), app.secret) : null;
+  if (!user) return json({ error: "Not a valid request." }, 400);
+  try {
+    await removeThreadsUser(user);
+  } catch (err) {
+    console.error(`threads removal failed: ${message(err)}`);
+    return json({ error: "Please try again." }, 500);
+  }
+  const code = crypto.createHash("sha256").update(`threads-removed:${user}`).digest("hex").slice(0, 16);
+  return json({ url: `${appOrigin(req)}/privacy`, confirmation_code: code });
 }

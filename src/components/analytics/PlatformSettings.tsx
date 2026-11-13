@@ -26,6 +26,8 @@ export function PlatformForm({ settings, onSaved }: {
   const [searchLimit, setSearchLimit] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
+  const [threadsAppId, setThreadsAppId] = useState("");
+  const [threadsAppSecret, setThreadsAppSecret] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => setOrigin(window.location.origin), []);
@@ -51,6 +53,8 @@ export function PlatformForm({ settings, onSaved }: {
         searchMonthlyLimit: searchLimit,
         shopifyClientId: clientId,
         shopifyClientSecret: clientSecret,
+        threadsAppId,
+        threadsAppSecret,
       });
       setAnthropicKey("");
       setGroqKey("");
@@ -64,6 +68,8 @@ export function PlatformForm({ settings, onSaved }: {
       setAiLimit("");
       setSearchLimit("");
       setClientSecret("");
+      setThreadsAppId("");
+      setThreadsAppSecret("");
       setNote(d.claudeError ? `Saved, but a key didn't work: ${d.claudeError}` : "Saved.");
       onSaved?.(d.settings);
     } catch (err) {
@@ -131,6 +137,8 @@ export function PlatformForm({ settings, onSaved }: {
             {has.keSpent != null && `, ${has.keSpent.toLocaleString()} of ${(has.keCredits ?? 3000).toLocaleString()} used by DashPatrol this month`}.
           </p>
         )}
+        {input("pf-threads-id", `Threads app ID (Meta). Redirect address: ${origin}/api/auth/threads/callback`, threadsAppId, setThreadsAppId, has?.hasThreads, false)}
+        {input("pf-threads-secret", "Threads app secret (Meta)", threadsAppSecret, setThreadsAppSecret, has?.hasThreads)}
         {input("pf-resend", "Email key (resend.com) for owner reports and alerts", resendKey, setResendKey, has?.hasEmail)}
         {input("pf-from", "Email sender, e.g. DashPatrol <alerts@dashpatrol.com>", alertsFrom, setAlertsFrom, has?.hasEmail, false)}
         <div className="grid gap-3 sm:grid-cols-2">

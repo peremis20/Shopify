@@ -110,6 +110,14 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     fix: () => "The writing or checking AI turned down the posts twice for the newest article, so it moves on to the next one. Nothing to do unless it keeps happening.",
     workaround: "Articles still publish; their posts can be written by hand.",
   },
+  threads: {
+    name: "Posting to Threads",
+    fix: (d) =>
+      /app|client|secret|redirect/i.test(d ?? "")
+        ? "Check the Threads app ID and secret in Platform keys, and that the app's redirect address is set in Meta's developer settings."
+        : "Threads turned down the last post. It tries the next article by itself; nothing was posted twice.",
+    workaround: "The posts stay under Share this week to post by hand.",
+  },
   "shopify-sales": {
     name: "Sales from Shopify",
     fix: () => "It tries again by itself. If it keeps failing, reconnect the store under Content.",

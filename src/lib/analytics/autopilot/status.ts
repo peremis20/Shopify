@@ -7,7 +7,7 @@ import { ensureSchema, sql } from "../db";
  * other agents to work around it or tell the owner what to do.
  */
 
-export type Part = "openpagerank" | "serper" | "ai" | "ai-review" | "keyword-planner" | "email" | "share-kit" | "idea-finder" | "keywords-everywhere" | "outreach-drafter" | "index-rescue" | "site-audit" | "shopify-sales";
+export type Part = "openpagerank" | "serper" | "ai" | "ai-review" | "keyword-planner" | "email" | "share-kit" | "idea-finder" | "keywords-everywhere" | "outreach-drafter" | "index-rescue" | "site-audit" | "shopify-sales" | "threads";
 
 export interface PartStatus {
   ok: boolean;

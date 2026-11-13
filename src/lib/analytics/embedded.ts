@@ -121,15 +121,17 @@ export interface LinkTicket {
   session: boolean;
   /** Single use: the callback records it once. */
   nonce: string;
+  /** What it may connect: Google (no purpose) or Threads. A ticket for one can't be used for the other. */
+  purpose: "google" | "threads";
 }
 
 /**
  * A short-lived signed ticket that lets a top-level Google sign in attach to this account.
  * session: it was made with the session cookie, so only that signed in browser can finish it.
  */
-export function googleLinkTicket(accountId: string, returnTo: string, session = false): string {
+export function googleLinkTicket(accountId: string, returnTo: string, session = false, purpose: "google" | "threads" = "google"): string {
   const n = crypto.randomBytes(12).toString("base64url");
-  const payload = Buffer.from(JSON.stringify({ a: accountId, r: returnTo, e: Date.now() + LINK_OPEN_MS, s: session ? 1 : 0, n })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ a: accountId, r: returnTo, e: Date.now() + LINK_OPEN_MS, s: session ? 1 : 0, n, ...(purpose === "google" ? {} : { p: purpose }) })).toString("base64url");
   return `${payload}.${crypto.createHmac("sha256", linkKey()).update(payload).digest("base64url")}`;
 }
 
@@ -140,9 +142,9 @@ export function readLinkTicket(ticket: string | null, grace = 0): LinkTicket | n
   const expected = crypto.createHmac("sha256", linkKey()).update(payload).digest("base64url");
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   try {
-    const { a, r, e, s, n } = b64json(payload);
+    const { a, r, e, s, n, p } = b64json(payload);
     if (!(typeof e === "number" && e + grace > Date.now()) || typeof a !== "string" || typeof n !== "string") return null;
-    return { accountId: a, returnTo: typeof r === "string" ? r : "", session: s === 1, nonce: n };
+    return { accountId: a, returnTo: typeof r === "string" ? r : "", session: s === 1, nonce: n, purpose: p === "threads" ? "threads" : "google" };
   } catch {
     return null;
   }

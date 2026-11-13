@@ -65,6 +65,8 @@ export const privacyHtml = () =>
 <li>If you use Set it up for me, DashPatrol verifies your site, adds it and its sitemap to Search Console, and creates a Google Analytics property for it.</li>
 <li>If you click Allow, it may resubmit sitemaps already listed in your Search Console so Google looks at changed pages sooner.</li>
 </ul>
+<h2>Threads</h2>
+<p>If you connect Threads, DashPatrol reads your Threads username and posts short posts about your own new articles to your own Threads profile, only when you click Post to Threads or after you turn on automatic posting. It posts at most a few times a week and never reads your messages or other posts. Disconnect it any time from Share this week, or remove DashPatrol in your Threads settings under Website permissions; DashPatrol then deletes its stored Threads access.</p>
 <h2>How we use it</h2>
 <ul>
 <li>Only to run DashPatrol for you: planning, improving pages, writing articles, tracking rankings and reporting results.</li>
@@ -77,7 +79,7 @@ export const privacyHtml = () =>
 <li>DashPatrol's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.</li>
 </ul>
 <h2>Where it is kept</h2>
-<p>In a database hosted by Neon. Sign in tokens and site access keys (Google, Shopify, WordPress, Webflow, Wix) are stored encrypted. Your data is kept until you ask us to delete it; disconnecting stops DashPatrol reading it but doesn't delete what was already stored.</p>
+<p>In a database hosted by Neon. Sign in tokens and site access keys (Google, Shopify, WordPress, Webflow, Wix, Threads) are stored encrypted. Your data is kept until you ask us to delete it; disconnecting stops DashPatrol reading it but doesn't delete what was already stored.</p>
 <h2>Your choices</h2>
 <ul>
 <li>Disconnect Google, your store or your site at any time in Settings; DashPatrol then stops reading it.</li>

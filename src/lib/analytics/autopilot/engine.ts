@@ -7,7 +7,8 @@ import { ensureSchema, sql, type Row } from "../db";
 import { resolveRange } from "../dates";
 import { googleRequest } from "../google-auth";
 import { readProfile, siteBrief } from "../profile";
-import { makeNextShareKit } from "./share-kit";
+import { makeNextShareKit, readShareKits } from "./share-kit";
+import { autoPostNext } from "../threads";
 import type { Opportunity } from "../seo-types";
 import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from "./apps";
 import { keyOf } from "./apps/types";
@@ -1142,6 +1143,11 @@ async function runAutopilotChecked(accountId: string, conn: Connection | null, t
   if (!preview && status !== "failed") {
     const shared = await makeNextShareKit(accountId, ai, brand, ctx.ourDomain).catch((e) => `Social posts not written yet: ${(e as Error).message}`);
     if (shared) summary.push(shared);
+    // Only when the owner turned on automatic posting to their own Threads: one post per run, a few a week at most.
+    const posted = await readShareKits(accountId)
+      .then((items) => autoPostNext(accountId, items))
+      .catch((e) => `Not posted to Threads: ${(e as Error).message}`);
+    if (posted) summary.push(posted);
   }
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}
