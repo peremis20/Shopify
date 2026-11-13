@@ -129,8 +129,10 @@ export function Home({ data, loading, onGo }: {
   else if (settings && !settings.platformReady) {
     /* shown below as a calm note, not a warning: there's nothing the owner can do */
   } else if (settings && !settings.enabled) warnings.push({ text: "The autopilot is switched off, so nothing is being improved.", page: "content" });
-  // What the Inspector found that needs a person (repairs it made itself show under "What I did").
-  for (const p of problems.filter((x) => x.who === "owner" || x.who === "watching")) {
+  // What the Inspector found that needs a person (repairs it made itself show under "What I did"). What the agents are
+  // still handling themselves ("watching") is not the owner's job, so it is listed calmly below, never as an alert.
+  const working = problems.filter((x) => x.who === "watching");
+  for (const p of problems.filter((x) => x.who === "owner")) {
     warnings.push({
       text: `${p.text} ${p.fix}`,
       page: p.id.startsWith("service:") ? "settings" : p.id.startsWith("ranks") || p.id === "google:recrawl" ? "keywords" : "content",
@@ -192,6 +194,20 @@ export function Home({ data, loading, onGo }: {
             );
           })}
         </div>
+      )}
+
+      {working.length > 0 && (
+        <details className="rounded-xl border border-dash-line bg-white px-4 py-2.5 text-sm text-dash-muted">
+          <summary className="cursor-pointer">
+            <BotIcon className="mr-1.5 inline h-4 w-4 align-[-3px] text-dash-green" />
+            The agents are working on {working.length} {working.length === 1 ? "thing" : "things"} they noticed. Nothing for you to do.
+          </summary>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            {working.map((p) => (
+              <li key={p.id}>{p.text}</li>
+            ))}
+          </ul>
+        </details>
       )}
 
       {settings && !settings.platformReady && !admin && (
