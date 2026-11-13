@@ -26,6 +26,8 @@ export interface ThreadsLink {
   expiresAt: string;
   auto: boolean;
   lastError: string | null;
+  /** When the token was last made or renewed. */
+  refreshedAt: string;
 }
 
 export interface ThreadsPost {
@@ -94,6 +96,7 @@ export async function getThreads(accountId: string): Promise<ThreadsLink | null>
     expiresAt: new Date(String(row.expires_at)).toISOString(),
     auto: row.auto === "t" || row.auto === "true",
     lastError: row.last_error ? String(row.last_error) : null,
+    refreshedAt: new Date(String(row.refreshed_at)).toISOString(),
   };
 }
 
@@ -241,12 +244,18 @@ export async function exchangeThreadsCode(app: { id: string; secret: string }, c
   return { token: long.access_token, userId: String(me.id || short.user_id), username: me.username, expiresIn: Number(long.expires_in) || 60 * 86400 };
 }
 
-/** Keeps the token alive: refreshed when fewer than ten days are left (Threads allows it once the token is a day old). */
+const DAY = 86400_000;
+/** Whether to renew now: every 30 days, or with fewer than ten days left; not when expired or under a day old (Threads refuses). */
+export const refreshDue = (msLeft: number, msAge: number) => msLeft > 0 && msAge >= DAY && (msLeft <= 10 * DAY || msAge >= 30 * DAY);
+
+/** Keeps the token alive: renewed every 30 days (or when fewer than ten days are left), on each daily run and each page view. */
 export async function freshLink(accountId: string): Promise<ThreadsLink | null> {
   const link = await getThreads(accountId);
   if (!link) return null;
   const left = Date.parse(link.expiresAt) - Date.now();
-  if (left <= 0 || left > 10 * 86400_000) return link;
+  // Renewed every 30 days, or sooner when fewer than ten days are left; never while it is under a day old (Threads refuses).
+  const age = Date.now() - Date.parse(link.refreshedAt);
+  if (!refreshDue(left, age)) return link;
   try {
     const out = await call<{ access_token: string; expires_in: number }>("/refresh_access_token", { grant_type: "th_refresh_token", access_token: link.token });
     await schema();
@@ -254,7 +263,7 @@ export async function freshLink(accountId: string): Promise<ThreadsLink | null> 
     const expires = new Date(Date.now() + (Number(out.expires_in) || 60 * 86400) * 1000).toISOString();
     await sql`UPDATE insights_account_threads SET token_enc = ${enc}, expires_at = ${expires}, refreshed_at = now() WHERE account_id = ${accountId}`;
     void report("threads", true);
-    return { ...link, token: out.access_token, expiresAt: expires };
+    return { ...link, token: out.access_token, expiresAt: expires, refreshedAt: new Date().toISOString() };
   } catch (e) {
     const msg = (e as Error).message;
     console.error(`threads token refresh failed for account ${accountId}: ${msg}`);
@@ -399,4 +408,16 @@ export async function autoPostNext(accountId: string, items: ShareItem[]): Promi
   if (out.ok) return `Posted "${next.title}" to Threads.`;
   if (out.status === 429 || out.status === 409) return null;
   throw new Error(out.error);
+}
+
+/** Every connected Threads account whose token is due, whatever its autopilot setting: run from the hourly tick. */
+export async function refreshDueThreads(limit = 10): Promise<number> {
+  await schema();
+  const rows = await sql`
+    SELECT account_id FROM insights_account_threads
+    WHERE expires_at > now() AND refreshed_at < now() - interval '1 day'
+      AND (refreshed_at < now() - interval '30 days' OR expires_at < now() + interval '10 days')
+    ORDER BY expires_at LIMIT ${limit}`;
+  for (const r of rows) await freshLink(String(r.account_id)).catch(() => null);
+  return rows.length;
 }

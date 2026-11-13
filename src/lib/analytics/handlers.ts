@@ -64,7 +64,7 @@ import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
-import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, removeThreadsUser, setThreadsAuto, threadsPosts, WEEKLY_POST_CAP } from "./threads";
+import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, threadsPosts, WEEKLY_POST_CAP } from "./threads";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import {
@@ -1528,6 +1528,8 @@ export async function autopilotTick(): Promise<Response> {
   const budget = Number(process.env.TICK_BUDGET_MS ?? 8 * 60_000);
   const late = () => Date.now() - started > budget;
   try {
+    // Threads tokens are renewed every 30 days for every connected site, so none runs out unnoticed.
+    await refreshDueThreads().catch((e) => console.warn(`threads token renewal failed: ${message(e)}`));
     // Emails fixed since the last try show as working again before the Inspector looks.
     await retestEmail().catch((e) => console.warn(`email retest failed: ${message(e)}`));
     // Rank checks and health first: a drop found this morning can be defended in today's run.

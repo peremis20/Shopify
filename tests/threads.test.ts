@@ -61,3 +61,13 @@ test("threads: a Google connect link can't be used to connect Threads, or the ot
   assert.equal(readLinkTicket(googleLinkTicket("7", "/back", true))?.purpose, "google");
   assert.equal(readLinkTicket(googleLinkTicket("7", "/back", true, "threads"))?.purpose, "threads");
 });
+
+test("threads: the token is renewed every 30 days, or sooner when it is about to run out", async () => {
+  const { refreshDue } = await import("../src/lib/analytics/threads");
+  const d = 86400_000;
+  assert.equal(refreshDue(59 * d, 2 * d), false);
+  assert.equal(refreshDue(30 * d, 30 * d), true);
+  assert.equal(refreshDue(8 * d, 5 * d), true);
+  assert.equal(refreshDue(50 * d, 0.5 * d), false);
+  assert.equal(refreshDue(-1, 61 * d), false);
+});
