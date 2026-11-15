@@ -93,12 +93,13 @@ async function schema() {
   )`;
   // One post per article and channel, enforced by the database even for two clicks at the same moment.
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS insights_social_posts_once ON insights_social_posts (account_id, channel, change_id)`;
-  await sql`CREATE TABLE IF NOT EXISTS insights_social_weekly (
+  // When each of the last seven days' posts went out, per site and channel. A post takes its place here in one
+  // atomic statement that refuses once the cap is reached, so the rolling seven day limit holds even for two at once.
+  await sql`CREATE TABLE IF NOT EXISTS insights_social_rolling (
     account_id bigint NOT NULL,
     channel text NOT NULL,
-    week date NOT NULL,
-    n integer NOT NULL DEFAULT 0,
-    PRIMARY KEY (account_id, channel, week)
+    times timestamptz[] NOT NULL DEFAULT '{}',
+    PRIMARY KEY (account_id, channel)
   )`;
   // Why an article was left out on a channel (no image for Instagram), so it isn't tried again every run.
   await sql`CREATE TABLE IF NOT EXISTS insights_social_skips (
@@ -223,10 +224,12 @@ export async function metaSkips(accountId: string): Promise<{ channel: MetaChann
   return rows.map((r) => ({ channel: r.channel === "instagram" ? "instagram" : "facebook", changeId: String(r.change_id), reason: String(r.reason) }));
 }
 
-/** Posts made from here this week on one channel (weeks start Monday, UTC). */
+/** Posts made from here in the last seven days on one channel: the same count that stops a post at the cap. */
 export async function metaPostsThisWeek(accountId: string, channel: MetaChannel): Promise<number> {
   await schema();
-  const [row] = await sql`SELECT n FROM insights_social_weekly WHERE account_id = ${accountId} AND channel = ${channel} AND week = date_trunc('week', now() AT TIME ZONE 'UTC')::date`;
+  const [row] = await sql`
+    SELECT (SELECT count(*) FROM unnest(times) t WHERE t > now() - interval '7 days') AS n
+    FROM insights_social_rolling WHERE account_id = ${accountId} AND channel = ${channel}`;
   return Number(row?.n ?? 0);
 }
 
@@ -306,9 +309,32 @@ async function publishFacebook(link: FacebookLink, text: string, url: string): P
   return { id: post.id, permalink };
 }
 
+/**
+ * Waits for an Instagram media container to be ready: a few checks with short waits, never longer than about fifteen
+ * seconds. ERROR or EXPIRED, or still not ready at the end, throws a clear refusal (status 400): nothing was published,
+ * so the post's place is given back.
+ */
+export async function waitForContainer(
+  check: () => Promise<{ status_code?: string; status?: string }>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  tries = 5,
+  waitMs = 3000,
+): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    const s = await check();
+    const code = String(s.status_code ?? "").toUpperCase();
+    if (code === "FINISHED" || code === "PUBLISHED") return;
+    if (code === "ERROR" || code === "EXPIRED") throw new MetaApiError(`Instagram couldn't use the article's image. ${s.status ?? ""}`.trim(), 400, null);
+    if (i < tries - 1) await sleep(waitMs);
+  }
+  throw new MetaApiError("Instagram was still preparing the image, so nothing was posted. It tries again later.", 400, null);
+}
+
 async function publishInstagram(link: FacebookLink, caption: string, imageUrl: string): Promise<{ id: string; permalink: string | null }> {
   if (!link.igUserId) throw new MetaApiError("No Instagram business account is linked to this Page.", 400, null);
   const container = await call<{ id: string }>(`/${link.igUserId}/media`, { image_url: imageUrl, caption, access_token: link.token }, "POST");
+  // Instagram fetches the image first; publishing before the container is FINISHED fails.
+  await waitForContainer(() => call<{ status_code?: string; status?: string }>(`/${container.id}`, { fields: "status_code,status", access_token: link.token }));
   const post = await call<{ id: string }>(`/${link.igUserId}/media_publish`, { creation_id: container.id, access_token: link.token }, "POST");
   const permalink = await call<{ permalink?: string }>(`/${post.id}`, { fields: "permalink", access_token: link.token })
     .then((r) => r.permalink ?? null)
@@ -414,27 +440,28 @@ export async function postToMeta(
     extra = taggedUrl(item.url, "facebook");
   }
   await schema();
-  const [recent] = await sql`SELECT count(*) AS n FROM insights_social_posts WHERE account_id = ${accountId} AND channel = ${channel} AND posted_at > now() - interval '7 days'`;
-  if (Number(recent?.n ?? 0) >= SOCIAL_WEEKLY_CAP) {
-    return { ok: false, status: 429, error: `${SOCIAL_WEEKLY_CAP} posts went to ${NAME[channel]} in the last seven days, the most allowed. The next one goes out in a few days.` };
-  }
   const [slot] = await sql`
     INSERT INTO insights_social_posts (account_id, channel, change_id, text, by_whom) VALUES (${accountId}, ${channel}, ${item.changeId}, ${text}, ${by})
     ON CONFLICT (account_id, channel, change_id) DO NOTHING RETURNING id, posted_at`;
   if (!slot?.id) return { ok: false, status: 409, error: `This article is already on ${NAME[channel]}.` };
+  // One of the last seven days' posts, taken in one statement: the WHERE is checked on the locked, latest row, so two
+  // posts at the same moment can't both pass the cap. Times older than seven days fall out as it goes.
+  const stamp = new Date().toISOString();
   const [count] = await sql`
-    INSERT INTO insights_social_weekly (account_id, channel, week, n) VALUES (${accountId}, ${channel}, date_trunc('week', now() AT TIME ZONE 'UTC')::date, 1)
-    ON CONFLICT (account_id, channel, week) DO UPDATE SET n = insights_social_weekly.n + 1 WHERE insights_social_weekly.n < ${SOCIAL_WEEKLY_CAP}
-    RETURNING n`;
+    INSERT INTO insights_social_rolling (account_id, channel, times) VALUES (${accountId}, ${channel}, ARRAY[${stamp}::timestamptz])
+    ON CONFLICT (account_id, channel) DO UPDATE
+      SET times = array_append(ARRAY(SELECT t FROM unnest(insights_social_rolling.times) t WHERE t > now() - interval '7 days'), ${stamp}::timestamptz)
+      WHERE (SELECT count(*) FROM unnest(insights_social_rolling.times) t WHERE t > now() - interval '7 days') < ${SOCIAL_WEEKLY_CAP}
+    RETURNING cardinality(times) AS n`;
   const giveBack = async (counted: boolean) => {
     await sql`DELETE FROM insights_social_posts WHERE id = ${slot.id}`.catch(() => undefined);
     if (counted) {
-      await sql`UPDATE insights_social_weekly SET n = greatest(n - 1, 0) WHERE account_id = ${accountId} AND channel = ${channel} AND week = date_trunc('week', now() AT TIME ZONE 'UTC')::date`.catch(() => undefined);
+      await sql`UPDATE insights_social_rolling SET times = array_remove(times, ${stamp}::timestamptz) WHERE account_id = ${accountId} AND channel = ${channel}`.catch(() => undefined);
     }
   };
   if (!count?.n) {
     await giveBack(false);
-    return { ok: false, status: 429, error: `${SOCIAL_WEEKLY_CAP} posts went to ${NAME[channel]} this week, the most allowed. The next one goes out next week.` };
+    return { ok: false, status: 429, error: `${SOCIAL_WEEKLY_CAP} posts went to ${NAME[channel]} in the last seven days, the most allowed. The next one goes out in a few days.` };
   }
   try {
     const send = publish ?? (channel === "instagram" ? publishInstagram : publishFacebook);
@@ -474,7 +501,7 @@ export async function autoPostMeta(accountId: string, items: ShareItem[]): Promi
   for (const channel of ["facebook", "instagram"] as const) {
     if (channel === "facebook" ? !link.autoFacebook : !link.autoInstagram || !link.igUserId) continue;
     // Only posts a second AI checked go out by themselves; the rest wait for the owner's click.
-    const next = items.find((i) => !i.postedAt && i.checkedBy !== "owner" && !done.has(`${channel}:${i.changeId}`) && !skipped.has(`${channel}:${i.changeId}`) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
+    const next = items.find((i) => !i.postedAt && i.checkedBy === "ai" && !done.has(`${channel}:${i.changeId}`) && !skipped.has(`${channel}:${i.changeId}`) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
     if (!next) continue;
     const out = await postToMeta(accountId, channel, next, "autopilot");
     if (out.ok) lines.push(`Posted "${next.title}" to ${NAME[channel]}.`);

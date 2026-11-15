@@ -16,7 +16,7 @@ export interface ShareItem {
   kit: ShareKit;
   /** Set when the owner marks it posted. */
   postedAt?: string | null;
-  /** "owner" when no second AI was free to check it: then it is never posted automatically, only by the owner's click. */
+  /** "ai" when a second AI checked it. Only those are posted automatically; any other (older items too) waits for the owner's click. */
   checkedBy?: "ai" | "owner";
 }
 

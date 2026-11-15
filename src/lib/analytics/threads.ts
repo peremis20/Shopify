@@ -32,7 +32,21 @@ export interface ThreadsLink {
   autoReply: boolean;
   /** The permissions asked for when it was connected; null for a connection made before they were recorded. */
   scopes: string[] | null;
+  /** Permissions Threads refused since it was connected: never counted on again until the owner reconnects. */
+  droppedScopes: string[];
 }
+
+/**
+ * Whether this connection may use a permission. A refused one never counts again; a connection made before the
+ * permissions were recorded gets `unknown` (true to try it and learn, false to leave it alone).
+ */
+export function hasScope(link: Pick<ThreadsLink, "scopes" | "droppedScopes">, scope: string, unknown: boolean): boolean {
+  if (link.droppedScopes.includes(scope)) return false;
+  return link.scopes === null ? unknown : link.scopes.includes(scope);
+}
+
+/** The stored permission list: NULL (never recorded) stays null, an empty text is an empty list. */
+export const scopesFrom = (v: string | null | undefined): string[] | null => (v == null ? null : String(v).split(",").filter(Boolean));
 
 export interface ThreadsPost {
   changeId: string;
@@ -89,6 +103,7 @@ async function schema() {
   )`;
   await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS auto_reply boolean NOT NULL DEFAULT false`;
   await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS scopes text`;
+  await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS dropped_scopes text`;
   await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS social_at timestamptz`;
 }
 
@@ -107,7 +122,8 @@ export async function getThreads(accountId: string): Promise<ThreadsLink | null>
     lastError: row.last_error ? String(row.last_error) : null,
     refreshedAt: new Date(String(row.refreshed_at)).toISOString(),
     autoReply: ["t", "true"].includes(String(row.auto_reply)),
-    scopes: row.scopes ? String(row.scopes).split(",").filter(Boolean) : null,
+    scopes: scopesFrom(row.scopes),
+    droppedScopes: scopesFrom(row.dropped_scopes) ?? [],
   };
 }
 
@@ -122,7 +138,7 @@ export async function saveThreads(accountId: string, link: { token: string; user
     ON CONFLICT (account_id) DO UPDATE SET token_enc = EXCLUDED.token_enc, user_id = EXCLUDED.user_id, username = EXCLUDED.username,
       auto = CASE WHEN insights_account_threads.user_id = EXCLUDED.user_id THEN insights_account_threads.auto ELSE false END,
       auto_reply = CASE WHEN insights_account_threads.user_id = EXCLUDED.user_id THEN insights_account_threads.auto_reply ELSE false END,
-      scopes = EXCLUDED.scopes,
+      scopes = EXCLUDED.scopes, dropped_scopes = NULL,
       expires_at = EXCLUDED.expires_at, last_error = NULL, connected_at = now(), refreshed_at = now()`;
 }
 
@@ -174,8 +190,10 @@ export async function setThreadsAutoReply(accountId: string, autoReply: boolean)
 /** Threads refused a permission this connection was thought to have: it is no longer counted on. */
 export async function dropThreadsScope(accountId: string, scope: string): Promise<void> {
   const link = await getThreads(accountId);
-  const kept = (link?.scopes ?? []).filter((s) => s !== scope);
-  await sql`UPDATE insights_account_threads SET scopes = ${kept.join(",")} WHERE account_id = ${accountId}`;
+  if (!link) return;
+  // Kept apart from the granted list, so it stays dropped on an older connection whose list was never recorded.
+  const dropped = [...new Set([...link.droppedScopes, scope])];
+  await sql`UPDATE insights_account_threads SET dropped_scopes = ${dropped.join(",")} WHERE account_id = ${accountId}`;
 }
 
 export async function removeThreads(accountId: string): Promise<void> {
@@ -448,7 +466,7 @@ export async function autoPostNext(accountId: string, items: ShareItem[]): Promi
   if (!link?.auto) return null;
   const done = new Set((await threadsPosts(accountId)).map((p) => p.changeId));
   // Only posts a second AI checked go out by themselves; the rest wait for the owner's click.
-  const next = items.find((i) => !i.postedAt && i.checkedBy !== "owner" && !done.has(i.changeId) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
+  const next = items.find((i) => !i.postedAt && i.checkedBy === "ai" && !done.has(i.changeId) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
   if (!next) return null;
   const out = await postToThreads(accountId, next, "autopilot");
   if (out.ok) return `Posted "${next.title}" to Threads.`;

@@ -71,3 +71,12 @@ test("threads: the token is renewed every 30 days, or sooner when it is about to
   assert.equal(refreshDue(50 * d, 0.5 * d), false);
   assert.equal(refreshDue(-1, 61 * d), false);
 });
+
+test("threads: only share posts a second AI checked are posted automatically (older ones without the mark wait for the owner)", async () => {
+  const fs = await import("fs");
+  for (const f of ["src/lib/analytics/threads.ts", "src/lib/analytics/facebook.ts"]) {
+    const src = fs.readFileSync(f, "utf8");
+    assert.ok(src.includes('i.checkedBy === "ai"'), f);
+    assert.ok(!src.includes('i.checkedBy !== "owner"'), f);
+  }
+});

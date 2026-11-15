@@ -311,7 +311,7 @@ function ShareCard({
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <a href={item.url} target="_blank" rel="noreferrer" className="break-words font-semibold text-dash-ink hover:underline">{item.title}</a>
-          <p className="text-xs text-dash-muted">Made {new Date(item.at).toLocaleDateString()} · {item.checkedBy === "owner" ? "no second AI was free, so check it before you post" : "checked by a second AI"}</p>
+          <p className="text-xs text-dash-muted">Made {new Date(item.at).toLocaleDateString()} · {item.checkedBy === "ai" ? "checked by a second AI" : "check it before you post"}</p>
         </div>
         <div className="flex flex-wrap items-start gap-2">
         {threads && <ThreadsButton item={item} t={threads} onPosted={onThreads} />}

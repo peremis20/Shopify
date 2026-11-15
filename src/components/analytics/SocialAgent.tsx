@@ -184,9 +184,9 @@ export function SocialAgent() {
     }
   };
   const posts = state?.posts.filter((p) => p.status === "draft") ?? [];
-  const held = state?.posts.filter((p) => p.status === "held") ?? [];
+  const held = state?.posts.filter((p) => p.status === "held" || p.status === "failed") ?? [];
   const replies = state?.replies.filter((r) => r.status === "draft") ?? [];
-  const heldReplies = state?.replies.filter((r) => r.status === "held") ?? [];
+  const heldReplies = state?.replies.filter((r) => r.status === "held" || r.status === "failed") ?? [];
 
   return (
     <Card className="mt-6">
@@ -243,7 +243,7 @@ export function SocialAgent() {
           </div>
           {held.length + heldReplies.length > 0 && (
             <div className="mt-4">
-              <p className="text-xs font-semibold text-dash-muted">Held back by the checks, not posted</p>
+              <p className="text-xs font-semibold text-dash-muted">Held back by the checks, or not confirmed by Threads</p>
               <ul className="mt-2 space-y-2">
                 {held.map((p) => (
                   <li key={`h${p.id}`} className="flex flex-wrap items-start justify-between gap-2 rounded-lg bg-dash-bg p-2 text-sm text-dash-ink">

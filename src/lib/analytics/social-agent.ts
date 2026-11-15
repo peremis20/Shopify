@@ -5,7 +5,7 @@ import { querySearches28d } from "./seo-tools";
 import { isPostUrl, sitePages } from "./site-crawl";
 import { scanClaims } from "./autopilot/claims";
 import { isSabbath } from "./autopilot/sabbath";
-import { aiProvider, readPlatformSettings, type AiProvider } from "./autopilot/settings";
+import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./autopilot/settings";
 import { readSiteKeywords } from "./autopilot/site-keywords";
 import { articleFromLog } from "./autopilot/share-kit";
 import { report } from "./autopilot/status";
@@ -13,6 +13,7 @@ import { isUnsourced, safeEmailText, secondCheck, writeReplyAnswer, writeSocialP
 import {
   dropThreadsScope,
   fetchReplies,
+  hasScope,
   freshLink,
   keywordSearch,
   lacksPermission,
@@ -201,9 +202,12 @@ export function classifyReply(text: string, from: string, ownUsername: string): 
   return { kind: "comment", reason: null };
 }
 
-/** A question about health: on a health site, or any question that mentions the body, symptoms or medicines. */
+/**
+ * Whose answer ends by asking them to talk to their doctor: any question on a health site, any question elsewhere that
+ * mentions the body, symptoms or medicines, and on a health site any comment that touches health.
+ */
 export const isHealthQuestion = (text: string, healthSite: boolean, kind: "question" | "comment" | "skip") =>
-  kind === "question" && (healthSite || HEALTH_WORDS.test(text));
+  (kind === "question" && (healthSite || HEALTH_WORDS.test(text))) || (kind === "comment" && healthSite && HEALTH_WORDS.test(text));
 
 /** The answer with the line asking them to talk to their doctor, always last and always whole. */
 export function withDoctorLine(answer: string): string {
@@ -256,6 +260,21 @@ async function schema() {
     decided_at timestamptz,
     PRIMARY KEY (account_id, reply_id)
   )`;
+  // Answers that went out (or may have) each day, raised in one atomic step that refuses once the cap is reached.
+  await sql`CREATE TABLE IF NOT EXISTS insights_threads_reply_daily (
+    account_id bigint NOT NULL,
+    day date NOT NULL,
+    n integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, day)
+  )`;
+}
+
+/** An answer claimed for posting that Threads never confirmed within an hour: shown to the owner as failed, never sent again blindly. */
+export const STUCK_REASON = "Threads never confirmed this answer, so it may or may not be live. Check your Threads profile before answering again.";
+async function expireStuck(accountId: string): Promise<void> {
+  await sql`
+    UPDATE insights_threads_replies SET status = 'failed', reason = ${STUCK_REASON}
+    WHERE account_id = ${accountId} AND status = 'posting' AND decided_at < now() - interval '1 hour'`;
 }
 
 export interface SocialDraft {
@@ -313,6 +332,7 @@ const toReply = (r: Record<string, unknown>): ReplyDraft => ({
 /** The site's drafts and recent decisions, newest first. */
 export async function socialDrafts(accountId: string): Promise<{ posts: SocialDraft[]; replies: ReplyDraft[] }> {
   await schema();
+  await expireStuck(accountId);
   const posts = await sql`SELECT * FROM insights_social_drafts WHERE account_id = ${accountId} AND channel = 'threads' AND created_at > now() - interval '30 days' ORDER BY created_at DESC LIMIT 20`;
   const replies = await sql`
     SELECT * FROM insights_threads_replies WHERE account_id = ${accountId} AND status IN ('draft', 'held', 'posted', 'failed') AND created_at > now() - interval '14 days'
@@ -373,7 +393,7 @@ async function siteDemand(accountId: string): Promise<Demand[]> {
  */
 async function askedOnThreads(accountId: string, link: ThreadsLink, queries: string[]): Promise<Map<string, number>> {
   const asked = new Map<string, number>();
-  if (!link.scopes?.includes("threads_keyword_search")) return asked;
+  if (!hasScope(link, "threads_keyword_search", false)) return asked;
   for (const q of queries.slice(0, 3)) {
     try {
       const texts = await keywordSearch(link, q);
@@ -407,7 +427,7 @@ async function weekIsFull(accountId: string): Promise<boolean> {
 }
 
 /** Drafts the next educational post, and posts it when the owner turned on automatic posting. Returns a line for the log. */
-export async function draftNextPost(accountId: string, link: ThreadsLink): Promise<string | null> {
+export async function draftNextPost(accountId: string, link: ThreadsLink, failures: string[] = []): Promise<string | null> {
   await schema();
   if (await weekIsFull(accountId)) return null;
   const profile = await readProfile(accountId);
@@ -457,6 +477,8 @@ export async function draftNextPost(accountId: string, link: ThreadsLink): Promi
   if (status === "held") return `A Threads post about "${pick.query}" was held back: ${reason}`;
   if (link.auto && checked === "ai") {
     const out = await approvePost(accountId, String(row.id), null, "autopilot");
+    // The cap or a post already made is no failure; anything else stays visible to the Inspector.
+    if (!out.ok && out.status !== 429 && out.status !== 409) failures.push(`Automatic post: ${out.error}`);
     return out.ok ? `Posted a ${kind} about "${pick.query}" to Threads.` : `A Threads post about "${pick.query}" waits: ${out.error}`;
   }
   return `Drafted a Threads ${kind} about "${pick.query}" for your approval.`;
@@ -500,7 +522,7 @@ export async function approvePost(accountId: string, id: string, edited: string 
 
 export async function skipPost(accountId: string, id: string): Promise<void> {
   await schema();
-  await sql`UPDATE insights_social_drafts SET status = 'skipped', decided_at = now() WHERE account_id = ${accountId} AND id = ${id} AND status IN ('draft', 'held')`;
+  await sql`UPDATE insights_social_drafts SET status = 'skipped', decided_at = now() WHERE account_id = ${accountId} AND id = ${id} AND status IN ('draft', 'held', 'failed')`;
 }
 
 // ---------- replies ----------
@@ -528,9 +550,10 @@ function bestPage(pages: SourcePage[], text: string, preferred: Set<string>): So
 }
 
 /** Reads replies to the site's recent posts, skips what isn't worth answering, and drafts helpful answers. */
-export async function handleReplies(accountId: string, link: ThreadsLink): Promise<string | null> {
+export async function handleReplies(accountId: string, link: ThreadsLink, failures: string[] = []): Promise<string | null> {
   await schema();
-  if (link.scopes && !link.scopes.includes("threads_read_replies")) return "Connect Threads again so replies can be read.";
+  await expireStuck(accountId);
+  if (!hasScope(link, "threads_read_replies", true)) return "Connect Threads again so replies can be read.";
   const posts = await sql`
     SELECT p.post_id, d.source_url FROM insights_threads_posts p
     LEFT JOIN insights_social_drafts d ON p.change_id = 'social:' || d.id::text
@@ -551,7 +574,7 @@ export async function handleReplies(accountId: string, link: ThreadsLink): Promi
       }
       if (lacksPermission(e)) {
         await dropThreadsScope(accountId, "threads_read_replies").catch(() => undefined);
-        void report("threads", false, `Reading replies: ${(e as Error).message}`);
+        failures.push(`Reading replies: ${(e as Error).message}`);
         return "Threads didn't allow reading replies.";
       }
       throw e;
@@ -595,6 +618,7 @@ export async function handleReplies(accountId: string, link: ThreadsLink): Promi
     if (answer.status === "draft" && answer.checked === "ai" && link.autoReply) {
       const out = await approveReply(accountId, replyId, null, "autopilot");
       if (out.ok) posted++;
+      else if (out.status !== 429 && out.status !== 409) failures.push(`Automatic answer: ${out.error}`);
     }
   }
   if (!drafted) return null;
@@ -615,7 +639,7 @@ async function draftAnswer(
   const clean = cleanPost(raw, keepNames(profile), room, strict);
   if (clean.problem) return { text: clean.text || raw.slice(0, 500), status: "held", checked: "owner", reason: clean.problem };
   const text = healthQuestion ? withDoctorLine(clean.text) : clean.text;
-  const verdict = await secondCheck(ai, { what: `an answer to this reply: "${question.slice(0, 300)}"`, source: `${page.title}\n${page.text}`, text, health: strict });
+  const verdict = await secondCheck(ai, { what: "an answer to a public reply", publicText: question, source: `${page.title}\n${page.text}`, text, health: strict });
   if (verdict && !verdict.ok) return { text, status: "held", checked: "owner", reason: `The second AI turned it down: ${verdict.why || "no reason given."}` };
   return { text, status: "draft", checked: verdict ? "ai" : "owner", reason: verdict ? null : "No second AI was free to check it, so it waits for your approval." };
 }
@@ -636,13 +660,24 @@ export async function approveReply(accountId: string, replyId: string, edited: s
   }
   const link = await freshLink(accountId);
   if (!link || Date.parse(link.expiresAt) <= Date.now()) return { ok: false, status: 400, error: "Connect Threads again first." };
-  // Claimed in one step, within the daily cap: two clicks can't answer twice.
+  // Claimed in one step: two clicks can't answer twice.
   const [claim] = await sql`
-    UPDATE insights_threads_replies SET status = 'posting', answer = ${text}, checked = ${edited !== null ? "owner" : row.checked}
+    UPDATE insights_threads_replies SET status = 'posting', answer = ${text}, checked = ${edited !== null ? "owner" : row.checked}, decided_at = now()
     WHERE account_id = ${accountId} AND reply_id = ${replyId} AND status = 'draft'
-      AND (SELECT count(*) FROM insights_threads_replies WHERE account_id = ${accountId} AND status IN ('posted', 'posting') AND decided_at > now() - interval '1 day') < ${REPLY_DAILY_CAP}
     RETURNING reply_id`;
-  if (!claim) return { ok: false, status: 429, error: `${REPLY_DAILY_CAP} answers went out in the last day, the most allowed. Try again tomorrow.` };
+  if (!claim) return { ok: false, status: 409, error: "This answer is already being posted." };
+  // Then one of today's answers, in one atomic step that refuses at the cap (an answer that may be live keeps its count).
+  const [count] = await sql`
+    INSERT INTO insights_threads_reply_daily (account_id, day, n) VALUES (${accountId}, (now() AT TIME ZONE 'UTC')::date, 1)
+    ON CONFLICT (account_id, day) DO UPDATE SET n = insights_threads_reply_daily.n + 1 WHERE insights_threads_reply_daily.n < ${REPLY_DAILY_CAP}
+    RETURNING n`;
+  const giveBack = async () => {
+    await sql`UPDATE insights_threads_reply_daily SET n = greatest(n - 1, 0) WHERE account_id = ${accountId} AND day = (now() AT TIME ZONE 'UTC')::date`.catch(() => undefined);
+  };
+  if (!count?.n) {
+    await sql`UPDATE insights_threads_replies SET status = 'draft', decided_at = NULL WHERE account_id = ${accountId} AND reply_id = ${replyId} AND status = 'posting'`;
+    return { ok: false, status: 429, error: `${REPLY_DAILY_CAP} answers went out today, the most allowed. Try again tomorrow.` };
+  }
   try {
     const out = await publishReply(link, replyId, text);
     await sql`UPDATE insights_threads_replies SET status = 'posted', answer_id = ${out.id}, reason = NULL, decided_at = now() WHERE account_id = ${accountId} AND reply_id = ${replyId}`;
@@ -654,7 +689,9 @@ export async function approveReply(accountId: string, replyId: string, edited: s
       await sql`UPDATE insights_threads_replies SET status = 'failed', reason = ${msg}, decided_at = now() WHERE account_id = ${accountId} AND reply_id = ${replyId}`;
       return { ok: false, status: 502, error: msg };
     }
-    await sql`UPDATE insights_threads_replies SET status = 'draft', reason = ${msg} WHERE account_id = ${accountId} AND reply_id = ${replyId}`;
+    // Threads clearly refused: nothing is live, so the answer and today's count are free again.
+    await sql`UPDATE insights_threads_replies SET status = 'draft', reason = ${msg}, decided_at = NULL WHERE account_id = ${accountId} AND reply_id = ${replyId}`;
+    await giveBack();
     if (needsReconnect(e)) {
       await noteError(accountId, "Threads needs to be connected again.");
       return { ok: false, status: 502, error: "Threads needs to be connected again. Nothing was posted." };
@@ -667,7 +704,7 @@ export async function approveReply(accountId: string, replyId: string, edited: s
 
 export async function skipReply(accountId: string, replyId: string): Promise<void> {
   await schema();
-  await sql`UPDATE insights_threads_replies SET status = 'skipped', decided_at = now() WHERE account_id = ${accountId} AND reply_id = ${replyId} AND status IN ('draft', 'held', 'new')`;
+  await sql`UPDATE insights_threads_replies SET status = 'skipped', decided_at = now() WHERE account_id = ${accountId} AND reply_id = ${replyId} AND status IN ('draft', 'held', 'new', 'failed')`;
 }
 
 // ---------- the daily run ----------
@@ -676,10 +713,12 @@ export async function skipReply(accountId: string, replyId: string): Promise<voi
 export async function accountsDueForSocial(limit: number): Promise<string[]> {
   await schema();
   await threadsSchema();
+  // Only sites whose autopilot is on: a paused site gets no drafts, posts or answers.
   const rows = await sql`
-    SELECT account_id FROM insights_account_threads
-    WHERE expires_at > now() AND (social_at IS NULL OR social_at < now() - interval '22 hours')
-    ORDER BY social_at NULLS FIRST LIMIT ${limit}`;
+    SELECT t.account_id FROM insights_account_threads t
+    JOIN insights_account_autopilot a ON a.account_id = t.account_id
+    WHERE a.enabled AND t.expires_at > now() AND (t.social_at IS NULL OR t.social_at < now() - interval '22 hours')
+    ORDER BY t.social_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
 
@@ -688,22 +727,26 @@ export async function runSocialAgent(accountId: string): Promise<string> {
   if (isSabbath()) return "rests for the Sabbath";
   await schema();
   await sql`UPDATE insights_account_threads SET social_at = now() WHERE account_id = ${accountId}`;
+  // Checked again here: the owner may have paused the autopilot since the list was made. Paused means nothing at all
+  // runs, automatic posts and answers included.
+  if (!(await readAccountAutopilot(accountId)).enabled) return "the autopilot is paused";
   const link = await freshLink(accountId);
   if (!link || Date.parse(link.expiresAt) <= Date.now()) return "Threads isn't connected";
   const notes: string[] = [];
-  let failed: string | null = null;
-  for (const step of [() => draftNextPost(accountId, link), () => handleReplies(accountId, link)]) {
+  const failures: string[] = [];
+  for (const step of [() => draftNextPost(accountId, link, failures), () => handleReplies(accountId, link, failures)]) {
     try {
       const n = await step();
       if (n) notes.push(n);
     } catch (e) {
       const msg = (e as Error).message;
-      failed = msg;
+      failures.push(msg);
       notes.push(`failed: ${msg}`);
       console.error(`social agent failed for account ${accountId}: ${msg}`);
     }
   }
-  // The Inspector sees a broken run on the status board; a clean run clears it.
-  void report("threads", !failed, failed ? `Social agent: ${failed}` : null);
+  // A failure anywhere in the run stays on the status board for the Inspector. A run is never reported as working on its
+  // own: only a real post to Threads clears the board, so one site's quiet day can't hide another site's failure.
+  if (failures.length) void report("threads", false, `Social agent: ${failures.join(" ")}`);
   return notes.join(" ") || "nothing to do today";
 }

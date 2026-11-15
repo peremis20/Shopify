@@ -1683,6 +1683,7 @@ export async function autopilotTick(): Promise<Response> {
     }
     // The social agent: once a day per site with Threads connected, two sites per hour (the tick itself rests in the Sabbath).
     for (const accountId of late() ? [] : await accountsDueForSocial(2).catch((e) => (console.error(`social agent list failed: ${message(e)}`), []))) {
+      if (late()) break;
       const note = await forSite(accountId, () => runSocialAgent(accountId)).catch(async (e) => {
         console.error(`social agent failed: ${message(e)}`);
         await report("threads", false, `Social agent: ${message(e)}`);
@@ -1692,6 +1693,7 @@ export async function autopilotTick(): Promise<Response> {
     }
     // Communities to join: a weekly list of searches and drafted answers the owner posts themselves, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForCommunities(1).catch((e) => (console.error(`communities list failed: ${message(e)}`), []))) {
+      if (late()) break;
       const note = await forSite(accountId, () => refreshCommunities(accountId)).catch((e) => (console.error(`communities failed: ${message(e)}`), null));
       if (note) results.push(`account ${accountId} communities: ${note}`);
     }
@@ -1952,6 +1954,8 @@ export async function threadsAuthConfirm(req: Request): Promise<Response> {
 export const threadsPost = (req: Request) =>
   withAccount(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { changeId?: string };
+    // Sabbath rest: nothing is posted from Friday sundown to Saturday sundown.
+    if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Post it again after Saturday sundown." }, 409);
     const item = (await readShareKits(account.id)).find((i) => i.changeId === String(b.changeId ?? ""));
     if (!item) return json({ error: "That article isn't on the list anymore." }, 404);
     const out = await postToThreads(account.id, item, "owner");

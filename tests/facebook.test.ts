@@ -79,3 +79,15 @@ test("connect links: a ticket made for one service is refused by every other con
   const forged = `${payload}.${crypto.createHmac("sha256", key).update(payload).digest("base64url")}`;
   assert.equal(readLinkTicket(forged), null);
 });
+
+test("instagram: publishing waits for the container to finish, and an error or a slow one gives back cleanly", async () => {
+  const { waitForContainer } = await import("../src/lib/analytics/facebook");
+  const sleep = async () => undefined;
+  const seq = (codes: string[]) => {
+    let i = 0;
+    return async () => ({ status_code: codes[Math.min(i++, codes.length - 1)] });
+  };
+  await waitForContainer(seq(["IN_PROGRESS", "IN_PROGRESS", "FINISHED"]), sleep);
+  await assert.rejects(waitForContainer(seq(["IN_PROGRESS", "ERROR"]), sleep), (e: unknown) => e instanceof MetaApiError && e.status === 400);
+  await assert.rejects(waitForContainer(seq(["IN_PROGRESS"]), sleep, 3), (e: unknown) => e instanceof MetaApiError && e.status === 400);
+});

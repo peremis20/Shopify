@@ -106,6 +106,20 @@ export async function accountsDueForCommunities(limit: number): Promise<string[]
 
 /** Makes this week's list for one site. Returns a line for the log. */
 export async function refreshCommunities(accountId: string): Promise<string> {
+  try {
+    return await buildCommunities(accountId);
+  } catch (e) {
+    const reason = (e as Error).message;
+    // Tried this week either way (last week's list stays), so a failing site never holds up the others; the Inspector sees it.
+    await readCommunities(accountId)
+      .then((c) => saveCommunities(accountId, c.items))
+      .catch((err) => console.error(`communities: couldn't mark account ${accountId} tried: ${(err as Error).message}`));
+    void report("communities", false, reason);
+    throw e;
+  }
+}
+
+async function buildCommunities(accountId: string): Promise<string> {
   const profile = await readProfile(accountId);
   const health = healthRulesApply(profile);
   const faith = allowsFaith(profile.businessType);
@@ -137,28 +151,21 @@ export async function refreshCommunities(accountId: string): Promise<string> {
   const ai = { ...base, site: siteBrief(profile) };
   const items = ideas.map((i) => ({ ...i, p: byUrl.get(normUrl(i.page))! }));
   const keep = [profile.brandName, profile.siteDomain].filter((x): x is string => Boolean(x && x.trim()));
-  try {
-    const answers = await writeCommunityAnswers(ai, {
-      items: items.map((i) => ({ search: i.query, title: i.p.h1 || i.p.title, text: i.p.text })),
-      brand: profile.brandName,
-      site: profile.siteDomain ?? "this site",
-      health,
-    });
-    const out: CommunityIdea[] = [];
-    for (const [n, i] of items.entries()) {
-      const clean = cleanPost(answers[n] ?? "", keep, 700, health);
-      if (clean.problem || !clean.text) continue;
-      const verdict = await secondCheck(ai, { what: "an answer a business owner will post in a public community", source: `${i.p.title}\n${i.p.text}`, text: clean.text, health });
-      if (verdict && !verdict.ok) continue;
-      out.push({ where: i.where, search: i.search, pageUrl: i.p.url, answer: clean.text, checked: verdict ? "ai" : "owner" });
-    }
-    await saveCommunities(accountId, out);
-    void report("communities", true);
-    return `${out.length} communities to join suggested`;
-  } catch (e) {
-    // Tried this week either way, so a failing site doesn't hold up the others; the Inspector sees it.
-    await saveCommunities(accountId, (await readCommunities(accountId)).items);
-    void report("communities", false, (e as Error).message);
-    throw e;
+  const answers = await writeCommunityAnswers(ai, {
+    items: items.map((i) => ({ search: i.query, title: i.p.h1 || i.p.title, text: i.p.text })),
+    brand: profile.brandName,
+    site: profile.siteDomain ?? "this site",
+    health,
+  });
+  const out: CommunityIdea[] = [];
+  for (const [n, i] of items.entries()) {
+    const clean = cleanPost(answers[n] ?? "", keep, 700, health);
+    if (clean.problem || !clean.text) continue;
+    const verdict = await secondCheck(ai, { what: "an answer a business owner will post in a public community", source: `${i.p.title}\n${i.p.text}`, text: clean.text, health });
+    if (verdict && !verdict.ok) continue;
+    out.push({ where: i.where, search: i.search, pageUrl: i.p.url, answer: clean.text, checked: verdict ? "ai" : "owner" });
   }
+  await saveCommunities(accountId, out);
+  void report("communities", true);
+  return `${out.length} communities to join suggested`;
 }
