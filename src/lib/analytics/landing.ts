@@ -28,10 +28,12 @@ export interface LandingCandidate {
 const SIZE = new Set("count ct mg mcg g kg oz ml l lb pack size".split(" "));
 /** Product forms: another form is another product, unless the post names that form too. */
 const FORM = new Set("capsule tablet softgel gummy gummie powder liquid drop oil cream lotion spray tea bar chew chewable serum balm".split(" ").map(stem));
-/** Words that join or compare products: a page with one is about more than the post's topic. */
+/** Words that join two things ("threonate with glycinate"): with one between two words the page is about more than the post. */
+const JOIN = new Set(["and", "or", "with", "plus", "+"]);
+/** Words that combine or compare products: a page with one is about more than the post's topic. */
 const COMBO = new Set("blend blends complex combo combination combinations vs versus plus stack mix".split(" "));
 /** General words a landing page may add next to the topic without naming another product or variant. */
-const GENERAL = new Set("best top guide benefit tip fact faq deep sleep natural daily simple complete ultimate easy info learn more shop buy new official review".split(" ").map(stem));
+const GENERAL = new Set("best top guide benefit tip fact faq natural daily simple complete ultimate easy info learn more shop buy new official review".split(" ").map(stem));
 
 /** The site's landing and product pages by their address (or null for any other page). */
 export function pageKind(url: string): LandingCandidate["kind"] | null {
@@ -125,15 +127,19 @@ export function matchesTopic(topic: string, c: LandingCandidate, ctx: MatchConte
   for (const seq of seqs) {
     for (const [i, t] of seq.entries()) {
       if (COMBO.has(t.raw)) return false;
-      // "and" between two product words: a page about two things.
-      if (t.raw === "and" && seq[i - 1] && seq[i + 1] && !GLUE.has(seq[i - 1].raw) && !GLUE.has(seq[i + 1].raw) && (named(seq[i - 1].term) || named(seq[i + 1].term))) return false;
+      // "and", "or", "with" between two words: a page about two things ("threonate with glycinate").
+      if (JOIN.has(t.raw) && seq[i - 1] && seq[i + 1] && !GLUE.has(seq[i - 1].raw) && !GLUE.has(seq[i + 1].raw)) {
+        const other = [seq[i - 1], seq[i + 1]].find((n) => !want.has(n.term));
+        if (named(seq[i - 1].term) && named(seq[i + 1].term)) return false;
+        if (other && (named(other.term) || !GENERAL.has(other.term))) return false;
+      }
     }
   }
   for (const w of own) {
     if (want.has(w) || SIZE.has(w) || /^\d+$/.test(w)) continue;
     if (FORM.has(w) || c.kind === "product" || ctx.productWords.has(w)) return false;
-    if (GENERAL.has(w)) continue;
     if (ctx.variants.has(w)) return false;
+    if (GENERAL.has(w)) continue;
     // Right next to a topic word ("magnesium glycinate" for a magnesium post): it narrows the topic to a variant.
     if (seqs.some((seq) => seq.some((t, i) => t.term === w && [seq[i - 1], seq[i + 1]].some((n) => n && want.has(n.term))))) return false;
   }

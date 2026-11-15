@@ -35,6 +35,12 @@ test("landing: blends, comparisons and pages narrowed to a variant are never use
   assert.equal(url("magnesium threonate", [landing("magnesium-threonate-vs-glycinate", "Magnesium Threonate vs Glycinate")]), null);
   assert.equal(url("magnesium", [landing("magnesium-glycinate", "Magnesium Glycinate")]), null);
   assert.equal(url("magnesium glycinate", [landing("calm", "Magnesium Glycinate and Threonate")]), null);
+  // "with" or "or" joining another variant is a combination too.
+  assert.equal(url("magnesium threonate", [landing("focus", "Magnesium Threonate with Glycinate")]), null);
+  assert.equal(url("magnesium threonate", [landing("magnesium-threonate-with-glycinate", "Focus")]), null);
+  assert.equal(url("magnesium threonate", [landing("focus", "Magnesium Threonate or Glycinate")]), null);
+  // A niche word the site's own searches use as a variant is not waved through as general.
+  assert.equal(url("magnesium", [landing("magnesium-sleep", "Magnesium Sleep")], ["magnesium sleep"]), null);
   // A word the site's own searches put next to the topic is a variant.
   assert.equal(url("magnesium", [landing("calm", "Magnesium for calm evenings, with threonate")], ["magnesium threonate"]), null);
   // Another product's name word, and another form.
