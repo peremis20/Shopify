@@ -79,7 +79,24 @@ import {
   type KeywordQuery,
 } from "./keywords";
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
-import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLinkTicket, useLinkTicket } from "./embedded";
+import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLinkTicket, ticketFor, useLinkTicket } from "./embedded";
+import {
+  confirmFacebookPending,
+  dropFacebookPending,
+  exchangeFacebookCode,
+  facebookAuthorizeUrl,
+  getFacebook,
+  holdFacebook,
+  metaPosts,
+  metaPostsThisWeek,
+  metaSkips,
+  postToMeta,
+  readFacebookPending,
+  removeFacebook,
+  removeFacebookUser,
+  setFacebookAuto,
+  SOCIAL_WEEKLY_CAP,
+} from "./facebook";
 import { setupGoogle } from "./google-setup";
 import { autoMatch, onboardingStatus } from "./onboarding";
 import { getOverview } from "./overview";
@@ -1268,6 +1285,8 @@ export const savePlatform = (req: Request) =>
       shopifyClientSecret: str("shopifyClientSecret"),
       threadsAppId: str("threadsAppId"),
       threadsAppSecret: str("threadsAppSecret"),
+      facebookAppId: str("facebookAppId"),
+      facebookAppSecret: str("facebookAppSecret"),
     });
     forgetOprKey();
     const p = await readPlatformSettings();
@@ -1974,7 +1993,7 @@ export const threadsDisconnect = (req: Request) =>
     return json({ ok: true });
   });
 
-/** Meta's signed request: the Threads user it names, or null when the signature doesn't match the app secret. */
+/** Meta's signed request (Threads or Facebook): the user it names, or null when the signature doesn't match the app secret. */
 export function threadsSignedUser(signed: string | null, secret: string): string | null {
   const [sig, payload] = (signed ?? "").split(".");
   if (!sig || !payload) return null;
@@ -2017,4 +2036,193 @@ export async function reportChart(req: Request): Promise<Response> {
   })();
   if (!png) return new Response("Not found", { status: 404 });
   return new Response(new Uint8Array(png), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable" } });
+}
+
+// ---------- Facebook Page and Instagram ----------
+
+const FACEBOOK_STATE_COOKIE = "insights_facebook_state";
+const FACEBOOK_CONFIRM_COOKIE = "insights_facebook_confirm";
+const facebookRedirectUri = (req: Request) => `${appOrigin(req)}/api/auth/facebook/callback`;
+
+async function facebookApp(): Promise<{ id: string; secret: string } | null> {
+  const p = await readPlatformSettings();
+  return p.facebookAppId && p.facebookAppSecret ? { id: p.facebookAppId, secret: p.facebookAppSecret } : null;
+}
+
+/** Whether a Facebook Page (and its Instagram account) is connected for this site, its posts, and the automatic posting choices. */
+export const facebookStatus = (req: Request) =>
+  withAccount(req, async (account) => {
+    const configured = Boolean(await facebookApp());
+    const link = await getFacebook(account.id).catch(() => null);
+    return json({
+      configured,
+      connected: Boolean(link),
+      pageName: link?.pageName ?? null,
+      igUsername: link?.igUsername ?? null,
+      hasInstagram: Boolean(link?.igUserId),
+      autoFacebook: link?.autoFacebook ?? false,
+      autoInstagram: link?.autoInstagram ?? false,
+      lastError: link?.lastError ?? null,
+      posts: link ? await metaPosts(account.id) : [],
+      skips: link ? await metaSkips(account.id) : [],
+      postedThisWeek: link ? { facebook: await metaPostsThisWeek(account.id, "facebook"), instagram: await metaPostsThisWeek(account.id, "instagram") } : { facebook: 0, instagram: 0 },
+      cap: SOCIAL_WEEKLY_CAP,
+    });
+  });
+
+/** A Facebook connect link tied to this account (opened at the top level, also from inside Shopify admin). */
+export const facebookLinkStart = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (!(await facebookApp())) return json({ error: "Facebook isn't set up on DashPatrol yet." }, 400);
+    const acct = await readAccountAutopilot(account.id);
+    const embedded = Boolean(req.headers.get("authorization"));
+    const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
+    const session = (await currentAccount(req).catch(() => null))?.id === account.id;
+    return json({ url: `${appOrigin(req)}/api/auth/facebook/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session, "facebook"))}` });
+  });
+
+/** Sends the owner to Facebook to allow posting to a Page they manage. Only a ticket made for Facebook is accepted. */
+export async function facebookAuthStart(req: Request): Promise<Response> {
+  const app = await facebookApp();
+  const ticket = new URL(req.url).searchParams.get("link");
+  if (!app || !ticketFor(ticket, "facebook")) return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent("Please start again from Share this week.")}`);
+  const state = `${ticket}.${crypto.randomBytes(16).toString("hex")}`;
+  return redirect(facebookAuthorizeUrl(app.id, facebookRedirectUri(req), state), tempCookie(req, FACEBOOK_STATE_COOKIE, state, 900));
+}
+
+/** Facebook redirects here: the Pages are held until the person picks one and confirms the site, in this same browser. */
+export async function facebookAuthCallback(req: Request): Promise<Response> {
+  const params = new URL(req.url).searchParams;
+  const clear = tempCookie(req, FACEBOOK_STATE_COOKIE, "", 0);
+  const state = params.get("state") ?? "";
+  const ticket = state.slice(0, state.lastIndexOf("."));
+  const link = state && state === readCookie(req, FACEBOOK_STATE_COOKIE) ? ticketFor(ticket, "facebook", LINK_FINISH_MS) : null;
+  const home = link?.returnTo || `${appOrigin(req)}/analytics`;
+  const back = (p: Record<string, string>) => redirect(`${home}${home.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
+  if (params.get("error")) return back({ auth_error: "Facebook access was not allowed. Nothing changed." });
+  const code = params.get("code");
+  const app = await facebookApp();
+  if (!code || !link || !app) return back({ auth_error: "The Facebook link expired. Please try again from Share this week." });
+  try {
+    const here = await currentAccount(req).catch(() => null);
+    if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Facebook from inside that account instead.");
+    if (link.session && !here) throw new Error("Please sign in again, then connect Facebook from the app.");
+    if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
+    const out = await exchangeFacebookCode(app, code, facebookRedirectUri(req));
+    if (!out.pages.length) throw new Error("Facebook didn't share any Page you manage. Connect again and choose the Page to post to.");
+    const id = await holdFacebook(link.accountId, out.userId, out.pages, home);
+    const confirm = crypto.randomBytes(16).toString("hex");
+    const profile = await readProfile(link.accountId).catch(() => null);
+    const site = profile?.siteDomain || (await readAccountAutopilot(link.accountId).catch(() => null))?.shopDomain || "your site";
+    return facebookConfirmPage(req, { id, confirm, site, pages: out.pages }, clear, tempCookie(req, FACEBOOK_CONFIRM_COOKIE, `${id}.${confirm}`, 900));
+  } catch (err) {
+    return back({ auth_error: message(err) });
+  }
+}
+
+function facebookConfirmPage(
+  req: Request,
+  p: { id: string; confirm: string; site: string; pages: { id: string; name: string; igUsername: string | null }[] },
+  ...cookies: string[]
+): Response {
+  const choices = p.pages
+    .map(
+      (pg, i) =>
+        `<label class="pg"><input type="radio" name="page" value="${escapeHtml(pg.id)}"${i === 0 ? " checked" : ""}> <strong>${escapeHtml(pg.name)}</strong>${
+          pg.igUsername ? `<br><span>Instagram: @${escapeHtml(pg.igUsername)}</span>` : "<br><span>No Instagram account linked</span>"
+        }</label>`,
+    )
+    .join("");
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Facebook</title>
+<style>body{margin:0;background:#F7F3EC;color:#1F1D1A;font:16px/1.5 Inter,system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+main{max-width:460px;background:#fff;border:1px solid #E6E0D6;border-radius:16px;padding:24px}h1{font-size:20px;margin:0 0 12px}.pg{display:block;border:1px solid #E6E0D6;border-radius:10px;padding:10px;margin:8px 0}.pg span{color:#6B675F;font-size:14px}
+button{font:600 15px Inter,system-ui,sans-serif;border:0;border-radius:10px;padding:10px 16px;cursor:pointer}.yes{background:#0F5A32;color:#fff}.no{background:#EFEAE1;color:#1F1D1A;margin-left:8px}</style></head>
+<body><main><h1>Which Page should DashPatrol post to?</h1>
+<p>DashPatrol will post about new articles from <strong>${escapeHtml(p.site)}</strong> to the Page you pick (and its Instagram account), only when you click Post or turn on automatic posting.</p>
+<p>If this isn't your site, click Cancel.</p>
+<form method="post" action="${appOrigin(req)}/api/auth/facebook/confirm"><input type="hidden" name="id" value="${escapeHtml(p.id)}"><input type="hidden" name="confirm" value="${escapeHtml(p.confirm)}">
+${choices}
+<button class="yes" name="answer" value="yes">Connect</button><button class="no" name="answer" value="no">Cancel</button></form></main></body></html>`;
+  const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Frame-Options": "DENY" });
+  cookies.forEach((c) => headers.append("Set-Cookie", c));
+  return new Response(html, { status: 200, headers });
+}
+
+/** The Connect or Cancel click on the confirm page, from the same browser that allowed it on Facebook. */
+export async function facebookAuthConfirm(req: Request): Promise<Response> {
+  const form = await req.formData().catch(() => null);
+  const id = String(form?.get("id") ?? "");
+  const confirm = String(form?.get("confirm") ?? "");
+  const page = String(form?.get("page") ?? "");
+  const clear = tempCookie(req, FACEBOOK_CONFIRM_COOKIE, "", 0);
+  const fallback = `${appOrigin(req)}/analytics`;
+  const go = (to: string, p: Record<string, string>) => redirect(`${to}${to.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
+  const expired = { auth_error: "That Facebook link expired. Please connect Facebook again from Share this week." };
+  try {
+    const pending = id ? await readFacebookPending(id) : null;
+    if (!pending || !id || !confirm || readCookie(req, FACEBOOK_CONFIRM_COOKIE) !== `${id}.${confirm}`) return go(fallback, expired);
+    if (form?.get("answer") !== "yes") {
+      await dropFacebookPending(id);
+      return go(pending.returnTo || fallback, { auth_error: "Facebook was not connected. Nothing changed." });
+    }
+    if (!pending.pages.some((p) => p.id === page)) return go(pending.returnTo || fallback, { auth_error: "Pick a Page first." });
+    const to = await confirmFacebookPending(id, page);
+    if (!to) return go(fallback, expired);
+    return go(to, { connected: "facebook" });
+  } catch (err) {
+    return go(fallback, { auth_error: message(err) });
+  }
+}
+
+/** Posts one article to the owner's Facebook Page or Instagram account. Only the owner's click (or their automatic posting choice) calls this. */
+export const facebookPost = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = (await req.json().catch(() => ({}))) as { changeId?: string; channel?: string };
+    const channel = b.channel === "instagram" ? "instagram" : b.channel === "facebook" ? "facebook" : null;
+    if (!channel) return json({ error: "Pick Facebook or Instagram." }, 400);
+    // Sabbath rest: nothing is posted from Friday sundown to Saturday sundown.
+    if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Post it again after Saturday sundown." }, 409);
+    const item = (await readShareKits(account.id)).find((i) => i.changeId === String(b.changeId ?? ""));
+    if (!item) return json({ error: "That article isn't on the list anymore." }, 404);
+    const out = await postToMeta(account.id, channel, item, "owner");
+    if (!out.ok) return json({ error: out.error }, out.status);
+    return json({ ok: true, post: out.post, postedThisWeek: await metaPostsThisWeek(account.id, channel) });
+  });
+
+/** Turns automatic posting to the Facebook Page or Instagram on or off for this site. */
+export const facebookSettings = (req: Request) =>
+  withAccount(req, async (account) => {
+    const b = (await req.json().catch(() => ({}))) as { facebook?: unknown; instagram?: unknown };
+    const link = await getFacebook(account.id);
+    if (!link) return json({ error: "Connect Facebook first." }, 400);
+    if (typeof b.facebook === "boolean") await setFacebookAuto(account.id, "facebook", b.facebook);
+    if (typeof b.instagram === "boolean") {
+      if (b.instagram && !link.igUserId) return json({ error: "No Instagram business account is linked to your Facebook Page." }, 400);
+      await setFacebookAuto(account.id, "instagram", b.instagram);
+    }
+    const now = await getFacebook(account.id);
+    return json({ ok: true, autoFacebook: now?.autoFacebook ?? false, autoInstagram: now?.autoInstagram ?? false });
+  });
+
+/** Stops posting to Facebook and Instagram: the saved access is deleted. */
+export const facebookDisconnect = (req: Request) =>
+  withAccount(req, async (account) => {
+    await removeFacebook(account.id);
+    return json({ ok: true });
+  });
+
+/** Meta calls this when someone removes DashPatrol from Facebook, or asks for their data to be deleted. */
+export async function facebookRemoved(req: Request): Promise<Response> {
+  const app = await facebookApp().catch(() => null);
+  const form = await req.formData().catch(() => null);
+  const user = app ? threadsSignedUser(String(form?.get("signed_request") ?? ""), app.secret) : null;
+  if (!user) return json({ error: "Not a valid request." }, 400);
+  try {
+    await removeFacebookUser(user);
+  } catch (err) {
+    console.error(`facebook removal failed: ${message(err)}`);
+    return json({ error: "Please try again." }, 500);
+  }
+  const code = crypto.createHash("sha256").update(`facebook-removed:${user}`).digest("hex").slice(0, 16);
+  return json({ url: `${appOrigin(req)}/privacy`, confirmation_code: code });
 }

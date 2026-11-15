@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { ShareItem } from "@/lib/analytics/autopilot/share-kit";
 import type { ThreadsPost } from "@/lib/analytics/threads";
+import type { MetaChannel, MetaPost } from "@/lib/analytics/facebook";
 import { isEmbedded } from "./embedded-client";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
@@ -153,7 +154,156 @@ function ThreadsButton({ item, t, onPosted }: { item: ShareItem; t: ThreadsState
   );
 }
 
-function ShareCard({ item, onPosted, threads, onThreads }: { item: ShareItem; onPosted: (posted: boolean) => void; threads: ThreadsState | null; onThreads: (p: ThreadsPost, n: number) => void }) {
+interface MetaState {
+  configured: boolean;
+  connected: boolean;
+  pageName: string | null;
+  igUsername: string | null;
+  hasInstagram: boolean;
+  autoFacebook: boolean;
+  autoInstagram: boolean;
+  lastError: string | null;
+  posts: MetaPost[];
+  skips: { channel: MetaChannel; changeId: string; reason: string }[];
+  postedThisWeek: { facebook: number; instagram: number };
+  cap: number;
+}
+
+/** Connect a Facebook Page (and its Instagram account), or say where posts go and whether the autopilot posts by itself. */
+function FacebookBar({ m, onChange }: { m: MetaState; onChange: (m: MetaState) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!m.configured) return null;
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { url } = await api<{ url: string }>("/api/social/facebook/link");
+      if (isEmbedded()) window.open(url, "_top");
+      else window.location.href = url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open Facebook. Try again.");
+      setBusy(false);
+    }
+  };
+  const setAuto = async (patch: { facebook?: boolean; instagram?: boolean }) => {
+    setBusy(true);
+    setError(null);
+    await api<{ autoFacebook: boolean; autoInstagram: boolean }>("/api/social/facebook/settings", patch)
+      .then((out) => onChange({ ...m, ...out }))
+      .catch((e) => setError(e instanceof Error ? e.message : "Couldn't save that."));
+    setBusy(false);
+  };
+  const disconnect = async () => {
+    if (!window.confirm("Stop posting to Facebook and Instagram? Posts already there stay there.")) return;
+    setBusy(true);
+    setError(null);
+    await api("/api/social/facebook/disconnect", {})
+      .then(() => onChange({ ...m, connected: false, pageName: null, igUsername: null, hasInstagram: false, autoFacebook: false, autoInstagram: false }))
+      .catch(() => setError("Couldn't stop posting to Facebook. Check your connection and try again."));
+    setBusy(false);
+  };
+  return (
+    <div className="mb-3 rounded-xl bg-dash-bg p-3 text-sm text-dash-ink">
+      {m.connected ? (
+        <>
+          <p>
+            Posting to the Facebook Page <strong>{m.pageName}</strong> ({m.postedThisWeek.facebook} of {m.cap} this week)
+            {m.hasInstagram ? (
+              <>
+                {" "}and Instagram <strong>@{m.igUsername}</strong> ({m.postedThisWeek.instagram} of {m.cap} this week)
+              </>
+            ) : null}
+            .{" "}
+            <button onClick={disconnect} disabled={busy} className="text-xs font-semibold text-dash-green hover:underline">Stop posting to Facebook</button>
+          </p>
+          <label className="mt-2 flex items-start gap-2">
+            <input type="checkbox" checked={m.autoFacebook} disabled={busy} onChange={(e) => setAuto({ facebook: e.target.checked })} className="mt-1" />
+            <span>
+              Post each new article to Facebook by itself.
+              <span className="block text-xs text-dash-muted">When this is off, nothing goes to Facebook until you click Post to Facebook.</span>
+            </span>
+          </label>
+          {m.hasInstagram && (
+            <label className="mt-2 flex items-start gap-2">
+              <input type="checkbox" checked={m.autoInstagram} disabled={busy} onChange={(e) => setAuto({ instagram: e.target.checked })} className="mt-1" />
+              <span>
+                Post each new article to Instagram by itself.
+                <span className="block text-xs text-dash-muted">Only articles with their own image. When this is off, nothing goes to Instagram until you click Post to Instagram.</span>
+              </span>
+            </label>
+          )}
+          {m.lastError && <p className="mt-2 text-dash-down">{m.lastError}</p>}
+        </>
+      ) : (
+        <p>
+          Post these to your own Facebook Page and Instagram from here.{" "}
+          <button onClick={connect} disabled={busy} className="font-semibold text-dash-green hover:underline">
+            Connect Facebook
+          </button>
+        </p>
+      )}
+      {error && <p className="mt-2 text-dash-down">{error}</p>}
+    </div>
+  );
+}
+
+const META_NAME = { facebook: "Facebook", instagram: "Instagram" } as const;
+
+function MetaButton({ item, m, channel, onPosted }: { item: ShareItem; m: MetaState; channel: MetaChannel; onPosted: (p: MetaPost, n: number) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const done = m.posts.find((p) => p.channel === channel && p.changeId === item.changeId);
+  const skipped = m.skips.find((s) => s.channel === channel && s.changeId === item.changeId);
+  if (done) {
+    return done.permalink ? (
+      <a href={done.permalink} target="_blank" rel="noreferrer" className="text-xs font-semibold text-dash-green hover:underline">
+        On {META_NAME[channel]}
+        {done.by === "autopilot" ? ", posted by the autopilot" : ""}
+      </a>
+    ) : (
+      <span className="text-xs text-dash-muted">On {META_NAME[channel]}</span>
+    );
+  }
+  if (!m.connected || (channel === "instagram" && !m.hasInstagram)) return null;
+  if (skipped) return <span className="max-w-[16rem] text-xs text-dash-muted">{skipped.reason}</span>;
+  const post = async () => {
+    if (!window.confirm(`Post this to ${META_NAME[channel]}?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const out = await api<{ post: MetaPost; postedThisWeek: number }>("/api/social/facebook/post", { changeId: item.changeId, channel });
+      onPosted(out.post, out.postedThisWeek);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't post it.");
+    }
+    setBusy(false);
+  };
+  return (
+    <span className="inline-flex flex-col items-end gap-1">
+      <button onClick={post} disabled={busy} className="rounded-lg bg-dash-ink px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60">
+        {busy ? "Posting" : `Post to ${META_NAME[channel]}`}
+      </button>
+      {error && <span className="max-w-[16rem] text-xs text-dash-down">{error}</span>}
+    </span>
+  );
+}
+
+function ShareCard({
+  item,
+  onPosted,
+  threads,
+  onThreads,
+  meta,
+  onMeta,
+}: {
+  item: ShareItem;
+  onPosted: (posted: boolean) => void;
+  threads: ThreadsState | null;
+  onThreads: (p: ThreadsPost, n: number) => void;
+  meta: MetaState | null;
+  onMeta: (p: MetaPost, n: number) => void;
+}) {
   const [ch, setCh] = useState<Channel>("linkedin");
   const text = textOf(item, ch);
   return (
@@ -161,10 +311,12 @@ function ShareCard({ item, onPosted, threads, onThreads }: { item: ShareItem; on
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <a href={item.url} target="_blank" rel="noreferrer" className="break-words font-semibold text-dash-ink hover:underline">{item.title}</a>
-          <p className="text-xs text-dash-muted">Made {new Date(item.at).toLocaleDateString()} · checked by a second AI</p>
+          <p className="text-xs text-dash-muted">Made {new Date(item.at).toLocaleDateString()} · {item.checkedBy === "owner" ? "no second AI was free, so check it before you post" : "checked by a second AI"}</p>
         </div>
         <div className="flex flex-wrap items-start gap-2">
         {threads && <ThreadsButton item={item} t={threads} onPosted={onThreads} />}
+        {meta && <MetaButton item={item} m={meta} channel="facebook" onPosted={onMeta} />}
+        {meta && <MetaButton item={item} m={meta} channel="instagram" onPosted={onMeta} />}
         <button
           onClick={() => onPosted(!item.postedAt)}
           className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${item.postedAt ? "bg-dash-line text-dash-ink" : "bg-dash-green text-white hover:bg-dash-deep"}`}
@@ -200,11 +352,15 @@ export function ShareKits() {
   const [showPosted, setShowPosted] = useState(false);
   const [failed, setFailed] = useState(false);
   const [threads, setThreads] = useState<ThreadsState | null>(null);
+  const [meta, setMeta] = useState<MetaState | null>(null);
   useEffect(() => {
+    api<MetaState>("/api/social/facebook").then(setMeta).catch(() => setMeta(null));
     api<{ items: ShareItem[] }>("/api/autopilot/share").then((d) => setItems(d.items)).catch(() => setItems([]));
     api<ThreadsState>("/api/social/threads").then(setThreads).catch(() => setThreads(null));
   }, []);
   const onThreads = (p: ThreadsPost, n: number) => setThreads((t) => (t ? { ...t, posts: [p, ...t.posts], postedThisWeek: n, lastError: null } : t));
+  const onMeta = (p: MetaPost, n: number) =>
+    setMeta((m) => (m ? { ...m, posts: [p, ...m.posts], postedThisWeek: { ...m.postedThisWeek, [p.channel]: n }, lastError: null } : m));
   if (!items?.length) return null;
   const todo = items.filter((i) => !i.postedAt);
   const posted = items.filter((i) => i.postedAt);
@@ -219,9 +375,10 @@ export function ShareKits() {
         Posts and a short video script for each new article, written from the article and checked by a second AI. Copy, post, then mark it posted.
       </p>
       {threads && <ThreadsBar t={threads} onChange={setThreads} />}
+      {meta && <FacebookBar m={meta} onChange={setMeta} />}
       {failed && <p className="mb-3 text-sm text-dash-down">Couldn&apos;t save that. Check your connection and try again.</p>}
       {todo.length ? (
-        <div className="space-y-3">{todo.map((i) => <ShareCard key={i.changeId} item={i} onPosted={(p) => mark(i.changeId, p)} threads={threads} onThreads={onThreads} />)}</div>
+        <div className="space-y-3">{todo.map((i) => <ShareCard key={i.changeId} item={i} onPosted={(p) => mark(i.changeId, p)} threads={threads} onThreads={onThreads} meta={meta} onMeta={onMeta} />)}</div>
       ) : (
         <p className="text-sm text-dash-ink">All caught up. New posts appear here after the next article.</p>
       )}
@@ -230,7 +387,7 @@ export function ShareKits() {
           <button onClick={() => setShowPosted((v) => !v)} className="text-xs font-semibold text-dash-green hover:underline">
             {showPosted ? "Hide" : "Show"} posted ({posted.length})
           </button>
-          {showPosted && <div className="mt-3 space-y-3">{posted.map((i) => <ShareCard key={i.changeId} item={i} onPosted={(p) => mark(i.changeId, p)} threads={threads} onThreads={onThreads} />)}</div>}
+          {showPosted && <div className="mt-3 space-y-3">{posted.map((i) => <ShareCard key={i.changeId} item={i} onPosted={(p) => mark(i.changeId, p)} threads={threads} onThreads={onThreads} meta={meta} onMeta={onMeta} />)}</div>}
         </div>
       )}
     </Card>

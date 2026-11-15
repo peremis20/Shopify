@@ -122,6 +122,24 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
             : "Threads turned down the last post. It tries the next article by itself; nothing was posted twice.",
     workaround: "The posts stay under Share this week to post by hand.",
   },
+  facebook: {
+    name: "Posting to a Facebook Page",
+    fix: (d) =>
+      /app|client|secret|redirect|permission|\(#200\)|\(#10\)/i.test(d ?? "")
+        ? "Check the Facebook app ID and secret in Platform keys, that the app's redirect address is set in Meta's developer settings, and that the app has pages_manage_posts."
+        : "Facebook turned down the last post. It tries the next article by itself; nothing was posted twice.",
+    workaround: "The posts stay under Share this week to post by hand.",
+  },
+  instagram: {
+    name: "Posting to Instagram",
+    fix: (d) =>
+      /app|client|secret|redirect|permission|\(#200\)|\(#10\)/i.test(d ?? "")
+        ? "Check the Facebook app in Meta's developer settings has instagram_basic and instagram_content_publish, and that the Instagram account is a business or creator account linked to the Page."
+        : /image|media|aspect|format/i.test(d ?? "")
+          ? "Instagram didn't accept the article's image. It moves on to the next article by itself."
+          : "Instagram turned down the last post. It tries the next article by itself; nothing was posted twice.",
+    workaround: "The posts stay under Share this week to post by hand.",
+  },
   "shopify-sales": {
     name: "Sales from Shopify",
     fix: () => "It tries again by itself. If it keeps failing, reconnect the store under Content.",

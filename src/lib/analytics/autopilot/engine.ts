@@ -9,6 +9,7 @@ import { googleRequest } from "../google-auth";
 import { readProfile, siteBrief } from "../profile";
 import { makeNextShareKit, readShareKits } from "./share-kit";
 import { autoPostNext } from "../threads";
+import { autoPostMeta } from "../facebook";
 import type { Opportunity } from "../seo-types";
 import { readyApps, type Candidate, type Hub, type Mode, type RankingApp } from "./apps";
 import { keyOf } from "./apps/types";
@@ -1148,6 +1149,11 @@ async function runAutopilotChecked(accountId: string, conn: Connection | null, t
       .then((items) => autoPostNext(accountId, items))
       .catch((e) => `Not posted to Threads: ${(e as Error).message}`);
     if (posted) summary.push(posted);
+    // The same for the owner's own Facebook Page and Instagram account, each only when the owner turned it on.
+    const meta = await readShareKits(accountId)
+      .then((items) => autoPostMeta(accountId, items))
+      .catch((e) => `Not posted to Facebook or Instagram: ${(e as Error).message}`);
+    if (meta) summary.push(meta);
   }
   const [run] = await sql`
     UPDATE insights_autopilot_runs SET finished_at = now(), status = ${status}, summary = ${summary.join(" ")}

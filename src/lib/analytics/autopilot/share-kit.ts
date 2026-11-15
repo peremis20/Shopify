@@ -2,7 +2,7 @@ import { ensureSchema, sql } from "../db";
 import { plainText } from "./guards";
 import type { AiProvider } from "./settings";
 import { report } from "./status";
-import { ownerApproves, writeShareKit, type ShareKit } from "./writer";
+import { hasSecondAi, loadRests, ownerApproves, writeShareKit, type ShareKit } from "./writer";
 
 /**
  * Share kits: for each new article the autopilot publishes, social posts for each channel and a short video script,
@@ -16,6 +16,8 @@ export interface ShareItem {
   kit: ShareKit;
   /** Set when the owner marks it posted. */
   postedAt?: string | null;
+  /** "owner" when no second AI was free to check it: then it is never posted automatically, only by the owner's click. */
+  checkedBy?: "ai" | "owner";
 }
 
 const KEEP = 10;
@@ -110,6 +112,8 @@ export async function makeNextShareKit(accountId: string, ai: AiProvider, brand:
   const { title, text } = article;
   const summary = text.split(/(?<=[.?!])\s+/).slice(0, 3).join(" ");
   let kit: ShareKit;
+  await loadRests();
+  const checkedBy = hasSecondAi(ai) ? "ai" : "owner";
   try {
     // The owner posts these themselves, so with one AI service the owner is the second check.
     kit = await ownerApproves(ai, () => writeShareKit(ai, { title, url: String(next.page_url), summary, text, brand, site: site || "this site" }));
@@ -120,7 +124,7 @@ export async function makeNextShareKit(accountId: string, ai: AiProvider, brand:
   }
   void report("share-kit", true);
   await saveShareKits(accountId, [
-    { changeId: String(next.id), url: String(next.page_url), title, at: new Date().toISOString(), kit, postedAt: null },
+    { changeId: String(next.id), url: String(next.page_url), title, at: new Date().toISOString(), kit, postedAt: null, checkedBy },
     ...items,
   ]);
   return `Wrote social posts and a short video script for "${title}". They're ready to post under Share this week.`;

@@ -447,7 +447,8 @@ export async function autoPostNext(accountId: string, items: ShareItem[]): Promi
   const link = await freshLink(accountId);
   if (!link?.auto) return null;
   const done = new Set((await threadsPosts(accountId)).map((p) => p.changeId));
-  const next = items.find((i) => !i.postedAt && !done.has(i.changeId) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
+  // Only posts a second AI checked go out by themselves; the rest wait for the owner's click.
+  const next = items.find((i) => !i.postedAt && i.checkedBy !== "owner" && !done.has(i.changeId) && Date.now() - Date.parse(i.at) < 14 * 86400_000);
   if (!next) return null;
   const out = await postToThreads(accountId, next, "autopilot");
   if (out.ok) return `Posted "${next.title}" to Threads.`;

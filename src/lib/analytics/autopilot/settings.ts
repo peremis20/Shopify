@@ -41,6 +41,9 @@ export interface PlatformSettings {
   /** The Meta app for Threads, so each site can post its articles to its own Threads profile. */
   threadsAppId?: string;
   threadsAppSecret?: string;
+  /** The Meta app for Facebook Login, so each site can post its articles to its own Facebook Page and Instagram account. */
+  facebookAppId?: string;
+  facebookAppSecret?: string;
   /** resend.com, for owner emails (weekly report, urgent alerts). */
   resendKey?: string;
   /** The sender, on a domain verified in Resend, e.g. "DashPatrol <alerts@dashpatrol.com>". */
@@ -75,7 +78,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; keLeft: number | null; keSpent: number | null; hasShopifyApp: boolean; hasThreads: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; keLeft: number | null; keSpent: number | null; hasShopifyApp: boolean; hasThreads: boolean; hasFacebook: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -119,6 +122,8 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     shopifyClientSecret: process.env.SHOPIFY_API_SECRET || stored.shopifyClientSecret,
     threadsAppId: process.env.THREADS_APP_ID || stored.threadsAppId,
     threadsAppSecret: process.env.THREADS_APP_SECRET || stored.threadsAppSecret,
+    facebookAppId: process.env.FACEBOOK_APP_ID || stored.facebookAppId,
+    facebookAppSecret: process.env.FACEBOOK_APP_SECRET || stored.facebookAppSecret,
   };
 }
 
@@ -238,7 +243,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, ...(await keCreditInfo(Boolean(platform.keKey))), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret), hasThreads: Boolean(platform.threadsAppId && platform.threadsAppSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, ...(await keCreditInfo(Boolean(platform.keKey))), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret), hasThreads: Boolean(platform.threadsAppId && platform.threadsAppSecret), hasFacebook: Boolean(platform.facebookAppId && platform.facebookAppSecret) }
       : undefined,
   };
 }

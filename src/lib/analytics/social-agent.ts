@@ -40,7 +40,6 @@ import {
 export const SOCIAL_KINDS: SocialKind[] = ["tip", "question", "explainer"];
 /** Answers to replies the agent drafts or posts for one site in a day. */
 export const REPLY_DAILY_CAP = 10;
-/** A page posted about rests this long before it is used again. */
 // A page posted about rests 21 days before it is used again (the query in draftNextPost).
 /** Pages thinner than this have too little to post about. */
 const MIN_WORDS = 120;

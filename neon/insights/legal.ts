@@ -67,6 +67,8 @@ export const privacyHtml = () =>
 </ul>
 <h2>Threads</h2>
 <p>If you connect Threads, DashPatrol reads your Threads username and posts short posts about your own articles and pages (new articles, practical tips, answered questions and short explainers written only from your own site) to your own Threads profile, only when you click Post to Threads or Approve, or after you turn on automatic posting. It posts at most three times a week. It reads the replies to your posts so it can suggest helpful answers, and posts an answer only when you approve it or turn on automatic replies, at most ten a day. It searches public Threads posts on your topics only to count what people ask about; it never copies or keeps anyone's posts. It never reads your private messages. Disconnect it any time from Share this week, or remove DashPatrol in your Threads settings under Website permissions; DashPatrol then deletes its stored Threads access.</p>
+<h2>Facebook and Instagram</h2>
+<p>If you connect Facebook, DashPatrol reads the list of Facebook Pages you manage and the Instagram business account linked to each, so you can pick one Page. It keeps an access key for that Page only, and posts short posts about your own new articles to that Page and its Instagram account, only when you click Post or after you turn on automatic posting for that channel. It posts at most three times a week on each, once per article, with a link back to your article (Instagram posts use your article's own image). It never reads your private messages, your friends or anyone else's Pages. Disconnect it any time from Share this week, or remove DashPatrol in your Facebook settings under Business Integrations; DashPatrol then deletes its stored Facebook access.</p>
 <h2>How we use it</h2>
 <ul>
 <li>Only to run DashPatrol for you: planning, improving pages, writing articles, tracking rankings and reporting results.</li>
@@ -79,7 +81,7 @@ export const privacyHtml = () =>
 <li>DashPatrol's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.</li>
 </ul>
 <h2>Where it is kept</h2>
-<p>In a database hosted by Neon. Sign in tokens and site access keys (Google, Shopify, WordPress, Webflow, Wix, Threads) are stored encrypted. Your data is kept until you ask us to delete it; disconnecting stops DashPatrol reading it but doesn't delete what was already stored.</p>
+<p>In a database hosted by Neon. Sign in tokens and site access keys (Google, Shopify, WordPress, Webflow, Wix, Threads, Facebook) are stored encrypted. Your data is kept until you ask us to delete it; disconnecting stops DashPatrol reading it but doesn't delete what was already stored.</p>
 <h2>Your choices</h2>
 <ul>
 <li>Disconnect Google, your store or your site at any time in Settings; DashPatrol then stops reading it.</li>

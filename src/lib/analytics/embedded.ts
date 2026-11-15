@@ -121,15 +121,23 @@ export interface LinkTicket {
   session: boolean;
   /** Single use: the callback records it once. */
   nonce: string;
-  /** What it may connect: Google (no purpose) or Threads. A ticket for one can't be used for the other. */
-  purpose: "google" | "threads";
+  /** What it may connect: Google (no purpose), Threads or Facebook. A ticket for one can't be used for another. */
+  purpose: LinkPurpose;
+}
+
+export type LinkPurpose = "google" | "threads" | "facebook";
+
+/** The ticket, only when it was made for this purpose: each connect flow refuses a ticket made for another. */
+export function ticketFor(ticket: string | null, purpose: LinkPurpose, grace = 0): LinkTicket | null {
+  const t = readLinkTicket(ticket, grace);
+  return t?.purpose === purpose ? t : null;
 }
 
 /**
  * A short-lived signed ticket that lets a top-level Google sign in attach to this account.
  * session: it was made with the session cookie, so only that signed in browser can finish it.
  */
-export function googleLinkTicket(accountId: string, returnTo: string, session = false, purpose: "google" | "threads" = "google"): string {
+export function googleLinkTicket(accountId: string, returnTo: string, session = false, purpose: LinkPurpose = "google"): string {
   const n = crypto.randomBytes(12).toString("base64url");
   const payload = Buffer.from(JSON.stringify({ a: accountId, r: returnTo, e: Date.now() + LINK_OPEN_MS, s: session ? 1 : 0, n, ...(purpose === "google" ? {} : { p: purpose }) })).toString("base64url");
   return `${payload}.${crypto.createHmac("sha256", linkKey()).update(payload).digest("base64url")}`;
@@ -144,7 +152,10 @@ export function readLinkTicket(ticket: string | null, grace = 0): LinkTicket | n
   try {
     const { a, r, e, s, n, p } = b64json(payload);
     if (!(typeof e === "number" && e + grace > Date.now()) || typeof a !== "string" || typeof n !== "string") return null;
-    return { accountId: a, returnTo: typeof r === "string" ? r : "", session: s === 1, nonce: n, purpose: p === "threads" ? "threads" : "google" };
+    // No purpose is Google; a purpose this version doesn't know is never read as Google.
+    const purpose: LinkPurpose | null = p === undefined ? "google" : p === "threads" || p === "facebook" ? p : null;
+    if (!purpose) return null;
+    return { accountId: a, returnTo: typeof r === "string" ? r : "", session: s === 1, nonce: n, purpose };
   } catch {
     return null;
   }
