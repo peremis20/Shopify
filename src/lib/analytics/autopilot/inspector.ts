@@ -145,6 +145,16 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     fix: () => "Writing this week's community answers failed. It tries again next week by itself; last week's list stays.",
     workaround: "Nothing is posted in any community by DashPatrol; the owner posts the answers themselves.",
   },
+  creators: {
+    name: "The creator finder (Instagram creators for the owner)",
+    fix: (d) =>
+      /permission|discovery isn't allowed/i.test(d ?? "")
+        ? "The Meta app needs instagram_manage_insights (and, for Creator Marketplace search, the creator marketplace permission). Add them in Meta's developer settings, then the owner connects Facebook again."
+        : /other customers/i.test(d ?? "")
+          ? "The customer list couldn't be read, so nothing was saved. It tries again next week by itself."
+          : "A creator source failed this week. It tries again next week by itself; the list from before stays.",
+    workaround: "Nothing is ever sent to a creator by DashPatrol; the owner can still add usernames and draft messages.",
+  },
   "shopify-sales": {
     name: "Sales from Shopify",
     fix: () => "It tries again by itself. If it keeps failing, reconnect the store under Content.",

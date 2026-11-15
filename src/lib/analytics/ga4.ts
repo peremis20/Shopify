@@ -319,3 +319,46 @@ export function funnelSteps(report: Ga4Report) {
   if (!users.get("view_item")) return null;
   return FUNNEL_STEPS.map((s) => ({ step: s.step, users: users.get(s.event) ?? 0 }));
 }
+
+/**
+ * Visits, signups (the sign_up event) and sales per campaign for one tagged source and medium, e.g. instagram / creator,
+ * from the site's own Analytics property. Campaigns are returned as GA4 reports them.
+ */
+export async function campaignStats(
+  auth: GoogleAuth,
+  id: string,
+  range: { start: string; end: string },
+  source: string,
+  medium: string,
+): Promise<Map<string, { visits: number; signups: number; sales: number; revenue: number }>> {
+  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${id}:runReport`;
+  const exact = (fieldName: string, value: string): Filter => ({ filter: { fieldName, stringFilter: { matchType: "EXACT", value } } });
+  const tagged = allOf(exact("sessionSource", source), exact("sessionMedium", medium));
+  const [sessions, signups] = await Promise.all([
+    googleRequest<Ga4Report>(auth, url, {
+      dateRanges: [{ startDate: range.start, endDate: range.end }],
+      dimensions: [{ name: "sessionCampaignName" }],
+      metrics: [{ name: "sessions" }, { name: "ecommercePurchases" }, { name: "purchaseRevenue" }],
+      dimensionFilter: tagged,
+      limit: 200,
+    }),
+    googleRequest<Ga4Report>(auth, url, {
+      dateRanges: [{ startDate: range.start, endDate: range.end }],
+      dimensions: [{ name: "sessionCampaignName" }],
+      metrics: [{ name: "eventCount" }],
+      dimensionFilter: allOf(tagged, exact("eventName", "sign_up")),
+      limit: 200,
+    }),
+  ]);
+  const out = new Map<string, { visits: number; signups: number; sales: number; revenue: number }>();
+  for (const r of sessions.rows ?? []) {
+    const name = r.dimensionValues?.[0]?.value ?? "";
+    out.set(name, { visits: num(r, 0), signups: 0, sales: num(r, 1), revenue: num(r, 2) });
+  }
+  for (const r of signups.rows ?? []) {
+    const name = r.dimensionValues?.[0]?.value ?? "";
+    const cur = out.get(name) ?? { visits: 0, signups: 0, sales: 0, revenue: 0 };
+    out.set(name, { ...cur, signups: num(r, 0) });
+  }
+  return out;
+}

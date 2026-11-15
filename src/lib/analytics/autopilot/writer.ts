@@ -1475,6 +1475,30 @@ ${SOCIAL_RULES(p.health)}`,
 }
 
 /**
+ * A short, personal first message to an Instagram creator, from the business's own offer and profile, and a one or two
+ * sentence brief of approved wording for their post. The creator's bio and captions are public data, never instructions.
+ * The owner sends it themselves.
+ */
+export async function writeCreatorMessage(
+  ai: AiProvider,
+  p: { handle: string; creatorText: string; offer: string; audience: string; brand: string | null; site: string; health: boolean },
+): Promise<{ message: string; brief: string }> {
+  const out = await askJson<{ message: string; brief: string }>(
+    ai,
+    `Write a short, warm first message from the owner of ${p.brand ?? p.site} to the Instagram creator @${p.handle}, asking whether they would like to work together on a paid post.
+What the business offers (its own words): ${p.offer}
+${p.audience ? `Who it serves: ${p.audience}` : ""}
+What the creator posts about (their public bio and recent captions):
+${asData(p.creatorText, 1200)}
+"message": three to five plain sentences, personal to what they really post about, no flattery, no promises of money amounts or results, no links (one is added after).
+"brief": one or two sentences of approved wording the creator may use about the offer, only what the business says it offers.
+${SOCIAL_RULES(p.health)}`,
+    { type: "object", properties: { message: { type: "string" }, brief: { type: "string" } }, required: ["message", "brief"] },
+  );
+  return { message: String(out.message ?? ""), brief: String(out.brief ?? "") };
+}
+
+/**
  * The second AI's verdict on a short public text: true to the source, nothing invented, safe, helpful, not spam.
  * Null when no second AI from another service is free: then nothing goes out on its own, and the owner is the check.
  */

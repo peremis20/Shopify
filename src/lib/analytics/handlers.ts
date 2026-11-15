@@ -67,6 +67,7 @@ import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SC
 import { chartFromUrl } from "./autopilot/report-email";
 import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, setThreadsAutoReply, threadsPosts, WEEKLY_POST_CAP } from "./threads";
 import { landingNotes } from "./landing";
+import { accountsDueForCreators, addCreator, creatorsView, dismissCreator, draftCreatorMessage, runCreatorFinder } from "./creators";
 import { accountsDueForCommunities, communityLine, readCommunities, refreshCommunities } from "./communities";
 import { accountsDueForSocial, approvePost, approveReply, REPLY_DAILY_CAP, runSocialAgent, skipPost, skipReply, socialDrafts } from "./social-agent";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
@@ -1698,6 +1699,12 @@ export async function autopilotTick(): Promise<Response> {
       const note = await forSite(accountId, () => refreshCommunities(accountId)).catch((e) => (console.error(`communities failed: ${message(e)}`), null));
       if (note) results.push(`account ${accountId} communities: ${note}`);
     }
+    // The creator finder: weekly per site with the autopilot on and Instagram connected, one site per hour.
+    for (const accountId of late() ? [] : await accountsDueForCreators(1).catch((e) => (console.error(`creator list failed: ${message(e)}`), []))) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runCreatorFinder(accountId)).catch((e) => (console.error(`creator finder failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} creators: ${note}`);
+    }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
       const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
@@ -1996,6 +2003,27 @@ export const socialAgent = (req: Request) =>
     }
     const communities = (await readCommunities(account.id)).items.map((c) => ({ ...c, line: communityLine(c) }));
     return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP, communities, landingNotes: await landingNotes(account.id) });
+  });
+
+/** The Creators card: Instagram creators found for this site, with Draft message and Dismiss. Nothing is sent from here. */
+export const creatorsApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { action?: string; handle?: string };
+      const handle = String(b.handle ?? "");
+      try {
+        if (b.action === "dismiss") await dismissCreator(account.id, handle);
+        else if (b.action === "add") await addCreator(account.id, handle);
+        else if (b.action === "draft") {
+          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Draft it again after Saturday sundown." }, 409);
+          const out = await draftCreatorMessage(account.id, handle);
+          if (!out.ok) return json({ error: out.error }, out.status);
+        } else return json({ error: "Nothing to do." }, 400);
+      } catch (err) {
+        return json({ error: publicError(err, "creators") }, 400);
+      }
+    }
+    return json(await creatorsView(account.id));
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

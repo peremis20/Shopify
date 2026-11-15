@@ -25,6 +25,7 @@ import { WeeklyReport } from "./WeeklyReport";
 import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
 import { SocialAgent } from "./SocialAgent";
+import { Creators } from "./Creators";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -410,6 +411,7 @@ export function DashboardView() {
                   />
                   <ShareKits />
                   <SocialAgent />
+                  <Creators />
                   <ExpertReview />
                   </ErrorBoundary>
                 </div>

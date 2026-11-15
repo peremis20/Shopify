@@ -51,3 +51,22 @@ export async function otherClient(ourDomain: string): Promise<(domain: string) =
 export async function clientListKnown(): Promise<boolean> {
   return (await allClientDomains().then(() => true).catch(() => false));
 }
+
+/**
+ * The Instagram and Threads usernames other DashPatrol customers connected: never suggested to another site as a
+ * creator. Null when the list can't be read, so anything that suggests accounts waits instead of guessing.
+ */
+export async function otherClientHandles(accountId: string): Promise<Set<string> | null> {
+  try {
+    await ensureSchema();
+    const ig = await sql`SELECT ig_username AS h FROM insights_account_facebook WHERE account_id <> ${accountId} AND ig_username IS NOT NULL`.catch((e) =>
+      /does not exist/i.test((e as Error).message) ? [] : Promise.reject(e),
+    );
+    const th = await sql`SELECT username AS h FROM insights_account_threads WHERE account_id <> ${accountId}`.catch((e) =>
+      /does not exist/i.test((e as Error).message) ? [] : Promise.reject(e),
+    );
+    return new Set([...ig, ...th].map((r) => String(r.h ?? "").toLowerCase().replace(/^@/, "")).filter(Boolean));
+  } catch {
+    return null;
+  }
+}

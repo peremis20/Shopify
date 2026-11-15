@@ -19,6 +19,16 @@ export const FB_GRAPH_VERSION = "v24.0";
 const GRAPH = `https://graph.facebook.com/${FB_GRAPH_VERSION}`;
 /** What Facebook Login asks for: the Pages the person manages, posting to one, and publishing to its Instagram account. */
 export const FACEBOOK_SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"];
+/**
+ * What the creator finder adds: public metrics of business and creator accounts (business discovery needs
+ * instagram_manage_insights), and Meta's Instagram Creator Marketplace search, which Meta documents as needing
+ * instagram_creator_marketplace_discovery (advanced access after app review) together with business_management.
+ * Kept in one place, so it is easy to change when Meta's list changes. A permission the app isn't approved for is simply
+ * not granted; the finder sees that at run time and tells the owner in plain words.
+ */
+export const CREATOR_SCOPES = ["instagram_manage_insights", "instagram_creator_marketplace_discovery", "business_management"];
+/** Everything Facebook Login asks for. */
+export const REQUESTED_SCOPES = [...new Set([...FACEBOOK_SCOPES, ...CREATOR_SCOPES])];
 /** Posts a site may make from here in seven days on each channel. */
 export const SOCIAL_WEEKLY_CAP = 3;
 /** Facebook's limit is far longer; posts stay short. Instagram's caption limit. */
@@ -37,6 +47,8 @@ export interface FacebookLink {
   autoFacebook: boolean;
   autoInstagram: boolean;
   lastError: string | null;
+  /** The permissions granted at connect time; null for a connection made before they were recorded. */
+  scopes: string[] | null;
 }
 
 export interface MetaPost {
@@ -54,7 +66,11 @@ interface PageChoice {
   token: string;
   igId: string | null;
   igUsername: string | null;
+  /** The permissions the person actually granted (Meta's own list), or null when it couldn't be read. */
+  scopes?: string[] | null;
 }
+
+export const facebookSchema = () => schema();
 
 async function schema() {
   await ensureSchema();
@@ -110,6 +126,7 @@ async function schema() {
     at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, channel, change_id)
   )`;
+  await sql`ALTER TABLE insights_account_facebook ADD COLUMN IF NOT EXISTS scopes text`;
 }
 
 const yes = (v: unknown) => ["t", "true"].includes(String(v));
@@ -130,6 +147,7 @@ export async function getFacebook(accountId: string): Promise<FacebookLink | nul
     autoFacebook: yes(row.auto_facebook),
     autoInstagram: yes(row.auto_instagram),
     lastError: row.last_error ? String(row.last_error) : null,
+    scopes: row.scopes == null ? null : String(row.scopes).split(",").filter(Boolean),
   };
 }
 
@@ -168,9 +186,9 @@ export async function confirmFacebookPending(id: string, pageId: string): Promis
   const enc = encrypt(page.token, await tokenSecret());
   // Reconnecting the same Page keeps the owner's automatic posting choices; another Page starts with them off.
   await sql`
-    INSERT INTO insights_account_facebook (account_id, user_id, page_id, page_name, token_enc, ig_user_id, ig_username)
-    VALUES (${p.accountId}, ${p.userId}, ${page.id}, ${page.name}, ${enc}, ${page.igId}, ${page.igUsername})
-    ON CONFLICT (account_id) DO UPDATE SET user_id = EXCLUDED.user_id, page_name = EXCLUDED.page_name, token_enc = EXCLUDED.token_enc,
+    INSERT INTO insights_account_facebook (account_id, user_id, page_id, page_name, token_enc, ig_user_id, ig_username, scopes)
+    VALUES (${p.accountId}, ${p.userId}, ${page.id}, ${page.name}, ${enc}, ${page.igId}, ${page.igUsername}, ${page.scopes ? page.scopes.join(",") : null})
+    ON CONFLICT (account_id) DO UPDATE SET user_id = EXCLUDED.user_id, page_name = EXCLUDED.page_name, token_enc = EXCLUDED.token_enc, scopes = EXCLUDED.scopes,
       ig_user_id = EXCLUDED.ig_user_id, ig_username = EXCLUDED.ig_username,
       auto_facebook = CASE WHEN insights_account_facebook.page_id = EXCLUDED.page_id THEN insights_account_facebook.auto_facebook ELSE false END,
       auto_instagram = CASE WHEN insights_account_facebook.page_id = EXCLUDED.page_id THEN insights_account_facebook.auto_instagram ELSE false END,
@@ -248,6 +266,8 @@ export class MetaApiError extends Error {
 /** Long lived Page tokens don't run out, but the person can remove the app or change their password: then only reconnecting fixes it. */
 export const needsFbReconnect = (e: unknown) => e instanceof MetaApiError && (e.code === 190 || e.status === 401);
 
+export const metaCall = <T>(path: string, params: Record<string, string>, method: "GET" | "POST" = "GET") => call<T>(path, params, method);
+
 async function call<T>(path: string, params: Record<string, string>, method: "GET" | "POST" = "GET"): Promise<T> {
   const url = new URL(path.startsWith("http") ? path : `${GRAPH}${path}`);
   const body = new URLSearchParams(params);
@@ -267,7 +287,7 @@ async function call<T>(path: string, params: Record<string, string>, method: "GE
 
 export function facebookAuthorizeUrl(appId: string, redirectUri: string, state: string): string {
   const url = new URL(`https://www.facebook.com/${FB_GRAPH_VERSION}/dialog/oauth`);
-  url.search = new URLSearchParams({ client_id: appId, redirect_uri: redirectUri, scope: FACEBOOK_SCOPES.join(","), response_type: "code", state }).toString();
+  url.search = new URLSearchParams({ client_id: appId, redirect_uri: redirectUri, scope: REQUESTED_SCOPES.join(","), response_type: "code", state }).toString();
   return url.toString();
 }
 
@@ -289,9 +309,14 @@ export async function exchangeFacebookCode(app: { id: string; secret: string }, 
     limit: "100",
     access_token: long.access_token,
   });
+  // What the person really granted (they can untick some, and an app not approved for one doesn't get it).
+  const granted = await call<{ data?: { permission?: string; status?: string }[] }>("/me/permissions", { access_token: long.access_token })
+    .then((r) => (r.data ?? []).filter((x) => x.status === "granted" && x.permission).map((x) => String(x.permission)))
+    .catch(() => null);
   const pages = (out.data ?? [])
     .filter((p) => p.id && p.access_token)
     .map((p) => ({
+      scopes: granted,
       id: String(p.id),
       name: String(p.name ?? "Page"),
       token: String(p.access_token),

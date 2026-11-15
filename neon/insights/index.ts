@@ -81,6 +81,8 @@ const routes: Record<string, Handler> = {
   "POST /api/social/threads/settings": api.threadsSettings,
   "POST /api/social/threads/disconnect": api.threadsDisconnect,
   "GET /api/social/agent": api.socialAgent,
+  "GET /api/social/creators": api.creatorsApi,
+  "POST /api/social/creators": api.creatorsApi,
   "POST /api/social/agent": api.socialAgent,
   "GET /api/auth/threads/start": api.threadsAuthStart,
   "GET /api/auth/threads/callback": api.threadsAuthCallback,

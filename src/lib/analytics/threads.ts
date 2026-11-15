@@ -349,10 +349,10 @@ async function publishText(link: ThreadsLink, text: string, replyTo?: string): P
 // ---------- the post itself ----------
 
 /** The article link tagged so Analytics shows visits from Threads (or another channel) as their own source. */
-export function taggedUrl(url: string, source = "threads", campaign = "dashpatrol_share"): string {
+export function taggedUrl(url: string, source = "threads", campaign = "dashpatrol_share", medium = "social"): string {
   const u = new URL(url);
   u.searchParams.set("utm_source", source);
-  u.searchParams.set("utm_medium", "social");
+  u.searchParams.set("utm_medium", medium);
   u.searchParams.set("utm_campaign", campaign);
   return u.toString();
 }
