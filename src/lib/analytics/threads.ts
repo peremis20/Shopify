@@ -28,6 +28,10 @@ export interface ThreadsLink {
   lastError: string | null;
   /** When the token was last made or renewed. */
   refreshedAt: string;
+  /** Answers to replies go out by themselves (only when the owner turned this on; off by default). */
+  autoReply: boolean;
+  /** The permissions asked for when it was connected; null for a connection made before they were recorded. */
+  scopes: string[] | null;
 }
 
 export interface ThreadsPost {
@@ -37,6 +41,8 @@ export interface ThreadsPost {
   at: string;
   by: "owner" | "autopilot";
 }
+
+export const threadsSchema = () => schema();
 
 async function schema() {
   await ensureSchema();
@@ -81,6 +87,9 @@ async function schema() {
     return_to text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
+  await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS auto_reply boolean NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS scopes text`;
+  await sql`ALTER TABLE insights_account_threads ADD COLUMN IF NOT EXISTS social_at timestamptz`;
 }
 
 export async function getThreads(accountId: string): Promise<ThreadsLink | null> {
@@ -97,6 +106,8 @@ export async function getThreads(accountId: string): Promise<ThreadsLink | null>
     auto: row.auto === "t" || row.auto === "true",
     lastError: row.last_error ? String(row.last_error) : null,
     refreshedAt: new Date(String(row.refreshed_at)).toISOString(),
+    autoReply: ["t", "true"].includes(String(row.auto_reply)),
+    scopes: row.scopes ? String(row.scopes).split(",").filter(Boolean) : null,
   };
 }
 
@@ -106,10 +117,12 @@ export async function saveThreads(accountId: string, link: { token: string; user
   const expires = new Date(Date.now() + Math.max(link.expiresIn, 3600) * 1000).toISOString();
   // Reconnecting the same profile keeps the owner's automatic posting choice; a different profile starts with it off.
   await sql`
-    INSERT INTO insights_account_threads (account_id, token_enc, user_id, username, expires_at)
-    VALUES (${accountId}, ${enc}, ${link.userId}, ${link.username}, ${expires})
+    INSERT INTO insights_account_threads (account_id, token_enc, user_id, username, expires_at, scopes)
+    VALUES (${accountId}, ${enc}, ${link.userId}, ${link.username}, ${expires}, ${THREADS_SCOPES.join(",")})
     ON CONFLICT (account_id) DO UPDATE SET token_enc = EXCLUDED.token_enc, user_id = EXCLUDED.user_id, username = EXCLUDED.username,
       auto = CASE WHEN insights_account_threads.user_id = EXCLUDED.user_id THEN insights_account_threads.auto ELSE false END,
+      auto_reply = CASE WHEN insights_account_threads.user_id = EXCLUDED.user_id THEN insights_account_threads.auto_reply ELSE false END,
+      scopes = EXCLUDED.scopes,
       expires_at = EXCLUDED.expires_at, last_error = NULL, connected_at = now(), refreshed_at = now()`;
 }
 
@@ -152,6 +165,19 @@ export async function setThreadsAuto(accountId: string, auto: boolean): Promise<
   await sql`UPDATE insights_account_threads SET auto = ${auto} WHERE account_id = ${accountId}`;
 }
 
+/** Turns automatic answers to replies on or off for this site (off unless the owner turns it on). */
+export async function setThreadsAutoReply(accountId: string, autoReply: boolean): Promise<void> {
+  await schema();
+  await sql`UPDATE insights_account_threads SET auto_reply = ${autoReply} WHERE account_id = ${accountId}`;
+}
+
+/** Threads refused a permission this connection was thought to have: it is no longer counted on. */
+export async function dropThreadsScope(accountId: string, scope: string): Promise<void> {
+  const link = await getThreads(accountId);
+  const kept = (link?.scopes ?? []).filter((s) => s !== scope);
+  await sql`UPDATE insights_account_threads SET scopes = ${kept.join(",")} WHERE account_id = ${accountId}`;
+}
+
 export async function removeThreads(accountId: string): Promise<void> {
   await schema();
   await sql`DELETE FROM insights_account_threads WHERE account_id = ${accountId}`;
@@ -164,7 +190,7 @@ export async function removeThreadsUser(userId: string): Promise<void> {
   await sql`DELETE FROM insights_threads_pending WHERE user_id = ${userId}`;
 }
 
-async function noteError(accountId: string, error: string | null): Promise<void> {
+export async function noteError(accountId: string, error: string | null): Promise<void> {
   await sql`UPDATE insights_account_threads SET last_error = ${error} WHERE account_id = ${accountId}`.catch(() => undefined);
 }
 
@@ -204,6 +230,8 @@ export class ThreadsApiError extends Error {
  * the platform's Meta app (not yet approved, or the person isn't a tester), so they go to the Inspector instead.
  */
 export const needsReconnect = (e: unknown) => e instanceof ThreadsApiError && (e.code === 190 || e.status === 401);
+/** Threads said this connection lacks a permission (or the platform's app isn't approved for it). */
+export const lacksPermission = (e: unknown) => e instanceof ThreadsApiError && (e.code === 10 || e.code === 200 || e.status === 403);
 
 async function call<T>(path: string, params: Record<string, string>, method: "GET" | "POST" = "GET"): Promise<T> {
   const url = new URL(path.startsWith("http") ? path : `${GRAPH}${path}`);
@@ -283,9 +311,11 @@ class PublishStepError extends Error {
   }
 }
 
-/** A text post: made as a container, then published. Returns the post and its public link. */
-async function publishText(link: ThreadsLink, text: string): Promise<{ id: string; permalink: string | null }> {
-  const container = await call<{ id: string }>(`/v1.0/${link.userId}/threads`, { media_type: "TEXT", text, access_token: link.token }, "POST").catch((e) => {
+/** A text post: made as a container, then published. With replyTo it answers that reply. Returns the post and its public link. */
+async function publishText(link: ThreadsLink, text: string, replyTo?: string): Promise<{ id: string; permalink: string | null }> {
+  const params: Record<string, string> = { media_type: "TEXT", text, access_token: link.token };
+  if (replyTo) params.reply_to_id = replyTo;
+  const container = await call<{ id: string }>(`/v1.0/${link.userId}/threads`, params, "POST").catch((e) => {
     throw new PublishStepError(e, false);
   });
   const post = await call<{ id: string }>(`/v1.0/${link.userId}/threads_publish`, { creation_id: container.id, access_token: link.token }, "POST").catch((e) => {
@@ -299,12 +329,12 @@ async function publishText(link: ThreadsLink, text: string): Promise<{ id: strin
 
 // ---------- the post itself ----------
 
-/** The article link tagged so Analytics shows visits from Threads as their own source. */
-export function taggedUrl(url: string): string {
+/** The article link tagged so Analytics shows visits from Threads (or another channel) as their own source. */
+export function taggedUrl(url: string, source = "threads", campaign = "dashpatrol_share"): string {
   const u = new URL(url);
-  u.searchParams.set("utm_source", "threads");
+  u.searchParams.set("utm_source", source);
   u.searchParams.set("utm_medium", "social");
-  u.searchParams.set("utm_campaign", "dashpatrol_share");
+  u.searchParams.set("utm_campaign", campaign);
   return u.toString();
 }
 
@@ -339,10 +369,25 @@ export async function postToThreads(
   by: "owner" | "autopilot",
   publish: (link: ThreadsLink, text: string) => Promise<{ id: string; permalink: string | null }> = publishText,
 ): Promise<PostResult> {
+  return postThreadsText(accountId, item.changeId, threadsText(item), by, publish);
+}
+
+/**
+ * Posts one text to the site's own Threads profile under a key (an article's change id, or "social:" and a draft id for
+ * the social agent's posts). Every post shares the same weekly cap and the same once only rule.
+ */
+export async function postThreadsText(
+  accountId: string,
+  key: string,
+  text: string,
+  by: "owner" | "autopilot",
+  publish: (link: ThreadsLink, text: string) => Promise<{ id: string; permalink: string | null }> = publishText,
+): Promise<PostResult> {
+  const item = { changeId: key };
+  if (text.length > THREADS_MAX_CHARS) return { ok: false, status: 400, error: `Threads takes ${THREADS_MAX_CHARS} characters at most. Make it shorter.` };
   const link = await freshLink(accountId);
   if (!link) return { ok: false, status: 400, error: "Connect Threads first." };
   if (Date.parse(link.expiresAt) <= Date.now()) return { ok: false, status: 400, error: "The Threads connection ran out. Connect Threads again." };
-  const text = threadsText(item);
   await schema();
   // Also no more than the cap in any seven days, so a Sunday and a Monday can't both be full.
   const [recent] = await sql`SELECT count(*) AS n FROM insights_threads_posts WHERE account_id = ${accountId} AND posted_at > now() - interval '7 days'`;
@@ -352,7 +397,7 @@ export async function postToThreads(
   const [slot] = await sql`
     INSERT INTO insights_threads_posts (account_id, change_id, text, by_whom) VALUES (${accountId}, ${item.changeId}, ${text}, ${by})
     ON CONFLICT (account_id, change_id) DO NOTHING RETURNING id, posted_at`;
-  if (!slot?.id) return { ok: false, status: 409, error: "This article is already on Threads." };
+  if (!slot?.id) return { ok: false, status: 409, error: "This is already on Threads." };
   const [count] = await sql`
     INSERT INTO insights_threads_weekly (account_id, week, n) VALUES (${accountId}, date_trunc('week', now() AT TIME ZONE 'UTC')::date, 1)
     ON CONFLICT (account_id, week) DO UPDATE SET n = insights_threads_weekly.n + 1 WHERE insights_threads_weekly.n < ${WEEKLY_POST_CAP}
@@ -420,4 +465,52 @@ export async function refreshDueThreads(limit = 10): Promise<number> {
     ORDER BY expires_at LIMIT ${limit}`;
   for (const r of rows) await freshLink(String(r.account_id)).catch(() => null);
   return rows.length;
+}
+
+// ---------- replies and public questions (for the social agent) ----------
+
+export interface ThreadsReply {
+  id: string;
+  text: string;
+  username: string;
+  timestamp: string;
+}
+
+/** The replies to one of our own posts (needs threads_read_replies). */
+export async function fetchReplies(link: ThreadsLink, mediaId: string): Promise<ThreadsReply[]> {
+  const out = await call<{ data?: { id: string; text?: string; username?: string; timestamp?: string }[] }>(`/v1.0/${mediaId}/replies`, {
+    fields: "id,text,username,timestamp",
+    access_token: link.token,
+  });
+  return (out.data ?? [])
+    .filter((r) => r.id)
+    .map((r) => ({ id: String(r.id), text: String(r.text ?? ""), username: String(r.username ?? ""), timestamp: String(r.timestamp ?? "") }));
+}
+
+/**
+ * Public Threads posts for a search (needs threads_keyword_search). Used only to count which of the site's own topics
+ * people are asking about right now; nobody's text is copied or stored.
+ */
+export async function keywordSearch(link: ThreadsLink, q: string): Promise<string[]> {
+  const out = await call<{ data?: { text?: string }[] }>("/v1.0/keyword_search", { q, search_type: "TOP", fields: "id,text", access_token: link.token });
+  return (out.data ?? []).map((p) => String(p.text ?? ""));
+}
+
+/** Posts an answer to one reply. Replies don't count against the weekly post cap; the social agent caps them per day. */
+export async function publishReply(link: ThreadsLink, replyTo: string, text: string): Promise<{ id: string; permalink: string | null }> {
+  try {
+    return await publishText(link, text, replyTo);
+  } catch (e) {
+    const cause = e instanceof PublishStepError ? e.cause : e;
+    // No clear answer at the publish step: it may be live, so it is never sent again blindly.
+    if (e instanceof PublishStepError && e.publishing && !(cause instanceof ThreadsApiError && cause.status < 500)) throw new UnclearPublish();
+    throw cause;
+  }
+}
+
+/** Threads didn't answer clearly at the publish step: the post may be live. */
+export class UnclearPublish extends Error {
+  constructor() {
+    super("Threads didn't answer clearly, so it may have been posted. Check your Threads profile.");
+  }
 }

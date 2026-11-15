@@ -98,7 +98,7 @@ function ThreadsBar({ t, onChange }: { t: ThreadsState; onChange: (t: ThreadsSta
           <label className="mt-2 flex items-start gap-2">
             <input type="checkbox" checked={t.auto} disabled={busy} onChange={(e) => setAuto(e.target.checked)} className="mt-1" />
             <span>
-              Post each new article to Threads by itself.
+              Post each new article, and the checked posts from the Social helper, to Threads by itself.
               <span className="block text-xs text-dash-muted">When this is off, nothing goes to Threads until you click Post to Threads.</span>
             </span>
           </label>

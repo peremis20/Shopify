@@ -65,7 +65,8 @@ import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
 import { chartFromUrl } from "./autopilot/report-email";
-import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, threadsPosts, WEEKLY_POST_CAP } from "./threads";
+import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, setThreadsAutoReply, threadsPosts, WEEKLY_POST_CAP } from "./threads";
+import { accountsDueForSocial, approvePost, approveReply, REPLY_DAILY_CAP, runSocialAgent, skipPost, skipReply, socialDrafts } from "./social-agent";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
 import {
@@ -1660,6 +1661,15 @@ export async function autopilotTick(): Promise<Response> {
       await markRescueTried(accountId, note).catch((e) => console.error(`index rescue couldn't save: ${message(e)}`));
       break;
     }
+    // The social agent: once a day per site with Threads connected, two sites per hour (the tick itself rests in the Sabbath).
+    for (const accountId of late() ? [] : await accountsDueForSocial(2).catch((e) => (console.error(`social agent list failed: ${message(e)}`), []))) {
+      const note = await forSite(accountId, () => runSocialAgent(accountId)).catch(async (e) => {
+        console.error(`social agent failed: ${message(e)}`);
+        await report("threads", false, `Social agent: ${message(e)}`);
+        return null;
+      });
+      if (note) results.push(`account ${accountId} social: ${note}`);
+    }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
       const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
@@ -1811,6 +1821,7 @@ export const threadsStatus = (req: Request) =>
       expired,
       username: link?.username ?? null,
       auto: link?.auto ?? false,
+      autoReply: link?.autoReply ?? false,
       lastError: link?.lastError ?? null,
       posts: link ? await threadsPosts(account.id) : [],
       postedThisWeek: link ? await postsThisWeek(account.id) : 0,
@@ -1926,10 +1937,34 @@ export const threadsPost = (req: Request) =>
 /** Turns automatic posting to Threads on or off for this site. */
 export const threadsSettings = (req: Request) =>
   withAccount(req, async (account) => {
-    const b = (await req.json().catch(() => ({}))) as { auto?: unknown };
-    if (!(await getThreads(account.id))) return json({ error: "Connect Threads first." }, 400);
-    await setThreadsAuto(account.id, b.auto === true);
-    return json({ ok: true, auto: b.auto === true });
+    const b = (await req.json().catch(() => ({}))) as { auto?: unknown; autoReply?: unknown };
+    const link = await getThreads(account.id);
+    if (!link) return json({ error: "Connect Threads first." }, 400);
+    // Each switch only changes when it is sent, so turning one on never turns the other off.
+    if (typeof b.auto === "boolean") await setThreadsAuto(account.id, b.auto);
+    if (typeof b.autoReply === "boolean") await setThreadsAutoReply(account.id, b.autoReply);
+    return json({ ok: true, auto: typeof b.auto === "boolean" ? b.auto : link.auto, autoReply: typeof b.autoReply === "boolean" ? b.autoReply : link.autoReply });
+  });
+
+/** The social agent's drafts for this site: educational posts and answers to replies, waiting for the owner. */
+export const socialAgent = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { type?: string; id?: string; action?: string; text?: unknown };
+      const id = String(b.id ?? "");
+      const edited = typeof b.text === "string" ? b.text : null;
+      if (!id || (b.type !== "post" && b.type !== "reply")) return json({ error: "Nothing to do." }, 400);
+      if (b.action === "skip") {
+        if (b.type === "post") await skipPost(account.id, id);
+        else await skipReply(account.id, id);
+      } else if (b.action === "approve") {
+        // Sabbath rest: nothing is posted from Friday sundown to Saturday sundown.
+        if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Approve it again after Saturday sundown." }, 409);
+        const out = b.type === "post" ? await approvePost(account.id, id, edited, "owner") : await approveReply(account.id, id, edited, "owner");
+        if (!out.ok) return json({ error: out.error }, out.status);
+      } else return json({ error: "Nothing to do." }, 400);
+    }
+    return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP });
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

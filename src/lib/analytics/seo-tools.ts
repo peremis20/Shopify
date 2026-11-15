@@ -148,6 +148,17 @@ export async function gscClicks28d(conn: Connection): Promise<number> {
   return rows.reduce((a, r) => a + r.clicks, 0);
 }
 
+/** What people search now: every search and page pair with its impressions over the last 28 days, most seen first. */
+export async function querySearches28d(conn: Connection): Promise<{ query: string; page: string; impressions: number; clicks: number }[]> {
+  if (!conn.gscSiteUrl) return [];
+  const { auth, site } = requireSite(conn);
+  const { current } = resolveRange("28d", 3);
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query", "page"], rowLimit: 1000 });
+  return rows
+    .map((r) => ({ query: r.keys[0].toLowerCase(), page: r.keys[1].split("#")[0], impressions: r.impressions, clicks: r.clicks }))
+    .sort((a, b) => b.impressions - a.impressions);
+}
+
 /** Below this many searches, Search Console alone is too thin to work from. */
 export const THIN_GSC = 20;
 

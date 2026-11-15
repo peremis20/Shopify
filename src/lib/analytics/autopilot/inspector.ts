@@ -115,7 +115,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     fix: (d) =>
       /app|client|secret|redirect/i.test(d ?? "")
         ? "Check the Threads app ID and secret in Platform keys, and that the app's redirect address is set in Meta's developer settings."
-        : "Threads turned down the last post. It tries the next article by itself; nothing was posted twice.",
+        : /reading replies|permission/i.test(d ?? "")
+          ? "Threads didn't allow reading replies. Check that the Threads app in Meta's developer settings has threads_read_replies and threads_manage_replies, then connect Threads again."
+          : /social agent/i.test(d ?? "")
+            ? "The social agent's daily run failed. It tries again tomorrow by itself; drafts already made stay for the owner."
+            : "Threads turned down the last post. It tries the next article by itself; nothing was posted twice.",
     workaround: "The posts stay under Share this week to post by hand.",
   },
   "shopify-sales": {

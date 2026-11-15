@@ -24,6 +24,7 @@ import { Scorecard } from "./Scorecard";
 import { WeeklyReport } from "./WeeklyReport";
 import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
+import { SocialAgent } from "./SocialAgent";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -408,6 +409,7 @@ export function DashboardView() {
                     onAutoPreviewDone={() => setPreviewRequested(false)}
                   />
                   <ShareKits />
+                  <SocialAgent />
                   <ExpertReview />
                   </ErrorBoundary>
                 </div>
