@@ -24,10 +24,14 @@ export interface LandingCandidate {
   kind: "landing" | "product";
 }
 
-/** Product forms, sizes and packaging: they describe how a product comes, not which product it is. */
-const FORM = new Set(
-  "capsule capsul tablet softgel gummy gummie powder liquid drop oil cream lotion tea bag bottle jar pack count ct mg mcg g kg oz ml l lb size original new formula supplement".split(" "),
-);
+/** Sizes and counts: they say how much, not which product. */
+const SIZE = new Set("count ct mg mcg g kg oz ml l lb pack size".split(" "));
+/** Product forms: another form is another product, unless the post names that form too. */
+const FORM = new Set("capsule tablet softgel gummy gummie powder liquid drop oil cream lotion spray tea bar chew chewable serum balm".split(" ").map(stem));
+/** Words that join or compare products: a page with one is about more than the post's topic. */
+const COMBO = new Set("blend blends complex combo combination combinations vs versus plus stack mix".split(" "));
+/** General words a landing page may add next to the topic without naming another product or variant. */
+const GENERAL = new Set("best top guide benefit tip fact faq deep sleep natural daily simple complete ultimate easy info learn more shop buy new official review".split(" ").map(stem));
 
 /** The site's landing and product pages by their address (or null for any other page). */
 export function pageKind(url: string): LandingCandidate["kind"] | null {
@@ -53,66 +57,138 @@ export function topicTerms(text: string): Set<string> {
   );
 }
 
-/** A page's own topic: its address, main heading and title (without the brand part after a separator). */
-export function pageTopic(c: Pick<LandingCandidate, "url" | "title" | "h1">, brand: Set<string>): Set<string> {
+/** The words of a phrase in order: glue words kept as they are (they break adjacency), the rest stemmed; "&" reads as "and". */
+function sequence(text: string): { raw: string; term: string }[] {
+  return text
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+    .map((raw) => ({ raw, term: GLUE.has(raw) ? raw : stem(raw) }));
+}
+
+/** The slug, main heading and title (without the brand part after a separator) of a page, each as a word sequence. */
+function pageSequences(c: Pick<LandingCandidate, "url" | "title" | "h1">): { raw: string; term: string }[][] {
   let slug = "";
   try {
     slug = decodeURIComponent(new URL(c.url).pathname.replace(/\/+$/, "").split("/").pop() ?? "");
   } catch {
     slug = "";
   }
-  const title = c.title.split(/\s+[|–—-]\s+/)[0] ?? "";
-  const all = topicTerms(`${slug} ${c.h1 ?? ""} ${title}`);
-  for (const b of brand) all.delete(b);
+  const title = c.title.split(/\s+[|\u2013\u2014-]\s+/)[0] ?? "";
+  return [sequence(slug.replace(/[-_]+/g, " ")), sequence(c.h1 ?? ""), sequence(title)];
+}
+
+/** A page's own topic: the meaning words of its address, main heading and title, brand words out. */
+export function pageTopic(c: Pick<LandingCandidate, "url" | "title" | "h1">, brand: Set<string>): Set<string> {
+  const all = new Set<string>();
+  for (const seq of pageSequences(c)) for (const t of seq) if (t.raw.length > 1 && !GLUE.has(t.raw) && !brand.has(t.term)) all.add(t.term);
   return all;
 }
 
+/** Words that sit right next to a topic word in the site's own searches ("magnesium threonate"): variants of it. */
+export function searchVariants(searches: string[], want: Set<string>): Set<string> {
+  const out = new Set<string>();
+  for (const q of searches) {
+    const seq = sequence(q);
+    seq.forEach((t, i) => {
+      if (!want.has(t.term)) return;
+      for (const n of [seq[i - 1], seq[i + 1]]) if (n && !GLUE.has(n.raw) && !want.has(n.term) && !/^\d+$/.test(n.term)) out.add(n.term);
+    });
+  }
+  return out;
+}
+
+export interface MatchContext {
+  /** Every word in the names of the site's own products. */
+  productWords: Set<string>;
+  /** Words next to a topic word in the site's own searches. */
+  variants: Set<string>;
+  brand: Set<string>;
+}
+
 /**
- * Whether a page is exactly about the topic: every meaning word of the topic is in the page's own topic, and the page
- * adds no word that names another product or variant (for a product page any extra word, sizes and forms aside; for a
- * landing page any word that names one of the site's products).
+ * Whether a page is exactly about the topic: every meaning word of the topic is in the page's own topic, and nothing
+ * in the page's topic names another product or variant. A page is out when it joins or compares products (blend, vs,
+ * plus, "and" between product words), has another form (oil, gummies) the post doesn't name, or adds a word that sits
+ * right next to a topic word, names one of the site's products, or is a variant in the site's own searches. A product
+ * page adds no word at all but sizes and counts. General words (best, guide, sleep) are fine on a landing page.
  */
-export function matchesTopic(topic: string, c: LandingCandidate, productWords: Set<string>, brand: Set<string>): boolean {
+export function matchesTopic(topic: string, c: LandingCandidate, ctx: MatchContext): boolean {
   const want = topicTerms(topic);
-  for (const b of brand) want.delete(b);
+  for (const b of ctx.brand) want.delete(b);
   if (!want.size) return false;
-  const own = pageTopic(c, brand);
+  const own = pageTopic(c, ctx.brand);
   for (const w of want) if (!own.has(w)) return false;
+  const seqs = pageSequences(c);
+  const named = (term: string) => want.has(term) || ctx.productWords.has(term) || ctx.variants.has(term) || FORM.has(term);
+  for (const seq of seqs) {
+    for (const [i, t] of seq.entries()) {
+      if (COMBO.has(t.raw)) return false;
+      // "and" between two product words: a page about two things.
+      if (t.raw === "and" && seq[i - 1] && seq[i + 1] && !GLUE.has(seq[i - 1].raw) && !GLUE.has(seq[i + 1].raw) && (named(seq[i - 1].term) || named(seq[i + 1].term))) return false;
+    }
+  }
   for (const w of own) {
-    if (want.has(w) || FORM.has(w) || /^\d+$/.test(w)) continue;
-    if (c.kind === "product" || productWords.has(w)) return false;
+    if (want.has(w) || SIZE.has(w) || /^\d+$/.test(w)) continue;
+    if (FORM.has(w) || c.kind === "product" || ctx.productWords.has(w)) return false;
+    if (GENERAL.has(w)) continue;
+    if (ctx.variants.has(w)) return false;
+    // Right next to a topic word ("magnesium glycinate" for a magnesium post): it narrows the topic to a variant.
+    if (seqs.some((seq) => seq.some((t, i) => t.term === w && [seq[i - 1], seq[i + 1]].some((n) => n && want.has(n.term))))) return false;
   }
   return true;
 }
 
 export interface LandingPick {
   /** The page to send people to, or null for the article. */
-  url: string | null;
+  page: LandingCandidate | null;
   /** Matching pages left out because their own text has risky wording, with that wording. */
   blocked: { url: string; phrases: string[] }[];
 }
 
+const claimText = (c: LandingCandidate) => `${c.title}. ${c.h1 ?? ""}. ${c.text}`;
+
 /**
  * The landing or product page for a topic, when one matches exactly and passes the claim guard. Products first (the
- * most direct page), then landing pages, each with the fewest extra words first.
+ * most direct page), then landing pages, each with the fewest extra words first. `searches` are the site's own.
  */
-export function pickLanding(topic: string, candidates: LandingCandidate[], brandName: string | null | undefined): LandingPick {
+export function pickLanding(topic: string, candidates: LandingCandidate[], brandName: string | null | undefined, searches: string[] = []): LandingPick {
   const brand = topicTerms(brandName ?? "");
   const productWords = new Set<string>();
-  for (const c of candidates) if (c.kind === "product") for (const w of pageTopic(c, brand)) if (!FORM.has(w)) productWords.add(w);
+  for (const c of candidates) if (c.kind === "product") for (const w of pageTopic(c, brand)) if (!SIZE.has(w) && !/^\d+$/.test(w)) productWords.add(w);
+  const want = topicTerms(topic);
+  const ctx: MatchContext = { productWords, variants: searchVariants(searches, want), brand };
   const matches = candidates
-    .filter((c) => matchesTopic(topic, c, productWords, brand))
+    .filter((c) => matchesTopic(topic, c, ctx))
     .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "product" ? -1 : 1) || pageTopic(a, brand).size - pageTopic(b, brand).size || a.url.length - b.url.length);
   const blocked: LandingPick["blocked"] = [];
   for (const c of matches) {
-    const flags = scanClaims(`${c.title}. ${c.h1 ?? ""}. ${c.text}`);
+    const flags = scanClaims(claimText(c));
     if (flags.length) {
       blocked.push({ url: c.url, phrases: [...new Set(flags.map((f) => f.phrase))].slice(0, 5) });
       continue;
     }
-    return { url: c.url, blocked };
+    return { page: c, blocked };
   }
-  return { url: null, blocked };
+  return { page: null, blocked };
+}
+
+/**
+ * The owner's notes after a pick: a page no longer read from the site, or whose own text now passes the claim guard,
+ * is dropped; the rest keep their current wording; new ones come first. At most ten.
+ */
+export function refreshNotes(cur: LandingNote[], blocked: LandingPick["blocked"], candidates: LandingCandidate[], at: string): LandingNote[] {
+  const byUrl = new Map(candidates.map((c) => [c.url, c]));
+  const kept: LandingNote[] = [];
+  for (const n of cur) {
+    if (blocked.some((b) => b.url === n.url)) continue;
+    const c = byUrl.get(n.url);
+    if (!c) continue;
+    const phrases = [...new Set(scanClaims(claimText(c)).map((f) => f.phrase))].slice(0, 5);
+    if (phrases.length) kept.push({ ...n, phrases });
+  }
+  return [...blocked.map((b) => ({ ...b, at })), ...kept].slice(0, 10);
 }
 
 // ---------- the site's own pages, and notes for the owner ----------
@@ -136,12 +212,11 @@ export async function landingNotes(accountId: string): Promise<LandingNote[]> {
   }
 }
 
-/** Keeps the latest note per page (newest first, at most ten), so the owner sees what to fix. */
-async function saveNotes(accountId: string, blocked: LandingPick["blocked"]): Promise<void> {
-  if (!blocked.length) return;
+/** Saves the owner's notes after a pick, clearing the ones that no longer apply. */
+async function saveNotes(accountId: string, blocked: LandingPick["blocked"], candidates: LandingCandidate[]): Promise<void> {
   const cur = await landingNotes(accountId);
-  const at = new Date().toISOString();
-  const next = [...blocked.map((b) => ({ ...b, at })), ...cur.filter((n) => !blocked.some((b) => b.url === n.url))].slice(0, 10);
+  const next = refreshNotes(cur, blocked, candidates, new Date().toISOString());
+  if (JSON.stringify(next) === JSON.stringify(cur)) return;
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${notesKey(accountId)}, ${JSON.stringify(next)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
@@ -169,22 +244,24 @@ async function candidatesFor(accountId: string, host: string): Promise<LandingCa
  * Where a post about this topic should send people: a matching landing or product page of the site, or the article.
  * Risky pages are noted for the owner. Never fails the post: on any problem it is the article.
  */
-export async function landingFor(accountId: string, topic: string, articleUrl: string, brand: string | null | undefined): Promise<string> {
+export async function landingFor(
+  accountId: string,
+  topic: string,
+  articleUrl: string,
+  brand: string | null | undefined,
+  searches: string[] = [],
+): Promise<LandingCandidate | null> {
   try {
-    const host = new URL(articleUrl).hostname;
-    const pick = pickLanding(topic, await candidatesFor(accountId, host), brand);
-    await saveNotes(accountId, pick.blocked).catch((e) => console.error(`landing notes not saved for account ${accountId}: ${(e as Error).message}`));
-    return pick.url ?? articleUrl;
+    const candidates = await candidatesFor(accountId, new URL(articleUrl).hostname);
+    const pick = pickLanding(topic, candidates, brand, searches);
+    await saveNotes(accountId, pick.blocked, candidates).catch((e) => console.error(`landing notes not saved for account ${accountId}: ${(e as Error).message}`));
+    return pick.page;
   } catch (e) {
     console.warn(`landing page not chosen for account ${accountId}: ${(e as Error).message}`);
-    return articleUrl;
+    return null;
   }
 }
 
-/** The search an autopilot article was written for (its topic), or the given fallback (its title). */
-export async function articleTopic(accountId: string, changeId: string, fallback: string): Promise<string> {
-  if (!/^\d+$/.test(changeId)) return fallback;
-  const [row] = await sql`SELECT query FROM insights_autopilot_changes WHERE account_id = ${accountId} AND id = ${changeId}`.catch(() => []);
-  const q = row?.query ? String(row.query).trim() : "";
-  return q || fallback;
-}
+/** Text that talks about the article itself ("read the full article"): it may only link to that article. */
+export const mentionsArticle = (text: string) =>
+  /\b(?:article|blog|post|read (?:more|the|our|it)|full (?:guide|story)|this guide|our guide|write ?up)\b/i.test(text);

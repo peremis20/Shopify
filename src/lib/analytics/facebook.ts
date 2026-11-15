@@ -5,7 +5,7 @@ import { decrypt, encrypt } from "./secrets";
 import { sitePage } from "./site-crawl";
 import type { ShareItem } from "./autopilot/share-kit";
 import { report } from "./autopilot/status";
-import { shareTarget, taggedUrl } from "./threads";
+import { taggedUrl } from "./threads";
 
 /**
  * Posting a site's new articles to the owner's own Facebook Page and its linked Instagram business account (Meta's
@@ -356,8 +356,8 @@ function ownLink(url: string): RegExp {
  * The Facebook post for an article: the post already written and checked for it, with the article's link tagged
  * (utm_source=facebook) once at the end.
  */
-export function facebookText(item: Pick<ShareItem, "url" | "kit">, target?: string): string {
-  const link = taggedUrl(target ?? item.url, "facebook");
+export function facebookText(item: Pick<ShareItem, "url" | "kit">): string {
+  const link = taggedUrl(item.url, "facebook");
   const words = String(item.kit.facebook ?? "").replace(ownLink(item.url), " ").replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
   const room = FACEBOOK_MAX_CHARS - link.length - 1;
   const body = words.length <= room ? words : words.slice(0, room).replace(/\s+\S*$/, "");
@@ -436,10 +436,9 @@ export async function postToMeta(
     text = plan.caption;
     extra = plan.image;
   } else {
-    // The site's own landing or product page when it is exactly about the article's topic, otherwise the article.
-    const target = await shareTarget(accountId, item);
-    text = facebookText(item, target);
-    extra = taggedUrl(target, "facebook");
+    // Always the article: the share text was written about it and checked against it, never against another page.
+    text = facebookText(item);
+    extra = taggedUrl(item.url, "facebook");
   }
   await schema();
   const [slot] = await sql`

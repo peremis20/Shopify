@@ -8,7 +8,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./autopilot/settings";
 import { readSiteKeywords } from "./autopilot/site-keywords";
 import { articleFromLog } from "./autopilot/share-kit";
-import { landingFor } from "./landing";
+import { landingFor, mentionsArticle, type LandingCandidate } from "./landing";
 import { report } from "./autopilot/status";
 import { isUnsourced, safeEmailText, secondCheck, writeReplyAnswer, writeSocialPost, type SocialKind } from "./autopilot/writer";
 import {
@@ -447,11 +447,14 @@ export async function draftNextPost(accountId: string, link: ThreadsLink, failur
   if (!pick) return "Every page was posted about lately; the next post waits for a new page.";
   const ai = await aiFor(profile);
   if (!ai) return "No AI key, so no post was written.";
-  let url = pickLink(pick.page, findSignupPage(pages.map((p) => p.url)));
-  // An article's post goes to the site's own landing or product page instead when that page is exactly about the topic.
+  const articleLink = pickLink(pick.page, findSignupPage(pages.map((p) => p.url)));
+  let url = articleLink;
+  // An article's post goes to the site's own landing or product page instead when that page is exactly about the topic
+  // (the site's own searches tell which words are variants). The second AI then checks the post against that page too.
+  let target: LandingCandidate | null = null;
   if (pick.page.article) {
-    const target = await landingFor(accountId, pick.query, pick.page.url, profile.brandName);
-    if (target !== pick.page.url) url = taggedUrl(target, "threads", "dashpatrol_social");
+    target = await landingFor(accountId, pick.query, pick.page.url, profile.brandName, [...new Set(demand.map((d) => d.query))]);
+    if (target) url = taggedUrl(target.url, "threads", "dashpatrol_social");
   }
   const raw = await writeSocialPost(ai, {
     kind,
@@ -464,12 +467,24 @@ export async function draftNextPost(accountId: string, link: ThreadsLink, failur
     room: roomFor(url),
   });
   const clean = cleanPost(raw, keepNames(profile), roomFor(url), health);
+  // Words about the article itself ("read the full article") may only point to the article.
+  if (target && mentionsArticle(clean.text)) {
+    target = null;
+    url = articleLink;
+  }
   let status: SocialDraft["status"] = "draft";
   let reason: string | null = clean.problem;
   let checked: "ai" | "owner" = "owner";
   if (reason) status = "held";
   else {
-    const verdict = await secondCheck(ai, { what: "a short educational social post", source: `${pick.page.title}\n${pick.page.text}`, text: clean.text, health });
+    const verdict = await secondCheck(ai, {
+      what: target ? "a short educational social post whose link sends people to the second page below; it must also fit that page" : "a short educational social post",
+      source: target
+        ? `Page the post is written from: ${pick.page.title}\n${pick.page.text.slice(0, 1800)}\n\nPage the link goes to: ${target.h1 || target.title}\n${target.text.slice(0, 1200)}`
+        : `${pick.page.title}\n${pick.page.text}`,
+      text: clean.text,
+      health,
+    });
     if (verdict && !verdict.ok) {
       status = "held";
       reason = `The second AI turned it down: ${verdict.why || "no reason given."}`;

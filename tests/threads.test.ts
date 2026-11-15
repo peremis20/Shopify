@@ -80,3 +80,11 @@ test("threads: only share posts a second AI checked are posted automatically (ol
     assert.ok(!src.includes('i.checkedBy !== "owner"'), f);
   }
 });
+
+test("threads and facebook: an article's share post always links to that article, the page it was written and checked against", async () => {
+  const { facebookText } = await import("../src/lib/analytics/facebook");
+  const kit = { linkedin: "", facebook: "Read the guide https://shop.com/blogs/news/mg", instagram: "", x: "Read the guide https://shop.com/blogs/news/mg", video: { hook: "", script: "", caption: "" } };
+  const item = { url: "https://shop.com/blogs/news/mg", kit };
+  assert.ok(threadsText(item).endsWith(taggedUrl(item.url)));
+  assert.ok(facebookText(item).endsWith(taggedUrl(item.url, "facebook")));
+});

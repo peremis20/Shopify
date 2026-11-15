@@ -4,16 +4,7 @@ import { tokenSecret } from "./oauth-client";
 import { decrypt, encrypt } from "./secrets";
 import type { ShareItem } from "./autopilot/share-kit";
 import { report } from "./autopilot/status";
-import { articleTopic, landingFor } from "./landing";
-import { readProfile } from "./profile";
 
-/** Where an article's share post sends people: a matching landing or product page of the site, or the article. */
-export async function shareTarget(accountId: string, item: { changeId: string; url: string; title?: string }): Promise<string> {
-  const topic = await articleTopic(accountId, item.changeId, item.title ?? "");
-  if (!topic) return item.url;
-  const brand = (await readProfile(accountId).catch(() => null))?.brandName;
-  return landingFor(accountId, topic, item.url, brand);
-}
 
 /**
  * Posting a site's new articles to the owner's own Threads account (Meta's Threads API).
@@ -370,8 +361,8 @@ export function taggedUrl(url: string, source = "threads", campaign = "dashpatro
  * The Threads text for an article: the short post already written and checked for it (the X one fits Threads' limit),
  * with its link tagged. Always ends with the link once; never over Threads' limit.
  */
-export function threadsText(item: Pick<ShareItem, "url" | "kit">, target?: string): string {
-  const link = taggedUrl(target ?? item.url);
+export function threadsText(item: Pick<ShareItem, "url" | "kit">): string {
+  const link = taggedUrl(item.url);
   if (link.length >= THREADS_MAX_CHARS - 1) return item.url.slice(0, THREADS_MAX_CHARS);
   const u = new URL(item.url);
   // Any form of the article's own link (www or not, http or https, trailing slash) is taken out, then the tagged one goes at the end.
@@ -397,9 +388,8 @@ export async function postToThreads(
   by: "owner" | "autopilot",
   publish: (link: ThreadsLink, text: string) => Promise<{ id: string; permalink: string | null }> = publishText,
 ): Promise<PostResult> {
-  // The site's own landing or product page when it is exactly about the article's topic, otherwise the article.
-  const target = await shareTarget(accountId, item);
-  return postThreadsText(accountId, item.changeId, threadsText(item, target), by, publish);
+  // Always the article: the share text was written about it and checked against it, never against another page.
+  return postThreadsText(accountId, item.changeId, threadsText(item), by, publish);
 }
 
 /**
