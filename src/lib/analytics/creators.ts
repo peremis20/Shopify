@@ -571,15 +571,20 @@ export async function runCreatorFinder(accountId: string): Promise<string> {
     void report("creators", ok, ok ? null : reason);
     return reason;
   };
+  /** A normal skip (paused, nothing to search yet): the site is marked done for the week, nothing is reported broken. */
+  const skip = async (reason: string): Promise<string> => {
+    await saveRun(accountId, caps).catch((e) => console.error(`creator run not marked for account ${accountId}: ${(e as Error).message}`));
+    return reason;
+  };
   try {
     await schema();
-    if (!(await readAccountAutopilot(accountId)).enabled) return await stop("Creator search skipped: the autopilot is paused.");
+    if (!(await readAccountAutopilot(accountId)).enabled) return await skip("Creator search skipped: the autopilot is paused.");
     const link = await getFacebook(accountId);
-    if (!link?.igUserId) return await stop("Creator search skipped: Instagram isn't connected.");
+    if (!link?.igUserId) return await stop("Instagram is connected but its saved connection couldn't be read. Connect Facebook again.");
     const profile = await readProfile(accountId);
     const { searches, products } = await siteTopics(accountId, profile);
     const topicWords = siteTopicWords(searches, products, profile.about?.offer, profile.brandName);
-    if (!topicWords.size) return await stop("Creator search skipped: the site has no searches or products of its own yet.");
+    if (!topicWords.size) return await skip("Creator search skipped: the site has no searches or products of its own yet.");
     const others = await otherClientHandles(accountId);
     if (!others) return await stop("The list of other customers couldn't be read, so no creators were saved this week.");
     const isOther = await otherClient(profile.siteDomain ?? "");
