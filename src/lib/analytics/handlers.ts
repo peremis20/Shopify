@@ -64,6 +64,7 @@ import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
+import { chartFromUrl } from "./autopilot/report-email";
 import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, threadsPosts, WEEKLY_POST_CAP } from "./threads";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
@@ -1967,4 +1968,18 @@ export async function threadsRemoved(req: Request): Promise<Response> {
   }
   const code = crypto.createHash("sha256").update(`threads-removed:${user}`).digest("hex").slice(0, 16);
   return json({ url: `${appOrigin(req)}/privacy`, confirmation_code: code });
+}
+
+/** The donut in the weekly email: drawn here from the signed numbers in its link, never by a third party. */
+export async function reportChart(req: Request): Promise<Response> {
+  const u = new URL(req.url);
+  const png = (() => {
+    try {
+      return chartFromUrl(u.searchParams.get("d"), u.searchParams.get("s"));
+    } catch {
+      return null;
+    }
+  })();
+  if (!png) return new Response("Not found", { status: 404 });
+  return new Response(new Uint8Array(png), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=31536000, immutable" } });
 }

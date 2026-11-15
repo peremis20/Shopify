@@ -10,6 +10,9 @@ import { readProspects } from "./backlinks";
 import { weekResults, type ChannelResult, type WeekResults } from "./signals";
 import { getConnection } from "../connection";
 import { salesFor } from "./shopify-sales";
+import { weeklyReportHtml } from "./report-email";
+import { usageThisMonth } from "./usage";
+import { readProfile } from "../profile";
 
 /**
  * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
@@ -25,7 +28,7 @@ async function ownerEmail(accountId: string): Promise<string | null> {
 /** Why the last email didn't go out, in Resend's words (shown when the owner saves the keys). */
 export let lastEmailError: string | null = null;
 
-export async function sendEmail(to: string, subject: string, text: string): Promise<boolean> {
+export async function sendEmail(to: string, subject: string, text: string, html?: string): Promise<boolean> {
   const p = await readPlatformSettings();
   lastEmailError = null;
   if (!p.resendKey || !p.alertsFrom) {
@@ -37,7 +40,7 @@ export async function sendEmail(to: string, subject: string, text: string): Prom
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: { Authorization: `Bearer ${p.resendKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from: p.alertsFrom, to: [to], subject, text }),
+    body: JSON.stringify({ from: p.alertsFrom, to: [to], subject, text, ...(html ? { html } : {}) }),
     signal: AbortSignal.timeout(15000),
   }).catch((e) => (console.error(`email not sent: ${(e as Error).message}`), null));
   if (!res?.ok) {
@@ -210,6 +213,8 @@ export interface WeeklyReportData {
   traffic: "none" | "error" | { name: string; now: ChannelResult; before: ChannelResult }[];
   /** Every channel added up (the chart shows the top six). */
   totals: { visits: number; leads: number; revenue: number } | null;
+  /** The week before, every channel added up, so a change compares like with like. */
+  totalsBefore?: { visits: number; leads: number; revenue: number } | null;
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
@@ -269,6 +274,9 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     totals: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })
       : null,
+    totalsBefore: results
+      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.before.sessions, leads: t.leads + c.before.keyEvents, revenue: t.revenue + c.before.revenue }), { visits: 0, leads: 0, revenue: 0 })
+      : null,
     backlinks: list === "error" ? "error" : prospects?.prospects.length
       ? {
           found: prospects.prospects.length,
@@ -299,7 +307,14 @@ export async function accountsDueForWeeklyReport(limit: number): Promise<string[
 export async function sendWeeklyReport(accountId: string): Promise<boolean> {
   const to = await ownerEmail(accountId);
   // Marked either way, so a site without email (or an email outage) waits a week instead of retrying every hour.
-  const ok = to ? await sendEmail(to, "Your DashPatrol week", await weeklyReportText(accountId)) : false;
+  // The plain text is always sent; the visual version rides along when it can be built, and never holds the email up.
+  const html = to
+    ? await Promise.race([
+        weeklyReportEmailHtml(accountId),
+        new Promise<undefined>((resolve) => setTimeout(() => (console.error("weekly report html took too long; sent as text"), resolve(undefined)), 25_000)),
+      ]).catch((e) => (console.error(`weekly report html failed: ${(e as Error).message}`), undefined))
+    : undefined;
+  const ok = to ? await sendEmail(to, "Your DashPatrol week", await weeklyReportText(accountId), html) : false;
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${`weekly_report:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), sent: ok })})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
@@ -325,4 +340,28 @@ export async function retestEmail(): Promise<void> {
   if (!claimed) return;
   // With one of the two missing, sendEmail records which one, so the warning names exactly what to add.
   await sendEmail(to, "DashPatrol emails are working", "This is a test from DashPatrol. Weekly reports and urgent alerts will reach this inbox.");
+}
+
+/** The visual weekly email for this site: its own numbers only. */
+export async function weeklyReportEmailHtml(accountId: string): Promise<string> {
+  const [data, usage, profile, acct, insp] = await Promise.all([
+    weeklyReportData(accountId),
+    usageThisMonth(accountId).catch(() => null),
+    readProfile(accountId).catch(() => null),
+    readAccountAutopilot(accountId).catch(() => null),
+    sql`SELECT value FROM insights_settings WHERE key = ${`inspect:${accountId}`}`.catch(() => [] as { value: string | null }[]),
+  ]);
+  let needsYou: number | null = null;
+  try {
+    const problems = insp[0]?.value ? ((JSON.parse(insp[0].value) as { problems?: { who: string; platform?: boolean }[] }).problems ?? []) : null;
+    needsYou = problems ? problems.filter((p) => p.who === "owner" && !p.platform).length : null;
+  } catch {
+    needsYou = null;
+  }
+  return weeklyReportHtml(data, {
+    site: profile?.siteDomain || acct?.shopDomain || "Your site",
+    origin: (process.env.APP_URL || "https://app.dashpatrol.io").replace(/\/$/, ""),
+    usage,
+    needsYou,
+  });
 }
