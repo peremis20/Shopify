@@ -66,6 +66,7 @@ import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
 import { chartFromUrl } from "./autopilot/report-email";
 import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, setThreadsAutoReply, threadsPosts, WEEKLY_POST_CAP } from "./threads";
+import { landingNotes } from "./landing";
 import { accountsDueForCommunities, communityLine, readCommunities, refreshCommunities } from "./communities";
 import { accountsDueForSocial, approvePost, approveReply, REPLY_DAILY_CAP, runSocialAgent, skipPost, skipReply, socialDrafts } from "./social-agent";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
@@ -1994,7 +1995,7 @@ export const socialAgent = (req: Request) =>
       } else return json({ error: "Nothing to do." }, 400);
     }
     const communities = (await readCommunities(account.id)).items.map((c) => ({ ...c, line: communityLine(c) }));
-    return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP, communities });
+    return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP, communities, landingNotes: await landingNotes(account.id) });
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

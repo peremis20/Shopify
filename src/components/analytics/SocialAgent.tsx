@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import type { ReplyDraft, SocialDraft } from "@/lib/analytics/social-agent";
 import type { CommunityIdea } from "@/lib/analytics/communities";
+import type { LandingNote } from "@/lib/analytics/landing";
 import { api, apiFresh } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
 
@@ -13,6 +14,28 @@ interface AgentState {
   cap: number;
   replyCap: number;
   communities: (CommunityIdea & { line: string })[];
+  landingNotes: LandingNote[];
+}
+
+/** Matching landing or product pages the posts don't link to yet, because of wording the claim guard flagged. */
+function PageNotes({ notes }: { notes: LandingNote[] }) {
+  if (!notes.length) return null;
+  return (
+    <div className="mt-4 rounded-xl border border-dash-line p-3">
+      <p className="text-sm font-semibold text-dash-ink">This page has wording to fix before we send people there</p>
+      <p className="text-xs text-dash-muted">Posts link to the article instead until the wording is changed.</p>
+      <ul className="mt-2 space-y-2">
+        {notes.map((n) => (
+          <li key={n.url} className="break-words text-sm text-dash-ink">
+            <a href={n.url} target="_blank" rel="noreferrer" className="font-semibold text-dash-green hover:underline">
+              {n.url}
+            </a>
+            : {n.phrases.map((p) => `"${p}"`).join(", ")}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 interface ThreadsInfo {
@@ -168,7 +191,7 @@ export function SocialAgent() {
     api<AgentState>("/api/social/agent").then(setState).catch(() => setState(null));
     api<ThreadsInfo>("/api/social/threads").then(setThreads).catch(() => setThreads(null));
   }, []);
-  if (!threads?.configured && !state?.communities.length) return null;
+  if (!threads?.configured && !state?.communities.length && !state?.landingNotes?.length) return null;
 
   const act = async (type: "post" | "reply", id: string, action: "approve" | "skip", text: string | null) => {
     const next = await api<AgentState>("/api/social/agent", { type, id, action, ...(text !== null ? { text } : {}) });
@@ -273,6 +296,7 @@ export function SocialAgent() {
           </button>
         </>
       )}
+      <PageNotes notes={state?.landingNotes ?? []} />
       <Communities items={state?.communities ?? []} />
     </Card>
   );

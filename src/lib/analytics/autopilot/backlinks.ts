@@ -112,8 +112,8 @@ async function save(accountId: string, list: ProspectList): Promise<void> {
 export const prospectsDue = (list: ProspectList | null) => !list || Date.now() - new Date(list.updatedAt).getTime() > WEEK;
 
 /** Little words that make a search phrase too exact to match anything ("website and seo"). */
-const GLUE = new Set("a an and the of for to in on at by with your you my me myself our we re s is are about all how what why do does can this that".split(" "));
-const stem = (w: string) => w.replace(/(ies)$/, "y").replace(/(?<=[a-z]{3})s$/, "");
+export const GLUE = new Set("a an and the of for to in on at by with your you my me myself our we re s is are about all how what why do does can this that".split(" "));
+export const stem = (w: string) => w.replace(/(ies)$/, "y").replace(/(?<=[a-z]{3})s$/, "");
 
 /**
  * The two topics to look for link sites on: the site's own searches, cut to their meaning words, and when the business

@@ -8,6 +8,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider } from "./autopilot/settings";
 import { readSiteKeywords } from "./autopilot/site-keywords";
 import { articleFromLog } from "./autopilot/share-kit";
+import { landingFor } from "./landing";
 import { report } from "./autopilot/status";
 import { isUnsourced, safeEmailText, secondCheck, writeReplyAnswer, writeSocialPost, type SocialKind } from "./autopilot/writer";
 import {
@@ -446,7 +447,12 @@ export async function draftNextPost(accountId: string, link: ThreadsLink, failur
   if (!pick) return "Every page was posted about lately; the next post waits for a new page.";
   const ai = await aiFor(profile);
   if (!ai) return "No AI key, so no post was written.";
-  const url = pickLink(pick.page, findSignupPage(pages.map((p) => p.url)));
+  let url = pickLink(pick.page, findSignupPage(pages.map((p) => p.url)));
+  // An article's post goes to the site's own landing or product page instead when that page is exactly about the topic.
+  if (pick.page.article) {
+    const target = await landingFor(accountId, pick.query, pick.page.url, profile.brandName);
+    if (target !== pick.page.url) url = taggedUrl(target, "threads", "dashpatrol_social");
+  }
   const raw = await writeSocialPost(ai, {
     kind,
     topic: pick.query,
