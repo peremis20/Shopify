@@ -2,12 +2,23 @@
 
 import { useEffect, useState } from "react";
 import type { CreatorRow } from "@/lib/analytics/creators";
+import { isEmbedded } from "./embedded-client";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
 
 type View =
   | { show: false }
-  | { show: true; lastRun: string | null; missing: string[]; creators: CreatorRow[]; draftsThisWeek: number; cap: number; analytics: boolean };
+  | {
+      show: true;
+      lastRun: string | null;
+      note: string | null;
+      missing: string[];
+      canTurnOn: boolean;
+      creators: CreatorRow[];
+      draftsThisWeek: number;
+      cap: number;
+      analytics: boolean;
+    };
 
 const fmt = (v: number) => v.toLocaleString();
 
@@ -105,6 +116,16 @@ export function Creators() {
   const act = async (action: "draft" | "dismiss" | "add", h: string) => {
     setView(await api<View>("/api/social/creators", { action, handle: h }));
   };
+  const turnOn = async () => {
+    setError(null);
+    try {
+      const { url } = await api<{ url: string }>("/api/social/facebook/link?creators=1");
+      if (isEmbedded()) window.open(url, "_top");
+      else window.location.href = url;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't open Facebook. Try again.");
+    }
+  };
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -122,6 +143,15 @@ export function Creators() {
         Instagram creators who post about your topics, with their public numbers. Draft a message, copy it, and send it yourself. At most {view.cap} drafts a week
         ({view.draftsThisWeek} used). Each creator gets their own tracked link{view.analytics ? "" : "; connect Google Analytics to see visits and sales from it"}.
       </p>
+      {view.note && <p className="mb-2 rounded-lg bg-dash-bg p-2 text-sm text-dash-ink">{view.note}</p>}
+      {view.canTurnOn && (
+        <p className="mb-3 text-sm text-dash-ink">
+          Finding creators needs a little more permission from Facebook. Your posting stays as it is.{" "}
+          <button onClick={turnOn} className="font-semibold text-dash-green hover:underline">
+            Turn on creator search
+          </button>
+        </p>
+      )}
       {view.missing.map((m) => (
         <p key={m} className="mb-2 rounded-lg bg-dash-bg p-2 text-sm text-dash-ink">
           {m}

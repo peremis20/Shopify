@@ -13,13 +13,16 @@ import {
   HASHTAG_WEEKLY_LIMIT,
   hashtagOf,
   hashtagsAllowed,
+  capsFromScopes,
+  grantNote,
+  needsCreatorLogin,
   mentionsIn,
   missingMessages,
   showCreators,
   siteTopicWords,
   topicFit,
 } from "../src/lib/analytics/creators";
-import { CREATOR_SCOPES, REQUESTED_SCOPES } from "../src/lib/analytics/facebook";
+import { CREATOR_REQUEST_SCOPES, CREATOR_SCOPES, FACEBOOK_SCOPES, facebookAuthorizeUrl } from "../src/lib/analytics/facebook";
 
 test("creators: engagement rate comes only from fetched posts with real numbers", () => {
   const posts = [
@@ -105,10 +108,36 @@ test("creators: the card is hidden without Instagram connected", () => {
 test("creators: a missing permission is told to the owner in plain words, and the scopes are in one constant", () => {
   const msgs = missingMessages({ marketplace: "missing", hashtags: "ok", discovery: "missing" });
   assert.equal(msgs.length, 2);
-  assert.match(msgs[0], /Creator Marketplace/);
-  assert.match(msgs[1], /instagram_manage_insights/);
+  assert.match(msgs[0], /instagram_manage_insights/);
+  assert.match(msgs[0], /Turn on creator search/);
+  assert.match(msgs[1], /Creator Marketplace/);
   for (const m of msgs) assert.ok(!/[‐-―]| - /.test(m));
   assert.deepEqual(missingMessages({ marketplace: "ok", hashtags: "ok", discovery: "ok" }), []);
   assert.ok(CREATOR_SCOPES.includes("instagram_manage_insights"));
-  assert.ok(REQUESTED_SCOPES.includes("instagram_basic") && REQUESTED_SCOPES.includes("instagram_manage_insights"));
+  assert.ok(CREATOR_REQUEST_SCOPES.includes("instagram_basic") && CREATOR_REQUEST_SCOPES.includes("instagram_manage_insights"));
+});
+
+test("creators: the main Facebook connect never asks for the creator permissions; only Turn on creator search does, asking again", () => {
+  const scopesOf = (u: string) => (new URL(u).searchParams.get("scope") ?? "").split(",");
+  const main = facebookAuthorizeUrl("app", "https://x.com/cb", "state");
+  for (const s of CREATOR_SCOPES) assert.ok(!scopesOf(main).includes(s), s);
+  assert.deepEqual(scopesOf(main), FACEBOOK_SCOPES);
+  assert.equal(new URL(main).searchParams.get("auth_type"), null);
+  const again = facebookAuthorizeUrl("app", "https://x.com/cb", "state", true);
+  for (const s of [...FACEBOOK_SCOPES, ...CREATOR_SCOPES]) assert.ok(scopesOf(again).includes(s), s);
+  assert.equal(new URL(again).searchParams.get("auth_type"), "rerequest");
+});
+
+test("creators: what was granted decides the creator search status and the owner's note, never the posting", () => {
+  const all = { marketplace: "unknown", hashtags: "unknown", discovery: "unknown" } as const;
+  assert.deepEqual(capsFromScopes(all, null), all);
+  assert.equal(capsFromScopes(all, FACEBOOK_SCOPES).discovery, "missing");
+  assert.equal(capsFromScopes(all, [...FACEBOOK_SCOPES, "instagram_manage_insights"]).discovery, "unknown");
+  assert.ok(needsCreatorLogin(null));
+  assert.ok(needsCreatorLogin(FACEBOOK_SCOPES));
+  assert.ok(!needsCreatorLogin(CREATOR_REQUEST_SCOPES));
+  assert.match(grantNote(FACEBOOK_SCOPES) ?? "", /wasn't turned on.*posting connection is unchanged/);
+  assert.match(grantNote([...FACEBOOK_SCOPES, "instagram_manage_insights"]) ?? "", /Creator Marketplace search wasn't allowed/);
+  assert.equal(grantNote(CREATOR_REQUEST_SCOPES), null);
+  for (const n of [grantNote(null), grantNote(FACEBOOK_SCOPES)]) assert.ok(n && !/[\u2010-\u2015]| - /.test(n));
 });

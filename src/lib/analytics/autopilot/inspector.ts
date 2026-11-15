@@ -149,7 +149,7 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     name: "The creator finder (Instagram creators for the owner)",
     fix: (d) =>
       /permission|discovery isn't allowed/i.test(d ?? "")
-        ? "The Meta app needs instagram_manage_insights (and, for Creator Marketplace search, the creator marketplace permission). Add them in Meta's developer settings, then the owner connects Facebook again."
+        ? "The Meta app needs instagram_manage_insights (and, for Creator Marketplace search, the creator marketplace permission). Add them in Meta's developer settings, then the owner clicks Turn on creator search on the Creators card (posting stays as it is)."
         : /other customers/i.test(d ?? "")
           ? "The customer list couldn't be read, so nothing was saved. It tries again next week by itself."
           : "A creator source failed this week. It tries again next week by itself; the list from before stays.",

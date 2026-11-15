@@ -143,13 +143,39 @@ export function competitorFlag(captions: string[], productNames: string[], brand
 /** What the owner reads about the sources that can't be used yet, in plain words. */
 export function missingMessages(caps: Capabilities): string[] {
   const out: string[] = [];
-  if (caps.marketplace === "missing")
-    out.push("Instagram Creator Marketplace search isn't allowed for this connection yet. It needs Meta to approve the creator marketplace permission for the app; then connect Facebook again.");
-  if (caps.hashtags === "missing") out.push("Hashtag search isn't allowed for this connection. The Meta app needs Instagram public content access; then connect Facebook again.");
   if (caps.discovery === "missing")
-    out.push("Looking up a creator's public numbers isn't allowed for this connection. The Meta app needs the instagram_manage_insights permission; then connect Facebook again.");
+    out.push("Looking up a creator's public numbers isn't allowed yet. Click Turn on creator search and allow it (the instagram_manage_insights permission). Posting stays as it is.");
+  if (caps.marketplace === "missing")
+    out.push("Instagram Creator Marketplace search isn't allowed yet. It needs Meta to approve the creator marketplace permission for the app; then click Turn on creator search.");
+  if (caps.hashtags === "missing") out.push("Hashtag search isn't allowed for this connection. The Meta app needs Instagram public content access.");
   if (caps.marketplace !== "ok" && caps.hashtags !== "ok" && caps.discovery !== "ok" && !out.length) out.push("No creator source has worked yet. The next weekly run tries again.");
   return out;
+}
+
+/**
+ * What the recorded permissions already say: a creator permission known to be missing is "missing" without asking
+ * Meta; anything else keeps what the last run found. A connection whose permissions were never recorded says nothing.
+ */
+export function capsFromScopes(caps: Capabilities, scopes: string[] | null): Capabilities {
+  if (!scopes) return caps;
+  return {
+    ...caps,
+    discovery: scopes.includes("instagram_manage_insights") ? caps.discovery : "missing",
+    marketplace: scopes.includes(MARKETPLACE_SCOPE) ? caps.marketplace : "missing",
+  };
+}
+
+/** Whether the Creators card offers "Turn on creator search": some creator permission isn't known to be granted. */
+export const needsCreatorLogin = (scopes: string[] | null) => !scopes || !scopes.includes("instagram_manage_insights") || !scopes.includes(MARKETPLACE_SCOPE);
+
+/** The plain note after the "Turn on creator search" login, from what was granted (null when everything was). */
+export function grantNote(granted: string[] | null): string | null {
+  if (!granted) return "Creator search wasn't turned on: Facebook didn't say what was allowed. Your posting connection is unchanged. Please try again.";
+  if (!granted.includes("instagram_manage_insights"))
+    return "Creator search wasn't turned on: looking up public creator numbers wasn't allowed. Your posting connection is unchanged.";
+  if (!granted.includes(MARKETPLACE_SCOPE))
+    return "Creator search is on with hashtags and the usernames you add. Instagram Creator Marketplace search wasn't allowed; it needs Meta to approve the app for it.";
+  return null;
 }
 
 /** The meaning words of the site's topics: its top searches, product names and the offer in its profile. */
@@ -203,6 +229,22 @@ async function schema() {
 }
 
 const runKey = (accountId: string) => `creators_run:${accountId}`;
+const noteKey = (accountId: string) => `creators_note:${accountId}`;
+
+/**
+ * After the "Turn on creator search" login, or when it failed: the note the owner reads. Only the creator search status
+ * changes; with a new creator permission the weekly search runs again soon.
+ */
+export async function recordCreatorGrant(accountId: string, granted: string[] | null, failure: string | null = null): Promise<void> {
+  await schema();
+  const note = failure ? `Creator search wasn't turned on: ${failure} Your posting connection is unchanged.` : grantNote(granted);
+  if (note) {
+    await sql`
+      INSERT INTO insights_settings (key, value) VALUES (${noteKey(accountId)}, ${note})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  } else await sql`DELETE FROM insights_settings WHERE key = ${noteKey(accountId)}`;
+  if (!failure && granted?.includes("instagram_manage_insights")) await sql`DELETE FROM insights_settings WHERE key = ${runKey(accountId)}`;
+}
 
 export interface CreatorRow {
   handle: string;
@@ -317,7 +359,9 @@ export async function creatorsView(accountId: string) {
   return {
     show: true as const,
     lastRun: run.at,
-    missing: missingMessages(run.caps),
+    note: (await sql`SELECT value FROM insights_settings WHERE key = ${noteKey(accountId)}`)[0]?.value ?? null,
+    missing: missingMessages(capsFromScopes(run.caps, link?.scopes ?? null)),
+    canTurnOn: needsCreatorLogin(link?.scopes ?? null),
     creators,
     draftsThisWeek: await draftsThisWeek(accountId),
     cap: CREATOR_DRAFT_CAP,
@@ -486,7 +530,9 @@ export async function runCreatorFinder(accountId: string): Promise<string> {
       queue.push(f);
     }
     let saved = 0;
-    for (const f of queue.slice(0, LOOKUPS_PER_RUN)) {
+    // Known from the recorded permissions: no lookups are tried without them.
+    if (link.scopes && !link.scopes.includes("instagram_manage_insights")) caps.discovery = "missing";
+    for (const f of caps.discovery === "missing" ? [] : queue.slice(0, LOOKUPS_PER_RUN)) {
       let d: Discovered | null;
       try {
         d = await discover(link, f.handle);

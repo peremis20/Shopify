@@ -20,15 +20,16 @@ const GRAPH = `https://graph.facebook.com/${FB_GRAPH_VERSION}`;
 /** What Facebook Login asks for: the Pages the person manages, posting to one, and publishing to its Instagram account. */
 export const FACEBOOK_SCOPES = ["pages_show_list", "pages_read_engagement", "pages_manage_posts", "instagram_basic", "instagram_content_publish"];
 /**
- * What the creator finder adds: public metrics of business and creator accounts (business discovery needs
+ * What the creator finder adds, asked for only from the Creators card's own "Turn on creator search" login (never in
+ * the main connect, so a permission name Meta refuses can't break posting): public metrics of business and creator accounts (business discovery needs
  * instagram_manage_insights), and Meta's Instagram Creator Marketplace search, which Meta documents as needing
  * instagram_creator_marketplace_discovery (advanced access after app review) together with business_management.
  * Kept in one place, so it is easy to change when Meta's list changes. A permission the app isn't approved for is simply
  * not granted; the finder sees that at run time and tells the owner in plain words.
  */
 export const CREATOR_SCOPES = ["instagram_manage_insights", "instagram_creator_marketplace_discovery", "business_management"];
-/** Everything Facebook Login asks for. */
-export const REQUESTED_SCOPES = [...new Set([...FACEBOOK_SCOPES, ...CREATOR_SCOPES])];
+/** What the "Turn on creator search" login asks for: the posting permissions plus the creator ones. */
+export const CREATOR_REQUEST_SCOPES = [...new Set([...FACEBOOK_SCOPES, ...CREATOR_SCOPES])];
 /** Posts a site may make from here in seven days on each channel. */
 export const SOCIAL_WEEKLY_CAP = 3;
 /** Facebook's limit is far longer; posts stay short. Instagram's caption limit. */
@@ -196,6 +197,29 @@ export async function confirmFacebookPending(id: string, pageId: string): Promis
   return p.returnTo;
 }
 
+/**
+ * After the "Turn on creator search" login: records what the person granted, for the same Facebook person and the same
+ * Page only. The Page's token is refreshed from this login when the same Page comes back; anything else about the
+ * posting connection stays exactly as it was. Throws a plain message when it can't be applied, changing nothing.
+ */
+export async function applyCreatorGrant(accountId: string, userId: string, granted: string[] | null, pages: PageChoice[]): Promise<string[]> {
+  const link = await getFacebook(accountId);
+  if (!link) throw new Error("Connect Facebook first, then turn on creator search.");
+  if (link.userId !== userId) throw new Error("That was a different Facebook account from the one connected, so nothing changed.");
+  if (!granted) throw new Error("Facebook didn't say which permissions were allowed, so nothing changed. Please try again.");
+  // Without any creator permission, nothing about the connection changes; only the creator search status does.
+  if (!CREATOR_SCOPES.some((s) => granted.includes(s))) return granted;
+  const page = pages.find((p) => p.id === link.pageId);
+  // The Page's token is replaced only when this login still allows everything posting needs.
+  if (page && FACEBOOK_SCOPES.every((s) => granted.includes(s))) {
+    const enc = encrypt(page.token, await tokenSecret());
+    await sql`UPDATE insights_account_facebook SET scopes = ${granted.join(",")}, token_enc = ${enc} WHERE account_id = ${accountId} AND user_id = ${userId} AND page_id = ${link.pageId}`;
+  } else {
+    await sql`UPDATE insights_account_facebook SET scopes = ${granted.join(",")} WHERE account_id = ${accountId} AND user_id = ${userId}`;
+  }
+  return granted;
+}
+
 export async function dropFacebookPending(id: string): Promise<void> {
   await schema();
   await sql`DELETE FROM insights_facebook_pending WHERE id = ${id}`;
@@ -285,9 +309,20 @@ async function call<T>(path: string, params: Record<string, string>, method: "GE
   return data;
 }
 
-export function facebookAuthorizeUrl(appId: string, redirectUri: string, state: string): string {
+/**
+ * The Facebook Login address. The main connect asks only for the posting permissions; `creators` asks again
+ * (auth_type=rerequest, so permissions declined before are offered again) for those plus the creator permissions.
+ */
+export function facebookAuthorizeUrl(appId: string, redirectUri: string, state: string, creators = false): string {
   const url = new URL(`https://www.facebook.com/${FB_GRAPH_VERSION}/dialog/oauth`);
-  url.search = new URLSearchParams({ client_id: appId, redirect_uri: redirectUri, scope: REQUESTED_SCOPES.join(","), response_type: "code", state }).toString();
+  url.search = new URLSearchParams({
+    client_id: appId,
+    redirect_uri: redirectUri,
+    scope: (creators ? CREATOR_REQUEST_SCOPES : FACEBOOK_SCOPES).join(","),
+    response_type: "code",
+    state,
+    ...(creators ? { auth_type: "rerequest" } : {}),
+  }).toString();
   return url.toString();
 }
 
@@ -295,7 +330,11 @@ export function facebookAuthorizeUrl(appId: string, redirectUri: string, state: 
  * The code from Facebook swapped for a long lived user token, then the Pages that person manages with their own
  * tokens (which don't run out when made from a long lived user token) and each Page's linked Instagram account.
  */
-export async function exchangeFacebookCode(app: { id: string; secret: string }, code: string, redirectUri: string): Promise<{ userId: string; pages: PageChoice[] }> {
+export async function exchangeFacebookCode(
+  app: { id: string; secret: string },
+  code: string,
+  redirectUri: string,
+): Promise<{ userId: string; pages: PageChoice[]; granted: string[] | null }> {
   const short = await call<{ access_token: string }>("/oauth/access_token", { client_id: app.id, client_secret: app.secret, redirect_uri: redirectUri, code });
   const long = await call<{ access_token: string }>("/oauth/access_token", {
     grant_type: "fb_exchange_token",
@@ -323,7 +362,7 @@ export async function exchangeFacebookCode(app: { id: string; secret: string }, 
       igId: p.instagram_business_account?.id ? String(p.instagram_business_account.id) : null,
       igUsername: p.instagram_business_account?.username ? String(p.instagram_business_account.username) : null,
     }));
-  return { userId: String(me.id), pages };
+  return { userId: String(me.id), pages, granted };
 }
 
 async function publishFacebook(link: FacebookLink, text: string, url: string): Promise<{ id: string; permalink: string | null }> {

@@ -67,7 +67,7 @@ import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SC
 import { chartFromUrl } from "./autopilot/report-email";
 import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, setThreadsAutoReply, threadsPosts, WEEKLY_POST_CAP } from "./threads";
 import { landingNotes } from "./landing";
-import { accountsDueForCreators, addCreator, creatorsView, dismissCreator, draftCreatorMessage, runCreatorFinder } from "./creators";
+import { accountsDueForCreators, addCreator, recordCreatorGrant, creatorsView, dismissCreator, draftCreatorMessage, runCreatorFinder } from "./creators";
 import { accountsDueForCommunities, communityLine, readCommunities, refreshCommunities } from "./communities";
 import { accountsDueForSocial, approvePost, approveReply, REPLY_DAILY_CAP, runSocialAgent, skipPost, skipReply, socialDrafts } from "./social-agent";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
@@ -84,6 +84,7 @@ import {
 import { getOAuthClient, saveOAuthClient } from "./oauth-client";
 import { adminAppUrl, embeddedAccount, googleLinkTicket, LINK_FINISH_MS, readLinkTicket, ticketFor, useLinkTicket } from "./embedded";
 import {
+  applyCreatorGrant,
   confirmFacebookPending,
   dropFacebookPending,
   exchangeFacebookCode,
@@ -2118,7 +2119,12 @@ export const facebookLinkStart = (req: Request) =>
     const embedded = Boolean(req.headers.get("authorization"));
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
     const session = (await currentAccount(req).catch(() => null))?.id === account.id;
-    return json({ url: `${appOrigin(req)}/api/auth/facebook/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session, "facebook"))}` });
+    // creators=1: the Creators card's "Turn on creator search", which asks again with the creator permissions too.
+    const creators = new URL(req.url).searchParams.get("creators") === "1";
+    if (creators && !(await getFacebook(account.id))) return json({ error: "Connect Facebook first, under Share this week." }, 400);
+    return json({
+      url: `${appOrigin(req)}/api/auth/facebook/start?link=${encodeURIComponent(googleLinkTicket(account.id, back, session, "facebook"))}${creators ? "&creators=1" : ""}`,
+    });
   });
 
 /** Sends the owner to Facebook to allow posting to a Page they manage. Only a ticket made for Facebook is accepted. */
@@ -2127,8 +2133,15 @@ export async function facebookAuthStart(req: Request): Promise<Response> {
   const ticket = new URL(req.url).searchParams.get("link");
   if (!app || !ticketFor(ticket, "facebook")) return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent("Please start again from Share this week.")}`);
   const state = `${ticket}.${crypto.randomBytes(16).toString("hex")}`;
-  return redirect(facebookAuthorizeUrl(app.id, facebookRedirectUri(req), state), tempCookie(req, FACEBOOK_STATE_COOKIE, state, 900));
+  const creators = new URL(req.url).searchParams.get("creators") === "1";
+  return redirect(
+    facebookAuthorizeUrl(app.id, facebookRedirectUri(req), state, creators),
+    tempCookie(req, FACEBOOK_STATE_COOKIE, state, 900),
+    tempCookie(req, FACEBOOK_MODE_COOKIE, creators ? "creators" : "", creators ? 900 : 0),
+  );
 }
+
+const FACEBOOK_MODE_COOKIE = "insights_facebook_mode";
 
 /** Facebook redirects here: the Pages are held until the person picks one and confirms the site, in this same browser. */
 export async function facebookAuthCallback(req: Request): Promise<Response> {
@@ -2138,7 +2151,10 @@ export async function facebookAuthCallback(req: Request): Promise<Response> {
   const ticket = state.slice(0, state.lastIndexOf("."));
   const link = state && state === readCookie(req, FACEBOOK_STATE_COOKIE) ? ticketFor(ticket, "facebook", LINK_FINISH_MS) : null;
   const home = link?.returnTo || `${appOrigin(req)}/analytics`;
-  const back = (p: Record<string, string>) => redirect(`${home}${home.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
+  const creators = readCookie(req, FACEBOOK_MODE_COOKIE) === "creators";
+  const back = (p: Record<string, string>) =>
+    redirect(`${home}${home.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear, tempCookie(req, FACEBOOK_MODE_COOKIE, "", 0));
+  if (creators) return creatorGrantCallback(req, params, link, back);
   if (params.get("error")) return back({ auth_error: "Facebook access was not allowed. Nothing changed." });
   const code = params.get("code");
   const app = await facebookApp();
@@ -2157,6 +2173,39 @@ export async function facebookAuthCallback(req: Request): Promise<Response> {
     return facebookConfirmPage(req, { id, confirm, site, pages: out.pages }, clear, tempCookie(req, FACEBOOK_CONFIRM_COOKIE, `${id}.${confirm}`, 900));
   } catch (err) {
     return back({ auth_error: message(err) });
+  }
+}
+
+/**
+ * The "Turn on creator search" login coming back. It never touches the posting connection unless the same Facebook
+ * person allowed a creator permission for the same connected Page; whatever happens, only the creator search status
+ * and its plain note change.
+ */
+async function creatorGrantCallback(
+  req: Request,
+  params: URLSearchParams,
+  link: ReturnType<typeof ticketFor>,
+  back: (p: Record<string, string>) => Response,
+): Promise<Response> {
+  const code = params.get("code");
+  const app = await facebookApp();
+  if (!link || !app) return back({ auth_error: "The Facebook link expired. Please try again from the Creators card." });
+  const fail = async (why: string) => {
+    await recordCreatorGrant(link.accountId, null, why).catch((e) => console.error(`creator note not saved: ${message(e)}`));
+    return back({ auth_error: `Creator search wasn't turned on. ${why} Posting is unchanged.` });
+  };
+  if (params.get("error") || !code) return fail("Facebook access was not allowed.");
+  try {
+    const here = await currentAccount(req).catch(() => null);
+    if (link.session && here && here.id !== link.accountId) return fail("This browser is signed in to a different account.");
+    if (link.session && !here) return fail("Please sign in again first.");
+    if (!(await useLinkTicket(link))) return fail("That link was already used.");
+    const out = await exchangeFacebookCode(app, code, facebookRedirectUri(req));
+    const granted = await applyCreatorGrant(link.accountId, out.userId, out.granted, out.pages);
+    await recordCreatorGrant(link.accountId, granted);
+    return back({ connected: "creators" });
+  } catch (err) {
+    return fail(message(err));
   }
 }
 
