@@ -8,6 +8,7 @@ import { querySearches28d } from "./seo-tools";
 import { sitePages } from "./site-crawl";
 import { taggedUrl } from "./threads";
 import { pageKind, topicTerms } from "./landing";
+import { GLUE } from "./autopilot/backlinks";
 import { claimProblem, cleanPost, noDashes } from "./social-agent";
 import { scanClaims } from "./autopilot/claims";
 import { otherClient, otherClientHandles } from "./autopilot/clients";
@@ -36,8 +37,10 @@ export const HASHTAG_WEEKLY_LIMIT = 30;
 const HASHTAGS_PER_RUN = 5;
 /** Accounts looked up with business discovery per run. */
 const LOOKUPS_PER_RUN = 15;
-/** Message drafts per site in seven days. */
+/** Message drafts per site in seven days (drafts that passed the checks). */
 export const CREATOR_DRAFT_CAP = 5;
+/** AI draft attempts per site in a day, whether they passed or not. */
+export const CREATOR_ATTEMPT_DAILY_CAP = 10;
 /** Recent posts needed before an engagement rate means anything. */
 const MIN_POSTS = 3;
 
@@ -82,6 +85,30 @@ export function hashtagsAllowed(used: { tag: string; at: string }[], wanted: str
 
 /** A hashtag from a topic: its words run together, letters and digits only. */
 export const hashtagOf = (topic: string) => topic.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+
+/** Words that say how much or in what pack, never what a product is: no hashtag is made from them. */
+const SIZE_WORDS = new Set(
+  "count ct mg mcg g kg oz ml l lb lbs pack packs size capsule capsules tablet tablets softgel softgels gummy gummies serving servings day days month months bottle bottles bag bags".split(" "),
+);
+
+/**
+ * Hashtags from the site's own topics: only short phrases of one to three meaning words (glue words, numbers, sizes
+ * and the brand left out), so a full search sentence or a product's size never becomes a hashtag.
+ */
+export function hashtagTopics(phrases: string[], brand: string | null | undefined): string[] {
+  const brandWords = new Set((brand ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+  const out: string[] = [];
+  for (const p of phrases) {
+    const words = p
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 1 && !GLUE.has(w) && !SIZE_WORDS.has(w) && !/\d/.test(w) && !brandWords.has(w));
+    if (!words.length || words.length > 3) continue;
+    const tag = words.join("");
+    if (tag.length >= 4 && tag.length <= 40 && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
 
 /** Mentioned accounts in public captions (how hashtag posts point to creators; Meta doesn't name a hashtag post's author). */
 export const mentionsIn = (caption: string) => [...caption.matchAll(/(?:^|[^\w.])@([a-z0-9._]{2,30})/gi)].map((m) => cleanHandle(m[1].replace(/\.+$/, ""))).filter((h) => h.length >= 2);
@@ -205,6 +232,7 @@ async function schema() {
     matched text,
     claim_flags text,
     competitor text,
+    website text,
     status text NOT NULL DEFAULT 'new',
     message text,
     message_checked text,
@@ -225,6 +253,14 @@ async function schema() {
   await sql`CREATE TABLE IF NOT EXISTS insights_creator_drafts (
     account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
     times timestamptz[] NOT NULL DEFAULT '{}'
+  )`;
+  await sql`ALTER TABLE insights_creators ADD COLUMN IF NOT EXISTS website text`;
+  // Every AI draft attempt per site and day, passed or refused, raised in one step that refuses at the daily cap.
+  await sql`CREATE TABLE IF NOT EXISTS insights_creator_attempts (
+    account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
+    day date NOT NULL,
+    n integer NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, day)
   )`;
 }
 
@@ -330,7 +366,11 @@ export async function creatorsView(accountId: string) {
   const rows = await sql`
     SELECT * FROM insights_creators WHERE account_id = ${accountId} AND status <> 'dismissed'
     ORDER BY (status = 'drafted') DESC, score DESC NULLS LAST, followers DESC NULLS LAST LIMIT 20`;
-  const creators: CreatorRow[] = rows.map((r) => {
+  // Checked again on every view: an account or site that became another customer's since is never shown.
+  const others = await otherClientHandles(accountId);
+  const isOther = await otherClient(profile.siteDomain ?? "");
+  const visible = others ? rows.filter((r) => !others.has(String(r.handle).toLowerCase()) && !(r.website && isOther(String(r.website)))) : [];
+  const creators: CreatorRow[] = visible.map((r) => {
     const flags = list(r.claim_flags);
     return {
       handle: String(r.handle),
@@ -390,7 +430,18 @@ export async function addCreator(accountId: string, handle: string): Promise<str
 
 // ---------- Meta's sources ----------
 
-const lacks = (e: unknown) => e instanceof MetaApiError && (e.code === 10 || e.code === 200 || e.code === 190 || e.status === 403 || /permission/i.test(e.message));
+/** Meta refused for want of a permission (not an expired or removed connection: that is code 190). */
+export const lacks = (e: unknown) => e instanceof MetaApiError && e.code !== 190 && (e.code === 10 || e.code === 200 || e.status === 403 || /permission/i.test(e.message));
+/** The connection itself expired or was removed: the owner connects Facebook again. */
+export const needsReconnect = (e: unknown) => e instanceof MetaApiError && (e.code === 190 || e.status === 401);
+/**
+ * Meta clearly said the account can't be looked up because it isn't a business or creator account (or doesn't
+ * exist). Only then is it skipped quietly; any other error is the source failing.
+ */
+export const notBusinessAccount = (e: unknown) =>
+  e instanceof MetaApiError &&
+  e.code !== 190 &&
+  (e.code === 110 || /not (?:an? )?(?:instagram )?(?:business|creator|professional)(?: or (?:business|creator|professional))? account|invalid user ?id|cannot find user|user (?:does not exist|not found)|cannot be found/i.test(e.message));
 
 interface Found {
   handle: string;
@@ -398,7 +449,16 @@ interface Found {
   country?: string | null;
 }
 
-async function fromMarketplace(link: FacebookLink): Promise<{ state: SourceState; found: Found[] }> {
+const RECONNECT = "Facebook needs to be connected again (the saved access expired or was removed).";
+
+interface SourceResult {
+  state: SourceState;
+  found: Found[];
+  /** Why it failed, in plain words, when it did. */
+  reason?: string;
+}
+
+async function fromMarketplace(link: FacebookLink): Promise<SourceResult> {
   if (link.scopes && !link.scopes.includes(MARKETPLACE_SCOPE)) return { state: "missing", found: [] };
   try {
     const out = await metaCall<{ data?: { username?: string; country?: string }[] }>(`/${link.igUserId}/${MARKETPLACE_EDGE}`, {
@@ -411,15 +471,16 @@ async function fromMarketplace(link: FacebookLink): Promise<{ state: SourceState
     });
     return { state: "ok", found: (out.data ?? []).filter((c) => c.username).map((c) => ({ handle: cleanHandle(String(c.username)), source: "marketplace", country: c.country ? String(c.country) : null })) };
   } catch (e) {
+    if (needsReconnect(e)) return { state: "error", found: [], reason: RECONNECT };
     if (lacks(e) || (e instanceof MetaApiError && e.status === 400 && /unsupported|nonexisting|does not exist/i.test(e.message))) return { state: "missing", found: [] };
     console.warn(`creator marketplace failed: ${(e as Error).message}`);
-    return { state: "error", found: [] };
+    return { state: "error", found: [], reason: `Creator Marketplace search failed: ${(e as Error).message}` };
   }
 }
 
-async function fromHashtags(accountId: string, link: FacebookLink, topics: string[]): Promise<{ state: SourceState; found: Found[] }> {
+async function fromHashtags(accountId: string, link: FacebookLink, topics: string[]): Promise<SourceResult> {
   const used = await sql`SELECT tag, at FROM insights_creator_hashtags WHERE account_id = ${accountId}`;
-  const wanted = [...new Set(topics.map(hashtagOf).filter((t) => t.length >= 4 && t.length <= 40))].slice(0, HASHTAGS_PER_RUN);
+  const wanted = topics.slice(0, HASHTAGS_PER_RUN);
   const allowed = hashtagsAllowed(used.map((u) => ({ tag: String(u.tag), at: new Date(String(u.at)).toISOString() })), wanted);
   if (!allowed.length) return { state: wanted.length ? "ok" : "unknown", found: [] };
   const found: Found[] = [];
@@ -437,9 +498,10 @@ async function fromHashtags(accountId: string, link: FacebookLink, topics: strin
       const media = await metaCall<{ data?: { caption?: string }[] }>(`/${id}/top_media`, { user_id: String(link.igUserId), fields: "id,caption,like_count,comments_count", limit: "30", access_token: link.token });
       for (const m of media.data ?? []) for (const h of mentionsIn(String(m.caption ?? ""))) found.push({ handle: h, source: "hashtag" });
     } catch (e) {
+      if (needsReconnect(e)) return { state: "error", found, reason: RECONNECT };
       if (lacks(e)) return { state: "missing", found };
       console.warn(`hashtag search failed for account ${accountId}: ${(e as Error).message}`);
-      state = "error";
+      return { state: "error", found, reason: `Hashtag search failed: ${(e as Error).message}` };
     }
   }
   return { state, found };
@@ -496,31 +558,40 @@ async function siteTopics(accountId: string, profile: Profile): Promise<{ search
   return { searches: searches.filter((q) => !brand || !q.toLowerCase().includes(brand)).slice(0, 20), products };
 }
 
-/** One site's weekly creator search. Returns a line for the log. */
+/**
+ * One site's weekly creator search. Returns a line for the log. Whatever happens (an early stop or an error), the site
+ * is marked tried for this week and the status board says why, so one site can never hold up the others.
+ */
 export async function runCreatorFinder(accountId: string): Promise<string> {
+  // The hourly run itself rests in the Sabbath; this is only a second guard, and changes nothing.
   if (isSabbath()) return "rests for the Sabbath";
-  await schema();
-  if (!(await readAccountAutopilot(accountId)).enabled) return "the autopilot is paused";
-  const link = await getFacebook(accountId);
-  if (!link?.igUserId) return "Instagram isn't connected";
   const caps: Capabilities = { marketplace: "unknown", hashtags: "unknown", discovery: "unknown" };
+  const stop = async (reason: string, ok = false): Promise<string> => {
+    await saveRun(accountId, caps).catch((e) => console.error(`creator run not marked for account ${accountId}: ${(e as Error).message}`));
+    void report("creators", ok, ok ? null : reason);
+    return reason;
+  };
   try {
+    await schema();
+    if (!(await readAccountAutopilot(accountId)).enabled) return await stop("Creator search skipped: the autopilot is paused.");
+    const link = await getFacebook(accountId);
+    if (!link?.igUserId) return await stop("Creator search skipped: Instagram isn't connected.");
     const profile = await readProfile(accountId);
     const { searches, products } = await siteTopics(accountId, profile);
     const topicWords = siteTopicWords(searches, products, profile.about?.offer, profile.brandName);
-    if (!topicWords.size) {
-      await saveRun(accountId, caps);
-      return "no searches or products of the site's own yet to find creators for";
-    }
+    if (!topicWords.size) return await stop("Creator search skipped: the site has no searches or products of its own yet.");
     const others = await otherClientHandles(accountId);
-    if (!others) throw new Error("The list of other customers couldn't be read, so no creators were saved this week.");
+    if (!others) return await stop("The list of other customers couldn't be read, so no creators were saved this week.");
     const isOther = await otherClient(profile.siteDomain ?? "");
     const own = (link.igUsername ?? "").toLowerCase();
 
+    const failures: string[] = [];
     const market = await fromMarketplace(link);
     caps.marketplace = market.state;
-    const tags = await fromHashtags(accountId, link, [...products, ...searches]);
+    if (market.reason) failures.push(market.reason);
+    const tags = await fromHashtags(accountId, link, hashtagTopics([...products, ...searches], profile.brandName));
     caps.hashtags = tags.state;
+    if (tags.reason) failures.push(tags.reason);
     const added = await sql`SELECT handle FROM insights_creators WHERE account_id = ${accountId} AND source = 'owner' AND followers IS NULL AND status = 'added'`;
     const known = new Set((await sql`SELECT handle FROM insights_creators WHERE account_id = ${accountId}`).map((r) => String(r.handle)));
     const queue: Found[] = [];
@@ -538,12 +609,14 @@ export async function runCreatorFinder(accountId: string): Promise<string> {
         d = await discover(link, f.handle);
         caps.discovery = "ok";
       } catch (e) {
-        if (lacks(e)) {
-          caps.discovery = "missing";
-          break;
+        // Meta clearly says it isn't a business or creator account (or doesn't exist): Meta won't share its numbers.
+        if (notBusinessAccount(e)) continue;
+        if (lacks(e)) caps.discovery = "missing";
+        else {
+          caps.discovery = "error";
+          failures.push(needsReconnect(e) ? RECONNECT : `Looking up public numbers failed: ${(e as Error).message}`);
         }
-        // Not a business or creator account, or gone: Meta won't share its numbers, so it is left out.
-        continue;
+        break;
       }
       if (!d?.followers_count) continue;
       // Another customer's site in the bio link is never suggested either.
@@ -556,23 +629,21 @@ export async function runCreatorFinder(accountId: string): Promise<string> {
       const flags = claimFlags(captions);
       const competitor = competitorFlag(captions, products, profile.brandName);
       await sql`
-        INSERT INTO insights_creators (account_id, handle, source, name, followers, media_count, engagement, posts_counted, country, fit, score, matched, claim_flags, competitor, status)
-        VALUES (${accountId}, ${f.handle}, ${f.source}, ${d.name ?? null}, ${d.followers_count}, ${d.media_count ?? null}, ${er?.rate ?? null}, ${er?.posts ?? null},
+        INSERT INTO insights_creators (account_id, handle, source, name, website, followers, media_count, engagement, posts_counted, country, fit, score, matched, claim_flags, competitor, status)
+        VALUES (${accountId}, ${f.handle}, ${f.source}, ${d.name ?? null}, ${d.website ?? null}, ${d.followers_count}, ${d.media_count ?? null}, ${er?.rate ?? null}, ${er?.posts ?? null},
           ${f.country ?? null}, ${fit}, ${creatorScore(fit, er?.rate ?? null)}, ${matched.join("\n")}, ${flags.join("\n")}, ${competitor}, ${f.source === "owner" ? "added" : "new"})
-        ON CONFLICT (account_id, handle) DO UPDATE SET name = EXCLUDED.name, followers = EXCLUDED.followers, media_count = EXCLUDED.media_count,
+        ON CONFLICT (account_id, handle) DO UPDATE SET name = EXCLUDED.name, website = EXCLUDED.website, followers = EXCLUDED.followers, media_count = EXCLUDED.media_count,
           engagement = EXCLUDED.engagement, posts_counted = EXCLUDED.posts_counted, country = COALESCE(EXCLUDED.country, insights_creators.country),
           fit = EXCLUDED.fit, score = EXCLUDED.score, matched = EXCLUDED.matched, claim_flags = EXCLUDED.claim_flags, competitor = EXCLUDED.competitor, updated_at = now()`;
       saved++;
     }
-    await saveRun(accountId, caps);
-    const working = [caps.marketplace, caps.hashtags, caps.discovery].some((s) => s === "ok");
-    if (caps.marketplace === "error" || caps.hashtags === "error") void report("creators", false, "A creator source failed this week; it tries again next week.");
-    else if (working) void report("creators", true);
-    else if (caps.discovery === "missing") void report("creators", false, "Permission: business discovery isn't allowed for this connection.");
+    if (failures.length) return await stop([...new Set(failures)].join(" "));
+    const working = [caps.marketplace, caps.hashtags, caps.discovery].some((x) => x === "ok");
+    if (!working && caps.discovery === "missing") return await stop("Permission: looking up public creator numbers isn't allowed for this connection.");
+    await stop(`${saved} creators looked up`, true);
     return `${saved} creators looked up`;
   } catch (e) {
-    await saveRun(accountId, caps).catch(() => undefined);
-    void report("creators", false, (e as Error).message);
+    await stop(`Creator search failed: ${(e as Error).message}`);
     throw e;
   }
 }
@@ -587,8 +658,8 @@ export function composeCreatorMessage(message: string, brief: string, link: stri
   return [message, PARTNERSHIP_LINE, `Approved wording: ${brief}`, NO_CLAIMS_LINE, link ? `Your link: ${link}` : ""].filter(Boolean).join("\n\n");
 }
 
-/** Whether another draft fits this week. */
-export const canDraft = (draftedThisWeek: number) => draftedThisWeek < CREATOR_DRAFT_CAP;
+/** Whether another draft fits: under five passed drafts this week and ten AI attempts today. */
+export const canDraft = (draftedThisWeek: number, attemptsToday = 0) => draftedThisWeek < CREATOR_DRAFT_CAP && attemptsToday < CREATOR_ATTEMPT_DAILY_CAP;
 
 /** Writes the message draft for one creator (the owner's click), within five a week. The owner sends it themselves. */
 export async function draftCreatorMessage(accountId: string, handle: string): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
@@ -613,6 +684,15 @@ export async function draftCreatorMessage(accountId: string, handle: string): Pr
       WHERE (SELECT count(*) FROM unnest(insights_creator_drafts.times) t WHERE t > now() - interval '7 days') < ${CREATOR_DRAFT_CAP}
     RETURNING account_id`;
   if (!slot) return { ok: false, status: 429, error: `${CREATOR_DRAFT_CAP} messages were drafted in the last seven days, the most allowed. More next week.` };
+  // Every AI attempt counts toward today's cap, whether the draft passes or not.
+  const [attempt] = await sql`
+    INSERT INTO insights_creator_attempts (account_id, day, n) VALUES (${accountId}, (now() AT TIME ZONE 'UTC')::date, 1)
+    ON CONFLICT (account_id, day) DO UPDATE SET n = insights_creator_attempts.n + 1 WHERE insights_creator_attempts.n < ${CREATOR_ATTEMPT_DAILY_CAP}
+    RETURNING n`;
+  if (!attempt) {
+    await sql`UPDATE insights_creator_drafts SET times = array_remove(times, ${stamp}::timestamptz) WHERE account_id = ${accountId}`;
+    return { ok: false, status: 429, error: `${CREATOR_ATTEMPT_DAILY_CAP} messages were tried today, the most allowed. Try again tomorrow.` };
+  }
   try {
     const ai = { ...base, site: siteBrief(profile) };
     const creatorText = `${row.name ?? ""}. Topics they post about: ${list(row.matched).join(", ")}`;

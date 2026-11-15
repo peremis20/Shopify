@@ -13,6 +13,11 @@ import {
   HASHTAG_WEEKLY_LIMIT,
   hashtagOf,
   hashtagsAllowed,
+  hashtagTopics,
+  lacks,
+  needsReconnect,
+  notBusinessAccount,
+  CREATOR_ATTEMPT_DAILY_CAP,
   capsFromScopes,
   grantNote,
   needsCreatorLogin,
@@ -22,7 +27,7 @@ import {
   siteTopicWords,
   topicFit,
 } from "../src/lib/analytics/creators";
-import { CREATOR_REQUEST_SCOPES, CREATOR_SCOPES, FACEBOOK_SCOPES, facebookAuthorizeUrl } from "../src/lib/analytics/facebook";
+import { MetaApiError, CREATOR_REQUEST_SCOPES, CREATOR_SCOPES, FACEBOOK_SCOPES, facebookAuthorizeUrl } from "../src/lib/analytics/facebook";
 
 test("creators: engagement rate comes only from fetched posts with real numbers", () => {
   const posts = [
@@ -140,4 +145,29 @@ test("creators: what was granted decides the creator search status and the owner
   assert.match(grantNote([...FACEBOOK_SCOPES, "instagram_manage_insights"]) ?? "", /Creator Marketplace search wasn't allowed/);
   assert.equal(grantNote(CREATOR_REQUEST_SCOPES), null);
   for (const n of [grantNote(null), grantNote(FACEBOOK_SCOPES)]) assert.ok(n && !/[\u2010-\u2015]| - /.test(n));
+});
+
+test("creators: hashtags come only from short topics of one to three meaning words, never sentences or sizes", () => {
+  assert.deepEqual(
+    hashtagTopics(["Magnesium Glycinate 120 Capsules 500mg", "sleep", "how to take magnesium glycinate before bed at night", "ShopCo Tea", "magnesium for sleep"], "ShopCo"),
+    ["magnesiumglycinate", "sleep", "magnesiumsleep"],
+  );
+  assert.deepEqual(hashtagTopics(["60 ct", "a"], null), []);
+});
+
+test("creators: an account is skipped as not a business only when Meta says so; an expired connection asks to connect again", () => {
+  assert.ok(notBusinessAccount(new MetaApiError("Invalid user id", 400, 110)));
+  assert.ok(notBusinessAccount(new MetaApiError("The user is not a business or creator account", 400, 100)));
+  assert.ok(!notBusinessAccount(new MetaApiError("An unexpected error has occurred", 500, 2)));
+  assert.ok(!notBusinessAccount(new MetaApiError("Error validating access token", 400, 190)));
+  assert.ok(needsReconnect(new MetaApiError("Error validating access token", 400, 190)));
+  assert.ok(!lacks(new MetaApiError("Error validating access token", 400, 190)));
+  assert.ok(lacks(new MetaApiError("(#10) permission", 403, 10)));
+});
+
+test("creators: every AI draft attempt counts toward ten a day, passed drafts toward five a week", () => {
+  assert.equal(CREATOR_ATTEMPT_DAILY_CAP, 10);
+  assert.ok(canDraft(0, 9));
+  assert.ok(!canDraft(0, 10));
+  assert.ok(!canDraft(5, 0));
 });

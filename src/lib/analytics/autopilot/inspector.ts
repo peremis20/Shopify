@@ -148,7 +148,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
   creators: {
     name: "The creator finder (Instagram creators for the owner)",
     fix: (d) =>
-      /permission|discovery isn't allowed/i.test(d ?? "")
+      /connected again/i.test(d ?? "")
+        ? "The owner's Facebook connection expired or was removed. The owner connects Facebook again under Share this week."
+        : /skipped/i.test(d ?? "")
+          ? "Nothing is broken: creator search waits for this site (paused, not connected, or no searches yet) and tries again next week."
+          : /permission|isn't allowed/i.test(d ?? "")
         ? "The Meta app needs instagram_manage_insights (and, for Creator Marketplace search, the creator marketplace permission). Add them in Meta's developer settings, then the owner clicks Turn on creator search on the Creators card (posting stays as it is)."
         : /other customers/i.test(d ?? "")
           ? "The customer list couldn't be read, so nothing was saved. It tries again next week by itself."
