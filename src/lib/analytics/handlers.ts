@@ -66,6 +66,7 @@ import { isRangeKey } from "./dates";
 import { ADS_OAUTH_SCOPES, exchangeAuthCode, OAUTH_SCOPES, revokeToken, SETUP_SCOPES } from "./google-auth";
 import { chartFromUrl } from "./autopilot/report-email";
 import { authorizeUrl as threadsAuthorizeUrl, confirmPending, dropPending, exchangeThreadsCode, freshLink, getThreads, holdThreads, readPending, postsThisWeek, postToThreads, removeThreads, refreshDueThreads, removeThreadsUser, setThreadsAuto, setThreadsAutoReply, threadsPosts, WEEKLY_POST_CAP } from "./threads";
+import { accountsDueForCommunities, communityLine, readCommunities, refreshCommunities } from "./communities";
 import { accountsDueForSocial, approvePost, approveReply, REPLY_DAILY_CAP, runSocialAgent, skipPost, skipReply, socialDrafts } from "./social-agent";
 import { DAILY_SEND_CAP, getGmail, GMAIL_OAUTH_SCOPES, GMAIL_SEND_SCOPE, removeGmail, sameOwner, saveGmail, sendOneEmail, sentToday } from "./gmail";
 import { KEYWORD_LANGUAGES, KEYWORD_LOCATIONS } from "./keyword-options";
@@ -1689,6 +1690,11 @@ export async function autopilotTick(): Promise<Response> {
       });
       if (note) results.push(`account ${accountId} social: ${note}`);
     }
+    // Communities to join: a weekly list of searches and drafted answers the owner posts themselves, one site per hour.
+    for (const accountId of late() ? [] : await accountsDueForCommunities(1).catch((e) => (console.error(`communities list failed: ${message(e)}`), []))) {
+      const note = await forSite(accountId, () => refreshCommunities(accountId)).catch((e) => (console.error(`communities failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} communities: ${note}`);
+    }
     // The weekly report email, one site per hour.
     for (const accountId of late() ? [] : await accountsDueForWeeklyReport(1)) {
       const sent = await sendWeeklyReport(accountId).catch((e) => (console.error(`weekly report failed: ${message(e)}`), false));
@@ -1983,7 +1989,8 @@ export const socialAgent = (req: Request) =>
         if (!out.ok) return json({ error: out.error }, out.status);
       } else return json({ error: "Nothing to do." }, 400);
     }
-    return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP });
+    const communities = (await readCommunities(account.id)).items.map((c) => ({ ...c, line: communityLine(c) }));
+    return json({ ...(await socialDrafts(account.id)), postedThisWeek: await postsThisWeek(account.id), cap: WEEKLY_POST_CAP, replyCap: REPLY_DAILY_CAP, communities });
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

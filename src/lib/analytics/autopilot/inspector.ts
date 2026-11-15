@@ -140,6 +140,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           : "Instagram turned down the last post. It tries the next article by itself; nothing was posted twice.",
     workaround: "The posts stay under Share this week to post by hand.",
   },
+  communities: {
+    name: "Communities to join (suggestions for the owner)",
+    fix: () => "Writing this week's community answers failed. It tries again next week by itself; last week's list stays.",
+    workaround: "Nothing is posted in any community by DashPatrol; the owner posts the answers themselves.",
+  },
   "shopify-sales": {
     name: "Sales from Shopify",
     fix: () => "It tries again by itself. If it keeps failing, reconnect the store under Content.",

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ReplyDraft, SocialDraft } from "@/lib/analytics/social-agent";
+import type { CommunityIdea } from "@/lib/analytics/communities";
 import { api, apiFresh } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
 
@@ -11,6 +12,7 @@ interface AgentState {
   postedThisWeek: number;
   cap: number;
   replyCap: number;
+  communities: (CommunityIdea & { line: string })[];
 }
 
 interface ThreadsInfo {
@@ -109,6 +111,54 @@ function Toggle({ checked, label, hint, onChange }: { checked: boolean; label: s
   );
 }
 
+function CopyText({ text }: { text: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button
+      onClick={() =>
+        navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setDone(true);
+            setTimeout(() => setDone(false), 1500);
+          })
+          .catch(() => undefined)
+      }
+      className="rounded-lg border border-dash-line px-3 py-1.5 text-xs font-semibold text-dash-ink hover:border-dash-green"
+    >
+      {done ? "Copied" : "Copy the answer"}
+    </button>
+  );
+}
+
+/** Where people ask about the site's topics, and a helpful answer the owner can post there themselves. */
+function Communities({ items }: { items: AgentState["communities"] }) {
+  if (!items.length) return null;
+  return (
+    <div className="mt-5">
+      <p className="text-sm font-semibold text-dash-ink">Communities to join</p>
+      <p className="mb-2 text-xs text-dash-muted">
+        Places where people ask about your topics. DashPatrol never joins or posts in groups for you. Join the ones that fit, read their rules, and post the
+        answer yourself if it helps someone.
+      </p>
+      <div className="space-y-3">
+        {items.map((c) => (
+          <div key={`${c.where}${c.search}`} className="rounded-xl border border-dash-line p-4">
+            <p className="text-sm font-semibold text-dash-ink">{c.line}</p>
+            <p className="mt-2 whitespace-pre-wrap break-words rounded-lg bg-dash-bg p-3 text-sm text-dash-ink">{c.answer}</p>
+            <p className="mt-1 break-words text-xs text-dash-muted">
+              From your page {c.pageUrl}. {c.checked === "ai" ? "Checked by a second AI." : "No second AI was free, so read it before you post it."}
+            </p>
+            <div className="mt-2 flex justify-end">
+              <CopyText text={c.answer} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** The social helper: post and answer drafts for the owner to approve, and the automatic posting switches. */
 export function SocialAgent() {
   const [state, setState] = useState<AgentState | null>(null);
@@ -118,7 +168,7 @@ export function SocialAgent() {
     api<AgentState>("/api/social/agent").then(setState).catch(() => setState(null));
     api<ThreadsInfo>("/api/social/threads").then(setThreads).catch(() => setThreads(null));
   }, []);
-  if (!threads?.configured) return null;
+  if (!threads?.configured && !state?.communities.length) return null;
 
   const act = async (type: "post" | "reply", id: string, action: "approve" | "skip", text: string | null) => {
     const next = await api<AgentState>("/api/social/agent", { type, id, action, ...(text !== null ? { text } : {}) });
@@ -145,7 +195,7 @@ export function SocialAgent() {
         Short tips, answered questions and explainers taken from your own pages, on what people search for now. Each one is checked for health claims and by a
         second AI. Nothing is posted until you approve it, unless you turn on automatic posting.
       </p>
-      {!threads.connected ? (
+      {!threads?.configured ? null : !threads.connected ? (
         <p className="text-sm text-dash-ink">Connect Threads under Share this week to get drafts here.</p>
       ) : (
         <>
@@ -223,6 +273,7 @@ export function SocialAgent() {
           </button>
         </>
       )}
+      <Communities items={state?.communities ?? []} />
     </Card>
   );
 }
