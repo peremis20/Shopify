@@ -218,7 +218,7 @@ export interface WeeklyReportData {
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
-  shopify: { days?: number; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
+  shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
 }
 
 /** One plan step as the owner reads it (page and email alike): it names the search or page it works on. */

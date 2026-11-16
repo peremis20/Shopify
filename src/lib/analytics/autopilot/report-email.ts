@@ -166,6 +166,26 @@ function tile(label: string, value: string, delta: { text: string; up: boolean }
 <div style="font-size:28px;font-weight:700;color:${INK};line-height:1.2">${esc(value)}</div>${arrow}</div></td>`;
 }
 
+/**
+ * Sales: the store's own orders when Shopify can be read (Analytics often never receives purchases), else the
+ * purchase revenue Analytics recorded. Free orders such as samples are counted and named apart.
+ */
+function salesTile(d: WeeklyReportData, gaRevenue: number, gaBefore: number): string {
+  const s = d.shopify;
+  if (s && typeof s === "object" && s.week && s.weekBefore) {
+    const w = s.week;
+    const paid = w.orders - w.free;
+    const amount = w.revenue > 0 ? w.revenue.toFixed(2) : "0";
+    const value = !s.currency || s.currency === "USD" ? `$${amount}` : `${amount} ${s.currency}`;
+    const parts = [`${paid} paid order${paid === 1 ? "" : "s"}`];
+    if (w.free) parts.push(`${w.free} free sample${w.free === 1 ? "" : "s"}`);
+    const note = w.orders === 0 ? "No orders this week" : parts.join(", ");
+    const delta = pct(w.revenue, s.weekBefore.revenue);
+    return tile("Sales from Shopify", value, null, delta ? `${note}. ${delta.up ? "Up" : "Down"} ${delta.text} from last week` : note);
+  }
+  return tile("Sales", gaRevenue > 0 ? num(gaRevenue) : "0", pct(gaRevenue, gaBefore), gaRevenue === 0 ? "None recorded yet" : undefined);
+}
+
 /** A labeled bar: the bar is drawn as a table cell whose width is the share of the row's largest value. */
 function barRow(label: string, value: number, max: number, color: string): string {
   const w = max > 0 ? Math.max(value > 0 ? 3 : 0, Math.round((value / max) * 100)) : 0;
@@ -201,7 +221,7 @@ export function weeklyReportHtml(d: WeeklyReportData, x: ReportExtras): string {
     parts.push(`<tr><td style="padding:6px 10px"><table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
 ${tile("Visits, last 7 days", num(t.visits), pct(t.visits, visitsBefore), visitsBefore === 0 && t.visits > 0 ? "None the week before" : undefined)}
 ${tile("Leads and sign ups", num(t.leads), pct(t.leads, leadsBefore), t.leads === 0 ? "None recorded yet" : undefined)}
-${tile("Sales", t.revenue > 0 ? num(t.revenue) : "0", pct(t.revenue, salesBefore), t.revenue === 0 ? "None recorded yet" : undefined)}
+${salesTile(d, t.revenue, salesBefore)}
 </tr></table></td></tr>`);
     // Where visits came from: a donut with a legend that names every slice (identity is never color alone).
     const shown = d.traffic.filter((c) => c.now.sessions > 0);

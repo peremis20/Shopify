@@ -48,3 +48,14 @@ test("report email: the chart and the tile add up when there are more channels t
   assert.match(html, /up 50% from last week/);
   assert.match(html, /Other<\/td>[\s\S]*?400 \(44%\)/);
 });
+
+test("report email: the sales tile uses the store's own Shopify orders, with free samples named apart", async () => {
+  const { weeklyReportHtml } = await import("../src/lib/analytics/autopilot/report-email");
+  const shopify = { days: 28, orders: 13, revenue: 206.15, currency: "USD", fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 5, revenue: 80.5, free: 2 }, weekBefore: { orders: 2, revenue: 40.25, free: 0 } };
+  const traffic = [{ name: "Organic Search", now: { sessions: 10, keyEvents: 1, purchases: 0, revenue: 0 }, before: { sessions: 8, keyEvents: 1, purchases: 0, revenue: 0 } }];
+  const html = weeklyReportHtml({ ...base, shopify, traffic, agents: [], totals: { visits: 10, leads: 1, revenue: 0 } } as never, { site: "shop.com", origin: "https://app.example", usage: null, needsYou: 0 } as never);
+  assert.ok(html.includes("Sales from Shopify"));
+  assert.ok(html.includes("$80.50"));
+  assert.ok(html.includes("3 paid orders, 2 free samples"));
+  assert.ok(html.includes("Up 100% from last week"));
+});

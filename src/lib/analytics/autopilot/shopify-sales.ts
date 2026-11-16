@@ -16,6 +16,9 @@ export interface ShopifySales {
   fromGoogleRevenue: number;
   /** More orders than were read (over 1,000 in the period): the totals are a lower bound. */
   capped?: boolean;
+  /** Orders of the last 7 days and the 7 before, from Shopify; free orders (samples) counted apart. */
+  week?: { orders: number; revenue: number; free: number };
+  weekBefore?: { orders: number; revenue: number; free: number };
   /** The pages Google search buyers landed on, most orders first. */
   pages: { path: string; orders: number; revenue: number }[];
 }
@@ -37,7 +40,8 @@ const fromGoogleSearch = (v: Visit | null) => {
 /** Orders of the last `days` days (up to 250), with the Google search share and its landing pages. */
 export async function shopifySales(store: StoreAccess, days = 28): Promise<ShopifySales> {
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  const out: ShopifySales = { days, orders: 0, revenue: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [] };
+  const out: ShopifySales = { days, orders: 0, revenue: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
+  const now = Date.now();
   const pages = new Map<string, { orders: number; revenue: number }>();
   let after: string | null = null;
   for (let page = 0; page < 20; page++) {
@@ -46,6 +50,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: {
           test: boolean;
+          createdAt: string;
           cancelledAt: string | null;
           currentTotalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
           customerJourneySummary: { firstVisit: Visit | null; lastVisit: Visit | null } | null;
@@ -54,7 +59,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
     } = await shopifyGql(
       store,
       `query($q: String!, $after: String) { orders(first: 50, after: $after, query: $q) { pageInfo { hasNextPage endCursor } nodes {
-        test cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } }
+        test createdAt cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } }
         customerJourneySummary {
           firstVisit { source referrerUrl landingPage utmParameters { medium } }
           lastVisit { source referrerUrl landingPage utmParameters { medium } }
@@ -68,6 +73,13 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       out.orders++;
       out.revenue += amount;
       out.currency ??= o.currentTotalPriceSet.shopMoney.currencyCode;
+      const age = now - Date.parse(o.createdAt);
+      const bucket = age < 7 * 864e5 ? out.week : age < 14 * 864e5 ? out.weekBefore : null;
+      if (bucket) {
+        bucket.orders++;
+        bucket.revenue += amount;
+        if (amount === 0) bucket.free++;
+      }
       const j = o.customerJourneySummary;
       // Credited to Google search when the visit that led to the order (or the first one) came from it.
       const v = fromGoogleSearch(j?.lastVisit ?? null) ? j!.lastVisit : fromGoogleSearch(j?.firstVisit ?? null) ? j!.firstVisit : null;
