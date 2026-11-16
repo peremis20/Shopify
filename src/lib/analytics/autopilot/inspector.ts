@@ -175,7 +175,7 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
       /search key|serper/i.test(d ?? "")
         ? "Add a Serper search key in Platform keys, so journalists and paid placements can be searched."
         : /second AI/i.test(d ?? "")
-          ? "Add a key for a second AI service (Claude and Groq) in Platform keys, so pitches can be checked before the owner sees them."
+          ? "Add a key for a second AI from a different provider in Platform keys, so pitches can be checked before the owner sees them."
           : /AI key/i.test(d ?? "")
             ? "Add an AI key in Platform keys, so pitches can be written."
             : /limit/i.test(d ?? "")
@@ -203,7 +203,7 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
       /AI key/i.test(d ?? "")
         ? "Add an AI key in Platform keys. The measured speed and app numbers still show meanwhile."
         : /second AI/i.test(d ?? "")
-          ? "Add a key for a second AI service (Claude and Groq) in Platform keys, so the conversion review can be checked. It tries again within a day."
+          ? "Add a key for a second AI from a different provider in Platform keys, so the conversion review can be checked. It tries again within a day."
           : /monthly AI limit/i.test(d ?? "")
             ? "The site used its AI limit for the month. Raise the limit in Platform keys or wait for next month; last week's fixes stay."
             : /out of time/i.test(d ?? "")

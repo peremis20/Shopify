@@ -72,6 +72,8 @@ export interface Prospect {
   draft?: OutreachDraft;
   /** When the Outreach Drafter last tried and couldn't write a safe email: it moves on to other sites for a week. */
   draftTriedAt?: string;
+  /** A page that sells placements, kept only because the owner marked it won: paid, never counted as a backlink. */
+  paid?: boolean;
   /** For a won link: whether the link to this site was really found on their page, and when it was checked. */
   linkCheck?: { at: string; found: boolean };
 }
@@ -109,10 +111,24 @@ export const isPaidPlacement = (url: string, title = "", snippet = "") => PAID_P
 /** Whether a find may go on the backlink list at all: never a page that sells placements. */
 export const keepAsProspect = (p: Pick<Prospect, "url" | "title" | "snippet">) => !isPaidPlacement(p.url, p.title, p.snippet);
 
+/**
+ * A list with the pages that sell placements taken off. One the owner already marked won stays (it is their record),
+ * marked "paid, not counted", so it never counts toward links won or site strength.
+ */
+export function withoutPaid(list: ProspectList): ProspectList {
+  const prospects: Prospect[] = [];
+  for (const p of list.prospects) {
+    if (keepAsProspect(p)) prospects.push(p);
+    else if (p.status === "won") prospects.push({ ...p, paid: true });
+  }
+  return { ...list, prospects };
+}
+
 export async function readProspects(accountId: string): Promise<ProspectList | null> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
-  return row?.value ? (JSON.parse(row.value) as ProspectList) : null;
+  // Pages that sell placements already on an older list are dropped (a won one kept as paid, not counted).
+  return row?.value ? withoutPaid(JSON.parse(row.value) as ProspectList) : null;
 }
 
 async function save(accountId: string, list: ProspectList): Promise<void> {

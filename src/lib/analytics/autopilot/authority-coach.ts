@@ -155,7 +155,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   const ps = list?.prospects ?? [];
   const by = (k: string) => ps.filter((p) => p.kind === k);
   lines.push(
-    `Backlink list: ${ps.length} sites. Not contacted yet: ${ps.filter((p) => p.status === "new").length}. Emailed: ${ps.filter((p) => p.status === "contacted").length}. Links won: ${ps.filter((p) => p.status === "won").length}. Skipped: ${ps.filter((p) => p.status === "skip").length}.`
+    `Backlink list: ${ps.length} sites. Not contacted yet: ${ps.filter((p) => p.status === "new").length}. Emailed: ${ps.filter((p) => p.status === "contacted").length}. Links won: ${ps.filter((p) => (p.status === "won" && !p.paid)).length}. Skipped: ${ps.filter((p) => p.status === "skip").length}.`
   );
   lines.push(
     `By kind: mentions ${by("mention").length}, resource pages ${by("resource").length}, guest articles ${by("guest").length}, podcasts ${by("podcast").length}, expert roundups ${by("roundup").length}, broken links ${by("broken").length}, competitor sources ${by("competitor").length}.`

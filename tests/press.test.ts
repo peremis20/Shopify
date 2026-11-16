@@ -20,6 +20,16 @@ import {
   publishedOf,
   requestFrom,
   statedPrice,
+  absoluteDate,
+  addItem,
+  autoDraftable,
+  mergeItem,
+  outletEmailOk,
+  patchItem,
+  releaseDraftSlot,
+  setOwnerFields,
+  takeDraftSlot,
+  type Sql,
 } from "../src/lib/analytics/autopilot/press";
 import { keepAsProspect } from "../src/lib/analytics/autopilot/backlinks";
 import { runWeekly, type WeeklyDeps } from "../src/lib/analytics/autopilot/weekly-run";
@@ -168,4 +178,116 @@ test("press: weekly runs save a provisional marker first and a real one on every
   // A marker that can't be saved never escapes.
   const noDb = make({ mark: async () => Promise.reject(new Error("db down")) });
   assert.equal(await runWeekly(noDb.d), "3 new journalists");
+});
+
+// ---------- review fixes ----------
+
+/** A stand in for the database that records each statement and answers with the given rows. */
+const recorder = (answer: (text: string) => Record<string, string | null>[] = () => []) => {
+  const calls: { text: string; values: unknown[] }[] = [];
+  const q: Sql = async (strings, ...values) => {
+    const text = strings.join("$").replace(/\s+/g, " ");
+    calls.push({ text, values });
+    return answer(text);
+  };
+  return { q, calls };
+};
+
+test("press: a draft slot is taken in one conditional statement and given back when the draft fails", async () => {
+  const ok = recorder(() => [{ account_id: "1" }]);
+  const stamp = await takeDraftSlot("1", ok.q);
+  assert.ok(stamp);
+  assert.equal(ok.calls.length, 1); // one statement: no read, then write
+  const t = ok.calls[0].text;
+  assert.match(t, /INSERT INTO insights_press_drafts/);
+  assert.match(t, /ON CONFLICT \(account_id\) DO UPDATE/);
+  assert.match(t, /WHERE \(SELECT count\(\*\) FROM unnest\(insights_press_drafts\.drafts\).*< \$ AND \(SELECT count\(\*\) FROM unnest\(insights_press_drafts\.attempts\).*< \$ RETURNING/);
+  assert.ok(ok.calls[0].values.includes(PITCH_WEEKLY_CAP) && ok.calls[0].values.includes(ATTEMPT_DAILY_CAP));
+  // At the cap the statement returns nothing: no slot.
+  const full = recorder(() => []);
+  assert.equal(await takeDraftSlot("1", full.q), null);
+  // Giving it back removes exactly that stamp from the week's drafts (the attempt still counts).
+  const back = recorder();
+  await releaseDraftSlot("1", stamp!, back.q);
+  assert.match(back.calls[0].text, /SET drafts = array_remove\(drafts, \$::timestamptz\)/);
+  assert.ok(back.calls[0].values.includes(stamp));
+  assert.ok(!/attempts/.test(back.calls[0].text));
+});
+
+test("press: the owner's status and dismissals are never overwritten by the agents", async () => {
+  // The owner's fields win when shown, and stored agent data can't carry them.
+  const j = mergeItem<{ status: string; name: string; pitch?: unknown }>({ name: "Dana Whitfield", status: "new" }, { status: "pitched", statusAt: "2026-11-15" });
+  assert.equal(j.status, "pitched");
+  assert.equal(mergeItem<{ status: string }>({ name: "x" }, null).status, "new");
+  assert.equal(mergeItem<{ name: string }>({ name: "x" }, { name: "evil" }).name, "x"); // only owner fields come from the owner
+  // A new find never replaces a stored row, and never writes the owner's column.
+  const add = recorder();
+  await addItem("1", "journalist", "abc", { name: "Dana Whitfield", status: "new", dismissed: false }, add.q);
+  assert.match(add.calls[0].text, /ON CONFLICT \(account_id, kind, item_id\) DO NOTHING/);
+  assert.ok(!/owner/.test(add.calls[0].text));
+  const stored = JSON.parse(String(add.calls[0].values.find((v) => typeof v === "string" && v.startsWith("{"))));
+  assert.equal(stored.status, undefined);
+  assert.equal(stored.dismissed, undefined);
+  // An agent's update merges into the row in one statement, only into data, and only when no pitch landed first.
+  const patch = recorder(() => [{ item_id: "abc" }]);
+  assert.equal(await patchItem("1", "journalist", "abc", { pitch: { subject: "s" }, status: "new" }, "pitch", patch.q), true);
+  assert.match(patch.calls[0].text, /SET data = data \|\| \$::jsonb/);
+  assert.match(patch.calls[0].text, /data -> \$::text IS NULL/);
+  assert.ok(!/owner/.test(patch.calls[0].text));
+  assert.ok(!String(patch.calls[0].values[0]).includes("status"));
+  const lost = recorder(() => []);
+  assert.equal(await patchItem("1", "journalist", "abc", { pitch: {} }, "pitch", lost.q), false);
+  // The owner's change merges into the owner column only, and only owner fields.
+  const own = recorder();
+  await setOwnerFields("1", "journalist", "abc", { status: "covered", pitch: "x" }, own.q);
+  assert.match(own.calls[0].text, /SET owner = owner \|\| \$::jsonb/);
+  assert.deepEqual(Object.keys(JSON.parse(String(own.calls[0].values[0]))), ["status"]);
+});
+
+test("press: the outlet's published email must be on the outlet's own domain, never another customer's", () => {
+  const isOther = (d: string) => d === "othercustomer.com";
+  assert.equal(outletEmailOk("tips@dailyhealth.example", "dailyhealth.example", isOther), true);
+  assert.equal(outletEmailOk("news@mail.dailyhealth.example", "www.dailyhealth.example", isOther), true);
+  assert.equal(outletEmailOk("someone@gmail.com", "dailyhealth.example", isOther), false);
+  assert.equal(outletEmailOk("hello@othercustomer.com", "othercustomer.com", isOther), false);
+  assert.equal(outletEmailOk("x@dailyhealth.example.evil.net", "dailyhealth.example", isOther), false);
+  assert.equal(outletEmailOk(null, "dailyhealth.example", isOther), false);
+  // An email elsewhere on the page (a newsroom footer) is not the author's.
+  const page = `<p class="byline">By Dana Whitfield</p><footer><a href="mailto:newsroom@dailyhealth.example">Tips</a></footer>`;
+  assert.equal(emailNearByline(page, "Dana Whitfield"), null);
+  assert.equal(emailNearByline(`<a rel="author" href="mailto:dana@dailyhealth.example">Dana</a>`, "Dana Whitfield"), "dana@dailyhealth.example");
+});
+
+test("press: prices need placement words next to them; subscription prices are dropped", () => {
+  assert.equal(statedPrice("Subscribe for $9 per month to read every issue."), null);
+  assert.equal(statedPrice("Premium membership $49 a year. Advertise with us."), null);
+  assert.equal(statedPrice("Our pricing starts from $99."), null);
+  assert.equal(statedPrice("Newsletter ads: $300 per issue."), "$300 per issue");
+  assert.equal(statedPrice("Sponsored placement in the show notes, $150."), "$150");
+});
+
+test("press: dates are absolute or left out, never relative", () => {
+  const now = Date.parse("2026-11-16T12:00:00Z");
+  assert.equal(absoluteDate("3 days ago", now), "2026-11-13");
+  assert.equal(absoluteDate("2 weeks ago", now), "2026-11-02");
+  assert.equal(absoluteDate("1 hour ago", now), "2026-11-16");
+  assert.equal(absoluteDate("a month ago", now), null);
+  assert.equal(absoluteDate("Nov 2, 2026", now), "2026-11-02");
+  assert.equal(absoluteDate("Nov 2", now), null);
+  assert.equal(absoluteDate(null, now), null);
+  // A journalist found without the page's own date gets the search's date as a day.
+  const j = journalistFrom(news({ date: "5 days ago" }), `<p class="byline">By Dana Whitfield</p>`, "t", "shopco.com", nobody)!;
+  assert.match(j.date ?? "", /^\d{4}-\d{2}-\d{2}$/);
+  const k = journalistFrom(news({ date: "3 months ago" }), `<p class="byline">By Dana Whitfield</p>`, "t", "shopco.com", nobody)!;
+  assert.equal(k.date, null);
+});
+
+test("press: a temporary note is retried next week; only a permanent one stops automatic drafts", () => {
+  const now = Date.parse("2026-11-16T12:00:00Z");
+  const day = (n: number) => new Date(now - n * 864e5).toISOString();
+  assert.equal(autoDraftable({ status: "new" }, now), true);
+  assert.equal(autoDraftable({ status: "new", pitchNote: "No second AI", pitchNoteKind: "temporary", pitchNoteAt: day(2) }, now), false);
+  assert.equal(autoDraftable({ status: "new", pitchNote: "No second AI", pitchNoteKind: "temporary", pitchNoteAt: day(8) }, now), true);
+  assert.equal(autoDraftable({ status: "new", pitchNote: "Turned down", pitchNoteKind: "permanent", pitchNoteAt: day(30) }, now), false);
+  assert.equal(autoDraftable({ status: "pitched" }, now), false);
 });

@@ -80,7 +80,7 @@ export function Backlinks() {
     .filter((p) => (view === "open" ? p.status === "new" : p.status === view))
     .sort((a, b) => (view === "open" ? Number(Boolean(b.draft)) - Number(Boolean(a.draft)) : 0));
   const ready = all.filter((p) => p.status === "new" && p.draft).length;
-  const won = all.filter((p) => p.status === "won").length;
+  const won = all.filter((p) => (p.status === "won" && !p.paid)).length;
 
   return (
     <div>
@@ -211,6 +211,7 @@ function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: 
           </span>
         )}
         {p.status === "won" && !p.linkCheck && <span className="text-xs text-dash-muted">Checking the link soon</span>}
+        {p.paid && <span className="rounded-full bg-dash-bg px-2 py-0.5 text-xs text-dash-muted" title="A page that sells placements: a paid link must be rel=sponsored and never counts as a backlink">Paid, not counted</span>}
         <span className="text-xs tabular-nums text-dash-muted" title="Site strength (Open PageRank)">{p.authority === null ? "not scored" : `${p.authority.toFixed(1)} / 10`}</span>
       </div>
       <p className="mt-1 whitespace-normal break-words text-xs text-dash-muted">{KIND[p.kind].hint} {p.snippet}</p>

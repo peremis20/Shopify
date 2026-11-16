@@ -165,7 +165,7 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   const prospects = await readProspects(accountId).catch(() => null);
   if (prospects) {
     const ps = prospects.prospects;
-    lines.push(`Backlinks: ${ps.filter((p) => p.status === "won").length} won, ${ps.filter((p) => p.status === "contacted").length} emailed, ${ps.filter((p) => p.status === "new").length} not contacted yet.`);
+    lines.push(`Backlinks: ${ps.filter((p) => (p.status === "won" && !p.paid)).length} won, ${ps.filter((p) => p.status === "contacted").length} emailed, ${ps.filter((p) => p.status === "new").length} not contacted yet.`);
     // Sites with an email already written are left out: the Drafter has nothing more to do for them.
     const open = ps.filter((p) => p.status === "new" && !p.draft).sort((a, b) => (b.authority ?? 0) - (a.authority ?? 0)).slice(0, 8);
     if (open.length)

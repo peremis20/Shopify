@@ -69,11 +69,11 @@ export function scoreChanges(stats: FieldStats[]): AgentScore[] {
   });
 }
 
-export function scoreProspects(prospects: { kind: string; status: string }[]): AgentScore[] {
+export function scoreProspects(prospects: { kind: string; status: string; paid?: boolean }[]): AgentScore[] {
   return PROSPECT_AGENTS.map(({ agent, kinds }) => {
     const mine = prospects.filter((p) => kinds.includes(p.kind));
     const contacted = mine.filter((p) => p.status === "contacted" || p.status === "won").length;
-    const won = mine.filter((p) => p.status === "won").length;
+    const won = mine.filter((p) => (p.status === "won" && !p.paid)).length;
     return {
       agent,
       did: `${mine.length} backlink ${mine.length === 1 ? "site" : "sites"} found`,

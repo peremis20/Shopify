@@ -1512,9 +1512,9 @@ export async function writePressPitch(
 ): Promise<{ subject: string; body: string }> {
   const out = await askJson<{ subject: string; body: string }>(
     ai,
-    `Write a short first email from the owner of ${p.brand ?? p.site} to ${p.name}, who writes for ${p.outlet}.
-Their recent article (its title, as published):
-${asData(p.articleTitle, 300)}
+    `Write a short first email from the owner of ${p.brand ?? p.site} to ${p.name}, a journalist.
+The outlet they write for and their recent article's title, as published:
+${asData(`Outlet: ${p.outlet}\nArticle: ${p.articleTitle}`, 400)}
 The topic they cover that fits this business: ${p.topic}
 What the business offers (its own words): ${p.offer}
 ${p.expertise ? `What it knows well (its own words): ${p.expertise}` : ""}

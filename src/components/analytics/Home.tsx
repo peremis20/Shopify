@@ -160,7 +160,7 @@ export function Home({ data, loading, onGo }: {
     { n: openProspects.length, label: openProspects.length === 1 ? "site to ask for a backlink" : "sites to ask for a backlink" },
   ];
   const repaired = problems.filter((x) => x.who === "repaired");
-  const wonLinks = prospects?.prospects.filter((p) => p.status === "won").length ?? 0;
+  const wonLinks = prospects?.prospects.filter((p) => (p.status === "won" && !p.paid)).length ?? 0;
 
   // App and service problems (keys, AI) are amber; problems with the site itself are red.
   const isApp = (w: { page: SimplePage; app?: boolean }) => w.page === "settings" || Boolean(w.app);

@@ -9,6 +9,9 @@ import { isSabbath } from "./sabbath";
 import { isStore, plainWords } from "./store-audit";
 import { accountsDueWeekly, readRunNote, runWeekly, saveRunMarker, type RunOutcome } from "./weekly-run";
 import type { NewsResult, SerpResult } from "./serp";
+import type { Row } from "../db";
+import { byDeadline } from "./store-audit";
+import { asData } from "./writer";
 
 /**
  * The Outreach agents: getting the owner's business into the media, the honest way.
@@ -58,7 +61,10 @@ export interface Journalist {
   statusAt?: string;
   pitch?: Pitch;
   /** Why the last pitch couldn't be written, in plain words. */
-  pitchNote?: string;
+  pitchNote?: string | null;
+  /** A permanent note (the checks turned this pitch down) stops automatic drafts; a temporary one is retried next week. */
+  pitchNoteKind?: "permanent" | "temporary" | null;
+  pitchNoteAt?: string | null;
   foundAt: string;
 }
 
@@ -130,14 +136,53 @@ export function contactPageOf(html: string, articleUrl: string, author: string):
   return null;
 }
 
-/** An email the article prints next to the author's name (within the byline area), or null. Never a guessed one. */
+/**
+ * An email the article prints for its author: a mailto link inside the byline element, or a mailto link marked
+ * rel="author". Anywhere else on the page (a newsroom footer, a tips line) it isn't theirs: null. Never a guessed one.
+ */
 export function emailNearByline(html: string, author: string): string | null {
-  const text = html.replace(/\s+/g, " ");
-  const at = text.toLowerCase().indexOf(author.toLowerCase());
-  if (at < 0) return null;
-  const near = text.slice(at, at + 600);
-  const m = /mailto:([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i.exec(near);
-  return m ? m[1].toLowerCase() : null;
+  const blocks: string[] = [];
+  for (const m of html.matchAll(/<(p|div|span|section|address|li|header)\b[^>]*class=["'][^"']*\b(?:byline|author|article-author|post-author|c-byline)[\w-]*\b[^"']*["'][^>]*>([\s\S]{0,1200}?)<\/\1>/gi)) blocks.push(m[2]);
+  for (const m of html.matchAll(/<a\b[^>]*\brel=["'][^"']*\bauthor\b[^"']*["'][^>]*>/gi)) blocks.push(m[0]);
+  for (const b of blocks) {
+    if (!b.toLowerCase().includes(author.toLowerCase()) && !/\brel=["'][^"']*\bauthor\b/i.test(b)) continue;
+    const m = /mailto:([a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,})/i.exec(b);
+    if (m) return m[1].toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * An address may be shown as "the outlet's published email" only when it is on the outlet's own domain (or a
+ * subdomain), never on another DashPatrol customer's domain.
+ */
+export function outletEmailOk(email: string | null, outletDomain: string, isOther: (d: string) => boolean): boolean {
+  if (!email) return false;
+  const host = email.split("@")[1]?.toLowerCase() ?? "";
+  const d = bare(outletDomain);
+  return Boolean(host) && (host === d || host.endsWith(`.${d}`)) && !isOther(host);
+}
+
+const MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ");
+
+/**
+ * The search's date turned into an absolute day when that is exact enough: "3 days ago" or "2 weeks ago" from now, a
+ * written date with its year as it is. Anything vaguer ("a month ago", no year) is left out, never stored as relative.
+ */
+export function absoluteDate(text: string | null, now = Date.now()): string | null {
+  if (!text) return null;
+  const t = text.trim().toLowerCase();
+  const rel = /^(\d+|an?|one)\s+(minute|hour|day|week)s?\s+ago$/.exec(t);
+  if (rel) {
+    const n = /^\d+$/.test(rel[1]) ? Number(rel[1]) : 1;
+    const ms = { minute: 6e4, hour: 36e5, day: 864e5, week: 7 * 864e5 }[rel[2] as "minute" | "hour" | "day" | "week"];
+    return new Date(now - n * ms).toISOString().slice(0, 10);
+  }
+  if (/ago|yesterday|today/.test(t)) return t === "yesterday" ? new Date(now - 864e5).toISOString().slice(0, 10) : t === "today" ? new Date(now).toISOString().slice(0, 10) : null;
+  const m = /^([a-z]{3})[a-z]*\.? (\d{1,2}),? (\d{4})$/.exec(t) ?? null;
+  if (m && MONTHS.includes(m[1])) return new Date(Date.UTC(Number(m[3]), MONTHS.indexOf(m[1]), Number(m[2]))).toISOString().slice(0, 10);
+  const iso = /^(\d{4}-\d{2}-\d{2})/.exec(t);
+  return iso ? iso[1] : null;
 }
 
 export const journalistId = (name: string, outletDomain: string) => crypto.createHash("sha1").update(`${name.toLowerCase()}|${outletDomain}`).digest("hex").slice(0, 16);
@@ -164,7 +209,8 @@ export function journalistFrom(n: NewsResult, html: string, topic: string, ourDo
     outletDomain: domain,
     articleTitle: (n.title || titleOnPage).slice(0, 200),
     articleUrl: n.link,
-    date: publishedOf(html) ?? n.date,
+    // Never a relative date: the page's own date, or the search's turned into a day, or none.
+    date: publishedOf(html) ?? absoluteDate(n.date),
     topic,
     contactPage: contactPageOf(html, n.link, name),
     email,
@@ -211,9 +257,10 @@ export function statedPrice(text: string): string | null {
   const t = text.replace(/\s+/g, " ");
   const m = /(?:(?:US)?\$|€|£|USD\s?|EUR\s?|GBP\s?)\s?\d{1,3}(?:[,.]\d{3})*(?:\.\d{2})?(?:\s?[kK])?(?:\s?(?:per|\/|a|an)\s?(?:issue|send|week|month|episode|post|placement|spot|article|newsletter|insertion|mention))?/.exec(t);
   if (!m) return null;
-  // Only an amount near words about the placement or its price: not a product price elsewhere on the page.
-  const around = t.slice(Math.max(0, m.index - 160), m.index + m[0].length + 160);
-  return /sponsor|advertis|placement|rate|pricing|price|cost|starts? at|from|package|ad\b|spot|issue|episode|media kit/i.test(around) ? m[0].trim() : null;
+  // Only an amount next to words about a placement: not a product or subscription price elsewhere on the page.
+  const around = t.slice(Math.max(0, m.index - 120), m.index + m[0].length + 120);
+  if (/subscri|membership|premium plan|per year for|annual plan|join for|members?\b/i.test(around)) return null;
+  return /\bsponsor(?:s|ship|ships|ed)?\b|\bplacements?\b|\bad (?:slot|spot|placement)s?\b|\brates?\b|per (?:issue|episode|send|insertion)|newsletter ads?\b|advertis/i.test(around) ? m[0].trim() : null;
 }
 
 export interface PaidOpportunity {
@@ -276,48 +323,150 @@ export function requestFrom(r: SerpResult, topic: string, ourDomain: string, isO
   return { url: r.link, title: r.title.slice(0, 200), snippet: r.snippet.slice(0, 400), platform, deadline: deadlineOf(text), topic, foundAt: new Date().toISOString() };
 }
 
-// ---------- storage ----------
+// ---------- storage: one row per item, the owner's fields apart ----------
 
-interface PressData {
-  updatedAt: string;
-  topics: string[];
-  journalists: Journalist[];
-  paid: PaidOpportunity[];
-}
-interface RequestData {
-  updatedAt: string;
-  /** Whether any public request source could be read this week. */
-  readable: boolean;
-  requests: MediaRequest[];
-}
-interface DraftLog {
-  drafts: string[];
-  attempts: string[];
+export type ItemKind = "journalist" | "request" | "paid";
+/** A tagged SQL runner (the database, or a stand in for tests). */
+export type Sql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[]>;
+
+/** Fields only the owner sets. The agents never write them, so an owner's change can't be overwritten. */
+export const OWNER_FIELDS = ["status", "statusAt", "dismissed"] as const;
+
+const withoutOwnerFields = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !(OWNER_FIELDS as readonly string[]).includes(k)));
+
+/** An item as shown: the agent's data, with the owner's fields on top (the owner always wins). */
+export function mergeItem<T>(data: Record<string, unknown>, owner: Record<string, unknown> | null): T {
+  const mine = Object.fromEntries(Object.entries(owner ?? {}).filter(([k]) => (OWNER_FIELDS as readonly string[]).includes(k)));
+  return { status: "new", ...withoutOwnerFields(data), ...mine } as T;
 }
 
-const pressKey = (a: string) => `press:${a}`;
-const requestKey = (a: string) => `media_requests:${a}`;
-const draftKey = (a: string) => `press_drafts:${a}`;
+let tablesReady: Promise<void> | null = null;
+function tables(): Promise<void> {
+  tablesReady ??= (async () => {
+    await ensureSchema();
+    await sql`CREATE TABLE IF NOT EXISTS insights_press_items (
+      account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      kind text NOT NULL,
+      item_id text NOT NULL,
+      data jsonb NOT NULL,
+      owner jsonb NOT NULL DEFAULT '{}'::jsonb,
+      found_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, kind, item_id)
+    )`;
+    await sql`CREATE TABLE IF NOT EXISTS insights_press_drafts (
+      account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      drafts timestamptz[] NOT NULL DEFAULT '{}',
+      attempts timestamptz[] NOT NULL DEFAULT '{}'
+    )`;
+  })().catch((e) => {
+    tablesReady = null;
+    throw e;
+  });
+  return tablesReady;
+}
+
+export const itemId = (key: string) => crypto.createHash("sha1").update(key).digest("hex").slice(0, 16);
+
+/** A new find. One already stored keeps its row as it is (the owner's fields, a pitch, an answer). */
+export async function addItem(accountId: string, kind: ItemKind, id: string, data: Record<string, unknown>, q: Sql = sql): Promise<void> {
+  await q`
+    INSERT INTO insights_press_items (account_id, kind, item_id, data) VALUES (${accountId}, ${kind}, ${id}, ${JSON.stringify(withoutOwnerFields(data))}::jsonb)
+    ON CONFLICT (account_id, kind, item_id) DO NOTHING`;
+}
+
+/**
+ * The agent's fields on one item, merged into the stored row in one statement (never the owner's fields). With
+ * `unlessSet`, only when that field isn't there yet: two drafts at once can't both land. True when it was written.
+ */
+export async function patchItem(accountId: string, kind: ItemKind, id: string, patch: Record<string, unknown>, unlessSet: string | null = null, q: Sql = sql): Promise<boolean> {
+  const rows = await q`
+    UPDATE insights_press_items SET data = data || ${JSON.stringify(withoutOwnerFields(patch))}::jsonb
+    WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id} AND (${unlessSet}::text IS NULL OR data -> ${unlessSet}::text IS NULL)
+    RETURNING item_id`;
+  return rows.length > 0;
+}
+
+/** The owner's fields on one item, merged in one statement. */
+export async function setOwnerFields(accountId: string, kind: ItemKind, id: string, patch: Record<string, unknown>, q: Sql = sql): Promise<void> {
+  const mine = Object.fromEntries(Object.entries(patch).filter(([k]) => (OWNER_FIELDS as readonly string[]).includes(k)));
+  await q`
+    UPDATE insights_press_items SET owner = owner || ${JSON.stringify(mine)}::jsonb
+    WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id}`;
+}
+
+const jsonOf = (v: unknown): Record<string, unknown> => (typeof v === "string" ? (JSON.parse(v) as Record<string, unknown>) : ((v ?? {}) as Record<string, unknown>));
+
+export async function readItems<T>(accountId: string, kind: ItemKind): Promise<T[]> {
+  await tables();
+  const rows = await sql`SELECT data, owner FROM insights_press_items WHERE account_id = ${accountId} AND kind = ${kind} ORDER BY found_at DESC`;
+  return rows.map((r) => mergeItem<T>(jsonOf(r.data), jsonOf(r.owner)));
+}
+
+async function readItem<T>(accountId: string, kind: ItemKind, id: string): Promise<T | null> {
+  await tables();
+  const [r] = await sql`SELECT data, owner FROM insights_press_items WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id}`;
+  return r ? mergeItem<T>(jsonOf(r.data), jsonOf(r.owner)) : null;
+}
+
+// ---------- draft slots: taken in one statement, given back when a draft fails ----------
+
+/**
+ * One of the week's five drafts and one of the day's ten attempts, taken together in a single statement that refuses
+ * when either cap is reached, so two drafts at once can never pass the cap. The stamp to give back, or null.
+ */
+export async function takeDraftSlot(accountId: string, q: Sql = sql): Promise<string | null> {
+  const stamp = new Date().toISOString();
+  const rows = await q`
+    INSERT INTO insights_press_drafts (account_id, drafts, attempts) VALUES (${accountId}, ARRAY[${stamp}::timestamptz], ARRAY[${stamp}::timestamptz])
+    ON CONFLICT (account_id) DO UPDATE SET
+      drafts = array_append(ARRAY(SELECT t FROM unnest(insights_press_drafts.drafts) t WHERE t > now() - interval '7 days'), ${stamp}::timestamptz),
+      attempts = array_append(ARRAY(SELECT t FROM unnest(insights_press_drafts.attempts) t WHERE t > now() - interval '1 day'), ${stamp}::timestamptz)
+    WHERE (SELECT count(*) FROM unnest(insights_press_drafts.drafts) t WHERE t > now() - interval '7 days') < ${PITCH_WEEKLY_CAP}
+      AND (SELECT count(*) FROM unnest(insights_press_drafts.attempts) t WHERE t > now() - interval '1 day') < ${ATTEMPT_DAILY_CAP}
+    RETURNING account_id`;
+  return rows.length ? stamp : null;
+}
+
+/** A draft that didn't pass gives its week slot back; the attempt still counts for the day. */
+export async function releaseDraftSlot(accountId: string, stamp: string, q: Sql = sql): Promise<void> {
+  await q`UPDATE insights_press_drafts SET drafts = array_remove(drafts, ${stamp}::timestamptz) WHERE account_id = ${accountId}`;
+}
+
+async function slotCounts(accountId: string): Promise<{ drafts: number; attempts: number }> {
+  await tables();
+  const [r] = await sql`
+    SELECT (SELECT count(*) FROM unnest(drafts) t WHERE t > now() - interval '7 days') AS d,
+           (SELECT count(*) FROM unnest(attempts) t WHERE t > now() - interval '1 day') AS a
+    FROM insights_press_drafts WHERE account_id = ${accountId}`;
+  return { drafts: Number(r?.d ?? 0), attempts: Number(r?.a ?? 0) };
+}
+
+const capMessage = async (accountId: string) =>
+  (await slotCounts(accountId)).drafts >= PITCH_WEEKLY_CAP
+    ? `${PITCH_WEEKLY_CAP} drafts were written in the last seven days, the most allowed. More next week.`
+    : `${ATTEMPT_DAILY_CAP} drafts were tried today, the most allowed. Try again tomorrow.`;
+
 const PRESS_RUN = "press_run";
 const REQUEST_RUN = "media_requests_run";
+const pressMetaKey = (a: string) => `press_meta:${a}`;
+const requestMetaKey = (a: string) => `media_requests_meta:${a}`;
 
-async function readJson<T>(key: string): Promise<T | null> {
-  await ensureSchema();
-  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`;
+async function readMeta<T>(key: string): Promise<T | null> {
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key}`.catch(() => [] as Row[]);
   try {
     return row?.value ? (JSON.parse(String(row.value)) as T) : null;
   } catch {
     return null;
   }
 }
-async function writeJson(key: string, v: unknown): Promise<void> {
+async function writeMeta(key: string, v: unknown): Promise<void> {
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${key}, ${JSON.stringify(v)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-export const accountsDueForPress = (limit: number) => ensureSchema().then(() => accountsDueWeekly(PRESS_RUN, limit));
-export const accountsDueForMediaRequests = (limit: number) => ensureSchema().then(() => accountsDueWeekly(REQUEST_RUN, limit));
+export const accountsDueForPress = (limit: number) => tables().then(() => accountsDueWeekly(PRESS_RUN, limit));
+export const accountsDueForMediaRequests = (limit: number) => tables().then(() => accountsDueWeekly(REQUEST_RUN, limit));
 
 // ---------- the site's context ----------
 
@@ -373,31 +522,14 @@ async function readPage(url: string, timeoutMs: number): Promise<string> {
 // ---------- pitches ----------
 
 type DraftResult = { ok: true } | { ok: false; status: number; error: string };
-
-/** Takes one AI attempt for today, if there's room. */
-async function takeAttempt(accountId: string): Promise<boolean> {
-  const log = (await readJson<DraftLog>(draftKey(accountId))) ?? { drafts: [], attempts: [] };
-  if (!attemptRoom(log.attempts)) return false;
-  const now = Date.now();
-  log.attempts = [...log.attempts.filter((t) => now - Date.parse(t) < 864e5), new Date().toISOString()];
-  await writeJson(draftKey(accountId), log);
-  return true;
-}
-async function draftsLeft(accountId: string): Promise<number> {
-  return draftRoom(((await readJson<DraftLog>(draftKey(accountId))) ?? { drafts: [], attempts: [] }).drafts);
-}
-async function countDraft(accountId: string): Promise<void> {
-  const log = (await readJson<DraftLog>(draftKey(accountId))) ?? { drafts: [], attempts: [] };
-  const now = Date.now();
-  log.drafts = [...log.drafts.filter((t) => now - Date.parse(t) < 7 * 864e5), new Date().toISOString()];
-  await writeJson(draftKey(accountId), log);
-}
+type Made = { pitch: Pitch } | { note: string; permanent: boolean };
 
 /**
  * Writes and checks a pitch: the claim guard on every sentence, then a second AI from another service against the
- * business's own offer. Without a second AI no pitch is written.
+ * business's own offer. Without a second AI no pitch is written. Public text (the outlet, the article title) reaches
+ * both AIs only inside marked data blocks.
  */
-async function makePitch(ctx: Context, j: Journalist): Promise<{ pitch: Pitch } | { note: string }> {
+async function makePitch(ctx: Context, j: Journalist): Promise<Made> {
   const [{ aiProvider, readPlatformSettings }, { writePressPitch, secondCheck }, { cleanPost }, { readProfile, siteBrief }] = await Promise.all([
     import("./settings"),
     import("./writer"),
@@ -405,7 +537,7 @@ async function makePitch(ctx: Context, j: Journalist): Promise<{ pitch: Pitch } 
     import("../profile"),
   ]);
   const base = aiProvider(await readPlatformSettings());
-  if (!base) return { note: "An AI key is needed to write pitches." };
+  if (!base) return { note: "An AI key is needed to write pitches. It tries again next week.", permanent: false };
   const ai = { ...base, site: siteBrief(await readProfile(ctx.accountId)) };
   const offerKind = ctx.store ? "sample" : "quote";
   const raw = await writePressPitch(ai, {
@@ -424,16 +556,16 @@ async function makePitch(ctx: Context, j: Journalist): Promise<{ pitch: Pitch } 
   const body = cleanPost(raw.body, keep, 900, ctx.health);
   const subject = cleanPost(raw.subject, keep, 120, ctx.health);
   const problem = pitchProblem(`${subject.text}\n${body.text}`, ctx.health) ?? body.problem ?? subject.problem;
-  if (problem || !body.text || !subject.text) return { note: problem ?? "The checks removed too much of it." };
+  if (problem || !body.text || !subject.text) return { note: problem ?? "The checks removed too much of it.", permanent: true };
   const text = composePitch(j.name, body.text, ctx.brand, ctx.domain);
   const verdict = await secondCheck(ai, {
     what: `a first email from a business owner to a journalist, offering ${offerKind === "sample" ? "a product sample to review" : "an expert quote"}`,
-    source: `What the business offers: ${ctx.offer}\n${ctx.expertise ? `What it knows well: ${ctx.expertise}\n` : ""}The journalist's article title: ${j.articleTitle}`,
+    source: `What the business offers: ${ctx.offer}\n${ctx.expertise ? `What it knows well: ${ctx.expertise}\n` : ""}The journalist's outlet and article title:\n${asData(`${j.outlet}: ${j.articleTitle}`, 400)}`,
     text: `${subject.text}\n\n${text}`,
     health: ctx.health,
   });
-  if (!verdict) return { note: "No second AI from another service was free to check it, so no pitch was written. It tries again next week." };
-  if (!verdict.ok) return { note: `The second AI turned it down: ${plainWords(verdict.why || "no reason given")}` };
+  if (!verdict) return { note: "No second AI from another service was free to check it, so no pitch was written. It tries again next week.", permanent: false };
+  if (!verdict.ok) return { note: `The second AI turned it down: ${plainWords(verdict.why || "no reason given")}`, permanent: true };
   return { pitch: { subject: plainWords(subject.text), body: text, offer: offerKind, at: new Date().toISOString() } };
 }
 
@@ -449,57 +581,85 @@ export function pitchProblem(text: string, health: boolean): string | null {
   return null;
 }
 
-/** The owner's Draft pitch click (and the weekly run): within five drafts a week and ten attempts a day. */
-export async function draftPitch(accountId: string, id: string): Promise<DraftResult> {
-  const data = await readJson<PressData>(pressKey(accountId));
-  const j = data?.journalists.find((x) => x.id === id && x.status !== "dismissed");
-  if (!data || !j) return { ok: false, status: 404, error: "That journalist isn't on the list anymore." };
+/**
+ * Whether the weekly run may draft this journalist's pitch by itself: a new one with no pitch, and no note, or only a
+ * temporary note from a week or more ago (no second AI then, a limit, a time out). A permanent note (the checks turned
+ * it down) leaves it to the owner.
+ */
+export function autoDraftable(j: Pick<Journalist, "status" | "pitch" | "pitchNote" | "pitchNoteKind" | "pitchNoteAt">, now = Date.now()): boolean {
+  if (j.status !== "new" || j.pitch) return false;
+  if (!j.pitchNote) return true;
+  if (j.pitchNoteKind === "permanent") return false;
+  return !j.pitchNoteAt || now - Date.parse(j.pitchNoteAt) >= 7 * 864e5;
+}
+
+const note = (text: string, permanent: boolean) => ({ pitchNote: text, pitchNoteKind: permanent ? "permanent" : "temporary", pitchNoteAt: new Date().toISOString() });
+
+/**
+ * The owner's Draft pitch click (and the weekly run, with its deadline): one slot of the week's five and the day's ten
+ * attempts, taken atomically and given back when no pitch is saved.
+ */
+export async function draftPitch(accountId: string, id: string, deadline: number | null = null): Promise<DraftResult> {
+  const j = await readItem<Journalist>(accountId, "journalist", id);
+  if (!j || j.status === "dismissed") return { ok: false, status: 404, error: "That journalist isn't on the list anymore." };
   if (j.pitch) return { ok: true };
-  if (!(await draftsLeft(accountId))) return { ok: false, status: 429, error: `${PITCH_WEEKLY_CAP} drafts were written in the last seven days, the most allowed. More next week.` };
-  if (!(await takeAttempt(accountId))) return { ok: false, status: 429, error: `${ATTEMPT_DAILY_CAP} drafts were tried today, the most allowed. Try again tomorrow.` };
   const ctx = await context(accountId);
   if ("skip" in ctx) return { ok: false, status: 409, error: "Add your website address first." };
-  if (!j.email && !j.contactPage) {
-    // Only a printed address: the outlet's published email, labeled as the outlet's.
-    const { findContactEmail } = await import("./contact-finder");
-    const outletEmail = await findContactEmail(j.articleUrl, j.outletDomain).catch(() => null);
-    if (outletEmail) Object.assign(j, { email: outletEmail, emailIsOutlets: true });
+  const stamp = await takeDraftSlot(accountId);
+  if (!stamp) return { ok: false, status: 429, error: await capMessage(accountId) };
+  let saved = false;
+  try {
+    if (!j.email && !j.contactPage) {
+      // Only an address the outlet itself publishes, on its own domain, and never another customer's.
+      const [{ findContactEmail }, { otherClient }] = await Promise.all([import("./contact-finder"), import("./clients")]);
+      const isOther = await otherClient(ctx.domain);
+      const found = await findContactEmail(j.articleUrl, j.outletDomain).catch(() => null);
+      if (outletEmailOk(found, j.outletDomain, isOther)) await patchItem(accountId, "journalist", id, { email: found, emailIsOutlets: true }, "email");
+    }
+    const made = deadline === null ? await makePitch(ctx, j) : await byDeadline(makePitch(ctx, j), deadline);
+    if (!("pitch" in made)) {
+      await patchItem(accountId, "journalist", id, note(made.note, made.permanent));
+      return { ok: false, status: 422, error: made.note };
+    }
+    saved = await patchItem(accountId, "journalist", id, { pitch: made.pitch, pitchNote: null, pitchNoteKind: null, pitchNoteAt: null }, "pitch");
+    // Another draft of the same pitch landed first: that one stands.
+    return { ok: true };
+  } catch (e) {
+    const out = (e as Error).name === "OutOfTime" ? "It ran out of time and tries again next week." : (e as Error).name === "SpendingLimitReached" ? String((e as Error).message) : "Writing the pitch failed. It tries again next week.";
+    await patchItem(accountId, "journalist", id, note(out, false)).catch(() => undefined);
+    if ((e as Error).name === "OutOfTime" || (e as Error).name === "SpendingLimitReached") return { ok: false, status: 503, error: out };
+    throw e;
+  } finally {
+    if (!saved) await releaseDraftSlot(accountId, stamp).catch((e) => console.error(`press draft slot not given back: ${(e as Error).message}`));
   }
-  const made = await makePitch(ctx, j);
-  const fresh = (await readJson<PressData>(pressKey(accountId))) ?? data;
-  fresh.journalists = fresh.journalists.map((x) =>
-    x.id === id ? { ...x, email: j.email, emailIsOutlets: j.emailIsOutlets, ...("pitch" in made ? { pitch: made.pitch, pitchNote: undefined } : { pitchNote: made.note }) } : x,
-  );
-  await writeJson(pressKey(accountId), fresh);
-  if (!("pitch" in made)) return { ok: false, status: 422, error: made.note };
-  await countDraft(accountId);
-  return { ok: true };
 }
 
 export async function setJournalistStatus(accountId: string, id: string, status: JournalistStatus): Promise<void> {
   if (!["new", "pitched", "replied", "covered", "dismissed"].includes(status)) throw new Error("Pick a status.");
-  const data = await readJson<PressData>(pressKey(accountId));
-  if (!data) return;
-  data.journalists = data.journalists.map((j) => (j.id === id ? { ...j, status, statusAt: new Date().toISOString() } : j));
-  await writeJson(pressKey(accountId), data);
+  await tables();
+  await setOwnerFields(accountId, "journalist", id, { status, statusAt: new Date().toISOString() });
 }
 
 export async function dismissPaid(accountId: string, url: string): Promise<void> {
-  const data = await readJson<PressData>(pressKey(accountId));
-  if (!data) return;
-  data.paid = data.paid.map((p) => (p.url === url ? { ...p, dismissed: true } : p));
-  await writeJson(pressKey(accountId), data);
+  await tables();
+  await setOwnerFields(accountId, "paid", itemId(url), { dismissed: true });
+}
+
+export async function dismissRequest(accountId: string, url: string): Promise<void> {
+  await tables();
+  await setOwnerFields(accountId, "request", itemId(url), { dismissed: true });
 }
 
 // ---------- the weekly runs ----------
 
-/** Journalists found per run, article pages read per run, paid pages read per run. */
+/** Article pages read per run, paid pages read per run, journalists kept. */
 const ARTICLES_PER_RUN = 10;
 const PAID_PAGES_PER_RUN = 8;
 const MAX_JOURNALISTS = 60;
 
 /** The Journalists agent and paid opportunities, for one site. */
 async function pressWork(accountId: string, deadline: number): Promise<RunOutcome> {
+  await tables();
   const ctx = await context(accountId);
   if ("skip" in ctx) return { note: `Journalists skipped: ${ctx.skip}.`, skip: true };
   if (!ctx.topics.length) return { note: "Journalists skipped: the site has no searches or products of its own yet.", skip: true };
@@ -514,8 +674,9 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
   // Without the customer list other customers can't be told apart: nothing is saved this time.
   if (!(await clientListKnown())) return { note: "Journalists wait: the customer list couldn't be read.", retryInDays: 1, problem: "The customer list couldn't be read, so no journalists were saved this week." };
   const isOther = await otherClient(ctx.domain);
-  const old = (await readJson<PressData>(pressKey(accountId))) ?? { updatedAt: "", topics: [], journalists: [], paid: [] };
   const issues: string[] = [];
+  const oldJournalists = await readItems<Journalist>(accountId, "journalist");
+  const oldPaid = await readItems<PaidOpportunity>(accountId, "paid");
 
   // Journalists: recent articles on the site's topics, each read for its printed byline.
   const news: { n: NewsResult; topic: string }[] = [];
@@ -528,7 +689,7 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
     });
     for (const n of found) if (!news.some((x) => x.n.link === n.link)) news.push({ n, topic: t });
   }
-  const known = new Set(old.journalists.map((j) => j.articleUrl));
+  const known = new Set(oldJournalists.map((j) => j.articleUrl));
   const toRead = news.filter(({ n }) => !known.has(n.link) && !isOther(n.domain) && !NOT_PROSPECTS.test(bare(n.domain))).slice(0, ARTICLES_PER_RUN);
   const fresh: Journalist[] = [];
   for (let i = 0; i < toRead.length && deadline - Date.now() > 8_000; i += 4) {
@@ -536,14 +697,15 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
       toRead.slice(i, i + 4).map(async ({ n, topic }) => {
         const html = await readPage(n.link, 8_000);
         const j = html ? journalistFrom(n, html, topic, ctx.domain, isOther) : null;
-        if (j) fresh.push(j);
+        if (j && !fresh.some((x) => x.id === j.id)) fresh.push(j);
       }),
     );
   }
-  const byId = new Map(old.journalists.filter((j) => !isOther(j.outletDomain)).map((j) => [j.id, j]));
-  for (const j of fresh) if (!byId.has(j.id)) byId.set(j.id, j);
-  const order: Record<JournalistStatus, number> = { new: 0, pitched: 1, replied: 2, covered: 3, dismissed: 4 };
-  const journalists = [...byId.values()].sort((a, b) => order[a.status] - order[b.status] || b.foundAt.localeCompare(a.foundAt)).slice(0, MAX_JOURNALISTS);
+  for (const j of fresh) await addItem(accountId, "journalist", j.id, j as unknown as Record<string, unknown>);
+  // Only the oldest untouched finds go when the list is full: never one the owner marked or one with a pitch.
+  await sql`
+    DELETE FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist' AND owner = '{}'::jsonb AND data -> 'pitch' IS NULL
+      AND item_id IN (SELECT item_id FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist' ORDER BY found_at DESC OFFSET ${MAX_JOURNALISTS})`;
 
   // Paid opportunities: pages on the topic that say they sell placements, read to confirm and for a stated price.
   const paidQueries = ctx.topics.slice(0, 1).flatMap((t) => [
@@ -568,41 +730,52 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
       paidFound.set(r.link, { r, t });
     }
   }
-  const paidKnown = new Map(old.paid.filter((p) => !isOther(p.domain)).map((p) => [p.url, p]));
+  const paidKnown = new Set(oldPaid.map((p) => p.url));
   const paidNew = [...paidFound.values()].filter(({ r }) => !paidKnown.has(r.link)).slice(0, PAID_PAGES_PER_RUN);
+  let paidAdded = 0;
   await Promise.all(
     paidNew.map(async ({ r, t }) => {
       if (deadline - Date.now() < 6_000) return;
       const text = toText(await readPage(r.link, 8_000));
       // Only a page that itself says it sells placements is listed.
       if (!text || !isPaidPlacement("", "", text)) return;
-      paidKnown.set(r.link, { url: r.link, outlet: r.title.split(/\s[|–—-]\s/).pop()?.trim() || bare(r.domain), domain: bare(r.domain), type: paidType(`${r.title} ${r.snippet} ${text.slice(0, 3000)}`), title: r.title.slice(0, 160), price: statedPrice(text), topic: t, foundAt: new Date().toISOString() });
+      const item: PaidOpportunity = {
+        url: r.link,
+        outlet: r.title.split(/\s[|–—-]\s/).pop()?.trim() || bare(r.domain),
+        domain: bare(r.domain),
+        type: paidType(`${r.title} ${r.snippet} ${text.slice(0, 3000)}`),
+        title: r.title.slice(0, 160),
+        price: statedPrice(text),
+        topic: t,
+        foundAt: new Date().toISOString(),
+      };
+      await addItem(accountId, "paid", itemId(r.link), item as unknown as Record<string, unknown>);
+      paidAdded++;
     }),
   );
+  await writeMeta(pressMetaKey(accountId), { updatedAt: new Date().toISOString(), topics: ctx.topics });
 
-  const data: PressData = { updatedAt: new Date().toISOString(), topics: ctx.topics, journalists, paid: [...paidKnown.values()].slice(0, 30) };
-  await writeJson(pressKey(accountId), data);
-
-  // Pitches for the newest journalists, within the week's five drafts.
+  // Pitches for the newest journalists, within the week's five drafts and the run's deadline.
   let drafted = 0;
-  const notes: string[] = [];
-  for (const j of journalists.filter((x) => x.status === "new" && !x.pitch && !x.pitchNote)) {
-    if (deadline - Date.now() < 30_000 || !(await draftsLeft(accountId))) break;
-    const r = await draftPitch(accountId, j.id).catch((e) => ({ ok: false as const, status: 500, error: (e as Error).message }));
+  for (const j of (await readItems<Journalist>(accountId, "journalist")).filter((x) => autoDraftable(x))) {
+    if (deadline - Date.now() < 30_000) break;
+    const r = await draftPitch(accountId, j.id, deadline).catch((e) => ({ ok: false as const, status: 500, error: (e as Error).message }));
     if (r.ok) drafted++;
     else if (r.status === 429) break;
-    else notes.push(r.error);
-    if (/second AI|AI key|AI limit/i.test(r.ok ? "" : r.error)) break;
+    else if (/second AI|AI key|AI limit|ran out of time/i.test(r.error)) {
+      issues.push(r.error);
+      break;
+    }
   }
-  if (notes.some((n) => /second AI from another service|AI key|AI limit/i.test(n))) issues.push(notes.find((n) => /second AI from another service|AI key|AI limit/i.test(n))!);
   return {
-    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${data.paid.length} paid ${data.paid.length === 1 ? "opportunity" : "opportunities"}`,
+    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${paidAdded} new paid ${paidAdded === 1 ? "opportunity" : "opportunities"}`,
     ...(issues.length ? { problem: [...new Set(issues)].join(" ") } : {}),
   };
 }
 
 /** Media requests for one site: public requests for sources on its topics. */
 async function requestsWork(accountId: string, deadline: number): Promise<RunOutcome> {
+  await tables();
   const ctx = await context(accountId);
   if ("skip" in ctx) return { note: `Media requests skipped: ${ctx.skip}.`, skip: true };
   if (!ctx.topics.length) return { note: "Media requests skipped: the site has no searches or products of its own yet.", skip: true };
@@ -622,13 +795,16 @@ async function requestsWork(accountId: string, deadline: number): Promise<RunOut
     { q: `"looking for experts" journalist "${t}"`, t },
     { q: `"${t}" (${sites})`, t },
   ]);
-  const old = (await readJson<RequestData>(requestKey(accountId))) ?? { updatedAt: "", readable: false, requests: [] };
   let answered = 0;
+  let failed = 0;
   const found = new Map<string, MediaRequest>();
   for (const { q, t } of queries) {
     if (Date.now() > deadline) break;
     const serp = await fetchSerp(key, q).catch((e) => (nullUnlessLimit(e), null));
-    if (!serp) continue;
+    if (!serp) {
+      failed++;
+      continue;
+    }
     answered++;
     for (const r of serp.organic) {
       const m = requestFrom(r, t, ctx.domain, isOther);
@@ -636,21 +812,24 @@ async function requestsWork(accountId: string, deadline: number): Promise<RunOut
     }
   }
   if (!answered) return { note: "Media requests: the search didn't answer this week.", retryInDays: 1, problem: "The search for media requests failed this week." };
-  const keep = new Map(old.requests.filter((r) => !isOther(r.url) && (r.answer || r.dismissed || Date.now() - Date.parse(r.foundAt) < 30 * 864e5)).map((r) => [r.url, r]));
-  for (const r of found.values()) if (!keep.has(r.url)) keep.set(r.url, r);
-  const data: RequestData = { updatedAt: new Date().toISOString(), readable: true, requests: [...keep.values()].sort((a, b) => b.foundAt.localeCompare(a.foundAt)).slice(0, 30) };
-  await writeJson(requestKey(accountId), data);
-  return { note: `${found.size} media ${found.size === 1 ? "request" : "requests"} found` };
+  for (const r of found.values()) await addItem(accountId, "request", itemId(r.url), r as unknown as Record<string, unknown>);
+  // Requests older than a month go, unless the owner acted on one or an answer was written for it.
+  await sql`
+    DELETE FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'request' AND owner = '{}'::jsonb AND data -> 'answer' IS NULL
+      AND found_at < now() - interval '30 days'`;
+  await writeMeta(requestMetaKey(accountId), { updatedAt: new Date().toISOString(), readable: true });
+  const n = `${found.size} media ${found.size === 1 ? "request" : "requests"} found`;
+  return failed
+    ? { note: n, problem: `${failed} of ${answered + failed} media request searches failed this week; the requests that were found are listed.` }
+    : { note: n };
 }
 
 /** The owner's Draft an answer: from the site's own page that best matches the request, checked like a pitch. */
 export async function draftAnswer(accountId: string, url: string): Promise<DraftResult> {
-  const data = await readJson<RequestData>(requestKey(accountId));
-  const req = data?.requests.find((r) => r.url === url && !r.dismissed);
-  if (!data || !req) return { ok: false, status: 404, error: "That request isn't on the list anymore." };
+  const id = itemId(url);
+  const req = await readItem<MediaRequest>(accountId, "request", id);
+  if (!req || req.dismissed) return { ok: false, status: 404, error: "That request isn't on the list anymore." };
   if (req.answer) return { ok: true };
-  if (!(await draftsLeft(accountId))) return { ok: false, status: 429, error: `${PITCH_WEEKLY_CAP} drafts were written in the last seven days, the most allowed. More next week.` };
-  if (!(await takeAttempt(accountId))) return { ok: false, status: 429, error: `${ATTEMPT_DAILY_CAP} drafts were tried today, the most allowed. Try again tomorrow.` };
   const ctx = await context(accountId);
   if ("skip" in ctx) return { ok: false, status: 409, error: "Add your website address first." };
   const [{ sitePages }, { aiProvider, readPlatformSettings }, { writeSourceAnswer, secondCheck }, { cleanPost }, { readProfile, siteBrief }] = await Promise.all([
@@ -664,37 +843,32 @@ export async function draftAnswer(accountId: string, url: string): Promise<Draft
   const page = (await sitePages(accountId))
     .map((p) => ({ p, score: [...topicTerms(`${p.title} ${p.h1 ?? ""} ${p.text.slice(0, 2000)}`)].filter((w) => want.has(w)).length }))
     .sort((a, b) => b.score - a.score)[0];
-  const save = async (patch: Partial<MediaRequest>) => {
-    const fresh = (await readJson<RequestData>(requestKey(accountId))) ?? data;
-    fresh.requests = fresh.requests.map((r) => (r.url === url ? { ...r, ...patch } : r));
-    await writeJson(requestKey(accountId), fresh);
-  };
   if (!page || page.score < 2) {
-    await save({ answerNote: "None of your pages answers this request, so no answer was written." });
-    return { ok: false, status: 422, error: "None of your pages answers this request, so no answer was written." };
+    const msg = "None of your pages answers this request, so no answer was written.";
+    await patchItem(accountId, "request", id, { answerNote: msg });
+    return { ok: false, status: 422, error: msg };
   }
   const base = aiProvider(await readPlatformSettings());
   if (!base) return { ok: false, status: 400, error: "An AI key is needed to write the answer." };
-  const ai = { ...base, site: siteBrief(await readProfile(accountId)) };
-  const raw = await writeSourceAnswer(ai, { request: `${req.title}\n${req.snippet}`, pageTitle: page.p.title, pageText: page.p.text, brand: ctx.brand, site: ctx.domain, health: ctx.health });
-  const clean = cleanPost(raw, [ctx.brand, ctx.domain].filter((x): x is string => Boolean(x)), 900, ctx.health);
-  const problem = !clean.text ? "The page doesn't answer it." : (pitchProblem(clean.text, ctx.health) ?? clean.problem);
-  const verdict = problem ? null : await secondCheck(ai, { what: "an answer from a business to a journalist's request for sources", source: page.p.text, text: clean.text, health: ctx.health });
-  const note = problem ?? (!verdict ? "No second AI from another service was free to check it, so no answer was written." : !verdict.ok ? `The second AI turned it down: ${plainWords(verdict.why || "no reason given")}` : null);
-  if (note) {
-    await save({ answerNote: note });
-    return { ok: false, status: 422, error: note };
+  const stamp = await takeDraftSlot(accountId);
+  if (!stamp) return { ok: false, status: 429, error: await capMessage(accountId) };
+  let saved = false;
+  try {
+    const ai = { ...base, site: siteBrief(await readProfile(accountId)) };
+    const raw = await writeSourceAnswer(ai, { request: `${req.title}\n${req.snippet}`, pageTitle: page.p.title, pageText: page.p.text, brand: ctx.brand, site: ctx.domain, health: ctx.health });
+    const clean = cleanPost(raw, [ctx.brand, ctx.domain].filter((x): x is string => Boolean(x)), 900, ctx.health);
+    const problem = !clean.text ? "The page doesn't answer it." : (pitchProblem(clean.text, ctx.health) ?? clean.problem);
+    const verdict = problem ? null : await secondCheck(ai, { what: "an answer from a business to a journalist's request for sources", source: page.p.text, text: clean.text, health: ctx.health });
+    const msg = problem ?? (!verdict ? "No second AI from another service was free to check it, so no answer was written." : !verdict.ok ? `The second AI turned it down: ${plainWords(verdict.why || "no reason given")}` : null);
+    if (msg) {
+      await patchItem(accountId, "request", id, { answerNote: msg });
+      return { ok: false, status: 422, error: msg };
+    }
+    saved = await patchItem(accountId, "request", id, { answer: { text: plainWords(clean.text), page: page.p.url, at: new Date().toISOString() }, answerNote: null }, "answer");
+    return { ok: true };
+  } finally {
+    if (!saved) await releaseDraftSlot(accountId, stamp).catch((e) => console.error(`press draft slot not given back: ${(e as Error).message}`));
   }
-  await save({ answer: { text: plainWords(clean.text), page: page.p.url, at: new Date().toISOString() }, answerNote: undefined });
-  await countDraft(accountId);
-  return { ok: true };
-}
-
-export async function dismissRequest(accountId: string, url: string): Promise<void> {
-  const data = await readJson<RequestData>(requestKey(accountId));
-  if (!data) return;
-  data.requests = data.requests.map((r) => (r.url === url ? { ...r, dismissed: true } : r));
-  await writeJson(requestKey(accountId), data);
 }
 
 export const PRESS_STARTED = "The last journalist search didn't finish. It tries again within a day.";
@@ -718,7 +892,7 @@ export function runPress(accountId: string, deadline = Date.now() + 150_000): Pr
     ...baseDeps(accountId),
     name: "Journalists",
     started: PRESS_STARTED,
-    mark: (note, days) => saveRunMarker(`${PRESS_RUN}:${accountId}`, note, days),
+    mark: (n, days) => saveRunMarker(`${PRESS_RUN}:${accountId}`, n, days),
     report: (ok, detail) => import("./status").then((m) => m.report("press", ok, detail)),
     work: () => pressWork(accountId, deadline),
   });
@@ -730,7 +904,7 @@ export function runMediaRequests(accountId: string, deadline = Date.now() + 90_0
     ...baseDeps(accountId),
     name: "Media requests",
     started: REQUESTS_STARTED,
-    mark: (note, days) => saveRunMarker(`${REQUEST_RUN}:${accountId}`, note, days),
+    mark: (n, days) => saveRunMarker(`${REQUEST_RUN}:${accountId}`, n, days),
     report: (ok, detail) => import("./status").then((m) => m.report("media-requests", ok, detail)),
     work: () => requestsWork(accountId, deadline),
   });
@@ -739,10 +913,14 @@ export function runMediaRequests(accountId: string, deadline = Date.now() + 90_0
 // ---------- the Outreach tab ----------
 
 export async function outreachView(accountId: string) {
-  const [press, requests, log, pressNote, requestNote] = await Promise.all([
-    readJson<PressData>(pressKey(accountId)),
-    readJson<RequestData>(requestKey(accountId)),
-    readJson<DraftLog>(draftKey(accountId)),
+  await tables();
+  const [journalists, requests, paid, counts, pressMeta, requestMeta, pressNote, requestNote] = await Promise.all([
+    readItems<Journalist>(accountId, "journalist"),
+    readItems<MediaRequest>(accountId, "request"),
+    readItems<PaidOpportunity>(accountId, "paid"),
+    slotCounts(accountId),
+    readMeta<{ topics: string[] }>(pressMetaKey(accountId)),
+    readMeta<{ readable: boolean }>(requestMetaKey(accountId)),
     readRunNote(`${PRESS_RUN}:${accountId}`),
     readRunNote(`${REQUEST_RUN}:${accountId}`),
   ]);
@@ -750,21 +928,25 @@ export async function outreachView(accountId: string) {
   const { otherClient } = await import("./clients");
   const { readProfile } = await import("../profile");
   const isOther = await otherClient((await readProfile(accountId)).siteDomain ?? "");
-  const shown = (requests?.requests ?? []).filter((r) => !r.dismissed && !isOther(r.url));
+  const order: Record<JournalistStatus, number> = { new: 0, pitched: 1, replied: 2, covered: 3, dismissed: 4 };
+  const shown = requests.filter((r) => !r.dismissed && !isOther(r.url));
   return {
-    journalists: (press?.journalists ?? []).filter((j) => j.status !== "dismissed" && !isOther(j.outletDomain)),
-    topics: press?.topics ?? [],
-    paid: (press?.paid ?? []).filter((p) => !p.dismissed && !isOther(p.domain)),
+    journalists: journalists
+      .filter((j) => j.status !== "dismissed" && !isOther(j.outletDomain))
+      .map((j) => (j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j))
+      .sort((a, b) => Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || order[a.status] - order[b.status]),
+    topics: pressMeta?.topics ?? [],
+    paid: paid.filter((p) => !p.dismissed && !isOther(p.domain)),
     paidNote: PAID_NOTE,
     requests: shown,
     requestsNote:
       shown.length > 0
         ? null
-        : requests?.readable
+        : requestMeta?.readable
           ? "No public requests for sources on your topics were found this week. Signing up on these sites gets their requests sent to you."
           : "No public requests for sources could be read yet. Signing up on these sites gets their requests sent to you.",
     platforms: SOURCE_PLATFORMS,
-    draftsLeft: draftRoom(log?.drafts ?? []),
+    draftsLeft: Math.max(0, PITCH_WEEKLY_CAP - counts.drafts),
     cap: PITCH_WEEKLY_CAP,
     lastRun: { press: pressNote, requests: requestNote },
   };

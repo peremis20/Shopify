@@ -191,7 +191,7 @@ async function backlinkLines(accountId: string, r: WeekResults | null): Promise<
   const recent = (at?: string) => Boolean(at && Date.now() - Date.parse(at) < WEEK_MS);
   const ready = list.prospects.filter((p) => p.status === "new" && p.draft).length;
   const emailed = list.prospects.filter((p) => p.status === "contacted" && recent(p.statusAt)).length;
-  const wonAll = list.prospects.filter((p) => p.status === "won");
+  const wonAll = list.prospects.filter((p) => (p.status === "won" && !p.paid));
   const wonWeek = wonAll.filter((p) => recent(p.statusAt)).length;
   const lines = [
     "",
@@ -260,7 +260,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
   const results = conn?.gaPropertyId ? await weekResults(conn).catch((e) => (console.error(`weekly results failed: ${(e as Error).message}`), undefined)) : null;
   const recent = (at?: string) => Boolean(at && Date.now() - Date.parse(at) < WEEK_MS);
   const prospects = list === "error" ? null : list;
-  const won = (prospects?.prospects ?? []).filter((p) => p.status === "won");
+  const won = (prospects?.prospects ?? []).filter((p) => (p.status === "won" && !p.paid));
   const fromLinks = results
     ? won
         .map((p) => {
