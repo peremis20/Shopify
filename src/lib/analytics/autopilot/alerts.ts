@@ -148,7 +148,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     lines.push(
       w.orders === 0
         ? "Sales from Shopify, last 7 days: no orders."
-        : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + (shop.capped ? " (at least; more orders than could be read)" : "") + "."
+        : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + "."
     );
   }
   lines.push(...(await backlinkLines(accountId, results ?? null)));
