@@ -24,7 +24,7 @@ import { Scorecard } from "./Scorecard";
 import { WeeklyReport } from "./WeeklyReport";
 import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
-import { CommunitiesCard, SocialAgent } from "./SocialAgent";
+import { SocialAgent } from "./SocialAgent";
 import { Outreach } from "./Outreach";
 import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
@@ -82,7 +82,7 @@ export function DashboardView() {
   const homeReady = Boolean(data) && !loading;
   useEffect(() => {
     if (!homeReady) return;
-    const t = setTimeout(() => setOpened((cur) => new Set<SimplePage>([...cur, "content", "outreach", "report", "settings"])), 800);
+    const t = setTimeout(() => setOpened((cur) => new Set<SimplePage>([...cur, "content", "backlinks", "outreach", "report", "settings"])), 800);
     return () => clearTimeout(t);
   }, [homeReady]);
   const keep = (p: SimplePage) => opened.has(p) || page === p;
@@ -414,23 +414,28 @@ export function DashboardView() {
                     onAutoPreviewDone={() => setPreviewRequested(false)}
                   />
                   <ShareKits />
-                  <SocialAgent communities={false} />
+                  <SocialAgent />
+                  <Creators />
                   <ExpertReview />
+                  </ErrorBoundary>
+                </div>
+              )}
+              {keep("backlinks") && (
+                <div hidden={page !== "backlinks"}>
+                  <ErrorBoundary where="backlinks">
+                  <Card className="mt-5">
+                    <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
+                    <SiteAuthority />
+                    <Backlinks />
+                  </Card>
                   </ErrorBoundary>
                 </div>
               )}
               {keep("outreach") && (
                 <div hidden={page !== "outreach"}>
                   <ErrorBoundary where="outreach">
-                  {/* Journalists, Media requests and Paid opportunities, then Links, Creators and Communities. */}
+                  {/* Simple: only the journalist list. */}
                   <Outreach />
-                  <Card className="mt-6">
-                    <CardHeader title="Links" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
-                    <SiteAuthority />
-                    <Backlinks />
-                  </Card>
-                  <Creators />
-                  <CommunitiesCard />
                   </ErrorBoundary>
                 </div>
               )}
@@ -747,13 +752,7 @@ export function DashboardView() {
           </div>
 
           <div className={show("outreach")}>
-          {tab === "outreach" && (
-            <>
-              <Outreach />
-              <Creators />
-              <CommunitiesCard />
-            </>
-          )}
+          {tab === "outreach" && <Outreach advanced />}
           </div>
 
           <div className={show("search")}>
@@ -794,6 +793,7 @@ const SIMPLE_TITLE: Record<SimplePage, string> = {
   home: "Welcome back!",
   keywords: "Keywords",
   content: "Content",
+  backlinks: "Backlinks",
   outreach: "Outreach",
   report: "Report",
   settings: "Settings",
@@ -802,7 +802,8 @@ const SIMPLE_SUB: Record<SimplePage, string> = {
   home: "Here's how your site is doing on Google, and what to do next.",
   keywords: "What people search for, how hard each one is, and where you rank.",
   content: "Every change the autopilot made, new articles, and your site's health.",
-  outreach: "Journalists, media requests, paid placements, links, creators and communities, with every message written for you to send.",
+  backlinks: "Websites that could link to you, with the email written for each one.",
+  outreach: "Journalists who write about your products, with an email ready for each one.",
   report: "This week's results: visits, leads and sales, backlinks and what each agent did.",
   settings: "Your connected accounts and apps.",
 };

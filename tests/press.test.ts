@@ -216,8 +216,8 @@ test("press: a draft slot is taken in one conditional statement and given back w
 
 test("press: the owner's status and dismissals are never overwritten by the agents", async () => {
   // The owner's fields win when shown, and stored agent data can't carry them.
-  const j = mergeItem<{ status: string; name: string; pitch?: unknown }>({ name: "Dana Whitfield", status: "new" }, { status: "pitched", statusAt: "2026-11-15" });
-  assert.equal(j.status, "pitched");
+  const j = mergeItem<{ status: string; name: string; pitch?: unknown }>({ name: "Dana Whitfield", status: "new" }, { status: "emailed", statusAt: "2026-11-15" });
+  assert.equal(j.status, "emailed");
   assert.equal(mergeItem<{ status: string }>({ name: "x" }, null).status, "new");
   assert.equal(mergeItem<{ name: string }>({ name: "x" }, { name: "evil" }).name, "x"); // only owner fields come from the owner
   // A new find never replaces a stored row, and never writes the owner's column.
@@ -289,5 +289,116 @@ test("press: a temporary note is retried next week; only a permanent one stops a
   assert.equal(autoDraftable({ status: "new", pitchNote: "No second AI", pitchNoteKind: "temporary", pitchNoteAt: day(2) }, now), false);
   assert.equal(autoDraftable({ status: "new", pitchNote: "No second AI", pitchNoteKind: "temporary", pitchNoteAt: day(8) }, now), true);
   assert.equal(autoDraftable({ status: "new", pitchNote: "Turned down", pitchNoteKind: "permanent", pitchNoteAt: day(30) }, now), false);
-  assert.equal(autoDraftable({ status: "pitched" }, now), false);
+  assert.equal(autoDraftable({ status: "emailed" }, now), false);
+});
+
+// ---------- the journalist CRM ----------
+
+import { emailedPatch, followUpDue, journalistsCsv, mailtoFor, manualJournalist, ownerPatch, statusPatch } from "../src/lib/analytics/autopilot/press-crm";
+import { jobTitleOf, printedPhone, productTopics, takeFindNow } from "../src/lib/analytics/autopilot/press";
+
+test("crm: the job title comes only from the page itself", () => {
+  const ld = `<script type="application/ld+json">{"@type":"NewsArticle","author":{"@type":"Person","name":"Dana Whitfield","jobTitle":"Senior Health Reporter"}}</script>`;
+  assert.equal(jobTitleOf(ld, "Dana Whitfield"), "Senior Health Reporter");
+  // Another person's title in the structured data is not theirs.
+  assert.equal(jobTitleOf(ld, "Sam Ortiz"), null);
+  assert.equal(jobTitleOf(`<p class="byline">By Dana Whitfield</p><span class="author-title">Features Editor</span>`, "Dana Whitfield"), "Features Editor");
+  // Their author page on the outlet (a Person page).
+  assert.equal(jobTitleOf(`<script type="application/ld+json">[{"@type":"Person","name":"Dana Whitfield","jobTitle":"Staff Writer"}]</script>`, "Dana Whitfield"), "Staff Writer");
+  // Nothing printed: blank, never guessed from the article's words or the outlet.
+  assert.equal(jobTitleOf(`<p class="byline">By Dana Whitfield, who covers wellness</p>`, "Dana Whitfield"), null);
+  assert.equal(jobTitleOf(`<span class="author-title">Dana Whitfield</span>`, "Dana Whitfield"), null);
+  const j = journalistFrom(news(), ARTICLE, "t", "shopco.com", nobody)!;
+  assert.equal(j.jobTitle, null); // the fixture article prints no title
+});
+
+test("crm: a phone is filled only when printed", () => {
+  assert.equal(printedPhone(`<a href="tel:+1-212-555-0142">Call the desk</a>`), "+1 212 555 0142");
+  assert.equal(printedPhone(`<p>Phone: (212) 555 0142</p>`), "(212) 555 0142");
+  assert.equal(printedPhone(`<p>Founded in 1998, 2,500 readers, issue 1234567.</p>`), null);
+  assert.equal(printedPhone(`<p>Call us any time.</p>`), null);
+  assert.equal(printedPhone(""), null);
+  const j = journalistFrom(news(), ARTICLE, "t", "shopco.com", nobody)!;
+  assert.equal(j.phone, null); // never from the article search alone
+});
+
+test("crm: the Email button's mailto carries the address, subject and body, encoded", () => {
+  const m = mailtoFor("dana@dailyhealth.example", "A quote on sleep & routines", "Hi Dana,\n\nLine two?\nhttps://shopco.com");
+  assert.ok(m.startsWith("mailto:dana@dailyhealth.example?subject="));
+  const q = new URLSearchParams(m.split("?")[1]);
+  assert.equal(q.get("subject"), "A quote on sleep & routines");
+  assert.equal(q.get("body"), "Hi Dana,\r\n\r\nLine two?\r\nhttps://shopco.com");
+  // No address known (or an odd one): the owner fills it in their own app.
+  assert.ok(mailtoFor(null, "s", "b").startsWith("mailto:?subject="));
+  assert.ok(mailtoFor("x@y.com?cc=evil@z.com", "s", "b").startsWith("mailto:?subject="));
+});
+
+test("crm: confirming the email marks Emailed with today and a follow up a week later", () => {
+  const now = Date.parse("2026-11-16T15:00:00Z");
+  assert.deepEqual(emailedPatch(now), { status: "emailed", statusAt: "2026-11-16T15:00:00.000Z", lastContacted: "2026-11-16", followUp: "2026-11-23" });
+  const yes = ownerPatch({ kind: "emailed" }, now);
+  assert.ok(yes.ok && yes.patch.status === "emailed" && yes.patch.lastContacted === "2026-11-16");
+  // Picking Emailed in the dropdown does the same; other statuses don't touch the dates.
+  assert.equal(statusPatch("emailed", now).followUp, "2026-11-23");
+  assert.deepEqual(Object.keys(statusPatch("replied", now)), ["status", "statusAt"]);
+  assert.equal(ownerPatch({ kind: "status", status: "pitched" }, now).ok, false);
+  assert.equal(ownerPatch({ kind: "edit", subject: "", body: "x" }, now).ok, false);
+});
+
+test("crm: follow ups are due on or after their day, while the journalist is Emailed", () => {
+  assert.equal(followUpDue({ status: "emailed", followUp: "2026-11-23" }, "2026-11-23"), true);
+  assert.equal(followUpDue({ status: "emailed", followUp: "2026-11-20" }, "2026-11-23"), true);
+  assert.equal(followUpDue({ status: "emailed", followUp: "2026-11-24" }, "2026-11-23"), false);
+  assert.equal(followUpDue({ status: "replied", followUp: "2026-11-20" }, "2026-11-23"), false);
+  assert.equal(followUpDue({ status: "emailed", followUp: null }, "2026-11-23"), false);
+  const set = ownerPatch({ kind: "followUp", date: "2026-12-01" });
+  assert.ok(set.ok && set.patch.followUp === "2026-12-01");
+  assert.equal(ownerPatch({ kind: "followUp", date: "next week" }).ok, false);
+  const clear = ownerPatch({ kind: "followUp", date: "" });
+  assert.ok(clear.ok && clear.patch.followUp === null);
+});
+
+test("crm: the owner adds a journalist by hand, kept as entered", () => {
+  const ok = manualJournalist({ name: "  Sam Ortiz ", jobTitle: "Editor", outlet: "Wellness Weekly", email: "Sam@Wellness.example", phone: "+1 (415) 555 0100", articleUrl: "https://wellness.example/a" });
+  assert.ok(ok.ok);
+  if (ok.ok) {
+    assert.equal(ok.value.name, "Sam Ortiz");
+    assert.equal(ok.value.email, "sam@wellness.example");
+    assert.equal(ok.value.articleTitle, null);
+  }
+  assert.equal(manualJournalist({ outlet: "X" }).ok, false);
+  assert.equal(manualJournalist({ name: "Sam", outlet: "" }).ok, false);
+  assert.equal(manualJournalist({ name: "Sam", outlet: "X", email: "not an email" }).ok, false);
+  assert.equal(manualJournalist({ name: "Sam", outlet: "X", phone: "call me" }).ok, false);
+  assert.equal(manualJournalist({ name: "Sam", outlet: "X", articleUrl: "javascript:alert(1)" }).ok, false);
+});
+
+test("crm: the CSV has one row per journalist, quoted, never read as a formula", () => {
+  const csv = journalistsCsv([
+    { name: "Dana Whitfield", jobTitle: "Reporter", outlet: "Daily Health", email: "dana@dailyhealth.example", phone: null, articleTitle: 'Sleep, "routines"', articleUrl: "https://dailyhealth.example/a", status: "emailed", lastContacted: "2026-11-16", followUp: "2026-11-23", notes: "=HYPERLINK(1)" },
+  ]);
+  const lines = csv.trim().split("\r\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /^"Name","Job title","Outlet","Email","Phone","Article","Article link","Status","Last contacted","Follow up","Notes"$/);
+  assert.match(lines[1], /"Sleep, ""routines"""/);
+  assert.match(lines[1], /"Emailed"/);
+  assert.match(lines[1], /"'=HYPERLINK\(1\)"$/);
+});
+
+test("crm: Find more is taken once a day in one conditional statement", async () => {
+  const calls: string[] = [];
+  const q = (rows: number): Sql => async (strings) => {
+    calls.push(strings.join("$").replace(/\s+/g, " "));
+    return Array.from({ length: rows }, () => ({ key: "k" }));
+  };
+  assert.equal(await takeFindNow("1", q(1)), true);
+  assert.equal(await takeFindNow("1", q(0)), false); // within a day: refused
+  assert.equal(calls.length, 2);
+  assert.match(calls[0], /ON CONFLICT \(key\) DO UPDATE SET .* WHERE insights_settings\.updated_at < now\(\) - interval '1 day' RETURNING key/);
+});
+
+test("crm: journalists are searched on the site's product names and searches about them", () => {
+  const t = productTopics(["ShopCo Magnesium Glycinate 120 Capsules", "ShopCo Ashwagandha Gummies"], ["shopco login", "best magnesium for sleep", "garden tips"], "ShopCo");
+  assert.deepEqual(t, ["magnesium glycinate", "best magnesium for sleep", "ashwagandha"]);
+  assert.deepEqual(productTopics([], ["anything"], null), []);
 });

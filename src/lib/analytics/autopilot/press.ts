@@ -10,8 +10,10 @@ import { isStore, plainWords } from "./store-audit";
 import { accountsDueWeekly, readRunNote, runWeekly, saveRunMarker, type RunOutcome } from "./weekly-run";
 import type { NewsResult, SerpResult } from "./serp";
 import type { Row } from "../db";
-import { byDeadline } from "./store-audit";
+import { byDeadline, canRunNow } from "./store-audit";
 import { asData } from "./writer";
+import { dayOf, followUpDue, manualJournalist, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
+import { onSite, siteFetch } from "./site-fetch";
 
 /**
  * The Outreach agents: getting the owner's business into the media, the honest way.
@@ -32,7 +34,8 @@ import { asData } from "./writer";
 
 // ---------- pure parts (tested) ----------
 
-export type JournalistStatus = "new" | "pitched" | "replied" | "covered" | "dismissed";
+/** The owner's status for a journalist (press-crm.ts): New, Emailed, Replied, Covered us, Not interested. */
+export type JournalistStatus = CrmStatus;
 
 export interface Pitch {
   subject: string;
@@ -43,8 +46,17 @@ export interface Pitch {
 
 export interface Journalist {
   id: string;
+  /** "search": found by the weekly finder, from the article page. "owner": entered by hand, the owner's own data. */
+  source?: "search" | "owner";
   /** The author's name exactly as printed on the article. */
   name: string;
+  /** Only from the page itself: the article's structured data, a byline title, or their author page on the outlet. */
+  jobTitle?: string | null;
+  /** Only when printed on the outlet's own pages: their author page, or the outlet's contact page (labeled). */
+  phone?: string | null;
+  phoneIsOutlets?: boolean;
+  /** The outlet's contact page, when it was read, for "Find contact on [outlet]". */
+  outletContactPage?: string | null;
   outlet: string;
   outletDomain: string;
   articleTitle: string;
@@ -59,6 +71,11 @@ export interface Journalist {
   emailIsOutlets: boolean;
   status: JournalistStatus;
   statusAt?: string;
+  /** Owner fields: the day they were last emailed, the follow up day, short notes, and their own edit of the draft. */
+  lastContacted?: string | null;
+  followUp?: string | null;
+  notes?: string | null;
+  pitchEdit?: { subject: string; body: string } | null;
   pitch?: Pitch;
   /** Why the last pitch couldn't be written, in plain words. */
   pitchNote?: string | null;
@@ -185,6 +202,67 @@ export function absoluteDate(text: string | null, now = Date.now()): string | nu
   return iso ? iso[1] : null;
 }
 
+/** A job title as printed: a few words of letters, not the person's name, not a byline. */
+function cleanTitle(t: string | null | undefined, name: string): string | null {
+  const v = decode(String(t ?? "")).replace(/^(?:by\s+)/i, "").trim();
+  if (v.length < 3 || v.length > 80 || v.toLowerCase() === name.toLowerCase() || v.toLowerCase().includes(name.toLowerCase())) return null;
+  return /^[\p{L}][\p{L}\s,&'.\/]+$/u.test(v) && v.split(/\s+/).length <= 8 ? v : null;
+}
+
+/** Every object in a page's structured data (JSON-LD), nested ones included. */
+function jsonLdObjects(html: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") {
+      out.push(v as Record<string, unknown>);
+      Object.values(v as Record<string, unknown>).forEach(walk);
+    }
+  };
+  for (const m of html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      walk(JSON.parse(m[1]));
+    } catch {
+      /* unreadable structured data says nothing */
+    }
+  }
+  return out;
+}
+
+/**
+ * The author's job title, only from the page: a schema.org Person with their name and a jobTitle, or a title element
+ * in the byline (author title, author role, job title). Null otherwise; never guessed. Works on the article and on
+ * their author page alike.
+ */
+export function jobTitleOf(html: string, name: string): string | null {
+  const want = name.trim().toLowerCase();
+  for (const o of jsonLdObjects(html)) {
+    if (typeof o.name === "string" && o.name.trim().toLowerCase() === want && typeof o.jobTitle === "string") {
+      const t = cleanTitle(o.jobTitle, name);
+      if (t) return t;
+    }
+  }
+  const m = /<(\w+)\b[^>]*class=["'][^"']*\b(?:(?:author|byline)[-_]{1,2}(?:title|role|position|job)|job[-_]title)\b[^"']*["'][^>]*>([\s\S]{1,200}?)<\/\1>/i.exec(html);
+  return m ? cleanTitle(toText(m[2]), name) : null;
+}
+
+/**
+ * A phone number printed on a page: a tel: link, or a number right after "Phone", "Tel" or "Call". Null when none is
+ * printed; never guessed. Only ever read from the outlet's own pages.
+ */
+export function printedPhone(html: string): string | null {
+  const ok = (p: string) => {
+    const digits = p.replace(/\D/g, "");
+    return digits.length >= 7 && digits.length <= 15 ? p.replace(/\s+/g, " ").trim() : null;
+  };
+  for (const m of html.matchAll(/href=["']tel:([+\d\s().%-]{7,30})["']/gi)) {
+    const p = ok(decodeURIComponent(m[1]).replace(/-/g, " "));
+    if (p) return p;
+  }
+  const m = /\b(?:phone|telephone|tel|call(?: us)?)\b\s*[:.]?\s*(\+?\(?\d[\d\s().]{5,20}\d)/i.exec(toText(html));
+  return m ? ok(m[1]) : null;
+}
+
 export const journalistId = (name: string, outletDomain: string) => crypto.createHash("sha1").update(`${name.toLowerCase()}|${outletDomain}`).digest("hex").slice(0, 16);
 
 const bare = (h: string) => h.toLowerCase().replace(/^www\./, "");
@@ -213,8 +291,11 @@ export function journalistFrom(n: NewsResult, html: string, topic: string, ourDo
     date: publishedOf(html) ?? absoluteDate(n.date),
     topic,
     contactPage: contactPageOf(html, n.link, name),
+    jobTitle: jobTitleOf(html, name),
+    phone: null,
     email,
     emailIsOutlets: false,
+    source: "search",
     status: "new",
     foundAt: new Date().toISOString(),
   };
@@ -330,7 +411,7 @@ export type ItemKind = "journalist" | "request" | "paid";
 export type Sql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[]>;
 
 /** Fields only the owner sets. The agents never write them, so an owner's change can't be overwritten. */
-export const OWNER_FIELDS = ["status", "statusAt", "dismissed"] as const;
+export const OWNER_FIELDS = ["status", "statusAt", "dismissed", "lastContacted", "followUp", "notes", "pitchEdit"] as const;
 
 const withoutOwnerFields = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !(OWNER_FIELDS as readonly string[]).includes(k)));
 
@@ -490,15 +571,9 @@ async function context(accountId: string): Promise<Context | { skip: string }> {
   const { searches, products } = await siteTopics(accountId, profile);
   const a = profile.about;
   const offer = a?.offer?.trim() || siteBrief(profile).sells;
-  const picked = pickTopics(searches.map((k, i) => ({ keyword: k, source: i < 5 ? 0 : 1 })), a ? [a.offer, a.audience].filter(Boolean).join(" ") : null);
-  const brandWords = new Set((profile.brandName ?? "").toLowerCase().split(/\s+/));
-  const product = products[0]
-    ?.toLowerCase()
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((w) => w.length > 2 && !brandWords.has(w) && !/\d/.test(w))
-    .slice(0, 3)
-    .join(" ");
-  const topics = [...new Set([...picked, ...(product ? [product] : [])])].slice(0, 3);
+  // Product focused: the site's product names and its top searches about them; a site with no products uses its own searches.
+  const fromProducts = productTopics(products, searches, profile.brandName);
+  const topics = fromProducts.length ? fromProducts : pickTopics(searches.map((k, i) => ({ keyword: k, source: i < 5 ? 0 : 1 })), a ? [a.offer, a.audience].filter(Boolean).join(" ") : null);
   return {
     accountId,
     domain: profile.siteDomain,
@@ -509,6 +584,30 @@ async function context(accountId: string): Promise<Context | { skip: string }> {
     store: isStore({ shopify: profile.platform === "shopify", businessType: profile.businessType, productPages: products.length }),
     topics,
   };
+}
+
+/**
+ * What journalists are searched on: the site's product names cut to their meaning words (no brand, sizes or counts),
+ * then the site's top searches that name one of its products. At most three, products first.
+ */
+export function productTopics(products: string[], searches: string[], brand: string | null | undefined): string[] {
+  const brandWords = new Set((brand ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean));
+  const SIZE = /^(?:count|ct|mg|mcg|g|kg|oz|ml|lb|lbs|pack|size|capsules?|tablets?|softgels?|gummies|servings?|bottles?|bags?)$/;
+  const short = (t: string) =>
+    t
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((w) => w.length > 2 && !brandWords.has(w) && !/\d/.test(w) && !SIZE.test(w))
+      .slice(0, 3)
+      .join(" ");
+  const names = [...new Set(products.map(short).filter(Boolean))];
+  const productWords = new Set(names.flatMap((n) => [...topicTerms(n)]));
+  const searchesAboutProducts = searches
+    .filter((q) => ![...brandWords].some((b) => q.toLowerCase().includes(b)) && [...topicTerms(q)].some((w) => productWords.has(w)))
+    .map((q) => q.toLowerCase().trim());
+  const out: string[] = [];
+  for (const t of [names[0], searchesAboutProducts[0], names[1], searchesAboutProducts[1]]) if (t && !out.includes(t)) out.push(t);
+  return out.slice(0, 3);
 }
 
 /** Reads a public page (every hop must be public), capped. Its text is only ever data. */
@@ -603,7 +702,7 @@ const note = (text: string, permanent: boolean) => ({ pitchNote: text, pitchNote
  */
 export async function draftPitch(accountId: string, id: string, deadline: number | null = null): Promise<DraftResult> {
   const j = await readItem<Journalist>(accountId, "journalist", id);
-  if (!j || j.status === "dismissed") return { ok: false, status: 404, error: "That journalist isn't on the list anymore." };
+  if (!j) return { ok: false, status: 404, error: "That journalist isn't on the list anymore." };
   if (j.pitch) return { ok: true };
   const ctx = await context(accountId);
   if ("skip" in ctx) return { ok: false, status: 409, error: "Add your website address first." };
@@ -636,10 +735,60 @@ export async function draftPitch(accountId: string, id: string, deadline: number
   }
 }
 
-export async function setJournalistStatus(accountId: string, id: string, status: JournalistStatus): Promise<void> {
-  if (!["new", "pitched", "replied", "covered", "dismissed"].includes(status)) throw new Error("Pick a status.");
+/** The owner's change to one journalist (status, Emailed after "Did you send it?", notes, follow up, their draft edit). */
+export async function journalistAction(accountId: string, id: string, action: OwnerAction): Promise<void> {
+  const r = ownerPatch(action);
+  if (!r.ok) throw new Error(r.error);
   await tables();
-  await setOwnerFields(accountId, "journalist", id, { status, statusAt: new Date().toISOString() });
+  await setOwnerFields(accountId, "journalist", id, r.patch);
+}
+
+/** A journalist the owner adds by hand: their own data, kept as they entered it. */
+export async function addManualJournalist(accountId: string, input: ManualInput): Promise<string> {
+  const r = manualJournalist(input);
+  if (!r.ok) throw new Error(r.error);
+  await tables();
+  const v = r.value;
+  let outletDomain = "";
+  try {
+    outletDomain = v.articleUrl ? bare(new URL(v.articleUrl).hostname) : "";
+  } catch {
+    outletDomain = "";
+  }
+  const id = itemId(`owner:${v.name}|${v.outlet}|${crypto.randomUUID()}`);
+  const j: Journalist = {
+    id,
+    source: "owner",
+    name: v.name,
+    jobTitle: v.jobTitle,
+    outlet: v.outlet,
+    outletDomain,
+    articleTitle: v.articleTitle ?? "",
+    articleUrl: v.articleUrl ?? "",
+    date: null,
+    topic: "",
+    contactPage: null,
+    email: v.email,
+    emailIsOutlets: false,
+    phone: v.phone,
+    phoneIsOutlets: false,
+    status: "new",
+    foundAt: new Date().toISOString(),
+  };
+  await addItem(accountId, "journalist", id, j as unknown as Record<string, unknown>);
+  return id;
+}
+
+const findNowKey = (a: string) => `press_find_now:${a}`;
+
+/** Takes today's "Find more now" in one statement that refuses within a day of the last one. */
+export async function takeFindNow(accountId: string, q: Sql = sql): Promise<boolean> {
+  const rows = await q`
+    INSERT INTO insights_settings (key, value) VALUES (${findNowKey(accountId)}, ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '1 day'
+    RETURNING key`;
+  return rows.length > 0;
 }
 
 export async function dismissPaid(accountId: string, url: string): Promise<void> {
@@ -658,6 +807,53 @@ export async function dismissRequest(accountId: string, url: string): Promise<vo
 const ARTICLES_PER_RUN = 10;
 const PAID_PAGES_PER_RUN = 8;
 const MAX_JOURNALISTS = 60;
+
+/** New journalists whose contact details are looked up per run. */
+const ENRICH_PER_RUN = 6;
+const OUTLET_CONTACT_PATHS = ["/contact", "/contact-us", "/about/contact"];
+
+/** A page of the outlet itself (every hop must stay on the outlet's site and be public), or "". */
+async function outletPage(url: string, outletDomain: string, deadline: number): Promise<{ url: string; html: string } | null> {
+  const left = deadline - Date.now();
+  if (left < 4_000) return null;
+  const r = await siteFetch(url, outletDomain, { timeoutMs: Math.min(6_000, left), maxBytes: 600_000 }).catch(() => null);
+  if (!r || "refused" in r || r.status >= 400 || !/html/i.test(r.headers["content-type"] ?? "html") || !r.body) return null;
+  return { url: r.url, html: r.body };
+}
+
+/**
+ * A new journalist's job title, phone and email, only where the outlet prints them: their author page (title, phone),
+ * the outlet's published email on its own domain (never another customer's), and the outlet's contact page (its link
+ * for "Find contact", and its phone, labeled as the outlet's). Nothing found means nothing filled in.
+ */
+async function contactDetails(j: Journalist, isOther: (d: string) => boolean, deadline: number): Promise<Partial<Journalist>> {
+  const patch: Partial<Journalist> = {};
+  const author = j.contactPage && onSite(new URL(j.contactPage).hostname, j.outletDomain) ? await outletPage(j.contactPage, j.outletDomain, deadline) : null;
+  if (author) {
+    if (!j.jobTitle) {
+      const t = jobTitleOf(author.html, j.name);
+      if (t) patch.jobTitle = t;
+    }
+    const ph = printedPhone(author.html);
+    if (ph) Object.assign(patch, { phone: ph, phoneIsOutlets: false });
+  }
+  if (!j.email && deadline - Date.now() > 15_000) {
+    const { findContactEmail } = await import("./contact-finder");
+    const e = await findContactEmail(j.articleUrl, j.outletDomain).catch(() => null);
+    if (outletEmailOk(e, j.outletDomain, isOther)) Object.assign(patch, { email: e, emailIsOutlets: true });
+  }
+  if (!j.contactPage && !patch.email && !j.email) {
+    for (const path of OUTLET_CONTACT_PATHS) {
+      const page = await outletPage(`https://${j.outletDomain}${path}`, j.outletDomain, deadline);
+      if (!page) continue;
+      patch.outletContactPage = page.url;
+      const ph = patch.phone ? null : printedPhone(page.html);
+      if (ph) Object.assign(patch, { phone: ph, phoneIsOutlets: true });
+      break;
+    }
+  }
+  return patch;
+}
 
 /** The Journalists agent and paid opportunities, for one site. */
 async function pressWork(accountId: string, deadline: number): Promise<RunOutcome> {
@@ -704,9 +900,16 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
     );
   }
   for (const j of fresh) await addItem(accountId, "journalist", j.id, j as unknown as Record<string, unknown>);
-  // Only the oldest untouched finds go when the list is full: never one the owner marked or one with a pitch.
+  // Their job title, phone and email, only from the outlet's own pages, for the newest few within the time left.
+  for (const j of fresh.slice(0, ENRICH_PER_RUN)) {
+    if (deadline - Date.now() < 20_000) break;
+    const patch = await contactDetails(j, isOther, deadline).catch(() => ({}));
+    if (Object.keys(patch).length) await patchItem(accountId, "journalist", j.id, patch);
+  }
+  // Only the oldest untouched finds go when the list is full: never one the owner marked, added, or one with a pitch.
   await sql`
     DELETE FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist' AND owner = '{}'::jsonb AND data -> 'pitch' IS NULL
+      AND coalesce(data ->> 'source', 'search') <> 'owner'
       AND item_id IN (SELECT item_id FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist' ORDER BY found_at DESC OFFSET ${MAX_JOURNALISTS})`;
 
   // Paid opportunities: pages on the topic that say they sell placements, read to confirm and for a stated price.
@@ -916,7 +1119,7 @@ export function runMediaRequests(accountId: string, deadline = Date.now() + 90_0
 
 export async function outreachView(accountId: string) {
   await tables();
-  const [journalists, requests, paid, counts, pressMeta, requestMeta, pressNote, requestNote] = await Promise.all([
+  const [journalists, requests, paid, counts, pressMeta, requestMeta, pressNote, requestNote, [findRow]] = await Promise.all([
     readItems<Journalist>(accountId, "journalist"),
     readItems<MediaRequest>(accountId, "request"),
     readItems<PaidOpportunity>(accountId, "paid"),
@@ -925,19 +1128,28 @@ export async function outreachView(accountId: string) {
     readMeta<{ readable: boolean }>(requestMetaKey(accountId)),
     readRunNote(`${PRESS_RUN}:${accountId}`),
     readRunNote(`${REQUEST_RUN}:${accountId}`),
+    sql`SELECT value FROM insights_settings WHERE key = ${findNowKey(accountId)}`,
   ]);
   // Checked again on every view: a site that became another customer's since is never shown.
   const { otherClient } = await import("./clients");
   const { readProfile } = await import("../profile");
   const isOther = await otherClient((await readProfile(accountId)).siteDomain ?? "");
-  const order: Record<JournalistStatus, number> = { new: 0, pitched: 1, replied: 2, covered: 3, dismissed: 4 };
+  const today = dayOf(Date.now());
+  const order: Record<CrmStatus, number> = { new: 0, emailed: 1, replied: 2, covered: 3, not_interested: 4 };
   const shown = requests.filter((r) => !r.dismissed && !isOther(r.url));
+  const list = journalists
+    .filter((j) => j.source === "owner" || !isOther(j.outletDomain))
+    .map((j) => ({
+      ...(j.source !== "owner" && j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j),
+      status: (order[j.status as CrmStatus] === undefined ? "new" : j.status) as CrmStatus,
+      due: followUpDue(j, today),
+    }))
+    .sort((a, b) => Number(b.due) - Number(a.due) || order[a.status] - order[b.status] || Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || b.foundAt.localeCompare(a.foundAt));
   return {
-    journalists: journalists
-      .filter((j) => j.status !== "dismissed" && !isOther(j.outletDomain))
-      .map((j) => (j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j))
-      .sort((a, b) => Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || order[a.status] - order[b.status]),
+    journalists: list,
+    followUpsToday: list.filter((j) => j.due).length,
     topics: pressMeta?.topics ?? [],
+    canFindNow: canRunNow(findRow?.value ? String(findRow.value) : null),
     paid: paid.filter((p) => !p.dismissed && !isOther(p.domain)),
     paidNote: PAID_NOTE,
     requests: shown,

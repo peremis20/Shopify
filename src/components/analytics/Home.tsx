@@ -15,7 +15,7 @@ import { api } from "./seo-ui";
 import { DeltaBadge, Skeleton } from "./ui";
 import { BarsIcon, BoltIcon, ExternalIcon, FileIcon, SearchIcon } from "./Icons";
 
-export type SimplePage = "home" | "keywords" | "content" | "outreach" | "report" | "settings";
+export type SimplePage = "home" | "keywords" | "content" | "backlinks" | "outreach" | "report" | "settings";
 
 interface Authority { ready: boolean; authority: number | null; history?: { day: string; score: number }[] }
 
@@ -113,7 +113,7 @@ export function Home({ data, loading, onGo }: {
     fixes.length > 0
       ? { text: `${fixes.length} ${fixes.length === 1 ? "change is" : "changes are"} ready for you to paste into your site. Each takes about a minute.`, button: "Open the fix list", page: "content" }
       : openProspects.length > 0
-        ? { text: `${openProspects[0].domain} could link to you. The email is written for you, just send it.`, button: "See the email", page: "outreach" }
+        ? { text: `${openProspects[0].domain} could link to you. The email is written for you, just send it.`, button: "See the email", page: "backlinks" }
         : { text: "Pick an Easy search you'd like to show up for, and the autopilot will go after it first.", button: "Find Easy searches", page: "keywords" };
 
   const ready = changes !== null && ranks !== null;
@@ -160,7 +160,7 @@ export function Home({ data, loading, onGo }: {
     { n: openProspects.length, label: openProspects.length === 1 ? "site to ask for a backlink" : "sites to ask for a backlink" },
   ];
   const repaired = problems.filter((x) => x.who === "repaired");
-  const wonLinks = prospects?.prospects.filter((p) => (p.status === "won" && !p.paid)).length ?? 0;
+  const wonLinks = prospects?.prospects.filter((p) => p.status === "won" && !p.paid).length ?? 0;
 
   // App and service problems (keys, AI) are amber; problems with the site itself are red.
   const isApp = (w: { page: SimplePage; app?: boolean }) => w.page === "settings" || Boolean(w.app);
@@ -271,7 +271,7 @@ export function Home({ data, loading, onGo }: {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Jump icon={<SearchIcon className="h-6 w-6" />} label="Keywords" sub={ranks ? `${ranks.length} tracked, ${pageOne.length} on page 1` : "What to rank for"} onClick={() => onGo("keywords")} />
         <Jump icon={<FileIcon className="h-6 w-6" />} label="Content" sub={fixes.length ? `${fixes.length} ${fixes.length === 1 ? "fix" : "fixes"} ready to paste` : `${pages + articles.length} updates this week`} onClick={() => onGo("content")} />
-        <Jump icon={<LinkIcon className="h-6 w-6" />} label="Backlinks" sub={`${openProspects.length} ${openProspects.length === 1 ? "site" : "sites"} to reach out to`} onClick={() => onGo("outreach")} />
+        <Jump icon={<LinkIcon className="h-6 w-6" />} label="Backlinks" sub={`${openProspects.length} ${openProspects.length === 1 ? "site" : "sites"} to reach out to`} onClick={() => onGo("backlinks")} />
         <Jump icon={<BarsIcon className="h-6 w-6" />} label="Report" sub="This week's results" onClick={() => onGo("report")} />
       </div>
 
@@ -494,7 +494,7 @@ const MOVE_PAGE: Record<string, { page: SimplePage; label: string }> = {
   target: { page: "keywords", label: "See keyword" },
   cluster: { page: "content", label: "See articles" },
   fix: { page: "content", label: "See fix" },
-  asset: { page: "outreach", label: "See backlinks" },
+  asset: { page: "backlinks", label: "See backlinks" },
 };
 
 /** The Strategist's week: progress to the goal, the moves that survived review, and the ones that didn't. */

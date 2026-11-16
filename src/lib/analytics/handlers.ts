@@ -31,8 +31,9 @@ import {
   outreachView,
   runMediaRequests,
   runPress,
-  setJournalistStatus,
-  type JournalistStatus,
+  addManualJournalist,
+  journalistAction,
+  takeFindNow,
 } from "./autopilot/press";
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
@@ -2095,17 +2096,53 @@ export const storeAuditApi = (req: Request) =>
 export const outreachApi = (req: Request) =>
   withAccount(req, async (account) => {
     if (req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; url?: string; status?: string };
+      const b = (await req.json().catch(() => ({}))) as Record<string, unknown> & { action?: string; id?: string; url?: string };
+      const id = String(b.id ?? "");
       try {
-        if (b.action === "status") await setJournalistStatus(account.id, String(b.id ?? ""), String(b.status ?? "") as JournalistStatus);
-        else if (b.action === "dismiss-paid") await dismissPaid(account.id, String(b.url ?? ""));
-        else if (b.action === "dismiss-request") await dismissRequest(account.id, String(b.url ?? ""));
-        else if (b.action === "pitch" || b.action === "answer") {
-          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Draft it again after Saturday sundown." }, 409);
-          if (!(await readAccountAutopilot(account.id)).enabled) return json({ error: "The autopilot is paused. Turn it on to write drafts." }, 409);
-          const out = b.action === "pitch" ? await draftPitch(account.id, String(b.id ?? "")) : await draftAnswer(account.id, String(b.url ?? ""));
-          if (!out.ok) return json({ error: out.error }, out.status);
-        } else return json({ error: "Nothing to do." }, 400);
+        switch (b.action) {
+          // The owner's own changes: never blocked by the Sabbath or the pause, nothing is sent or changed on a site.
+          case "status":
+            await journalistAction(account.id, id, { kind: "status", status: b.status });
+            break;
+          case "emailed":
+            await journalistAction(account.id, id, { kind: "emailed" });
+            break;
+          case "notes":
+            await journalistAction(account.id, id, { kind: "notes", notes: b.notes });
+            break;
+          case "followUp":
+            await journalistAction(account.id, id, { kind: "followUp", date: b.date ?? null });
+            break;
+          case "edit":
+            await journalistAction(account.id, id, { kind: "edit", subject: b.subject, body: b.body });
+            break;
+          case "add":
+            await addManualJournalist(account.id, { name: b.name, jobTitle: b.jobTitle, outlet: b.outlet, email: b.email, phone: b.phone, articleUrl: b.articleUrl, articleTitle: b.articleTitle });
+            break;
+          case "dismiss-paid":
+            await dismissPaid(account.id, String(b.url ?? ""));
+            break;
+          case "dismiss-request":
+            await dismissRequest(account.id, String(b.url ?? ""));
+            break;
+          // Work done by the agents: rests in the Sabbath and while the autopilot is paused.
+          case "pitch":
+          case "answer":
+          case "find": {
+            if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+            if (!(await readAccountAutopilot(account.id)).enabled) return json({ error: "The autopilot is paused. Turn it on first." }, 409);
+            if (b.action === "find") {
+              if (!(await takeFindNow(account.id))) return json({ error: "Find more works once a day. Try again tomorrow." }, 429);
+              await runPress(account.id, Date.now() + 100_000);
+              break;
+            }
+            const out = b.action === "pitch" ? await draftPitch(account.id, id) : await draftAnswer(account.id, String(b.url ?? ""));
+            if (!out.ok) return json({ error: out.error }, out.status);
+            break;
+          }
+          default:
+            return json({ error: "Nothing to do." }, 400);
+        }
       } catch (err) {
         return json({ error: publicError(err, "outreach") }, 400);
       }
