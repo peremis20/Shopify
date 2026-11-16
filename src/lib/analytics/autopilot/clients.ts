@@ -47,6 +47,16 @@ export async function otherClient(ourDomain: string): Promise<(domain: string) =
   };
 }
 
+/**
+ * Other customers' domains (never the site's own), for filters that run in SQL. Null when the list can't be read, so
+ * the caller can stay on the safe side.
+ */
+export async function otherClientDomains(ourDomain: string): Promise<string[] | null> {
+  const ours = clean(ourDomain);
+  const all = await allClientDomains().catch(() => null);
+  return all ? [...all].filter((c) => c && c !== ours && !c.endsWith(`.${ours}`) && !ours.endsWith(`.${c}`)) : null;
+}
+
 /** Whether the customer list can be read right now. Anything that saves data based on it waits when it can't. */
 export async function clientListKnown(): Promise<boolean> {
   return (await allClientDomains().then(() => true).catch(() => false));

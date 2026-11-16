@@ -12,8 +12,23 @@ import type { NewsResult, SerpResult } from "./serp";
 import type { Row } from "../db";
 import { byDeadline, canRunNow } from "./store-audit";
 import { asData } from "./writer";
-import { crmMetrics, dayOf, followUpDue, manualJournalist, normalStatus, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
+import { dayOf, historyEntry, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
 import { onSite, siteFetch } from "./site-fetch";
+import { planImport } from "./press-import";
+import {
+  cleanTag,
+  existingKeys,
+  importItem,
+  IMPORT_ORDER,
+  insertBatch,
+  listFacets,
+  listJournalists,
+  listMetrics,
+  listTemplates,
+  migrateOwnerNotes,
+  PAGE_SIZE,
+  type ListQuery,
+} from "./press-list";
 
 /**
  * The Outreach agents: getting the owner's business into the media, the honest way.
@@ -64,6 +79,13 @@ export interface Journalist {
   hunterTriedAt?: string | null;
   /** The outlet's contact page, when it was read, for "Find contact on [outlet]". */
   outletContactPage?: string | null;
+  /** Where they are based and what they cover, as the owner entered or imported them. */
+  location?: string | null;
+  field?: string | null;
+  /** A profile link the owner gave (their site, a social profile). */
+  profileUrl?: string | null;
+  /** The owner's list names, e.g. an import's "Help a Reporter November". */
+  tags?: string[];
   outlet: string;
   outletDomain: string;
   articleTitle: string;
@@ -482,7 +504,7 @@ export type ItemKind = "journalist" | "request" | "paid";
 export type Sql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<Row[]>;
 
 /** Fields only the owner sets. The agents never write them, so an owner's change can't be overwritten. */
-export const OWNER_FIELDS = ["status", "statusAt", "dismissed", "lastContacted", "followUp", "notes", "pitchEdit"] as const;
+export const OWNER_FIELDS = ["status", "statusAt", "dismissed", "lastContacted", "followUp", "notes", "pitchEdit", "tags"] as const;
 
 const withoutOwnerFields = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([k]) => !(OWNER_FIELDS as readonly string[]).includes(k)));
 
@@ -493,6 +515,9 @@ export function mergeItem<T>(data: Record<string, unknown>, owner: Record<string
 }
 
 let tablesReady: Promise<void> | null = null;
+/** The Outreach tables, created on first use. */
+export const pressTables = (): Promise<void> => tables();
+
 function tables(): Promise<void> {
   tablesReady ??= (async () => {
     await ensureSchema();
@@ -509,6 +534,16 @@ function tables(): Promise<void> {
       account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
       drafts timestamptz[] NOT NULL DEFAULT '{}',
       attempts timestamptz[] NOT NULL DEFAULT '{}'
+    )`;
+    // The owner's email templates, per account.
+    await sql`CREATE TABLE IF NOT EXISTS insights_press_templates (
+      account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      id text NOT NULL,
+      name text NOT NULL,
+      subject text NOT NULL,
+      body text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, id)
     )`;
     await sql`ALTER TABLE insights_press_drafts ADD COLUMN IF NOT EXISTS hunter timestamptz[] NOT NULL DEFAULT '{}'`;
   })().catch((e) => {
@@ -542,8 +577,12 @@ export async function patchItem(accountId: string, kind: ItemKind, id: string, p
 /** The owner's fields on one item, merged in one statement. */
 export async function setOwnerFields(accountId: string, kind: ItemKind, id: string, patch: Record<string, unknown>, q: Sql = sql): Promise<void> {
   const mine = Object.fromEntries(Object.entries(patch).filter(([k]) => (OWNER_FIELDS as readonly string[]).includes(k)));
+  // A status change adds a history line in the same statement, so none is lost to another change at the same time.
+  const entry = kind === "journalist" ? historyEntry(mine) : null;
   await q`
-    UPDATE insights_press_items SET owner = owner || ${JSON.stringify(mine)}::jsonb
+    UPDATE insights_press_items
+    SET owner = owner || ${JSON.stringify(mine)}::jsonb
+      || jsonb_build_object('history', coalesce(owner -> 'history', '[]'::jsonb) || ${JSON.stringify(entry ? [entry] : [])}::jsonb)
     WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id}`;
 }
 
@@ -818,40 +857,18 @@ export async function journalistAction(accountId: string, id: string, action: Ow
 }
 
 /** A journalist the owner adds by hand: their own data, kept as they entered it. */
-export async function addManualJournalist(accountId: string, input: ManualInput): Promise<string> {
-  const r = manualJournalist(input);
-  if (!r.ok) throw new Error(r.error);
+export async function addManualJournalist(accountId: string, input: ManualInput & { location?: unknown; field?: unknown; profileUrl?: unknown; notes?: unknown; tag?: unknown }): Promise<string> {
+  const values = [input.name, input.jobTitle, input.outlet, input.email, input.phone, input.location, input.field, input.profileUrl, input.articleUrl, input.articleTitle, input.notes].map((v) =>
+    typeof v === "string" ? v : "",
+  );
   await tables();
-  const v = r.value;
-  let outletDomain = "";
-  try {
-    outletDomain = v.articleUrl ? bare(new URL(v.articleUrl).hostname) : "";
-  } catch {
-    outletDomain = "";
-  }
-  const id = itemId(`owner:${v.name}|${v.outlet}|${crypto.randomUUID()}`);
-  const j: Journalist = {
-    id,
-    source: "owner",
-    name: v.name,
-    jobTitle: v.jobTitle,
-    outlet: v.outlet,
-    outletDomain,
-    articleTitle: v.articleTitle ?? "",
-    articleUrl: v.articleUrl ?? "",
-    date: null,
-    topic: "",
-    contactPage: null,
-    email: v.email,
-    emailIsOutlets: false,
-    ...(v.email ? { emailSource: "owner" as const } : {}),
-    phone: v.phone,
-    phoneIsOutlets: false,
-    status: "new",
-    foundAt: new Date().toISOString(),
-  };
-  await addItem(accountId, "journalist", id, j as unknown as Record<string, unknown>);
-  return id;
+  // The same checks and duplicate rules as an import: by email, else by name and outlet.
+  const plan = planImport([values], IMPORT_ORDER, await existingKeys(accountId), 1);
+  if (plan.rejects.length) throw new Error(plan.rejects[0].reason);
+  if (!plan.add.length) throw new Error("That journalist is already on the list.");
+  const item = importItem(plan.add[0], cleanTag(input.tag) || null, itemId);
+  if (!(await insertBatch(accountId, [item]))) throw new Error("That journalist is already on the list.");
+  return item.id;
 }
 
 const findNowKey = (a: string) => `press_find_now:${a}`;
@@ -1304,10 +1321,24 @@ export function runMediaRequests(accountId: string, deadline = Date.now() + 90_0
 
 // ---------- the Outreach tab ----------
 
-export async function outreachView(accountId: string) {
+/**
+ * The Outreach tab: one page of the journalist list (searched, filtered and sorted in SQL), the metrics strip from one
+ * aggregate query, the filter choices, and for Advanced the media requests and paid opportunities.
+ */
+export async function outreachView(accountId: string, query: ListQuery) {
   await tables();
-  const [journalists, requests, paid, counts, pressMeta, requestMeta, pressNote, requestNote, [findRow]] = await Promise.all([
-    readItems<Journalist>(accountId, "journalist"),
+  // Notes written before location and field had their own place move there once (safe to run again).
+  await migrateOwnerNotes(accountId).catch((e) => console.error(`press notes not moved for account ${accountId}: ${(e as Error).message}`));
+  const { otherClientDomains } = await import("./clients");
+  const { readProfile } = await import("../profile");
+  const ours = (await readProfile(accountId)).siteDomain ?? "";
+  // When the customer list can't be read, every found journalist's outlet is held back (the safe side).
+  const others = await otherClientDomains(ours);
+  const today = dayOf(Date.now());
+  const [page, metrics, facets, requests, paid, counts, pressMeta, requestMeta, pressNote, requestNote, [findRow], templates] = await Promise.all([
+    listJournalists(accountId, query, others, today),
+    listMetrics(accountId, others),
+    listFacets(accountId),
     readItems<MediaRequest>(accountId, "request"),
     readItems<PaidOpportunity>(accountId, "paid"),
     slotCounts(accountId),
@@ -1316,25 +1347,19 @@ export async function outreachView(accountId: string) {
     readRunNote(`${PRESS_RUN}:${accountId}`),
     readRunNote(`${REQUEST_RUN}:${accountId}`),
     sql`SELECT value FROM insights_settings WHERE key = ${findNowKey(accountId)}`,
+    listTemplates(accountId),
   ]);
-  // Checked again on every view: a site that became another customer's since is never shown.
   const { otherClient } = await import("./clients");
-  const { readProfile } = await import("../profile");
-  const isOther = await otherClient((await readProfile(accountId)).siteDomain ?? "");
-  const today = dayOf(Date.now());
-  const order: Record<CrmStatus, number> = { new: 0, emailed: 1, replied: 2, covered: 3, not_interested: 4 };
+  const isOther = await otherClient(ours);
   const shown = requests.filter((r) => !r.dismissed && !isOther(r.url));
-  const list = journalists
-    .filter((j) => j.source === "owner" || !isOther(j.outletDomain))
-    .map((j) => ({
-      ...(j.source !== "owner" && j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j),
-      status: normalStatus(j.status),
-      due: followUpDue({ ...j, status: normalStatus(j.status) }, today),
-    }))
-    .sort((a, b) => Number(b.due) - Number(a.due) || order[a.status] - order[b.status] || Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || b.foundAt.localeCompare(a.foundAt));
-  const metrics = crmMetrics(list);
   return {
-    journalists: list,
+    journalists: page.rows.map((j) => (j.source !== "owner" && j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j)),
+    total: page.total,
+    page: query.page,
+    pageSize: PAGE_SIZE,
+    query,
+    facets,
+    templates,
     metrics,
     followUpsToday: metrics.followUpsToday,
     topics: pressMeta?.topics ?? [],

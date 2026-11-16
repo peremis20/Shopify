@@ -21,6 +21,8 @@ import crypto from "crypto";
 import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
+import { bulkJournalists, countExisting, deleteTemplate, importJournalists, journalistsByIds, listJournalists, parseListQuery, saveTemplate } from "./autopilot/press-list";
+import { IMPORT_MAX_ROWS } from "./autopilot/press-import";
 import {
   accountsDueForMediaRequests,
   accountsDueForPress,
@@ -32,6 +34,8 @@ import {
   runMediaRequests,
   runPress,
   addManualJournalist,
+  itemId,
+  pressTables,
   journalistAction,
   takeFindNow,
 } from "./autopilot/press";
@@ -2096,8 +2100,10 @@ export const storeAuditApi = (req: Request) =>
  */
 export const outreachApi = (req: Request) =>
   withAccount(req, async (account) => {
+    const b0: unknown = req.method === "POST" ? await req.json().catch(() => ({})) : {};
     if (req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as Record<string, unknown> & { action?: string; id?: string; url?: string };
+      await pressTables();
+      const b = b0 as Record<string, unknown> & { action?: string; id?: string; url?: string };
       const id = String(b.id ?? "");
       try {
         switch (b.action) {
@@ -2118,8 +2124,44 @@ export const outreachApi = (req: Request) =>
             await journalistAction(account.id, id, { kind: "edit", subject: b.subject, body: b.body });
             break;
           case "add":
-            await addManualJournalist(account.id, { name: b.name, jobTitle: b.jobTitle, outlet: b.outlet, email: b.email, phone: b.phone, articleUrl: b.articleUrl, articleTitle: b.articleTitle });
+            await addManualJournalist(account.id, {
+              name: b.name,
+              jobTitle: b.jobTitle,
+              outlet: b.outlet,
+              email: b.email,
+              phone: b.phone,
+              articleUrl: b.articleUrl,
+              articleTitle: b.articleTitle,
+              location: b.location,
+              field: b.field,
+              profileUrl: b.profileUrl,
+              notes: b.notes,
+            });
             break;
+          // The owner's own spreadsheet: checked and deduplicated again here, added 500 rows per statement.
+          case "template-save":
+            await saveTemplate(account.id, (b.template ?? {}) as Record<string, unknown>, () => itemId(`template:${crypto.randomUUID()}`));
+            break;
+          case "template-delete":
+            await deleteTemplate(account.id, b.templateId);
+            break;
+          case "import-check":
+            return json({ existing: await countExisting(account.id, b.keys) });
+          case "import":
+            return json(await importJournalists(account.id, b.rows, b.tag, itemId));
+          case "bulk": {
+            const bulk = (b.bulk ?? {}) as { kind?: string; status?: unknown; tag?: unknown };
+            if (bulk.kind !== "status" && bulk.kind !== "tag" && bulk.kind !== "delete") return json({ error: "Nothing to do." }, 400);
+            await bulkJournalists(account.id, b.ids, bulk.kind === "status" ? { kind: "status", status: bulk.status } : bulk.kind === "tag" ? { kind: "tag", tag: bulk.tag } : { kind: "delete" });
+            break;
+          }
+          case "export": {
+            const today = new Date().toISOString().slice(0, 10);
+            if (Array.isArray(b.ids)) return json({ rows: await journalistsByIds(account.id, b.ids, today) });
+            const { otherClientDomains } = await import("./autopilot/clients");
+            const others = await otherClientDomains((await readProfile(account.id)).siteDomain ?? "");
+            return json({ rows: (await listJournalists(account.id, { ...parseListQuery(b.query as Record<string, unknown>), page: 0 }, others, today, undefined, IMPORT_MAX_ROWS)).rows });
+          }
           case "dismiss-paid":
             await dismissPaid(account.id, String(b.url ?? ""));
             break;
@@ -2148,7 +2190,8 @@ export const outreachApi = (req: Request) =>
         return json({ error: publicError(err, "outreach") }, 400);
       }
     }
-    return json(await outreachView(account.id));
+    const query = parseListQuery(req.method === "POST" ? ((b0 as { query?: Record<string, unknown> }).query ?? null) : new URL(req.url).searchParams);
+    return json(await outreachView(account.id, query));
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

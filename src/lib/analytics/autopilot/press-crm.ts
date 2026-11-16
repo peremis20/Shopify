@@ -199,3 +199,104 @@ export function crmMetrics(items: MetricItem[], now = Date.now()): CrmMetrics {
     funnel: { found: items.length, emailed: emailedEver, replied: replies, covered: coverage },
   };
 }
+
+/** One line of a journalist's history: when their status changed, and to what (Emailed carries the day it was sent). */
+export interface HistoryEntry {
+  at: string;
+  status: CrmStatus;
+}
+
+/** The history line a change adds: only a status change adds one. */
+export const historyEntry = (patch: Record<string, unknown>): HistoryEntry | null =>
+  typeof patch.status === "string" && CRM_STATUSES.includes(patch.status as CrmStatus) ? { at: String(patch.statusAt ?? new Date().toISOString()), status: patch.status as CrmStatus } : null;
+
+// ---------- emails to several people: merge fields and one at a time ----------
+
+/** The merge fields a template may use; each is filled from that journalist's own row. */
+export const MERGE_FIELDS = ["first_name", "last_name", "full_name", "outlet", "article_title", "field", "location"] as const;
+export type MergeField = (typeof MERGE_FIELDS)[number];
+
+export interface MergeSource {
+  name: string;
+  outlet: string;
+  articleTitle?: string | null;
+  field?: string | null;
+  location?: string | null;
+}
+
+const mergeValue = (f: MergeField, j: MergeSource): string => {
+  const parts = j.name.trim().split(/\s+/);
+  switch (f) {
+    case "first_name":
+      return parts[0] ?? "";
+    case "last_name":
+      return parts.length > 1 ? parts[parts.length - 1] : "";
+    case "full_name":
+      return j.name.trim();
+    case "outlet":
+      return j.outlet === "Not listed" ? "" : j.outlet.trim();
+    case "article_title":
+      return (j.articleTitle ?? "").trim();
+    case "field":
+      return (j.field ?? "").trim();
+    case "location":
+      return (j.location ?? "").trim();
+  }
+};
+
+/**
+ * A template filled for one journalist: {first_name}, {outlet} and the other merge fields replaced with their own
+ * values (any letter case, spaces inside the braces allowed). A field they have no value for is left empty and named in
+ * `missing`, so the owner can check that email; other braces stay as written.
+ */
+export function fillTemplate(text: string, j: MergeSource): { text: string; missing: MergeField[] } {
+  const missing = new Set<MergeField>();
+  const out = text.replace(/\{\s*([a-z_]+)\s*\}/gi, (whole, key: string) => {
+    const f = key.toLowerCase() as MergeField;
+    if (!MERGE_FIELDS.includes(f)) return whole;
+    const v = mergeValue(f, j);
+    if (!v) missing.add(f);
+    return v;
+  });
+  return {
+    text: out.replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?;:])/g, "$1").replace(/[ \t]+$/gm, ""),
+    missing: [...missing],
+  };
+}
+
+/** Where a one at a time send stands: who is next, who was sent to, who was skipped. */
+export interface ComposeState {
+  ids: string[];
+  index: number;
+  /** Their email was opened in the owner's email app, waiting for "Did you send it?". */
+  opened: boolean;
+  sent: string[];
+  skipped: string[];
+}
+
+export const composeStart = (ids: string[]): ComposeState => ({ ids: [...new Set(ids)], index: 0, opened: false, sent: [], skipped: [] });
+export const composeDone = (s: ComposeState) => s.index >= s.ids.length;
+export const composeCurrent = (s: ComposeState): string | null => s.ids[s.index] ?? null;
+
+/**
+ * One step: "opened" after Open in my email; "sent" when the owner says Yes (the caller marks them Emailed) and the
+ * next person comes up; "notSent" when they say No (it stays on the same person); "skip" moves on without marking;
+ * "back" returns to the person before.
+ */
+export function composeStep(s: ComposeState, action: "opened" | "sent" | "notSent" | "skip" | "back"): ComposeState {
+  const cur = composeCurrent(s);
+  switch (action) {
+    case "opened":
+      return cur ? { ...s, opened: true } : s;
+    case "notSent":
+      return { ...s, opened: false };
+    case "sent":
+      if (!cur || !s.opened) return s;
+      return { ...s, index: s.index + 1, opened: false, sent: s.sent.includes(cur) ? s.sent : [...s.sent, cur], skipped: s.skipped.filter((x) => x !== cur) };
+    case "skip":
+      if (!cur) return s;
+      return { ...s, index: s.index + 1, opened: false, skipped: s.sent.includes(cur) || s.skipped.includes(cur) ? s.skipped : [...s.skipped, cur] };
+    case "back":
+      return s.index > 0 ? { ...s, index: s.index - 1, opened: false } : s;
+  }
+}
