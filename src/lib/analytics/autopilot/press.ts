@@ -12,12 +12,14 @@ import type { NewsResult, SerpResult } from "./serp";
 import type { Row } from "../db";
 import { byDeadline, canRunNow } from "./store-audit";
 import { asData } from "./writer";
-import { dayOf, historyEntry, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
+import { dayOf, historyEntry, outletEmailOk, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
 import { onSite, siteFetch } from "./site-fetch";
 import { planImport } from "./press-import";
 import {
   cleanTag,
-  existingKeys,
+  CAP_MESSAGE,
+  HISTORY_MAX,
+  listRoom,
   importItem,
   IMPORT_ORDER,
   insertBatch,
@@ -202,12 +204,7 @@ export function emailNearByline(html: string, author: string): string | null {
  * An address may be shown as "the outlet's published email" only when it is on the outlet's own domain (or a
  * subdomain), never on another DashPatrol customer's domain.
  */
-export function outletEmailOk(email: string | null, outletDomain: string, isOther: (d: string) => boolean): boolean {
-  if (!email) return false;
-  const host = email.split("@")[1]?.toLowerCase() ?? "";
-  const d = bare(outletDomain);
-  return Boolean(host) && (host === d || host.endsWith(`.${d}`)) && !isOther(host);
-}
+export { outletEmailOk } from "./press-crm";
 
 const MONTHS = "jan feb mar apr may jun jul aug sep oct nov dec".split(" ");
 
@@ -535,6 +532,8 @@ function tables(): Promise<void> {
       drafts timestamptz[] NOT NULL DEFAULT '{}',
       attempts timestamptz[] NOT NULL DEFAULT '{}'
     )`;
+    // Duplicate checks by email look rows up by this (not unique: several found journalists may share an outlet's email).
+    await sql`CREATE INDEX IF NOT EXISTS insights_press_items_email ON insights_press_items (account_id, kind, lower(data ->> 'email'))`;
     // The owner's email templates, per account.
     await sql`CREATE TABLE IF NOT EXISTS insights_press_templates (
       account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
@@ -582,7 +581,10 @@ export async function setOwnerFields(accountId: string, kind: ItemKind, id: stri
   await q`
     UPDATE insights_press_items
     SET owner = owner || ${JSON.stringify(mine)}::jsonb
-      || jsonb_build_object('history', coalesce(owner -> 'history', '[]'::jsonb) || ${JSON.stringify(entry ? [entry] : [])}::jsonb)
+      || jsonb_build_object('history', (
+        SELECT coalesce(jsonb_agg(h.e ORDER BY h.n), '[]'::jsonb) FROM (
+          SELECT e, n FROM jsonb_array_elements(coalesce(owner -> 'history', '[]'::jsonb) || ${JSON.stringify(entry ? [entry] : [])}::jsonb) WITH ORDINALITY x(e, n)
+          ORDER BY n DESC LIMIT ${HISTORY_MAX}) h))
     WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id}`;
 }
 
@@ -863,9 +865,9 @@ export async function addManualJournalist(accountId: string, input: ManualInput 
   );
   await tables();
   // The same checks and duplicate rules as an import: by email, else by name and outlet.
-  const plan = planImport([values], IMPORT_ORDER, await existingKeys(accountId), 1);
+  const plan = planImport([values], IMPORT_ORDER, new Set(), 1);
   if (plan.rejects.length) throw new Error(plan.rejects[0].reason);
-  if (!plan.add.length) throw new Error("That journalist is already on the list.");
+  if ((await listRoom(accountId)) <= 0) throw new Error(CAP_MESSAGE);
   const item = importItem(plan.add[0], cleanTag(input.tag) || null, itemId);
   if (!(await insertBatch(accountId, [item]))) throw new Error("That journalist is already on the list.");
   return item.id;
@@ -1353,7 +1355,8 @@ export async function outreachView(accountId: string, query: ListQuery) {
   const isOther = await otherClient(ours);
   const shown = requests.filter((r) => !r.dismissed && !isOther(r.url));
   return {
-    journalists: page.rows.map((j) => (j.source !== "owner" && j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j)),
+    // Emails already checked against the outlet's domain and other customers in listJournalists.
+    journalists: page.rows,
     total: page.total,
     page: query.page,
     pageSize: PAGE_SIZE,

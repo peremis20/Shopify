@@ -1,6 +1,6 @@
 import { sql } from "../db";
-import { dayOf, historyEntry, normalStatus, ownerPatch, type CrmMetrics, type CrmStatus, type HistoryEntry, CRM_STATUSES } from "./press-crm";
-import { dedupeKey, IMPORT_BATCH, IMPORT_CHUNK, IMPORT_ORDER, outletFromEmail, NOT_LISTED, planImport, type ImportRow, type Reject } from "./press-import";
+import { dayOf, historyEntry, normalStatus, outletEmailOk, ownerPatch, type CrmMetrics, type CrmStatus, type HistoryEntry, CRM_STATUSES } from "./press-crm";
+import { dedupeKey, IMPORT_BATCH, IMPORT_CHUNK, IMPORT_MAX_ROWS as IMPORT_MAX, IMPORT_ORDER, outletFromEmail, NOT_LISTED, planImport, rowValues, type ImportRow, type Reject } from "./press-import";
 import type { Journalist, Sql } from "./press";
 
 /**
@@ -25,6 +25,21 @@ export interface ListQuery {
 }
 
 const str = (v: unknown, max = 100) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+
+/** Rows the list may show: the owner's own always; found ones only when not at another customer's outlet. */
+export const isOtherFrom = (others: string[] | null) => (d: string) => {
+  const h = (d ?? "").toLowerCase().replace(/^www\./, "");
+  return others === null ? true : others.some((c) => h === c || h.endsWith(`.${c}`));
+};
+
+/**
+ * A found journalist's email is shown only while it is on their outlet's own domain and not another customer's: an
+ * outlet email or a Hunter email failing that is blanked, the same in the list and in every export.
+ */
+export function safeEmail<T extends Pick<Journalist, "source" | "email" | "emailIsOutlets" | "emailSource" | "outletDomain">>(j: T, others: string[] | null): T {
+  if (j.source === "owner" || !j.email || !(j.emailIsOutlets || j.emailSource === "hunter")) return j;
+  return outletEmailOk(j.email, j.outletDomain, isOtherFrom(others)) ? j : { ...j, email: null };
+}
 
 /** The list query from the address (or a POST body), every value checked. */
 export function parseListQuery(src: URLSearchParams | Record<string, unknown> | null | undefined): ListQuery {
@@ -98,7 +113,7 @@ export async function listJournalists(
       CASE WHEN ${query.sort} = 'last' THEN owner ->> 'lastContacted' END DESC NULLS LAST,
       found_at DESC, item_id
     LIMIT ${limit} OFFSET ${query.page * PAGE_SIZE}`;
-  return { rows: rows.map((r) => listed(jsonOf(r.data), jsonOf(r.owner), today)), total: Number(rows[0]?.total ?? 0) };
+  return { rows: rows.map((r) => safeEmail(listed(jsonOf(r.data), jsonOf(r.owner), today), others)), total: Number(rows[0]?.total ?? 0) };
 }
 
 /** The metrics strip from one aggregate query over this account's list (the same rules as crmMetrics in press-crm.ts). */
@@ -158,6 +173,8 @@ export async function listFacets(accountId: string, q: Sql = sql): Promise<{ tag
 // ---------- bulk actions ----------
 
 export const BULK_MAX = 1000;
+/** History lines kept per person: the newest. */
+export const HISTORY_MAX = 50;
 const ID = /^[0-9a-f]{16}$/;
 export const cleanIds = (ids: unknown) => (Array.isArray(ids) ? [...new Set(ids.map(String).filter((i) => ID.test(i)))].slice(0, BULK_MAX) : []);
 export const cleanTag = (t: unknown) => (typeof t === "string" ? t.replace(/\s+/g, " ").trim().slice(0, 60) : "");
@@ -179,7 +196,10 @@ export async function bulkJournalists(accountId: string, ids: unknown, action: B
     const rows = await q`
       UPDATE insights_press_items
       SET owner = owner || ${JSON.stringify(r.patch)}::jsonb
-        || jsonb_build_object('history', coalesce(owner -> 'history', '[]'::jsonb) || ${JSON.stringify(entry ? [entry] : [])}::jsonb)
+        || jsonb_build_object('history', (
+          SELECT coalesce(jsonb_agg(h.e ORDER BY h.n), '[]'::jsonb) FROM (
+            SELECT e, n FROM jsonb_array_elements(coalesce(owner -> 'history', '[]'::jsonb) || ${JSON.stringify(entry ? [entry] : [])}::jsonb) WITH ORDINALITY x(e, n)
+            ORDER BY n DESC LIMIT ${HISTORY_MAX}) h))
       WHERE account_id = ${accountId} AND kind = 'journalist' AND item_id IN (SELECT jsonb_array_elements_text(${idsJson}::jsonb))
       RETURNING item_id`;
     return rows.length;
@@ -202,24 +222,31 @@ export async function bulkJournalists(accountId: string, ids: unknown, action: B
   return rows.length;
 }
 
-/** The selected rows, for an export. */
-export async function journalistsByIds(accountId: string, ids: unknown, today: string, q: Sql = sql): Promise<ListedJournalist[]> {
+/** The selected rows, for an export or the compose panel: the same other customers rule and email check as the list. */
+export async function journalistsByIds(accountId: string, ids: unknown, others: string[] | null, today: string, q: Sql = sql): Promise<ListedJournalist[]> {
   const list = cleanIds(ids);
   if (!list.length) return [];
   const rows = await q`
     SELECT data, owner FROM insights_press_items
-    WHERE account_id = ${accountId} AND kind = 'journalist' AND item_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(list)}::jsonb))`;
-  return rows.map((r) => listed(jsonOf(r.data), jsonOf(r.owner), today));
+    WHERE account_id = ${accountId} AND kind = 'journalist' AND item_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(list)}::jsonb))
+      AND (data ->> 'source' = 'owner' OR (${others !== null}::boolean AND NOT EXISTS (
+        SELECT 1 FROM jsonb_array_elements_text(${JSON.stringify(others ?? [])}::jsonb) c
+        WHERE coalesce(data ->> 'outletDomain', '') = c OR coalesce(data ->> 'outletDomain', '') LIKE '%.' || c)))`;
+  return rows.map((r) => safeEmail(listed(jsonOf(r.data), jsonOf(r.owner), today), others));
 }
 
 // ---------- import ----------
 
 export { IMPORT_ORDER, rowValues } from "./press-import";
 
-/** The list's dedupe keys (email, or name and outlet). */
-export async function existingKeys(accountId: string, q: Sql = sql): Promise<Set<string>> {
-  const rows = await q`SELECT data ->> 'email' AS email, data ->> 'name' AS name, data ->> 'outlet' AS outlet FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist'`;
-  return new Set(rows.map((r) => dedupeKey({ email: r.email ? String(r.email) : null, name: String(r.name ?? ""), outlet: String(r.outlet ?? "") })));
+/** People one account's list may hold. */
+export const JOURNALIST_CAP = 50_000;
+export const CAP_MESSAGE = `Your list holds up to ${JOURNALIST_CAP.toLocaleString("en-US")} people. Delete some before adding more.`;
+
+/** Room left on this account's list. */
+export async function listRoom(accountId: string, q: Sql = sql): Promise<number> {
+  const [r] = await q`SELECT count(*) AS n FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist'`;
+  return Math.max(0, JOURNALIST_CAP - Number(r?.n ?? 0));
 }
 
 /** An imported row as stored: the owner's data, with their notes and list tag as owner fields. */
@@ -256,17 +283,32 @@ export function importItem(r: ImportRow, tag: string | null, itemIdOf: (key: str
       contactPage: null,
       foundAt: now,
     },
-    owner: { ...(r.notes ? { notes: r.notes } : {}), ...(tag ? { tags: [tag] } : {}) },
+    owner: (() => {
+      const tags = [...new Set([...(r.tags ?? []), ...(tag ? [tag] : [])])];
+      return { ...(r.notes ? { notes: r.notes } : {}), ...(tags.length ? { tags } : {}) };
+    })(),
   };
 }
 
-/** Inserts up to 500 rows in one statement; a row already there stays as it is. Returns the rows added. */
+/**
+ * Inserts up to 500 rows in one statement. Duplicates are left out in SQL: a row whose email (any case), or without an
+ * email whose name and outlet, is already on the list; the same person twice at once meets the same id. The list's
+ * cap is checked in the statement too. Returns the rows added.
+ */
 export async function insertBatch(accountId: string, items: { id: string; data: Record<string, unknown>; owner: Record<string, unknown> }[], q: Sql = sql): Promise<number> {
   if (!items.length) return 0;
   if (items.length > IMPORT_BATCH) throw new Error(`At most ${IMPORT_BATCH} rows per statement.`);
   const rows = await q`
     INSERT INTO insights_press_items (account_id, kind, item_id, data, owner)
-    SELECT ${accountId}, 'journalist', x ->> 'id', x -> 'data', x -> 'owner' FROM jsonb_array_elements(${JSON.stringify(items)}::jsonb) x
+    SELECT ${accountId}, 'journalist', x.v ->> 'id', x.v -> 'data', x.v -> 'owner'
+    FROM jsonb_array_elements(${JSON.stringify(items)}::jsonb) WITH ORDINALITY x(v, n)
+    WHERE x.n <= ${JOURNALIST_CAP} - (SELECT count(*) FROM insights_press_items c WHERE c.account_id = ${accountId} AND c.kind = 'journalist')
+      AND NOT EXISTS (
+        SELECT 1 FROM insights_press_items p WHERE p.account_id = ${accountId} AND p.kind = 'journalist' AND (
+          (coalesce(x.v -> 'data' ->> 'email', '') <> '' AND lower(p.data ->> 'email') = lower(x.v -> 'data' ->> 'email'))
+          OR (coalesce(x.v -> 'data' ->> 'email', '') = ''
+            AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'name')), '\s+', ' ', 'g')
+            AND regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'outlet')), '\s+', ' ', 'g'))))
     ON CONFLICT (account_id, kind, item_id) DO NOTHING
     RETURNING item_id`;
   return rows.length;
@@ -287,19 +329,31 @@ export async function importJournalists(
   if (valueRows.length > IMPORT_CHUNK) throw new Error(`Send at most ${IMPORT_CHUNK} rows at a time.`);
   const rows = valueRows.map((r) => (Array.isArray(r) ? r.slice(0, IMPORT_ORDER.length).map((v) => (v === null || v === undefined ? "" : String(v))) : []));
   const tag = cleanTag(tagIn) || null;
-  const plan = planImport(rows, IMPORT_ORDER, await existingKeys(accountId, q), 1);
-  const items = plan.add.map((r) => importItem(r, tag, itemIdOf));
+  // Checked and deduplicated within these rows here; against the list in SQL, as each batch goes in.
+  const plan = planImport(rows, IMPORT_ORDER, new Set(), 1);
+  const room = await listRoom(accountId, q);
+  if (plan.add.length && room <= 0) throw new Error(CAP_MESSAGE);
+  const fits = plan.add.slice(0, room);
+  const over = plan.add.slice(room);
+  const items = fits.map((r) => importItem(r, tag, itemIdOf));
   let added = 0;
   for (let i = 0; i < items.length; i += IMPORT_BATCH) added += await insertBatch(accountId, items.slice(i, i + IMPORT_BATCH), q);
-  // A row that lost a race with another import of the same person counts as a duplicate.
-  return { added, duplicates: plan.duplicates + (items.length - added), rejects: plan.rejects };
+  // Rows not added were already on the list (or met another import of the same person at the same moment).
+  const rejects = [...plan.rejects, ...over.map((r) => ({ line: 0, reason: CAP_MESSAGE, values: rowValues(r) }))];
+  return { added, duplicates: plan.duplicates + (items.length - added), rejects };
 }
 
-/** How many of these dedupe keys the list already has (for the preview's duplicate count). */
+/** How many of these dedupe keys the list already has (for the preview's duplicate count), counted in SQL. */
 export async function countExisting(accountId: string, keys: unknown, q: Sql = sql): Promise<number> {
-  if (!Array.isArray(keys)) return 0;
-  const have = await existingKeys(accountId, q);
-  return [...new Set(keys.map(String))].filter((k) => have.has(k)).length;
+  if (!Array.isArray(keys) || !keys.length) return 0;
+  const list = [...new Set(keys.map(String))].filter((k) => /^[en]:/.test(k)).slice(0, IMPORT_MAX);
+  const [r] = await q`
+    SELECT count(*) AS n FROM jsonb_array_elements_text(${JSON.stringify(list)}::jsonb) k
+    WHERE EXISTS (
+      SELECT 1 FROM insights_press_items p WHERE p.account_id = ${accountId} AND p.kind = 'journalist' AND (
+        (left(k, 2) = 'e:' AND lower(p.data ->> 'email') = substr(k, 3))
+        OR (left(k, 2) = 'n:' AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') || '|' || regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = substr(k, 3))))`;
+  return Number(r?.n ?? 0);
 }
 
 // ---------- moving "Location: ...; Field: ..." out of notes ----------
@@ -327,29 +381,40 @@ export function splitNotes(notes: string | null | undefined): { location: string
   return { location, field, rest: rest || null };
 }
 
+/** The rows that may hold the old notes (the same rule as splitNotes: the key at the start or after ; | or a new line). */
+const OLD_NOTES = "(^|[;|\n])[[:space:]]*(location|field)[[:space:]]*:";
+
 /**
  * The one time move for rows the owner entered before: location and field go to their own fields, the notes keep the
- * rest. Each row moves in one statement that applies only while its notes are unchanged and it has no location or
- * field yet, so running it again (or twice at once) changes nothing.
+ * rest. Each row is marked checked (notesMoved) in the same statement, so it is never selected again; a row whose
+ * notes changed meanwhile is left for the next read. Runs through every such row, 500 at a time.
  */
-export async function migrateOwnerNotes(accountId: string, q: Sql = sql): Promise<number> {
-  const rows = await q`
-    SELECT item_id, owner ->> 'notes' AS notes FROM insights_press_items
-    WHERE account_id = ${accountId} AND kind = 'journalist' AND data ->> 'source' = 'owner'
-      AND data ->> 'location' IS NULL AND data ->> 'field' IS NULL AND owner ->> 'notes' ~* '(location|field)\\s*:'
-    LIMIT 500`;
+export async function migrateOwnerNotes(accountId: string, q: Sql = sql, maxBatches = 200): Promise<number> {
   let moved = 0;
-  for (const r of rows) {
-    const split = splitNotes(r.notes ? String(r.notes) : null);
-    if (!split) continue;
-    const done = await q`
-      UPDATE insights_press_items
-      SET data = data || ${JSON.stringify({ location: split.location, field: split.field })}::jsonb,
-          owner = owner || ${JSON.stringify({ notes: split.rest })}::jsonb
-      WHERE account_id = ${accountId} AND kind = 'journalist' AND item_id = ${String(r.item_id)}
-        AND owner ->> 'notes' = ${String(r.notes)} AND data ->> 'location' IS NULL AND data ->> 'field' IS NULL
-      RETURNING item_id`;
-    moved += done.length;
+  const seen = new Set<string>();
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const rows = await q`
+      SELECT item_id, owner ->> 'notes' AS notes, data ->> 'location' AS location, data ->> 'field' AS field FROM insights_press_items
+      WHERE account_id = ${accountId} AND kind = 'journalist' AND data ->> 'source' = 'owner' AND data ->> 'notesMoved' IS NULL
+        AND owner ->> 'notes' ~* ${OLD_NOTES}
+      ORDER BY item_id LIMIT 500`;
+    const fresh = rows.filter((r) => !seen.has(String(r.item_id)));
+    if (!fresh.length) break;
+    for (const r of fresh) {
+      seen.add(String(r.item_id));
+      const split = splitNotes(r.notes ? String(r.notes) : null);
+      // Location and field the owner already set are never overwritten: such a row is only marked checked.
+      const canMove = Boolean(split) && r.location === null && r.field === null;
+      const done = await q`
+        UPDATE insights_press_items
+        SET data = data || ${JSON.stringify(canMove ? { notesMoved: true, location: split!.location, field: split!.field } : { notesMoved: true })}::jsonb,
+            owner = owner || ${JSON.stringify(canMove ? { notes: split!.rest } : {})}::jsonb
+        WHERE account_id = ${accountId} AND kind = 'journalist' AND item_id = ${String(r.item_id)}
+          AND owner ->> 'notes' = ${String(r.notes)} AND data ->> 'notesMoved' IS NULL
+        RETURNING item_id`;
+      if (canMove && done.length) moved++;
+    }
+    if (rows.length < 500) break;
   }
   return moved;
 }

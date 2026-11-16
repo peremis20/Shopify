@@ -99,6 +99,10 @@ export interface CsvRow {
   lastContacted?: string | null;
   followUp?: string | null;
   notes?: string | null;
+  location?: string | null;
+  field?: string | null;
+  profileUrl?: string | null;
+  tags?: string[] | null;
 }
 
 /** One CSV cell: quoted, and never read as a formula by a spreadsheet. */
@@ -111,9 +115,28 @@ const cell = (v: unknown) => {
 
 /** The journalist list as a CSV file, one row each. */
 export function journalistsCsv(rows: CsvRow[]): string {
-  const head = ["Name", "Job title", "Outlet", "Email", "Phone", "Article", "Article link", "Status", "Last contacted", "Follow up", "Notes"];
+  // Headers the importer recognises, so an export can be imported back whole (status and dates are left out there).
+  const head = ["Name", "Job title", "Outlet", "Email", "Phone", "Location", "Field", "Profile link", "Lists", "Article title", "Article link", "Status", "Last contacted", "Follow up", "Notes"];
   const lines = rows.map((r) =>
-    [r.name, r.jobTitle, r.outlet, r.email, r.phone, r.articleTitle, r.articleUrl, STATUS_LABEL[r.status as CrmStatus] ?? r.status, r.lastContacted, r.followUp, r.notes].map(cell).join(","),
+    [
+      r.name,
+      r.jobTitle,
+      r.outlet,
+      r.email,
+      r.phone,
+      r.location,
+      r.field,
+      r.profileUrl,
+      (r.tags ?? []).join("; "),
+      r.articleTitle,
+      r.articleUrl,
+      STATUS_LABEL[r.status as CrmStatus] ?? r.status,
+      r.lastContacted,
+      r.followUp,
+      r.notes,
+    ]
+      .map(cell)
+      .join(","),
   );
   return [head.map(cell).join(","), ...lines].join("\r\n") + "\r\n";
 }
@@ -299,4 +322,15 @@ export function composeStep(s: ComposeState, action: "opened" | "sent" | "notSen
     case "back":
       return s.index > 0 ? { ...s, index: s.index - 1, opened: false } : s;
   }
+}
+
+/**
+ * An address may be shown as the outlet's (or Hunter's) only when it is on the outlet's own domain (or a subdomain),
+ * never on another DashPatrol customer's domain.
+ */
+export function outletEmailOk(email: string | null, outletDomain: string, isOther: (d: string) => boolean): boolean {
+  if (!email) return false;
+  const host = email.split("@")[1]?.toLowerCase() ?? "";
+  const d = outletDomain.toLowerCase().replace(/^www\./, "");
+  return Boolean(host) && Boolean(d) && (host === d || host.endsWith(`.${d}`)) && !isOther(host);
 }

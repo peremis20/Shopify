@@ -379,7 +379,7 @@ test("crm: the CSV has one row per journalist, quoted, never read as a formula",
   ]);
   const lines = csv.trim().split("\r\n");
   assert.equal(lines.length, 2);
-  assert.match(lines[0], /^"Name","Job title","Outlet","Email","Phone","Article","Article link","Status","Last contacted","Follow up","Notes"$/);
+  assert.match(lines[0], /^"Name","Job title","Outlet","Email","Phone","Location","Field","Profile link","Lists","Article title","Article link","Status","Last contacted","Follow up","Notes"$/);
   assert.match(lines[1], /"Sleep, ""routines"""/);
   assert.match(lines[1], /"Emailed"/);
   assert.match(lines[1], /"'=HYPERLINK\(1\)"$/);

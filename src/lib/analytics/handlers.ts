@@ -2157,9 +2157,10 @@ export const outreachApi = (req: Request) =>
           }
           case "export": {
             const today = new Date().toISOString().slice(0, 10);
-            if (Array.isArray(b.ids)) return json({ rows: await journalistsByIds(account.id, b.ids, today) });
+            // Both paths apply the list's rules: other customers' outlets left out, unsafe outlet emails blanked.
             const { otherClientDomains } = await import("./autopilot/clients");
             const others = await otherClientDomains((await readProfile(account.id)).siteDomain ?? "");
+            if (Array.isArray(b.ids)) return json({ rows: await journalistsByIds(account.id, b.ids, others, today) });
             return json({ rows: (await listJournalists(account.id, { ...parseListQuery(b.query as Record<string, unknown>), page: 0 }, others, today, undefined, IMPORT_MAX_ROWS)).rows });
           }
           case "dismiss-paid":

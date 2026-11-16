@@ -28,6 +28,7 @@ export type ImportField =
   | "profileUrl"
   | "articleUrl"
   | "articleTitle"
+  | "tags"
   | "notes";
 
 export const IMPORT_FIELD_LABEL: Record<ImportField, string> = {
@@ -44,6 +45,7 @@ export const IMPORT_FIELD_LABEL: Record<ImportField, string> = {
   profileUrl: "Profile link",
   articleUrl: "Article link",
   articleTitle: "Article title",
+  tags: "Lists",
   notes: "Notes",
 };
 
@@ -103,6 +105,7 @@ const GUESS: [ImportField, RegExp][] = [
   ["articleUrl", /article.*(link|url)|story.*(link|url)|^article$|^url$|^link$/],
   ["articleTitle", /article.*(title|headline)|headline|^story$/],
   ["profileUrl", /profile|linkedin|twitter|x\.com|website|author\s*page|bio\s*link|muck/],
+  ["tags", /^(lists?|tags?|groups?|segments?)$/],
   ["notes", /note|comment|remark/],
 ];
 
@@ -153,6 +156,8 @@ export interface ImportRow {
   articleUrl: string | null;
   articleTitle: string | null;
   notes: string | null;
+  /** The owner's list names from the file ("a; b"). */
+  tags: string[];
 }
 
 export interface Reject {
@@ -175,7 +180,8 @@ const okLink = (u: string) => {
 export function mapRow(values: string[], mapping: ImportField[]): { row: ImportRow } | { reason: string } {
   const get = (f: ImportField) => {
     const i = mapping.indexOf(f);
-    return i >= 0 ? (values[i] ?? "") : "";
+    // A value an export guarded against spreadsheet formulas ("'+1 212...") is read back as written.
+    return i >= 0 ? (values[i] ?? "").replace(/^'(?=\s*[=+\-@|\t\r])/, "") : "";
   };
   const name = cut(get("fullName"), 80) || cut(`${get("firstName")} ${get("lastName")}`, 80);
   const email = cut(get("email"), 120).toLowerCase();
@@ -192,6 +198,7 @@ export function mapRow(values: string[], mapping: ImportField[]): { row: ImportR
       field: cut(get("field"), 80) || null,
       profileUrl: profileUrl || null,
       notes: cut(get("notes"), 500) || null,
+      tags: [...new Set(get("tags").split(/[;,|]/).map((t) => cut(t, 60)).filter(Boolean))].slice(0, 10),
     },
   };
 }
@@ -231,6 +238,7 @@ export function rejectsCsv(headers: string[], rejects: Reject[]): string {
 }
 
 /** The columns the browser sends each checked row in (the server checks them again in this order). */
-export const IMPORT_ORDER: ImportField[] = ["fullName", "jobTitle", "outlet", "email", "phone", "location", "field", "profileUrl", "articleUrl", "articleTitle", "notes"];
+export const IMPORT_ORDER: ImportField[] = ["fullName", "jobTitle", "outlet", "email", "phone", "location", "field", "profileUrl", "articleUrl", "articleTitle", "notes", "tags"];
 
-export const rowValues = (r: ImportRow): string[] => [r.name, r.jobTitle, r.outlet, r.email, r.phone, r.location, r.field, r.profileUrl, r.articleUrl, r.articleTitle, r.notes].map((v) => v ?? "");
+export const rowValues = (r: ImportRow): string[] =>
+  [r.name, r.jobTitle, r.outlet, r.email, r.phone, r.location, r.field, r.profileUrl, r.articleUrl, r.articleTitle, r.notes, r.tags.join("; ")].map((v) => v ?? "");

@@ -14,7 +14,15 @@ import {
   saveTemplate,
   splitNotes,
   TEMPLATE_MAX,
+  CAP_MESSAGE,
+  countExisting,
+  HISTORY_MAX,
+  JOURNALIST_CAP,
+  journalistsByIds,
+  listed,
+  safeEmail,
 } from "../src/lib/analytics/autopilot/press-list";
+import { journalistsCsv } from "../src/lib/analytics/autopilot/press-crm";
 import type { Sql } from "../src/lib/analytics/autopilot/press";
 
 /** A stand in for the database: records each statement, answers with `answer`. */
@@ -99,11 +107,12 @@ test("import: rows that can't be imported are listed with their row and reason, 
   assert.match(csv[2], /^"3","That email doesn't look right.","Sam","not an email","X"$/);
 });
 
-test("import: rows go in 500 per statement, checked again on the server, as the owner's own with the list name", async () => {
-  const rows = Array.from({ length: 1200 }, (_, i) => ["Person " + i, "", `p${i}@outlet.example`].slice(0, 0).concat([`Person ${i}`, "", "Outlet", `p${i}@outlet.example`, "", "", "", "", "", "", ""]));
+test("import: rows go in 500 per statement, deduplicated in SQL, as the owner's own with the list name", async () => {
+  const rows = Array.from({ length: 1200 }, (_, i) => [`Person ${i}`, "", "Outlet", `p${i}@outlet.example`, "", "", "", "", "", "", "", ""]);
   const { q, calls } = recorder((text, values) => {
-    if (/^SELECT data ->> 'email'/.test(text.trim())) return [{ email: "p5@outlet.example", name: "Person 5", outlet: "Outlet" }];
-    if (/INSERT INTO insights_press_items/.test(text)) return JSON.parse(String(values[1])).map((x: { id: string }) => ({ item_id: x.id }));
+    if (/SELECT count\(\*\) AS n FROM insights_press_items/.test(text)) return [{ n: "10" }];
+    // One row in the first batch is already on the list: the statement leaves it out.
+    if (/INSERT INTO insights_press_items/.test(text)) return JSON.parse(String(values[1])).filter((x: { data: { email: string } }) => x.data.email !== "p5@outlet.example").map((x: { id: string }) => ({ item_id: x.id }));
     return [];
   });
   let n = 0;
@@ -111,18 +120,42 @@ test("import: rows go in 500 per statement, checked again on the server, as the 
   const inserts = calls.filter((c) => /INSERT INTO insights_press_items/.test(c.text));
   assert.equal(inserts.length, 3);
   const sizes = inserts.map((c) => JSON.parse(String(c.values[1])).length);
-  assert.deepEqual(sizes, [500, 500, 199]);
+  assert.deepEqual(sizes, [500, 500, 200]);
   assert.ok(sizes.every((s) => s <= IMPORT_BATCH));
+  // Dedupe and the cap run in the statement itself, never by loading every key.
+  assert.match(inserts[0].text, /AND NOT EXISTS \( SELECT 1 FROM insights_press_items p WHERE p\.account_id = \$ AND p\.kind = 'journalist' AND \( \(coalesce\(x\.v -> 'data' ->> 'email', ''\) <> '' AND lower\(p\.data ->> 'email'\) = lower/);
+  assert.match(inserts[0].text, /WHERE x\.n <= \$ - \(SELECT count\(\*\) FROM insights_press_items c/);
   assert.match(inserts[0].text, /ON CONFLICT \(account_id, kind, item_id\) DO NOTHING RETURNING item_id/);
+  assert.ok(!calls.some((c) => /SELECT data ->> 'email' AS email/.test(c.text)));
   const first = JSON.parse(String(inserts[0].values[1]))[0];
   assert.equal(first.data.source, "owner");
-  assert.equal(first.data.outlet, "Outlet");
   assert.deepEqual(first.owner.tags, ["Help a Reporter November"]);
   assert.equal(out.added, 1199);
   assert.equal(out.duplicates, 1);
-  // More than one request's worth is refused.
   await assert.rejects(importJournalists("1", Array.from({ length: 2001 }, () => []), null, () => "x", q), /at most 2000/);
-  assert.equal(IMPORT_ORDER.length, 11);
+  assert.equal(IMPORT_ORDER.length, 12);
+});
+
+test("import: the list holds up to 50,000 people, with a plain message past it", async () => {
+  const row = (i: number) => [`Person ${i}`, "", "Outlet", `p${i}@o.example`, "", "", "", "", "", "", "", ""];
+  // Room for 2 more: 2 are added, the third is reported, never silently dropped.
+  const near = recorder((text, values) =>
+    /SELECT count\(\*\) AS n/.test(text) ? [{ n: String(JOURNALIST_CAP - 2) }] : /INSERT/.test(text) ? JSON.parse(String(values[1])).map((x: { id: string }) => ({ item_id: x.id })) : [],
+  );
+  let n = 0;
+  const out = await importJournalists("1", [row(1), row(2), row(3)], null, () => (n++).toString(16).padStart(16, "0"), near.q);
+  assert.equal(out.added, 2);
+  assert.equal(out.rejects.length, 1);
+  assert.equal(out.rejects[0].reason, CAP_MESSAGE);
+  assert.match(CAP_MESSAGE, /up to 50,000 people/);
+  const full = recorder((text) => (/SELECT count\(\*\) AS n/.test(text) ? [{ n: String(JOURNALIST_CAP) }] : []));
+  await assert.rejects(importJournalists("1", [row(1)], null, () => "0", full.q), /up to 50,000 people/);
+  assert.equal(full.calls.filter((c) => /INSERT/.test(c.text)).length, 0);
+  // The preview's duplicate count is one SQL statement over the keys.
+  const pre = recorder(() => [{ n: "3" }]);
+  assert.equal(await countExisting("1", ["e:a@b.example", "n:sam|x", "bad"], pre.q), 3);
+  assert.equal(pre.calls.length, 1);
+  assert.deepEqual(JSON.parse(String(pre.calls[0].values[0])), ["e:a@b.example", "n:sam|x"]);
 });
 
 test("list: paging, search and filters run in one SQL statement with every value as a parameter", async () => {
@@ -185,21 +218,91 @@ test("bulk: delete removes only rows the owner added or imported", async () => {
   assert.match(calls[0].text, /^\s*DELETE FROM insights_press_items WHERE account_id = \$ AND kind = 'journalist' AND data ->> 'source' = 'owner' AND item_id IN/);
 });
 
-test("migration: Location and Field move out of the notes into their own fields, once", async () => {
+test("migration: Location and Field move out of the notes into their own fields, once, through every row", async () => {
   assert.deepEqual(splitNotes("Location: Austin, TX; Field: Health; met at expo"), { location: "Austin, TX", field: "Health", rest: "met at expo" });
   assert.deepEqual(splitNotes("Field: Food"), { location: null, field: "Food", rest: null });
   assert.deepEqual(splitNotes("location:Paris|field: Travel"), { location: "Paris", field: "Travel", rest: null });
   assert.equal(splitNotes("Prefers phone calls"), null);
   assert.equal(splitNotes(null), null);
-  const { q, calls } = recorder((text) => (/^SELECT item_id/.test(text.trim()) ? [{ item_id: "abc", notes: "Location: Austin; Field: Health; likes data" }] : [{ item_id: "abc" }]));
-  assert.equal(await migrateOwnerNotes("1", q), 1);
-  const up = calls[1];
-  assert.match(up.text, /SET data = data \|\| \$::jsonb, owner = owner \|\| \$::jsonb/);
-  // Only while the notes are unchanged and nothing moved yet: running again (or twice at once) changes nothing.
-  assert.match(up.text, /AND owner ->> 'notes' = \$ AND data ->> 'location' IS NULL AND data ->> 'field' IS NULL/);
-  assert.deepEqual(JSON.parse(String(up.values[0])), { location: "Austin", field: "Health" });
-  assert.deepEqual(JSON.parse(String(up.values[1])), { notes: "likes data" });
-  assert.match(calls[0].text, /data ->> 'source' = 'owner'/);
+  // 501 rows: two batches. One row's location was already set by the owner: only marked checked.
+  const batch1 = Array.from({ length: 500 }, (_, i) => ({ item_id: `r${String(i).padStart(4, "0")}`, notes: "Location: Austin; Field: Health; likes data", location: i === 0 ? "Dallas" : null, field: null }));
+  const batch2 = [{ item_id: "r9999", notes: "Field: Food", location: null, field: null }];
+  let selects = 0;
+  const { q, calls } = recorder((text) => {
+    if (/^\s*SELECT item_id/.test(text)) return (selects++ === 0 ? batch1 : selects === 2 ? batch2 : []) as never;
+    return [{ item_id: "x" }];
+  });
+  assert.equal(await migrateOwnerNotes("1", q), 500);
+  const sel = calls.filter((c) => /^\s*SELECT item_id/.test(c.text));
+  assert.equal(sel.length, 2);
+  // The selection is the same rule as splitNotes, and skips rows already checked.
+  assert.match(sel[0].text, /data ->> 'notesMoved' IS NULL AND owner ->> 'notes' ~\* \$/);
+  assert.equal(sel[0].values.find((v) => typeof v === "string" && v.includes("location|field")), "(^|[;|\n])[[:space:]]*(location|field)[[:space:]]*:");
+  const ups = calls.filter((c) => /^\s*UPDATE/.test(c.text));
+  assert.equal(ups.length, 501);
+  assert.match(ups[1].text, /AND owner ->> 'notes' = \$ AND data ->> 'notesMoved' IS NULL/);
+  assert.deepEqual(JSON.parse(String(ups[0].values[0])), { notesMoved: true }); // the owner's own location stays
+  assert.deepEqual(JSON.parse(String(ups[0].values[1])), {});
+  assert.deepEqual(JSON.parse(String(ups[1].values[0])), { notesMoved: true, location: "Austin", field: "Health" });
+  assert.deepEqual(JSON.parse(String(ups[1].values[1])), { notes: "likes data" });
+});
+
+test("history keeps the newest 50 lines, trimmed in the same statement", async () => {
+  const { q, calls } = recorder(() => [{ item_id: "x" }]);
+  await bulkJournalists("1", ["0123456789abcdef"], { kind: "status", status: "replied" }, q);
+  assert.match(calls[0].text, /jsonb_build_object\('history', \( SELECT coalesce\(jsonb_agg\(h\.e ORDER BY h\.n\), '\[\]'::jsonb\) FROM \( SELECT e, n FROM jsonb_array_elements\(coalesce\(owner -> 'history', '\[\]'::jsonb\) \|\| \$::jsonb\) WITH ORDINALITY x\(e, n\) ORDER BY n DESC LIMIT \$\) h\)\)/);
+  assert.ok(calls[0].values.includes(HISTORY_MAX));
+  assert.equal(HISTORY_MAX, 50);
+  // A person with more is shown the newest 50.
+  const many = Array.from({ length: 60 }, (_, i) => ({ at: new Date(Date.UTC(2026, 0, 1 + i)).toISOString(), status: "emailed" }));
+  assert.equal(listed({ name: "A", outlet: "B" }, { history: many }, "2026-11-16").history.length, 50);
+});
+
+const se = (j: Record<string, unknown>, others: string[] | null) => safeEmail(j as unknown as Parameters<typeof safeEmail>[0], others);
+
+test("exports: other customers' outlets left out and unsafe outlet emails blanked, on every export path", async () => {
+  const found = { name: "Dana W", outlet: "Other", outletDomain: "othercustomer.com", email: "desk@othercustomer.com", emailIsOutlets: true, source: "search" };
+  const hunted = { name: "Sam O", outlet: "Mag", outletDomain: "mag.example", email: "sam@othercustomer.com", emailSource: "hunter", source: "search" };
+  const own = { name: "Lee P", outlet: "Mine", outletDomain: "othercustomer.com", email: "lee@othercustomer.com", source: "owner" };
+  assert.equal(se(found, ["othercustomer.com"]).email, null);
+  assert.equal(se(hunted, ["othercustomer.com"]).email, null);
+  assert.equal(se(own, ["othercustomer.com"]).email, "lee@othercustomer.com"); // the owner's own data
+  assert.equal(se({ ...found, outletDomain: "daily.example", email: "desk@daily.example" }, ["othercustomer.com"]).email, "desk@daily.example");
+  assert.equal(se({ ...found, outletDomain: "daily.example", email: "desk@daily.example" }, null).email, null); // list unknown: safe side
+  // By ids (selected rows, compose): the same SQL rule as the list, and the same blanking.
+  const ids = recorder(() => [{ data: JSON.stringify({ ...found, outletDomain: "daily.example", email: "x@othercustomer.com" }), owner: "{}" }]);
+  const rows = await journalistsByIds("1", ["0123456789abcdef"], ["othercustomer.com"], "2026-11-16", ids.q);
+  assert.equal(rows[0].email, null);
+  assert.match(ids.calls[0].text, /AND \(data ->> 'source' = 'owner' OR \(\$::boolean AND NOT EXISTS \( SELECT 1 FROM jsonb_array_elements_text\(\$::jsonb\) c/);
+  assert.ok(ids.calls[0].values.includes('["othercustomer.com"]'));
+  // The filtered export uses listJournalists, which blanks the same way.
+  const list = recorder(() => [{ data: JSON.stringify({ ...found, outletDomain: "daily.example", email: "x@othercustomer.com" }), owner: "{}", total: "1" }]);
+  assert.equal((await listJournalists("1", parseListQuery(null), ["othercustomer.com"], "2026-11-16", list.q, 20000)).rows[0].email, null);
+});
+
+test("exports can be imported back whole: location, field, profile link and lists", () => {
+  const csv = journalistsCsv([
+    { name: "Dana Whitfield", jobTitle: "Editor", outlet: "Daily Health", email: "dana@daily.example", phone: "+1 212 555 0142", location: "Austin", field: "Health", profileUrl: "https://daily.example/dana", tags: ["November", "Top"], articleTitle: "Sleep", articleUrl: "https://daily.example/a", status: "emailed", lastContacted: "2026-11-16", followUp: "2026-11-23", notes: "met at expo" },
+  ]);
+  const [head, ...data] = parseCsv(csv);
+  assert.deepEqual(head, ["Name", "Job title", "Outlet", "Email", "Phone", "Location", "Field", "Profile link", "Lists", "Article title", "Article link", "Status", "Last contacted", "Follow up", "Notes"]);
+  const map = guessColumns(head);
+  assert.deepEqual(map, ["fullName", "jobTitle", "outlet", "email", "phone", "location", "field", "profileUrl", "tags", "articleTitle", "articleUrl", "ignore", "ignore", "ignore", "notes"]);
+  const plan = planImport(data, map);
+  assert.deepEqual(plan.add[0], {
+    name: "Dana Whitfield",
+    jobTitle: "Editor",
+    outlet: "Daily Health",
+    email: "dana@daily.example",
+    phone: "+1 212 555 0142",
+    location: "Austin",
+    field: "Health",
+    profileUrl: "https://daily.example/dana",
+    articleUrl: "https://daily.example/a",
+    articleTitle: "Sleep",
+    notes: "met at expo",
+    tags: ["November", "Top"],
+  });
 });
 
 test("compose: merge fields are filled from each person's own row", () => {
