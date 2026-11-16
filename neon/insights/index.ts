@@ -83,6 +83,8 @@ const routes: Record<string, Handler> = {
   "GET /api/social/agent": api.socialAgent,
   "GET /api/social/creators": api.creatorsApi,
   "POST /api/social/creators": api.creatorsApi,
+  "GET /api/store-audit": api.storeAuditApi,
+  "POST /api/store-audit": api.storeAuditApi,
   "POST /api/social/agent": api.socialAgent,
   "GET /api/auth/threads/start": api.threadsAuthStart,
   "GET /api/auth/threads/callback": api.threadsAuthCallback,

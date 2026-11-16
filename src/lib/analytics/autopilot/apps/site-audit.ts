@@ -10,7 +10,7 @@ const FIX_WEIGHT = 1.5;
 const SERIOUS_WEIGHT = 2;
 const UNKNOWN_POTENTIAL = 5;
 
-const topicOf = (title: string | null, url: string) =>
+export const topicOf = (title: string | null, url: string) =>
   ((title ?? "").split(/\s[|–—-]\s/)[0] || decodeURIComponent(pathOf(url).split("/").filter(Boolean).pop() ?? "").replace(/[-_]+/g, " "))
     .toLowerCase()
     .replace(/[^a-z0-9\s']/g, " ")

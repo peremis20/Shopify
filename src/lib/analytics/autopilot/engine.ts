@@ -16,11 +16,11 @@ import { keyOf } from "./apps/types";
 import { clickGain } from "./keyword-boost";
 import { aiProvider, readAccountAutopilot, readPlatformSettings, type AiProvider, type PlatformSettings } from "./settings";
 import {
+  autopilotCanEdit,
   copiedFrom,
   duplicateOf,
   pagesForQuery,
   plainText,
-  PROTECTED_PAGE,
   strongerRival,
   trafficCheck,
   type SiteItem,
@@ -379,9 +379,6 @@ async function measureOlderChanges(ctx: Ctx, conn: Connection): Promise<{ notes:
 
 // ---------- improving ----------
 
-/** Legal, contact, account and similar pages on any website: never rewritten. */
-const PROTECTED_ANY = /\/(contact|privacy|terms|refund|returns?|shipping|polic(y|ies)|legal|cookies?|accessibility|disclaimer|cart|checkout|account|login|search|tag|tags|author|category|categories)(\/|$)/i;
-
 /**
  * The best candidate on a page the autopilot may change. On Shopify that's a
  * blog post, page, product or collection; on any other website it's any
@@ -391,10 +388,7 @@ function pickTarget(cands: Candidate[], brand: string, rested: (c: Candidate) =>
   return (
     cands.find((c) => {
       const path = new URL(c.op.page).pathname;
-      const editable = shopify
-        ? /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/")
-        : path.replace(/\/+$/, "") !== "" && !PROTECTED_ANY.test(path);
-      return !(brand && c.op.query.includes(brand)) && !rested(c) && !PROTECTED_PAGE.test(path) && editable;
+      return !(brand && c.op.query.includes(brand)) && !rested(c) && autopilotCanEdit(path, shopify);
     }) ?? null
   );
 }

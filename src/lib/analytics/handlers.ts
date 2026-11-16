@@ -20,6 +20,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
+import { accountsDueForStoreAudit, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
@@ -1665,6 +1666,15 @@ export async function autopilotTick(): Promise<Response> {
         results.push(`account ${accountId} site audit: ${note}`);
       }
     }
+    // The Store audit: the store's key pages checked weekly for what stops a sale, one site per hour. Every exit saves
+    // the site's run marker and reports to the status board (runStoreAudit), so a broken site never blocks the queue.
+    for (const accountId of late() ? [] : await accountsDueForStoreAudit(1).catch((e) => (console.error(`store audit list failed: ${message(e)}`), []))) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runStoreAudit(accountId, Math.min(Date.now() + 120_000, started + budget))).catch(
+        (e) => (console.error(`store audit failed: ${message(e)}`), null),
+      );
+      if (note) results.push(`account ${accountId} store audit: ${note}`);
+    }
     // The Index rescue: once a week per site, a page Google crawled but left out gets a substantial new section.
     // Sites with nothing waiting stay due (they're skipped quickly), so up to 5 are looked at and one is worked on.
     for (const accountId of late() ? [] : await accountsDueForRescue(5)) {
@@ -2025,6 +2035,20 @@ export const creatorsApi = (req: Request) =>
       }
     }
     return json(await creatorsView(account.id));
+  });
+
+/** The Store audit card: the latest audit, and Run now (once a day; never in the Sabbath or while the autopilot is paused). */
+export const storeAuditApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { action?: string };
+      if (b.action !== "run") return json({ error: "Nothing to do." }, 400);
+      if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Run it again after Saturday sundown." }, 409);
+      if (!(await readAccountAutopilot(account.id)).enabled) return json({ error: "The autopilot is paused. Turn it on to run the store audit." }, 409);
+      if (!(await takeRunNow(account.id))) return json({ error: "The store audit can run once a day. Try again tomorrow." }, 429);
+      await runStoreAudit(account.id, Date.now() + 100_000);
+    }
+    return json(await storeAuditView(account.id));
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

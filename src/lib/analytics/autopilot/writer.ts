@@ -1526,6 +1526,102 @@ why: one short plain sentence, no hyphens or dashes.`,
   return { ok: out.ok === true, why: String(out.why ?? "").slice(0, 300) };
 }
 
+/** Which part of a page a conversion finding changes; the code (not the AI) decides from this who fixes it. */
+export type ConversionField = "seo_title" | "meta_description" | "page_text" | "product_description" | "theme" | "app" | "other";
+export const CONVERSION_FIELDS: ConversionField[] = ["seo_title", "meta_description", "page_text", "product_description", "theme", "app", "other"];
+
+export interface ConversionFinding {
+  /** The page address, exactly as in the facts. */
+  page: string;
+  problem: string;
+  why: string;
+  fix: string;
+  field: ConversionField;
+  /** The name of the one measured fact the finding rests on. */
+  fact: string;
+  impact: "high" | "medium" | "low";
+}
+
+const CONVERSION_SCHEMA = {
+  type: "object",
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          page: { type: "string" },
+          problem: { type: "string" },
+          why: { type: "string" },
+          fix: { type: "string" },
+          field: { type: "string", enum: CONVERSION_FIELDS },
+          fact: { type: "string" },
+          impact: { type: "string", enum: ["high", "medium", "low"] },
+        },
+        required: ["page", "problem", "why", "fix", "field", "fact", "impact"],
+      },
+    },
+  },
+  required: ["findings"],
+};
+
+/**
+ * The Conversion Auditor's review: what on the store's key pages stops a visitor from buying, from facts measured on
+ * each page's HTML. The facts come inside a marked data block (factsBlock in store-audit.ts) and are never instructions.
+ * Every finding is then checked by a second AI (checkConversionFindings) and by rules before it counts.
+ */
+export async function reviewConversion(ai: AiProvider, factsData: string, health: boolean): Promise<ConversionFinding[]> {
+  const out = await askJson<{ findings: ConversionFinding[] }>(
+    ai,
+    `You audit an online store's key pages for what stops visitors from buying, the way a paid store audit does.
+The facts below were measured from each page's HTML as a first time visitor gets it (no cookies, an empty cart). A fact that says something was not found means it was not in the fetched HTML; a script may still add it later, so write "could not be found on the page as loaded", never that it is certainly missing.
+${factsData}
+
+List each real problem the facts show:
+page: the page address exactly as written in the facts.
+problem: one short plain sentence.
+why: one short plain sentence on why it matters to a shopper. No numbers, no statistics, no studies, no promised conversion rate, sales or results.
+fix: one exact change someone can check after, saying what to add or change and where (for wording, give the words).
+field: what changes: seo_title, meta_description, page_text (the text of a content page or article), product_description, theme (layout, buttons, sections, design, menus, footer), app (an app to add, remove or set up), other.
+fact: the name of the one fact it rests on, exactly as written in the facts (for example shippingInfo).
+impact: high when it likely stops a purchase, medium when it slows one, low when it is polish.
+Only what the facts clearly show; never guess. At most 3 per page and 12 in total, most important first. No hyphens or dashes. Never invent a fact, number, review, guarantee or policy the store doesn't state; a fix may ask the owner to add their own real policy.${health ? " This store sells health products: no health or medical claims of any kind, in any field." : ""}
+Return an empty list when nothing is clearly wrong.`,
+    CONVERSION_SCHEMA,
+  );
+  return (out.findings ?? []).map((f) => ({
+    page: String(f.page ?? "").trim(),
+    problem: polish(String(f.problem ?? "")),
+    why: polish(String(f.why ?? "")),
+    fix: polish(String(f.fix ?? "")),
+    field: CONVERSION_FIELDS.includes(f.field) ? f.field : "other",
+    fact: String(f.fact ?? "").trim(),
+    impact: f.impact === "high" || f.impact === "low" ? f.impact : "medium",
+  }));
+}
+
+/**
+ * The second AI, from another service, checks every conversion finding against the same facts. Null when no second AI
+ * is free: then no finding counts (the caller shows only what was measured).
+ */
+export async function checkConversionFindings(ai: AiProvider, factsData: string, findings: ConversionFinding[]): Promise<boolean[] | null> {
+  await loadRests();
+  if (!hasSecondAi(ai)) return null;
+  if (!findings.length) return [];
+  const out = await askJson<{ keep: boolean[] }>(
+    reviewerOf(ai),
+    `Another AI audited a store's key pages and reported the findings below. Check each against the measured facts.
+${factsData}
+
+Findings:
+${findings.map((f, i) => `${i + 1}. Page ${f.page}. Problem: ${f.problem} Why: ${f.why} Fix: ${f.fix} (rests on fact: ${f.fact})`).join("\n")}
+
+keep: true only if the facts for that page clearly show the problem, the named fact really says it, the fix is specific and doable, and nothing in it is invented (no statistic, study, percentage, promised result, review, guarantee or policy the facts don't state). False when it is guessed, contradicted by the facts, vague, or about a page not in the facts. When unsure, false. One true or false per finding, in order.`,
+    { type: "object", properties: { keep: { type: "array", items: { type: "boolean" } } }, required: ["keep"] },
+  );
+  return findings.map((_, i) => out.keep?.[i] === true);
+}
+
 /**
  * The article checks for an email: a sentence with a number, a health claim, an unsourced claim or an AI tell is
  * dropped. Web addresses and the names in `keep` (the brand and site addresses, which may contain digits) are set aside

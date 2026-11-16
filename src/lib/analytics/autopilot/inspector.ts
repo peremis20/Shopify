@@ -169,6 +169,14 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     fix: () => "It tries again next hour by itself.",
     workaround: "The pages already checked stay on the list until the next pass.",
   },
+  "store-audit": {
+    name: "The Store audit (key pages checked for what stops a sale)",
+    fix: (d) =>
+      /couldn't be read|couldn't be reached|answered \d+/i.test(d ?? "")
+        ? "The store's key pages couldn't be read this week. Check that the site is online and not blocking visitors; it tries again next week by itself."
+        : "It tries again next week by itself. The owner can also click Run now on the Store audit card once a day.",
+    workaround: "Last week's store audit stays on the dashboard until the next one.",
+  },
   "index-rescue": {
     name: "The Index rescue (pages Google left out)",
     fix: () => "It tries again next week by itself.",

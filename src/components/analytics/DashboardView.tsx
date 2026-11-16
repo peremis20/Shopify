@@ -26,6 +26,7 @@ import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
 import { SocialAgent } from "./SocialAgent";
 import { Creators } from "./Creators";
+import { StoreAudit } from "./StoreAudit";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -382,6 +383,7 @@ export function DashboardView() {
                 <div hidden={page !== "home"}>
                   <ErrorBoundary where="home">
                   <Home data={data} loading={loading} onGo={go} />
+                  <StoreAudit />
                   </ErrorBoundary>
                 </div>
               )}
@@ -471,6 +473,7 @@ export function DashboardView() {
           <div className={show("overview")}>
           <Scorecard />
           <WeeklyReport />
+          <StoreAudit advanced />
           </div>
           {/* KPI row */}
           <div className={`mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 ${show("overview")}`}>

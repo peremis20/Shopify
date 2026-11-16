@@ -126,6 +126,18 @@ export function overlap(a: Set<string>, b: Set<string>): number {
 /** Pages the autopilot never touches: they carry legal, contact or review content people rely on as written. */
 export const PROTECTED_PAGE = /^\/pages\/[^/]*(contact|privacy|terms|refund|return|shipping|polic|legal|cookie|accessibility|disclaimer|track|wholesale|career|job|review|testimonial|warranty|guarantee|affiliate|partner)/i;
 
+/** Legal, contact, account and similar pages on any website: never rewritten. */
+export const PROTECTED_ANY = /\/(contact|privacy|terms|refund|returns?|shipping|polic(y|ies)|legal|cookies?|accessibility|disclaimer|cart|checkout|account|login|search|tag|tags|author|category|categories)(\/|$)/i;
+
+/**
+ * Whether the autopilot may change a page at this path. On Shopify that's a blog post, page, product or collection; on
+ * any other website it's any content page (not the home page, legal or utility pages). Protected pages never.
+ */
+export function autopilotCanEdit(path: string, shopify: boolean): boolean {
+  const editable = shopify ? /^\/(blogs\/[^/]+\/[^/]+|pages|products|collections)\//.test(path + "/") : path.replace(/\/+$/, "") !== "" && !PROTECTED_ANY.test(path);
+  return editable && !PROTECTED_PAGE.test(path);
+}
+
 /** Cuts at the last whole word that fits, without a dangling comma or dash. */
 export function trimWords(s: string, max: number): string {
   const t = s.trim();
