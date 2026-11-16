@@ -1295,6 +1295,7 @@ export const savePlatform = (req: Request) =>
       pagespeedKey: str("pagespeedKey"),
       oprKey: str("oprKey"),
       keKey: str("keKey"),
+      hunterApiKey: str("hunterApiKey"),
       keMonthlyCredits: Number(b.keMonthlyCredits) > 0 ? Number(b.keMonthlyCredits) : undefined,
       resendKey: str("resendKey"),
       alertsFrom: str("alertsFrom"),

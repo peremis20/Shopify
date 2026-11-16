@@ -12,7 +12,7 @@ import type { NewsResult, SerpResult } from "./serp";
 import type { Row } from "../db";
 import { byDeadline, canRunNow } from "./store-audit";
 import { asData } from "./writer";
-import { dayOf, followUpDue, manualJournalist, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
+import { dayOf, followUpDue, manualJournalist, normalStatus, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
 import { onSite, siteFetch } from "./site-fetch";
 
 /**
@@ -52,9 +52,16 @@ export interface Journalist {
   name: string;
   /** Only from the page itself: the article's structured data, a byline title, or their author page on the outlet. */
   jobTitle?: string | null;
-  /** Only when printed on the outlet's own pages: their author page, or the outlet's contact page (labeled). */
+  /** Only when printed on the outlet's own pages: their own (Person data or author bio), or else the outlet's (labeled). */
   phone?: string | null;
   phoneIsOutlets?: boolean;
+  /** The job title came from Hunter (shown "from Hunter"), only when the pages had none. */
+  jobTitleFromHunter?: boolean;
+  /** Where the email came from: printed by the article, the outlet's published one, or Hunter (shown with its score). */
+  emailSource?: "page" | "outlet" | "hunter" | "owner";
+  hunterScore?: number | null;
+  /** When Hunter was asked for this journalist, so each is asked once. */
+  hunterTriedAt?: string | null;
   /** The outlet's contact page, when it was read, for "Find contact on [outlet]". */
   outletContactPage?: string | null;
   outlet: string;
@@ -229,6 +236,63 @@ function jsonLdObjects(html: string): Record<string, unknown>[] {
   return out;
 }
 
+const TITLE_ELEMENT = /<(\w+)\b[^>]*class=["'][^"']*\b(?:(?:author|byline)[-_]{1,2}(?:title|role|position|job)|job[-_]title)\b[^"']*["'][^>]*>([\s\S]{1,200}?)<\/\1>/i;
+
+/**
+ * The byline and author box containers of a page (their inner HTML). A container holds the author's name and may hold
+ * their title or bio; the element names inside are matched to the container's own closing tag, nesting counted.
+ */
+export function bylineContainers(html: string): string[] {
+  const out: string[] = [];
+  const open = /<(div|p|section|header|address|li|span|aside|footer)\b[^>]*class=["'][^"']*\b(?:byline|c-byline|author|article-author|post-author|author-info|author-box|author-block|author-meta|author-details|author-card)\b[^"']*["'][^>]*>/gi;
+  for (const m of html.matchAll(open)) {
+    const tag = m[1].toLowerCase();
+    const start = (m.index ?? 0) + m[0].length;
+    const re = new RegExp(`<(/?)${tag}\\b[^>]*>`, "gi");
+    re.lastIndex = start;
+    let depth = 1;
+    let end = -1;
+    for (let t = re.exec(html); t && end < 0; t = re.exec(html)) {
+      depth += t[1] ? -1 : 1;
+      if (depth === 0) end = t.index;
+      if (t.index - start > 4000) break;
+    }
+    if (end > 0) out.push(html.slice(start, end));
+  }
+  return out;
+}
+
+/** An author bio element's inner HTML, only inside a container that names the author. */
+function authorBios(html: string, name: string): string[] {
+  const want = name.trim().toLowerCase();
+  const bios: string[] = [];
+  for (const box of bylineContainers(html)) if (toText(box).toLowerCase().includes(want) || /\bbio\b/i.test(box)) bios.push(box);
+  for (const m of html.matchAll(/<(div|p|section|aside)\b[^>]*class=["'][^"']*\b(?:author[-_]{1,2}bio|bio|author-description|author__description)\b[^"']*["'][^>]*>([\s\S]{0,3000}?)<\/\1>/gi)) {
+    if (toText(m[2]).toLowerCase().includes(want)) bios.push(m[2]);
+  }
+  return bios;
+}
+
+/**
+ * A phone on the journalist's author page. Theirs only from Person structured data with their name and a telephone, or
+ * printed inside their author bio; any other printed number on the page is the outlet's, and is labeled so.
+ */
+export function authorPagePhone(html: string, name: string): { phone: string; own: boolean } | null {
+  const want = name.trim().toLowerCase();
+  for (const o of jsonLdObjects(html)) {
+    if (typeof o.name === "string" && o.name.trim().toLowerCase() === want && typeof o.telephone === "string") {
+      const p = printedPhone(`Phone: ${o.telephone}`);
+      if (p) return { phone: p, own: true };
+    }
+  }
+  for (const bio of authorBios(html, name)) {
+    const p = printedPhone(bio);
+    if (p) return { phone: p, own: true };
+  }
+  const p = printedPhone(html);
+  return p ? { phone: p, own: false } : null;
+}
+
 /**
  * The author's job title, only from the page: a schema.org Person with their name and a jobTitle, or a title element
  * in the byline (author title, author role, job title). Null otherwise; never guessed. Works on the article and on
@@ -242,8 +306,14 @@ export function jobTitleOf(html: string, name: string): string | null {
       if (t) return t;
     }
   }
-  const m = /<(\w+)\b[^>]*class=["'][^"']*\b(?:(?:author|byline)[-_]{1,2}(?:title|role|position|job)|job[-_]title)\b[^"']*["'][^>]*>([\s\S]{1,200}?)<\/\1>/i.exec(html);
-  return m ? cleanTitle(toText(m[2]), name) : null;
+  // A title element counts only inside the same byline container as their name (never one elsewhere on the page).
+  for (const box of bylineContainers(html)) {
+    if (!toText(box).toLowerCase().includes(want)) continue;
+    const m = TITLE_ELEMENT.exec(box);
+    const t = m ? cleanTitle(toText(m[2]), name) : null;
+    if (t) return t;
+  }
+  return null;
 }
 
 /**
@@ -295,6 +365,7 @@ export function journalistFrom(n: NewsResult, html: string, topic: string, ourDo
     phone: null,
     email,
     emailIsOutlets: false,
+    ...(email ? { emailSource: "page" as const } : {}),
     source: "search",
     status: "new",
     foundAt: new Date().toISOString(),
@@ -439,6 +510,7 @@ function tables(): Promise<void> {
       drafts timestamptz[] NOT NULL DEFAULT '{}',
       attempts timestamptz[] NOT NULL DEFAULT '{}'
     )`;
+    await sql`ALTER TABLE insights_press_drafts ADD COLUMN IF NOT EXISTS hunter timestamptz[] NOT NULL DEFAULT '{}'`;
   })().catch((e) => {
     tablesReady = null;
     throw e;
@@ -687,8 +759,10 @@ export function pitchProblem(text: string, health: boolean): string | null {
  * temporary note from a week or more ago (no second AI then, a limit, a time out). A permanent note (the checks turned
  * it down) leaves it to the owner.
  */
-export function autoDraftable(j: Pick<Journalist, "status" | "pitch" | "pitchNote" | "pitchNoteKind" | "pitchNoteAt">, now = Date.now()): boolean {
+export function autoDraftable(j: Pick<Journalist, "status" | "pitch" | "pitchNote" | "pitchNoteKind" | "pitchNoteAt"> & Partial<Pick<Journalist, "source" | "articleTitle">>, now = Date.now()): boolean {
   if (j.status !== "new" || j.pitch) return false;
+  // Someone the owner added with no article: nothing to write about by itself; the owner drafts it when they want.
+  if (j.source === "owner" && !j.articleTitle?.trim()) return false;
   if (!j.pitchNote) return true;
   if (j.pitchNoteKind === "permanent") return false;
   return !j.pitchNoteAt || now - Date.parse(j.pitchNoteAt) >= 7 * 864e5;
@@ -770,6 +844,7 @@ export async function addManualJournalist(accountId: string, input: ManualInput)
     contactPage: null,
     email: v.email,
     emailIsOutlets: false,
+    ...(v.email ? { emailSource: "owner" as const } : {}),
     phone: v.phone,
     phoneIsOutlets: false,
     status: "new",
@@ -812,39 +887,49 @@ const MAX_JOURNALISTS = 60;
 const ENRICH_PER_RUN = 6;
 const OUTLET_CONTACT_PATHS = ["/contact", "/contact-us", "/about/contact"];
 
-/** A page of the outlet itself (every hop must stay on the outlet's site and be public), or "". */
-async function outletPage(url: string, outletDomain: string, deadline: number): Promise<{ url: string; html: string } | null> {
+/** A page of the outlet itself (every hop must stay on the outlet's site and be public). Null when it isn't there. */
+async function outletPage(url: string, outletDomain: string, deadline: number, issues: string[]): Promise<{ url: string; html: string } | null> {
   const left = deadline - Date.now();
   if (left < 4_000) return null;
-  const r = await siteFetch(url, outletDomain, { timeoutMs: Math.min(6_000, left), maxBytes: 600_000 }).catch(() => null);
+  const r = await siteFetch(url, outletDomain, { timeoutMs: Math.min(6_000, left), maxBytes: 600_000 }).catch((e) => {
+    // A failure to read (not a page that simply isn't there) is seen by the Inspector; the run goes on.
+    console.warn(`press: ${outletDomain} page not read: ${(e as Error).message}`);
+    issues.push(`Contact details couldn't be read from ${outletDomain}.`);
+    return null;
+  });
   if (!r || "refused" in r || r.status >= 400 || !/html/i.test(r.headers["content-type"] ?? "html") || !r.body) return null;
   return { url: r.url, html: r.body };
 }
 
 /**
- * A new journalist's job title, phone and email, only where the outlet prints them: their author page (title, phone),
- * the outlet's published email on its own domain (never another customer's), and the outlet's contact page (its link
- * for "Find contact", and its phone, labeled as the outlet's). Nothing found means nothing filled in.
+ * A journalist's job title, phone and email, only where the outlet prints them: their author page (title; a phone that
+ * is theirs only in their Person data or bio, else the outlet's), the outlet's published email on its own domain (never
+ * another customer's), and the outlet's contact page (its link for "Find contact", and its phone, labeled as the
+ * outlet's). Nothing found means nothing filled in. Failures go to `issues`; the run goes on.
  */
-async function contactDetails(j: Journalist, isOther: (d: string) => boolean, deadline: number): Promise<Partial<Journalist>> {
+async function contactDetails(j: Journalist, isOther: (d: string) => boolean, deadline: number, issues: string[]): Promise<Partial<Journalist>> {
   const patch: Partial<Journalist> = {};
-  const author = j.contactPage && onSite(new URL(j.contactPage).hostname, j.outletDomain) ? await outletPage(j.contactPage, j.outletDomain, deadline) : null;
+  const author = j.contactPage && onSite(new URL(j.contactPage).hostname, j.outletDomain) ? await outletPage(j.contactPage, j.outletDomain, deadline, issues) : null;
   if (author) {
     if (!j.jobTitle) {
       const t = jobTitleOf(author.html, j.name);
       if (t) patch.jobTitle = t;
     }
-    const ph = printedPhone(author.html);
-    if (ph) Object.assign(patch, { phone: ph, phoneIsOutlets: false });
+    const ph = authorPagePhone(author.html, j.name);
+    if (ph) Object.assign(patch, { phone: ph.phone, phoneIsOutlets: !ph.own });
   }
   if (!j.email && deadline - Date.now() > 15_000) {
     const { findContactEmail } = await import("./contact-finder");
-    const e = await findContactEmail(j.articleUrl, j.outletDomain).catch(() => null);
-    if (outletEmailOk(e, j.outletDomain, isOther)) Object.assign(patch, { email: e, emailIsOutlets: true });
+    const e = await findContactEmail(j.articleUrl, j.outletDomain).catch((err) => {
+      console.warn(`press: ${j.outletDomain} email not looked up: ${(err as Error).message}`);
+      issues.push(`The published email of ${j.outletDomain} couldn't be looked up.`);
+      return null;
+    });
+    if (outletEmailOk(e, j.outletDomain, isOther)) Object.assign(patch, { email: e, emailIsOutlets: true, emailSource: "outlet" });
   }
   if (!j.contactPage && !patch.email && !j.email) {
     for (const path of OUTLET_CONTACT_PATHS) {
-      const page = await outletPage(`https://${j.outletDomain}${path}`, j.outletDomain, deadline);
+      const page = await outletPage(`https://${j.outletDomain}${path}`, j.outletDomain, deadline, issues);
       if (!page) continue;
       patch.outletContactPage = page.url;
       const ph = patch.phone ? null : printedPhone(page.html);
@@ -853,6 +938,99 @@ async function contactDetails(j: Journalist, isOther: (d: string) => boolean, de
     }
   }
   return patch;
+}
+
+// ---------- Hunter.io (optional) ----------
+
+/** Hunter lookups per site in seven days. */
+export const HUNTER_WEEKLY_CAP = 10;
+/** Hunter's confidence score an email needs to be shown. */
+export const HUNTER_MIN_SCORE = 70;
+
+export interface HunterFinderData {
+  email?: string | null;
+  score?: number | null;
+  position?: string | null;
+  verification?: { status?: string | null } | null;
+}
+
+/**
+ * Whether Hunter's answer may be shown: an address on the outlet's own domain (never another customer's), a score of
+ * at least 70, and no verification that says it is invalid. The position becomes the job title only when the pages had
+ * none (and is shown "from Hunter").
+ */
+export function hunterAccept(d: HunterFinderData | null | undefined, outletDomain: string, isOther: (d: string) => boolean, hasTitle: boolean): Partial<Journalist> | null {
+  if (!d?.email) return null;
+  const email = String(d.email).trim().toLowerCase();
+  if (!outletEmailOk(email, outletDomain, isOther)) return null;
+  const score = typeof d.score === "number" ? d.score : Number(d.score);
+  if (!Number.isFinite(score) || score < HUNTER_MIN_SCORE) return null;
+  const status = String(d.verification?.status ?? "").toLowerCase();
+  if (["invalid", "undeliverable", "blocked", "disposable"].includes(status)) return null;
+  const patch: Partial<Journalist> = { email, emailIsOutlets: false, emailSource: "hunter", hunterScore: Math.round(score) };
+  const title = !hasTitle && typeof d.position === "string" ? d.position.replace(/\s+/g, " ").trim().slice(0, 80) : "";
+  if (title && /^[\p{L}][\p{L}\s,&'.\/]+$/u.test(title)) Object.assign(patch, { jobTitle: title, jobTitleFromHunter: true });
+  return patch;
+}
+
+/** A Hunter failure in plain words (never with the key in it). */
+export class HunterError extends Error {
+  name = "HunterError";
+}
+
+/** Hunter's Email Finder for one person at one domain. The key goes only to Hunter, never into a log or an error. */
+export async function hunterFind(key: string, domain: string, fullName: string, fetcher: typeof fetch = fetch): Promise<HunterFinderData | null> {
+  const url = `https://api.hunter.io/v2/email-finder?domain=${encodeURIComponent(domain)}&full_name=${encodeURIComponent(fullName)}&api_key=${encodeURIComponent(key)}`;
+  const res = await fetcher(url, { signal: AbortSignal.timeout(10_000) }).catch(() => {
+    throw new HunterError("Hunter didn't answer.");
+  });
+  const body = (await res.json().catch(() => ({}))) as { data?: HunterFinderData; errors?: { id?: string; details?: string }[] };
+  if (res.status === 401) throw new HunterError("Hunter refused the API key. Check the Hunter key in Platform keys.");
+  if (res.status === 429 || res.status === 402 || (res.status === 403 && /quota|limit|plan|credit/i.test(JSON.stringify(body.errors ?? [])))) throw new HunterError("Hunter's monthly search quota is used up. Lookups wait until it renews.");
+  if (res.status === 404 || res.status === 400) return null;
+  if (!res.ok) throw new HunterError(`Hunter answered ${res.status}.`);
+  return body.data ?? null;
+}
+
+/** One of the site's ten Hunter lookups for the week, taken in one statement that refuses at the cap. */
+export async function takeHunterSlot(accountId: string, q: Sql = sql): Promise<boolean> {
+  const stamp = new Date().toISOString();
+  const rows = await q`
+    INSERT INTO insights_press_drafts (account_id, hunter) VALUES (${accountId}, ARRAY[${stamp}::timestamptz])
+    ON CONFLICT (account_id) DO UPDATE SET
+      hunter = array_append(ARRAY(SELECT t FROM unnest(insights_press_drafts.hunter) t WHERE t > now() - interval '7 days'), ${stamp}::timestamptz)
+    WHERE (SELECT count(*) FROM unnest(insights_press_drafts.hunter) t WHERE t > now() - interval '7 days') < ${HUNTER_WEEKLY_CAP}
+    RETURNING account_id`;
+  return rows.length > 0;
+}
+
+/**
+ * Hunter for journalists with a full name and an outlet domain but no email, within the week's ten lookups. Runs only
+ * inside the weekly run (or Find more), so it rests in the Sabbath and while the autopilot is paused. A refused key or
+ * a used up quota stops the lookups for this run and is reported in plain words.
+ */
+async function hunterPass(accountId: string, key: string, isOther: (d: string) => boolean, deadline: number, issues: string[]): Promise<number> {
+  let found = 0;
+  const due = (await readItems<Journalist>(accountId, "journalist")).filter(
+    (j) => !j.email && !j.hunterTriedAt && j.outletDomain && j.name.trim().split(/\s+/).length >= 2 && !isOther(j.outletDomain) && j.status !== "not_interested",
+  );
+  for (const j of due) {
+    if (deadline - Date.now() < 12_000) break;
+    if (!(await takeHunterSlot(accountId))) break;
+    await patchItem(accountId, "journalist", j.id, { hunterTriedAt: new Date().toISOString() });
+    let data: HunterFinderData | null;
+    try {
+      data = await hunterFind(key, j.outletDomain, j.name);
+    } catch (e) {
+      issues.push(e instanceof HunterError ? e.message : "A Hunter lookup failed.");
+      if (e instanceof HunterError && /refused|quota/i.test(e.message)) break;
+      continue;
+    }
+    const patch = hunterAccept(data, j.outletDomain, isOther, Boolean(j.jobTitle));
+    // Written only while no email is there: one the outlet published or the owner typed always stays.
+    if (patch && (await patchItem(accountId, "journalist", j.id, patch, "email"))) found++;
+  }
+  return found;
 }
 
 /** The Journalists agent and paid opportunities, for one site. */
@@ -903,9 +1081,16 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
   // Their job title, phone and email, only from the outlet's own pages, for the newest few within the time left.
   for (const j of fresh.slice(0, ENRICH_PER_RUN)) {
     if (deadline - Date.now() < 20_000) break;
-    const patch = await contactDetails(j, isOther, deadline).catch(() => ({}));
+    const patch = await contactDetails(j, isOther, deadline, issues).catch((e) => {
+      console.warn(`press: contact details failed for ${j.outletDomain}: ${(e as Error).message}`);
+      issues.push(`Contact details couldn't be read from ${j.outletDomain}.`);
+      return {};
+    });
     if (Object.keys(patch).length) await patchItem(accountId, "journalist", j.id, patch);
   }
+  // Hunter.io, when its key is set: a work email for journalists whose outlet publishes none.
+  const hunterKey = (await readPlatformSettings()).hunterApiKey;
+  const hunted = hunterKey ? await hunterPass(accountId, hunterKey, isOther, deadline, issues) : 0;
   // Only the oldest untouched finds go when the list is full: never one the owner marked, added, or one with a pitch.
   await sql`
     DELETE FROM insights_press_items WHERE account_id = ${accountId} AND kind = 'journalist' AND owner = '{}'::jsonb AND data -> 'pitch' IS NULL
@@ -973,7 +1158,7 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
     }
   }
   return {
-    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${paidAdded} new paid ${paidAdded === 1 ? "opportunity" : "opportunities"}`,
+    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${hunted ? `${hunted} ${hunted === 1 ? "email" : "emails"} found by Hunter, ` : ""}${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${paidAdded} new paid ${paidAdded === 1 ? "opportunity" : "opportunities"}`,
     ...(issues.length ? { problem: [...new Set(issues)].join(" ") } : {}),
   };
 }
@@ -1141,8 +1326,8 @@ export async function outreachView(accountId: string) {
     .filter((j) => j.source === "owner" || !isOther(j.outletDomain))
     .map((j) => ({
       ...(j.source !== "owner" && j.email && j.emailIsOutlets && !outletEmailOk(j.email, j.outletDomain, isOther) ? { ...j, email: null } : j),
-      status: (order[j.status as CrmStatus] === undefined ? "new" : j.status) as CrmStatus,
-      due: followUpDue(j, today),
+      status: normalStatus(j.status),
+      due: followUpDue({ ...j, status: normalStatus(j.status) }, today),
     }))
     .sort((a, b) => Number(b.due) - Number(a.due) || order[a.status] - order[b.status] || Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || b.foundAt.localeCompare(a.foundAt));
   return {

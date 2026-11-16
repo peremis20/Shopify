@@ -16,6 +16,7 @@ export function PlatformForm({ settings, onSaved }: {
   const [anthropicKey, setAnthropicKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
   const [serperKey, setSerperKey] = useState("");
+  const [hunterKey, setHunterKey] = useState("");
   const [pagespeedKey, setPagespeedKey] = useState("");
   const [oprKey, setOprKey] = useState("");
   const [keKey, setKeKey] = useState("");
@@ -48,6 +49,7 @@ export function PlatformForm({ settings, onSaved }: {
         pagespeedKey,
         oprKey,
         keKey,
+        hunterApiKey: hunterKey,
         keMonthlyCredits: keCredits,
         resendKey,
         alertsFrom,
@@ -66,6 +68,7 @@ export function PlatformForm({ settings, onSaved }: {
       setPagespeedKey("");
       setOprKey("");
       setKeKey("");
+      setHunterKey("");
       setKeCredits("");
       setResendKey("");
       setAlertsFrom("");
@@ -135,6 +138,7 @@ export function PlatformForm({ settings, onSaved }: {
         {input("pf-serper", "Search results key (serper.dev)", serperKey, setSerperKey, has?.hasSerper)}
         {input("pf-pagespeed", "Google API key for PageSpeed (optional)", pagespeedKey, setPagespeedKey, has?.hasPagespeed)}
         {input("pf-opr", "Open PageRank key (site authority on page one)", oprKey, setOprKey, has?.hasOpr)}
+        {input("pf-hunter", "Hunter.io API key (optional: finds a journalist's work email when their outlet publishes none)", hunterKey, setHunterKey, has?.hasHunter)}
         {input("pf-ke", "Keywords Everywhere API key (rival searches and links, related searches, traffic estimates, backup search volumes)", keKey, setKeKey, has?.hasKe)}
         {has?.hasKe && (has.keLeft != null || has.keSpent != null) && (
           <p className="text-xs text-dash-muted">

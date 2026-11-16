@@ -302,7 +302,7 @@ test("crm: the job title comes only from the page itself", () => {
   assert.equal(jobTitleOf(ld, "Dana Whitfield"), "Senior Health Reporter");
   // Another person's title in the structured data is not theirs.
   assert.equal(jobTitleOf(ld, "Sam Ortiz"), null);
-  assert.equal(jobTitleOf(`<p class="byline">By Dana Whitfield</p><span class="author-title">Features Editor</span>`, "Dana Whitfield"), "Features Editor");
+  assert.equal(jobTitleOf(`<p class="byline">By Dana Whitfield <span class="author-title">Features Editor</span></p>`, "Dana Whitfield"), "Features Editor");
   // Their author page on the outlet (a Person page).
   assert.equal(jobTitleOf(`<script type="application/ld+json">[{"@type":"Person","name":"Dana Whitfield","jobTitle":"Staff Writer"}]</script>`, "Dana Whitfield"), "Staff Writer");
   // Nothing printed: blank, never guessed from the article's words or the outlet.
@@ -401,4 +401,95 @@ test("crm: journalists are searched on the site's product names and searches abo
   const t = productTopics(["ShopCo Magnesium Glycinate 120 Capsules", "ShopCo Ashwagandha Gummies"], ["shopco login", "best magnesium for sleep", "garden tips"], "ShopCo");
   assert.deepEqual(t, ["magnesium glycinate", "best magnesium for sleep", "ashwagandha"]);
   assert.deepEqual(productTopics([], ["anything"], null), []);
+});
+
+// ---------- CRM review fixes and Hunter ----------
+
+import { normalStatus } from "../src/lib/analytics/autopilot/press-crm";
+import { authorPagePhone, HUNTER_WEEKLY_CAP, hunterAccept, HunterError, hunterFind, takeHunterSlot } from "../src/lib/analytics/autopilot/press";
+
+test("crm: a phone on the author page is theirs only from their Person data or bio; otherwise the outlet's", () => {
+  const ld = `<script type="application/ld+json">{"@type":"Person","name":"Dana Whitfield","telephone":"+1 212 555 0142"}</script>`;
+  assert.deepEqual(authorPagePhone(ld, "Dana Whitfield"), { phone: "+1 212 555 0142", own: true });
+  const bio = `<div class="author-bio"><p>Dana Whitfield covers wellness. Phone: (212) 555 0199</p></div><footer>Tel: 212 555 0000</footer>`;
+  assert.deepEqual(authorPagePhone(bio, "Dana Whitfield"), { phone: "(212) 555 0199", own: true });
+  // Only a newsroom number elsewhere on the page: shown, but as the outlet's.
+  assert.deepEqual(authorPagePhone(`<h1>Dana Whitfield</h1><footer>Tel: 212 555 0000</footer>`, "Dana Whitfield"), { phone: "212 555 0000", own: false });
+  // Someone else's Person data is not theirs.
+  assert.equal(authorPagePhone(`<script type="application/ld+json">{"@type":"Person","name":"Sam Ortiz","telephone":"+1 415 555 0100"}</script>`, "Dana Whitfield"), null);
+  assert.equal(authorPagePhone("<p>No numbers.</p>", "Dana Whitfield"), null);
+});
+
+test("crm: a byline title counts only inside the same byline container as the author's name", () => {
+  const same = `<div class="byline"><span class="author-name">Dana Whitfield</span><span class="author-title">Health Editor</span></div>`;
+  assert.equal(jobTitleOf(same, "Dana Whitfield"), "Health Editor");
+  const elsewhere = `<div class="byline">By Dana Whitfield</div><aside><span class="author-title">Editor in Chief</span></aside>`;
+  assert.equal(jobTitleOf(elsewhere, "Dana Whitfield"), null);
+  const otherBox = `<div class="byline">By Sam Ortiz <span class="author-title">Editor</span></div><p>Dana Whitfield</p>`;
+  assert.equal(jobTitleOf(otherBox, "Dana Whitfield"), null);
+  // Nested elements inside the container are fine.
+  const nested = `<div class="author-box"><div><a href="/authors/dana">Dana Whitfield</a></div><div><p class="job-title">Senior Reporter</p></div></div>`;
+  assert.equal(jobTitleOf(nested, "Dana Whitfield"), "Senior Reporter");
+});
+
+test("crm: CSV values that a spreadsheet could run are shown as text", () => {
+  const row = (notes: string) => journalistsCsv([{ name: "A B", outlet: "X", status: "new", notes }]).trim().split("\r\n")[1];
+  assert.match(row("  =1+1"), /"'  =1\+1"$/);
+  assert.match(row("|cmd"), /"'\|cmd"$/);
+  assert.match(row("-5"), /"'-5"$/);
+  assert.match(row("\tx"), /"'\tx"$/);
+  assert.match(row("\rx"), /"'\rx"$/);
+  assert.match(row("plain note"), /"plain note"$/);
+});
+
+test("crm: the earlier statuses read as today's", () => {
+  assert.equal(normalStatus("pitched"), "emailed");
+  assert.equal(normalStatus("dismissed"), "not_interested");
+  assert.equal(normalStatus("covered"), "covered");
+  assert.equal(normalStatus(undefined), "new");
+  assert.equal(normalStatus("anything"), "new");
+});
+
+test("crm: someone the owner added with no article is never drafted automatically", () => {
+  assert.equal(autoDraftable({ status: "new", source: "owner", articleTitle: "" }), false);
+  assert.equal(autoDraftable({ status: "new", source: "owner", articleTitle: "Sleep routines" }), true);
+  assert.equal(autoDraftable({ status: "new", source: "search", articleTitle: "" }), true);
+});
+
+test("hunter: an email is shown only on the outlet's domain with a score of at least 70, labeled as Hunter's", () => {
+  const none = () => false;
+  const ok = hunterAccept({ email: "Dana@DailyHealth.example", score: 91, position: "Health Reporter", verification: { status: "valid" } }, "dailyhealth.example", none, false)!;
+  assert.equal(ok.email, "dana@dailyhealth.example");
+  assert.equal(ok.emailSource, "hunter");
+  assert.equal(ok.hunterScore, 91);
+  assert.equal(ok.emailIsOutlets, false);
+  assert.equal(ok.jobTitle, "Health Reporter");
+  assert.equal(ok.jobTitleFromHunter, true);
+  // The page's own title stays: Hunter's position isn't used.
+  assert.equal(hunterAccept({ email: "dana@dailyhealth.example", score: 91, position: "Reporter" }, "dailyhealth.example", none, true)!.jobTitle, undefined);
+  assert.equal(hunterAccept({ email: "dana@dailyhealth.example", score: 69 }, "dailyhealth.example", none, false), null);
+  assert.equal(hunterAccept({ email: "dana@gmail.com", score: 99 }, "dailyhealth.example", none, false), null);
+  assert.equal(hunterAccept({ email: "dana@dailyhealth.example", score: 95, verification: { status: "invalid" } }, "dailyhealth.example", none, false), null);
+  assert.equal(hunterAccept({ email: "dana@other.example", score: 95 }, "other.example", (d) => d === "other.example", false), null);
+  assert.equal(hunterAccept({ email: null, score: 95 }, "dailyhealth.example", none, false), null);
+  assert.equal(hunterAccept({ email: "dana@dailyhealth.example" }, "dailyhealth.example", none, false), null); // no score, not shown
+});
+
+test("hunter: a refused key or a used up quota is a plain message without the key; lookups are capped atomically", async () => {
+  const reply = (status: number, body: unknown) => (async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+  const secret = "hk_secret_123";
+  await assert.rejects(hunterFind(secret, "x.example", "Dana Whitfield", reply(401, { errors: [{ id: "authentication_failed" }] })), (e: Error) => e instanceof HunterError && /refused the API key/.test(e.message) && !e.message.includes(secret));
+  await assert.rejects(hunterFind(secret, "x.example", "Dana Whitfield", reply(429, {})), (e: Error) => /quota is used up/.test(e.message) && !e.message.includes(secret));
+  await assert.rejects(hunterFind(secret, "x.example", "Dana Whitfield", reply(403, { errors: [{ details: "You have reached your monthly quota" }] })), /quota/);
+  const down = (async () => Promise.reject(new Error(`fetch failed for https://api.hunter.io/?api_key=${secret}`))) as unknown as typeof fetch;
+  await assert.rejects(hunterFind(secret, "x.example", "Dana Whitfield", down), (e: Error) => !e.message.includes(secret));
+  const found = await hunterFind(secret, "x.example", "Dana Whitfield", reply(200, { data: { email: "dana@x.example", score: 80 } }));
+  assert.equal(found?.email, "dana@x.example");
+  // The weekly cap in one conditional statement.
+  const calls: { text: string; values: unknown[] }[] = [];
+  const q: Sql = async (strings, ...values) => (calls.push({ text: strings.join("$").replace(/\s+/g, " "), values }), []);
+  assert.equal(await takeHunterSlot("1", q), false);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].text, /ON CONFLICT \(account_id\) DO UPDATE SET hunter = .* WHERE \(SELECT count\(\*\) FROM unnest\(insights_press_drafts\.hunter\).*< \$ RETURNING/);
+  assert.ok(calls[0].values.includes(HUNTER_WEEKLY_CAP));
 });

@@ -172,7 +172,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
   press: {
     name: "The Journalists agent (reporters on the site's topics, and paid placements)",
     fix: (d) =>
-      /search key|serper/i.test(d ?? "")
+      /Hunter refused/i.test(d ?? "")
+        ? "Check the Hunter.io key in Platform keys. Journalists are still found; only Hunter's email lookups wait."
+        : /Hunter's monthly search quota/i.test(d ?? "")
+          ? "Hunter's monthly quota is used up. Its email lookups wait until it renews, or upgrade the Hunter plan."
+          : /search key|serper/i.test(d ?? "")
         ? "Add a Serper search key in Platform keys, so journalists and paid placements can be searched."
         : /second AI/i.test(d ?? "")
           ? "Add a key for a second AI from a different provider in Platform keys, so pitches can be checked before the owner sees them."

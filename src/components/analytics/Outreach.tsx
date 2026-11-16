@@ -89,7 +89,13 @@ function JournalistRow({ j, onView }: { j: Row; onView: (v: View) => void }) {
         <div className="min-w-0">
           <p className="font-semibold text-dash-ink">
             {j.name}
-            {j.jobTitle ? <span className="font-normal text-dash-muted"> · {j.jobTitle}</span> : null}
+            {j.jobTitle ? (
+              <span className="font-normal text-dash-muted">
+                {" "}
+                · {j.jobTitle}
+                {j.jobTitleFromHunter ? " (from Hunter)" : ""}
+              </span>
+            ) : null}
           </p>
           <p className="text-sm text-dash-ink">{j.outlet}</p>
           {j.articleUrl && (
@@ -113,7 +119,12 @@ function JournalistRow({ j, onView }: { j: Row; onView: (v: View) => void }) {
         </select>
       </div>
       <p className="mt-2 break-words text-sm text-dash-ink [overflow-wrap:anywhere]">
-        {j.email ? <span>{j.email}{j.emailIsOutlets ? " (the outlet's email)" : ""}</span> : null}
+        {j.email ? (
+          <span>
+            {j.email}
+            {j.emailSource === "hunter" ? ` (found by Hunter, score ${j.hunterScore ?? "unknown"})` : j.emailIsOutlets ? " (the outlet's email)" : ""}
+          </span>
+        ) : null}
         {j.email && j.phone ? " · " : null}
         {j.phone ? <span>{j.phone}{j.phoneIsOutlets ? " (the outlet's phone)" : ""}</span> : null}
         {!j.email && contact ? (

@@ -8,6 +8,13 @@ export type CrmStatus = "new" | "emailed" | "replied" | "covered" | "not_interes
 export const CRM_STATUSES: CrmStatus[] = ["new", "emailed", "replied", "covered", "not_interested"];
 export const STATUS_LABEL: Record<CrmStatus, string> = { new: "New", emailed: "Emailed", replied: "Replied", covered: "Covered us", not_interested: "Not interested" };
 
+/** A stored status in today's words: the earlier "pitched" is Emailed, "dismissed" is Not interested, anything else New. */
+export function normalStatus(s: unknown): CrmStatus {
+  if (s === "pitched") return "emailed";
+  if (s === "dismissed") return "not_interested";
+  return CRM_STATUSES.includes(s as CrmStatus) ? (s as CrmStatus) : "new";
+}
+
 /** Days after Emailed that the follow up falls on, unless the owner picks another day. */
 export const FOLLOW_UP_DAYS = 7;
 
@@ -97,7 +104,8 @@ export interface CsvRow {
 /** One CSV cell: quoted, and never read as a formula by a spreadsheet. */
 const cell = (v: unknown) => {
   let s = v === null || v === undefined ? "" : String(v);
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  // A formula sign after any spaces, or a value starting with a tab or carriage return, is shown as text.
+  if (/^\s*[=+\-@|]/.test(s) || /^[\t\r]/.test(s)) s = `'${s}`;
   return `"${s.replace(/"/g, '""')}"`;
 };
 

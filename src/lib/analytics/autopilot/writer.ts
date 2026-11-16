@@ -1514,13 +1514,13 @@ export async function writePressPitch(
     ai,
     `Write a short first email from the owner of ${p.brand ?? p.site} to ${p.name}, a journalist.
 The outlet they write for and their recent article's title, as published:
-${asData(`Outlet: ${p.outlet}\nArticle: ${p.articleTitle}`, 400)}
-The topic they cover that fits this business: ${p.topic}
+${asData(`Outlet: ${p.outlet}${p.articleTitle.trim() ? `\nArticle: ${p.articleTitle}` : ""}`, 400)}
+${p.topic ? `The topic they cover that fits this business: ${p.topic}` : ""}
 What the business offers (its own words): ${p.offer}
 ${p.expertise ? `What it knows well (its own words): ${p.expertise}` : ""}
 What to offer them: ${p.offerKind === "sample" ? "a free sample of the product to review, with no obligation to write about it" : "a short expert quote or background on the topic for a future story"}.
 "subject": under ten words, plain, no clickbait.
-"body": three to five plain sentences. Mention their article naturally, say who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
+"body": three to five plain sentences. ${p.articleTitle.trim() ? "Mention their article naturally, say" : "Don't mention any article of theirs (none is known), say"} who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
 ${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
 No hyphens or dashes, no emojis, no exclamation marks.`,
     { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"] },

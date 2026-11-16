@@ -32,6 +32,8 @@ export interface PlatformSettings {
   pagespeedKey?: string;
   /** Open PageRank (free), for the authority of the sites on Google page one. */
   oprKey?: string;
+  /** Hunter.io (optional), to find a journalist's work email when their outlet doesn't publish one. */
+  hunterApiKey?: string;
   /** Keywords Everywhere, for the searches rivals rank for and the sites that link to them. */
   keKey?: string;
   /** Keywords Everywhere credits the platform may spend a month (default in keywords-everywhere.ts). */
@@ -78,7 +80,7 @@ export interface AutopilotSettingsView extends AccountAutopilot {
   } | null;
   platformReady: boolean;
   /** Only filled in for admins. */
-  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; keCredits: number | null; keLeft: number | null; keSpent: number | null; hasShopifyApp: boolean; hasThreads: boolean; hasFacebook: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
+  platform?: { hasAnthropic: boolean; hasGemini: boolean; hasGroq: boolean; hasMistral: boolean; hasCerebras: boolean; hasGithub: boolean; hasSerper: boolean; hasPagespeed: boolean; hasOpr: boolean; hasKe: boolean; hasHunter: boolean; keCredits: number | null; keLeft: number | null; keSpent: number | null; hasShopifyApp: boolean; hasThreads: boolean; hasFacebook: boolean; hasEmail: boolean; aiLimit: number | null; searchLimit: number | null };
 }
 
 const PLATFORM_KEY = "platform_autopilot";
@@ -113,6 +115,7 @@ export async function readPlatformSettings(): Promise<PlatformSettings> {
     pagespeedKey: process.env.PAGESPEED_API_KEY || stored.pagespeedKey,
     oprKey: process.env.OPR_API_KEY || stored.oprKey,
     keKey: process.env.KE_API_KEY || stored.keKey,
+    hunterApiKey: process.env.HUNTER_API_KEY || stored.hunterApiKey,
     keMonthlyCredits: Number(process.env.KE_MONTHLY_CREDITS) || stored.keMonthlyCredits,
     resendKey: process.env.RESEND_API_KEY || stored.resendKey,
     alertsFrom: process.env.ALERTS_FROM || stored.alertsFrom,
@@ -243,7 +246,7 @@ export async function autopilotView(accountId: string, admin: boolean): Promise<
     shopConnected: Boolean(acct.shopDomain && acct.shopTokenEnc),
     platformReady: platformReady(platform),
     platform: admin
-      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), keCredits: platform.keMonthlyCredits ?? null, ...(await keCreditInfo(Boolean(platform.keKey))), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret), hasThreads: Boolean(platform.threadsAppId && platform.threadsAppSecret), hasFacebook: Boolean(platform.facebookAppId && platform.facebookAppSecret) }
+      ? { hasAnthropic: Boolean(platform.anthropicKey), hasGemini: Boolean(platform.geminiKey), hasGroq: Boolean(platform.groqKey), hasMistral: Boolean(platform.mistralKey), hasCerebras: Boolean(platform.cerebrasKey), hasGithub: Boolean(platform.githubModelsKey), hasSerper: Boolean(platform.serperKey), hasPagespeed: Boolean(platform.pagespeedKey), hasOpr: Boolean(platform.oprKey), hasKe: Boolean(platform.keKey), hasHunter: Boolean(platform.hunterApiKey), keCredits: platform.keMonthlyCredits ?? null, ...(await keCreditInfo(Boolean(platform.keKey))), hasEmail: Boolean(platform.resendKey), aiLimit: platform.aiMonthlyLimit ?? null, searchLimit: platform.searchMonthlyLimit ?? null, hasShopifyApp: Boolean(platform.shopifyClientId && platform.shopifyClientSecret), hasThreads: Boolean(platform.threadsAppId && platform.threadsAppSecret), hasFacebook: Boolean(platform.facebookAppId && platform.facebookAppSecret) }
       : undefined,
   };
 }
