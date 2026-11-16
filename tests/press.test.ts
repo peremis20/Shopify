@@ -232,7 +232,7 @@ test("press: the owner's status and dismissals are never overwritten by the agen
   const patch = recorder(() => [{ item_id: "abc" }]);
   assert.equal(await patchItem("1", "journalist", "abc", { pitch: { subject: "s" }, status: "new" }, "pitch", patch.q), true);
   assert.match(patch.calls[0].text, /SET data = data \|\| \$::jsonb/);
-  assert.match(patch.calls[0].text, /data -> \$::text IS NULL/);
+  assert.match(patch.calls[0].text, /data ->> \$::text IS NULL/);
   assert.ok(!/owner/.test(patch.calls[0].text));
   assert.ok(!String(patch.calls[0].values[0]).includes("status"));
   const lost = recorder(() => []);

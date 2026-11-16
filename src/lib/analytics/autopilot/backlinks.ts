@@ -112,14 +112,15 @@ export const isPaidPlacement = (url: string, title = "", snippet = "") => PAID_P
 export const keepAsProspect = (p: Pick<Prospect, "url" | "title" | "snippet">) => !isPaidPlacement(p.url, p.title, p.snippet);
 
 /**
- * A list with the pages that sell placements taken off. One the owner already marked won stays (it is their record),
+ * A list with the pages that sell placements taken off. One the owner already emailed or marked won stays (their record),
  * marked "paid, not counted", so it never counts toward links won or site strength.
  */
 export function withoutPaid(list: ProspectList): ProspectList {
   const prospects: Prospect[] = [];
   for (const p of list.prospects) {
     if (keepAsProspect(p)) prospects.push(p);
-    else if (p.status === "won") prospects.push({ ...p, paid: true });
+    // One the owner already acted on (emailed or won) stays as their record, marked paid so it never counts.
+    else if (p.status !== "new") prospects.push({ ...p, paid: true });
   }
   return { ...list, prospects };
 }

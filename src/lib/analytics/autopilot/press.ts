@@ -381,7 +381,7 @@ export async function addItem(accountId: string, kind: ItemKind, id: string, dat
 export async function patchItem(accountId: string, kind: ItemKind, id: string, patch: Record<string, unknown>, unlessSet: string | null = null, q: Sql = sql): Promise<boolean> {
   const rows = await q`
     UPDATE insights_press_items SET data = data || ${JSON.stringify(withoutOwnerFields(patch))}::jsonb
-    WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id} AND (${unlessSet}::text IS NULL OR data -> ${unlessSet}::text IS NULL)
+    WHERE account_id = ${accountId} AND kind = ${kind} AND item_id = ${id} AND (${unlessSet}::text IS NULL OR data ->> ${unlessSet}::text IS NULL)
     RETURNING item_id`;
   return rows.length > 0;
 }
@@ -415,7 +415,9 @@ async function readItem<T>(accountId: string, kind: ItemKind, id: string): Promi
  * when either cap is reached, so two drafts at once can never pass the cap. The stamp to give back, or null.
  */
 export async function takeDraftSlot(accountId: string, q: Sql = sql): Promise<string | null> {
-  const stamp = new Date().toISOString();
+  // Microseconds added so two drafts in the same millisecond never share a stamp (giving one back removes only its own).
+  const iso = new Date().toISOString();
+  const stamp = `${iso.slice(0, 23)}${String(Math.floor(Math.random() * 1000)).padStart(3, "0")}Z`;
   const rows = await q`
     INSERT INTO insights_press_drafts (account_id, drafts, attempts) VALUES (${accountId}, ARRAY[${stamp}::timestamptz], ARRAY[${stamp}::timestamptz])
     ON CONFLICT (account_id) DO UPDATE SET
