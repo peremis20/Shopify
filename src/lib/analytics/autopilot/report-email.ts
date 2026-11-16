@@ -175,11 +175,11 @@ function salesTile(d: WeeklyReportData, gaRevenue: number, gaBefore: number): st
   if (s && typeof s === "object" && s.week && s.weekBefore) {
     const w = s.week;
     const paid = w.orders - w.free;
-    const amount = w.revenue > 0 ? w.revenue.toFixed(2) : "0";
+    const amount = w.revenue > 0 ? w.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0";
     const value = !s.currency || s.currency === "USD" ? `$${amount}` : `${amount} ${s.currency}`;
     const parts = [`${paid} paid order${paid === 1 ? "" : "s"}`];
     if (w.free) parts.push(`${w.free} free sample${w.free === 1 ? "" : "s"}`);
-    const note = w.orders === 0 ? "No orders this week" : parts.join(", ");
+    const note = (w.orders === 0 ? "No orders this week" : parts.join(", ")) + (s.capped ? " at least" : "");
     const delta = pct(w.revenue, s.weekBefore.revenue);
     return tile("Sales from Shopify", value, null, delta ? `${note}. ${delta.up ? "Up" : "Down"} ${delta.text} from last week` : note);
   }

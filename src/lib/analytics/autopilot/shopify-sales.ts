@@ -52,14 +52,16 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
           test: boolean;
           createdAt: string;
           cancelledAt: string | null;
+          displayFinancialStatus: string | null;
           currentTotalPriceSet: { shopMoney: { amount: string; currencyCode: string } };
+          totalPriceSet: { shopMoney: { amount: string } };
           customerJourneySummary: { firstVisit: Visit | null; lastVisit: Visit | null } | null;
         }[];
       };
     } = await shopifyGql(
       store,
-      `query($q: String!, $after: String) { orders(first: 50, after: $after, query: $q) { pageInfo { hasNextPage endCursor } nodes {
-        test createdAt cancelledAt currentTotalPriceSet { shopMoney { amount currencyCode } }
+      `query($q: String!, $after: String) { orders(first: 50, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor } nodes {
+        test createdAt cancelledAt displayFinancialStatus currentTotalPriceSet { shopMoney { amount currencyCode } } totalPriceSet { shopMoney { amount } }
         customerJourneySummary {
           firstVisit { source referrerUrl landingPage utmParameters { medium } }
           lastVisit { source referrerUrl landingPage utmParameters { medium } }
@@ -67,7 +69,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       { q: `created_at:>=${since}`, after },
     );
     for (const o of d.orders.nodes) {
-      if (o.test || o.cancelledAt) continue;
+      if (o.test || o.cancelledAt || o.displayFinancialStatus === "REFUNDED") continue;
       // After refunds and edits: what the store really kept.
       const amount = Number(o.currentTotalPriceSet.shopMoney.amount) || 0;
       out.orders++;
@@ -78,7 +80,8 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       if (bucket) {
         bucket.orders++;
         bucket.revenue += amount;
-        if (amount === 0) bucket.free++;
+        // Free from the start (a sample), not an order whose money was given back.
+        if ((Number(o.totalPriceSet.shopMoney.amount) || 0) === 0) bucket.free++;
       }
       const j = o.customerJourneySummary;
       // Credited to Google search when the visit that led to the order (or the first one) came from it.

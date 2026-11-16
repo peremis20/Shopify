@@ -138,6 +138,19 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const conn = await getConnection(accountId).catch(() => null);
   const results = conn?.gaPropertyId ? await weekResults(conn).catch((e) => (console.error(`weekly results failed: ${(e as Error).message}`), undefined)) : null;
   lines.push(...resultsLines(results));
+  // The same Shopify sales line as the email's tile, from the store's own orders.
+  const shop = await salesFor(accountId).catch(() => null);
+  if (shop && typeof shop === "object" && shop.week) {
+    const w = shop.week;
+    const paid = w.orders - w.free;
+    const amount = w.revenue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const value = !shop.currency || shop.currency === "USD" ? `$${amount}` : `${amount} ${shop.currency}`;
+    lines.push(
+      w.orders === 0
+        ? "Sales from Shopify, last 7 days: no orders."
+        : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + (shop.capped ? " (at least; more orders than could be read)" : "") + "."
+    );
+  }
   lines.push(...(await backlinkLines(accountId, results ?? null)));
   if (scores.length) lines.push("", "What each agent did:", ...scores.map((s) => `${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`));
   lines.push("", "You can turn these emails off in Autopilot settings.");
