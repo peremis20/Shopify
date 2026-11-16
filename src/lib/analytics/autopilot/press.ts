@@ -980,8 +980,9 @@ export class HunterError extends Error {
 
 /** Hunter's Email Finder for one person at one domain. The key goes only to Hunter, never into a log or an error. */
 export async function hunterFind(key: string, domain: string, fullName: string, fetcher: typeof fetch = fetch): Promise<HunterFinderData | null> {
-  const url = `https://api.hunter.io/v2/email-finder?domain=${encodeURIComponent(domain)}&full_name=${encodeURIComponent(fullName)}&api_key=${encodeURIComponent(key)}`;
-  const res = await fetcher(url, { signal: AbortSignal.timeout(10_000) }).catch(() => {
+  // The key goes in a header, never in the address, so it stays out of any proxy or access log.
+  const url = `https://api.hunter.io/v2/email-finder?domain=${encodeURIComponent(domain)}&full_name=${encodeURIComponent(fullName)}`;
+  const res = await fetcher(url, { headers: { "X-API-KEY": key }, signal: AbortSignal.timeout(10_000) }).catch(() => {
     throw new HunterError("Hunter didn't answer.");
   });
   const body = (await res.json().catch(() => ({}))) as { data?: HunterFinderData; errors?: { id?: string; details?: string }[] };
@@ -1017,10 +1018,11 @@ async function hunterPass(accountId: string, key: string, isOther: (d: string) =
   for (const j of due) {
     if (deadline - Date.now() < 12_000) break;
     if (!(await takeHunterSlot(accountId))) break;
-    await patchItem(accountId, "journalist", j.id, { hunterTriedAt: new Date().toISOString() });
     let data: HunterFinderData | null;
     try {
       data = await hunterFind(key, j.outletDomain, j.name);
+      // Marked tried only once Hunter answered, so a refused key or a pause in service doesn't stop it for good.
+      await patchItem(accountId, "journalist", j.id, { hunterTriedAt: new Date().toISOString() });
     } catch (e) {
       issues.push(e instanceof HunterError ? e.message : "A Hunter lookup failed.");
       if (e instanceof HunterError && /refused|quota/i.test(e.message)) break;
