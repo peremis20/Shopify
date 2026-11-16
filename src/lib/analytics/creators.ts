@@ -541,7 +541,7 @@ export async function accountsDueForCreators(limit: number): Promise<string[]> {
 }
 
 /** The site's own topics: top searches, product names (its own product pages) and the profile's offer. */
-async function siteTopics(accountId: string, profile: Profile): Promise<{ searches: string[]; products: string[] }> {
+export async function siteTopics(accountId: string, profile: Profile): Promise<{ searches: string[]; products: string[] }> {
   const searches: string[] = [];
   const conn = await getConnection(accountId).catch(() => null);
   if (conn?.gscSiteUrl) {

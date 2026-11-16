@@ -3,6 +3,7 @@ import { parsePage, toText } from "../site-crawl";
 import { pageKind } from "../landing";
 import { safeFetch } from "./broken-links";
 import { siteFetch } from "./site-fetch";
+import { runWeekly, saveRunMarker, type RunOutcome } from "./weekly-run";
 import { isRisky } from "./claims";
 import { autopilotCanEdit } from "./guards";
 import { isSabbath } from "./sabbath";
@@ -625,12 +626,7 @@ export async function accountsDueForStoreAudit(limit: number): Promise<string[]>
  * comes back in a day; anything else in a week. Saved before the work starts and again on every exit, so one site
  * can never hold up the queue, even when its run is killed.
  */
-async function saveMarker(accountId: string, note: string, retryInDays = 7): Promise<void> {
-  const back = Math.max(0, 7 - retryInDays);
-  await sql`
-    INSERT INTO insights_settings (key, value, updated_at) VALUES (${runKey(accountId)}, ${JSON.stringify({ at: new Date().toISOString(), note })}, now() - make_interval(days => ${back}))
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
-}
+const saveMarker = (accountId: string, note: string, retryInDays = 7) => saveRunMarker(runKey(accountId), note, retryInDays);
 
 /** The marker saved before the work starts; it stays only when the run is killed before it ends. */
 export const STARTED_NOTE = "The last store audit didn't finish. It tries again within a day.";
@@ -652,14 +648,7 @@ export interface RunDeps {
   audit: (accountId: string, deadline: number) => Promise<AuditOutcome>;
 }
 
-export interface AuditOutcome {
-  note: string;
-  /** A normal wait (paused, not a store, not yet shown to be the account's): nothing is reported either way. */
-  skip?: boolean;
-  retryInDays?: number;
-  /** Something the Inspector must see, in plain words: reported as not working. */
-  problem?: string;
-}
+export type AuditOutcome = RunOutcome;
 
 const DEFAULT_DEPS: RunDeps = {
   sabbath: () => isSabbath(),
@@ -670,35 +659,20 @@ const DEFAULT_DEPS: RunDeps = {
 };
 
 /**
- * One site's store audit. Rests in the Sabbath and while the autopilot is paused. A provisional marker is saved before
- * the work starts and the real one on every exit, and the status board says how it went, so a broken or killed run
- * never blocks the others and no failure is quiet.
+ * One site's store audit, through the shared weekly run (weekly-run.ts): rests in the Sabbath and while the autopilot is
+ * paused, a provisional marker before the work and the real one on every exit, and the status board hears how it went.
  */
-export async function runStoreAudit(accountId: string, deadline = Date.now() + 120_000, deps: RunDeps = DEFAULT_DEPS): Promise<string> {
-  const mark = (note: string, days?: number) =>
-    deps.mark(accountId, note, days).catch((e) => console.error(`store audit not marked for account ${accountId}: ${(e as Error).message}`));
-  if (deps.sabbath()) {
-    await mark("Store audit rests for the Sabbath.", 1);
-    return "Store audit rests for the Sabbath.";
-  }
-  try {
-    if (!(await deps.autopilotOn(accountId))) {
-      await mark("Store audit skipped: the autopilot is paused.");
-      return "Store audit skipped: the autopilot is paused.";
-    }
-    await mark(STARTED_NOTE, 1);
-    const r = await deps.audit(accountId, deadline);
-    await mark(r.note, r.retryInDays);
-    if (r.problem) await deps.report(false, r.problem);
-    else if (!r.skip) await deps.report(true, null);
-    return r.note;
-  } catch (e) {
-    const plain = plainFailure(e);
-    console.error(`store audit failed for account ${accountId}: ${(e as Error)?.message ?? e}`);
-    await mark(plain);
-    await deps.report(false, `${plain} (${String((e as Error)?.message ?? e).slice(0, 200)})`);
-    return plain;
-  }
+export function runStoreAudit(accountId: string, deadline = Date.now() + 120_000, deps: RunDeps = DEFAULT_DEPS): Promise<string> {
+  return runWeekly({
+    name: "Store audit",
+    started: STARTED_NOTE,
+    sabbath: deps.sabbath,
+    autopilotOn: () => deps.autopilotOn(accountId),
+    mark: (note, days) => deps.mark(accountId, note, days),
+    report: deps.report,
+    work: () => deps.audit(accountId, deadline),
+    plainFailure,
+  });
 }
 
 /** Whether the owner's Run now is allowed: once a day. */

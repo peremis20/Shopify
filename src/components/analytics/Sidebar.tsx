@@ -25,7 +25,7 @@ export const NAV_SIMPLE: NavItem[] = [
   { id: "home", label: "Dashboard", icon: HomeIcon },
   { id: "keywords", label: "Keywords", icon: KeyIcon },
   { id: "content", label: "Content", icon: FileIcon },
-  { id: "backlinks", label: "Backlinks", icon: PlugIcon },
+  { id: "outreach", label: "Outreach", icon: PlugIcon },
   { id: "report", label: "Report", icon: ListIcon },
   { id: "settings", label: "Settings", icon: BoltIcon },
 ];

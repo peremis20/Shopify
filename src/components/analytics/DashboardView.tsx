@@ -24,7 +24,8 @@ import { Scorecard } from "./Scorecard";
 import { WeeklyReport } from "./WeeklyReport";
 import { BusinessProfile } from "./BusinessProfile";
 import { ShareKits } from "./ShareKits";
-import { SocialAgent } from "./SocialAgent";
+import { CommunitiesCard, SocialAgent } from "./SocialAgent";
+import { Outreach } from "./Outreach";
 import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
 import { ExpertReview } from "./ExpertReview";
@@ -39,7 +40,7 @@ const RANGE_STORAGE_KEY = "insights.range";
 const MODE_STORAGE_KEY = "insights.view";
 const SEEN_STORAGE_KEY = "insights.seen";
 
-type AdvTab = "overview" | "search" | "visitors" | "sales" | "autopilot";
+type AdvTab = "overview" | "search" | "visitors" | "sales" | "autopilot" | "outreach";
 
 const ADV_TABS: { id: AdvTab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -47,6 +48,7 @@ const ADV_TABS: { id: AdvTab; label: string }[] = [
   { id: "visitors", label: "Visitors" },
   { id: "sales", label: "Sales" },
   { id: "autopilot", label: "Autopilot" },
+  { id: "outreach", label: "Outreach" },
 ];
 
 /** Which tab holds each menu item's card. */
@@ -80,7 +82,7 @@ export function DashboardView() {
   const homeReady = Boolean(data) && !loading;
   useEffect(() => {
     if (!homeReady) return;
-    const t = setTimeout(() => setOpened((cur) => new Set<SimplePage>([...cur, "content", "backlinks", "report", "settings"])), 800);
+    const t = setTimeout(() => setOpened((cur) => new Set<SimplePage>([...cur, "content", "outreach", "report", "settings"])), 800);
     return () => clearTimeout(t);
   }, [homeReady]);
   const keep = (p: SimplePage) => opened.has(p) || page === p;
@@ -412,20 +414,23 @@ export function DashboardView() {
                     onAutoPreviewDone={() => setPreviewRequested(false)}
                   />
                   <ShareKits />
-                  <SocialAgent />
-                  <Creators />
+                  <SocialAgent communities={false} />
                   <ExpertReview />
                   </ErrorBoundary>
                 </div>
               )}
-              {keep("backlinks") && (
-                <div hidden={page !== "backlinks"}>
-                  <ErrorBoundary where="backlinks">
-                  <Card className="mt-5">
-                    <CardHeader title="Backlinks" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
+              {keep("outreach") && (
+                <div hidden={page !== "outreach"}>
+                  <ErrorBoundary where="outreach">
+                  {/* Journalists, Media requests and Paid opportunities, then Links, Creators and Communities. */}
+                  <Outreach />
+                  <Card className="mt-6">
+                    <CardHeader title="Links" icon={<KeyIcon className="h-5 w-5 text-dash-green" />} />
                     <SiteAuthority />
                     <Backlinks />
                   </Card>
+                  <Creators />
+                  <CommunitiesCard />
                   </ErrorBoundary>
                 </div>
               )}
@@ -741,6 +746,16 @@ export function DashboardView() {
           />
           </div>
 
+          <div className={show("outreach")}>
+          {tab === "outreach" && (
+            <>
+              <Outreach />
+              <Creators />
+              <CommunitiesCard />
+            </>
+          )}
+          </div>
+
           <div className={show("search")}>
           <RankHealth connected={connection?.mode === "oauth"} />
 
@@ -779,7 +794,7 @@ const SIMPLE_TITLE: Record<SimplePage, string> = {
   home: "Welcome back!",
   keywords: "Keywords",
   content: "Content",
-  backlinks: "Backlinks",
+  outreach: "Outreach",
   report: "Report",
   settings: "Settings",
 };
@@ -787,7 +802,7 @@ const SIMPLE_SUB: Record<SimplePage, string> = {
   home: "Here's how your site is doing on Google, and what to do next.",
   keywords: "What people search for, how hard each one is, and where you rank.",
   content: "Every change the autopilot made, new articles, and your site's health.",
-  backlinks: "Websites that could link to you, with the email written for each one.",
+  outreach: "Journalists, media requests, paid placements, links, creators and communities, with every message written for you to send.",
   report: "This week's results: visits, leads and sales, backlinks and what each agent did.",
   settings: "Your connected accounts and apps.",
 };

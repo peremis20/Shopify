@@ -182,8 +182,23 @@ function Communities({ items }: { items: AgentState["communities"] }) {
   );
 }
 
+/** Communities to join, on its own card (the Outreach tab). */
+export function CommunitiesCard() {
+  const [items, setItems] = useState<AgentState["communities"] | null>(null);
+  useEffect(() => {
+    api<AgentState>("/api/social/agent").then((s) => setItems(s.communities)).catch(() => setItems(null));
+  }, []);
+  if (items === null) return null;
+  return (
+    <Card className="mt-6">
+      <CardHeader title="Communities" />
+      {items.length ? <Communities items={items} /> : <p className="text-sm text-dash-muted">No communities to join yet. The weekly list comes from your own searches.</p>}
+    </Card>
+  );
+}
+
 /** The social helper: post and answer drafts for the owner to approve, and the automatic posting switches. */
-export function SocialAgent() {
+export function SocialAgent({ communities = true }: { communities?: boolean }) {
   const [state, setState] = useState<AgentState | null>(null);
   const [threads, setThreads] = useState<ThreadsInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -191,7 +206,7 @@ export function SocialAgent() {
     api<AgentState>("/api/social/agent").then(setState).catch(() => setState(null));
     api<ThreadsInfo>("/api/social/threads").then(setThreads).catch(() => setThreads(null));
   }, []);
-  if (!threads?.configured && !state?.communities.length && !state?.landingNotes?.length) return null;
+  if (!threads?.configured && !(communities && state?.communities.length) && !state?.landingNotes?.length) return null;
 
   const act = async (type: "post" | "reply", id: string, action: "approve" | "skip", text: string | null) => {
     const next = await api<AgentState>("/api/social/agent", { type, id, action, ...(text !== null ? { text } : {}) });
@@ -297,7 +312,7 @@ export function SocialAgent() {
         </>
       )}
       <PageNotes notes={state?.landingNotes ?? []} />
-      <Communities items={state?.communities ?? []} />
+      {communities && <Communities items={state?.communities ?? []} />}
     </Card>
   );
 }

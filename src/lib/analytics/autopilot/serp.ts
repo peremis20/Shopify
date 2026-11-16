@@ -106,6 +106,52 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
   return data;
 }
 
+export interface NewsResult {
+  title: string;
+  link: string;
+  domain: string;
+  snippet: string;
+  /** The outlet's name as the search shows it. */
+  source: string;
+  /** The date as the search shows it ("3 days ago", "Nov 2, 2026"), never worked out. */
+  date: string | null;
+}
+
+/**
+ * Recent news and magazine articles for a search (the last month), from the same search results API as fetchSerp,
+ * cached for a day and counted against the site's search limit the same way.
+ */
+export async function fetchNews(apiKey: string, query: string): Promise<NewsResult[]> {
+  const cacheKey = `news:${crypto.createHash("sha256").update(`us|en|m|${query.toLowerCase()}`).digest("hex")}`;
+  await ensureSchema();
+  const [row] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${cacheKey} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
+  if (row?.data) return JSON.parse(row.data) as NewsResult[];
+  await spend("search");
+  const res = await fetch("https://google.serper.dev/news", {
+    method: "POST",
+    headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ q: query, gl: "us", hl: "en", num: 10, tbs: "qdr:m" }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if ([401, 402, 403, 429].includes(res.status) || res.status >= 500) await report("serper", false, `${res.status}: ${body?.message ?? "news lookup failed"}`);
+    throw new Error(`News lookup failed: ${body?.message ?? res.status}`);
+  }
+  await report("serper", true);
+  const data: NewsResult[] = ((body.news ?? []) as { title?: string; link?: string; snippet?: string; source?: string; date?: string }[])
+    .filter((r) => r.link)
+    .slice(0, 10)
+    .map((r) => ({ title: r.title ?? "", link: r.link!, domain: domainOf(r.link!), snippet: r.snippet ?? "", source: r.source ?? "", date: r.date ?? null }));
+  await sql`
+    INSERT INTO insights_report_cache (cache_key, data, fetched_at)
+    VALUES (${cacheKey}, ${JSON.stringify(data)}::jsonb, now())
+    ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
+  return data;
+}
+
 // Sites whose pages are not ordinary articles we can learn from (or block plain fetches).
 const SKIP_DOMAINS = /(^|\.)(amazon|reddit|youtube|wikipedia|facebook|instagram|pinterest|tiktok|quora|walmart|target|ebay|x|twitter)\.[a-z.]+$/;
 

@@ -21,6 +21,19 @@ import crypto from "crypto";
 import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
+import {
+  accountsDueForMediaRequests,
+  accountsDueForPress,
+  dismissPaid,
+  dismissRequest,
+  draftAnswer,
+  draftPitch,
+  outreachView,
+  runMediaRequests,
+  runPress,
+  setJournalistStatus,
+  type JournalistStatus,
+} from "./autopilot/press";
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
@@ -1679,6 +1692,26 @@ export async function autopilotTick(): Promise<Response> {
       );
       if (note) results.push(`account ${accountId} store audit: ${note}`);
     }
+    // The Journalists agent (with paid placements) and Media requests: weekly per site, one site per hour each. Each run
+    // saves a provisional marker first and the real one on every exit, and reports to the status board (weekly-run.ts).
+    for (const accountId of late() ? [] : await accountsDueForPress(1).catch(async (e) => {
+      console.error(`press list failed: ${message(e)}`);
+      await report("press", false, `The list of sites due for the journalist search couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runPress(accountId, Math.min(Date.now() + 150_000, started + budget))).catch((e) => (console.error(`press failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} journalists: ${note}`);
+    }
+    for (const accountId of late() ? [] : await accountsDueForMediaRequests(1).catch(async (e) => {
+      console.error(`media request list failed: ${message(e)}`);
+      await report("media-requests", false, `The list of sites due for the media request search couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runMediaRequests(accountId, Math.min(Date.now() + 90_000, started + budget))).catch((e) => (console.error(`media requests failed: ${message(e)}`), null));
+      if (note) results.push(`account ${accountId} media requests: ${note}`);
+    }
     // The Index rescue: once a week per site, a page Google crawled but left out gets a substantial new section.
     // Sites with nothing waiting stay due (they're skipped quickly), so up to 5 are looked at and one is worked on.
     for (const accountId of late() ? [] : await accountsDueForRescue(5)) {
@@ -2053,6 +2086,31 @@ export const storeAuditApi = (req: Request) =>
       await runStoreAudit(account.id, Date.now() + 100_000);
     }
     return json(await storeAuditView(account.id));
+  });
+
+/**
+ * The Outreach tab: journalists with their pitches, media requests with source answers, and paid opportunities. The
+ * owner sets each journalist's status and sends everything themselves; nothing is sent or bought from here.
+ */
+export const outreachApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; url?: string; status?: string };
+      try {
+        if (b.action === "status") await setJournalistStatus(account.id, String(b.id ?? ""), String(b.status ?? "") as JournalistStatus);
+        else if (b.action === "dismiss-paid") await dismissPaid(account.id, String(b.url ?? ""));
+        else if (b.action === "dismiss-request") await dismissRequest(account.id, String(b.url ?? ""));
+        else if (b.action === "pitch" || b.action === "answer") {
+          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Draft it again after Saturday sundown." }, 409);
+          if (!(await readAccountAutopilot(account.id)).enabled) return json({ error: "The autopilot is paused. Turn it on to write drafts." }, 409);
+          const out = b.action === "pitch" ? await draftPitch(account.id, String(b.id ?? "")) : await draftAnswer(account.id, String(b.url ?? ""));
+          if (!out.ok) return json({ error: out.error }, out.status);
+        } else return json({ error: "Nothing to do." }, 400);
+      } catch (err) {
+        return json({ error: publicError(err, "outreach") }, 400);
+      }
+    }
+    return json(await outreachView(account.id));
   });
 
 /** Stops posting to Threads: the saved access is deleted. */

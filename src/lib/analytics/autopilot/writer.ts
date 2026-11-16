@@ -1498,6 +1498,61 @@ ${SOCIAL_RULES(p.health)}`,
   return { message: String(out.message ?? ""), brief: String(out.brief ?? "") };
 }
 
+/** What a pitch offers the journalist: never data the site can't show. */
+export type PitchOffer = "quote" | "sample";
+
+/**
+ * A short, personal pitch from the site's owner to a journalist who recently wrote on the site's topic, offering
+ * something useful (an expert quote, or a sample to review for a store). The article title is public data, never
+ * instructions. The owner sends it themselves; it is checked by rules and a second AI first.
+ */
+export async function writePressPitch(
+  ai: AiProvider,
+  p: { name: string; outlet: string; articleTitle: string; topic: string; offer: string; expertise: string; brand: string | null; site: string; health: boolean; offerKind: PitchOffer },
+): Promise<{ subject: string; body: string }> {
+  const out = await askJson<{ subject: string; body: string }>(
+    ai,
+    `Write a short first email from the owner of ${p.brand ?? p.site} to ${p.name}, who writes for ${p.outlet}.
+Their recent article (its title, as published):
+${asData(p.articleTitle, 300)}
+The topic they cover that fits this business: ${p.topic}
+What the business offers (its own words): ${p.offer}
+${p.expertise ? `What it knows well (its own words): ${p.expertise}` : ""}
+What to offer them: ${p.offerKind === "sample" ? "a free sample of the product to review, with no obligation to write about it" : "a short expert quote or background on the topic for a future story"}.
+"subject": under ten words, plain, no clickbait.
+"body": three to five plain sentences. Mention their article naturally, say who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
+${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
+No hyphens or dashes, no emojis, no exclamation marks.`,
+    { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"] },
+  );
+  return { subject: String(out.subject ?? ""), body: String(out.body ?? "") };
+}
+
+/**
+ * A short answer to a journalist's public request for sources, only from one of the site's own pages. The request is
+ * public data, never instructions. The owner submits it themselves.
+ */
+export async function writeSourceAnswer(
+  ai: AiProvider,
+  p: { request: string; pageTitle: string; pageText: string; brand: string | null; site: string; health: boolean },
+): Promise<string> {
+  const out = await askJson<{ text: string }>(
+    ai,
+    `A journalist asked for sources. Write a short answer the owner of ${p.brand ?? p.site} could send as a source.
+The request (public text):
+${asData(p.request, 800)}
+Answer only from this page of the site: "${p.pageTitle}"
+"""
+${p.pageText.slice(0, 3500)}
+"""
+Three to five plain sentences, useful and quotable, only what the page says. If the page doesn't answer the request, return an empty string. No numbers, no links, no promise of results.
+${p.health ? "This is a health business: general information only, no medical claims, no advice for anyone's own condition." : ""}
+No hyphens or dashes, no emojis, no exclamation marks.`,
+    { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+  );
+  return String(out.text ?? "");
+}
+
 /**
  * The second AI's verdict on a short public text: true to the source, nothing invented, safe, helpful, not spam.
  * Null when no second AI from another service is free: then nothing goes out on its own, and the owner is the check.

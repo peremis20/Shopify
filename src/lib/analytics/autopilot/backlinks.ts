@@ -97,6 +97,18 @@ const MAX = 80;
 export const NOT_PROSPECTS =
   /(^|\.)(facebook|instagram|twitter|x|tiktok|linkedin|pinterest|youtube|reddit|quora|amazon|ebay|walmart|etsy|target|wikipedia|google|yelp|tripadvisor|indeed|glassdoor|medium)\.[a-z.]+$/i;
 
+/**
+ * A page that sells placements (advertising, sponsorship, sponsored posts, media kits). Never a backlink prospect: a
+ * link bought there is a paid link, which Google requires to be rel="sponsored". Those pages are listed apart, as paid
+ * opportunities (press.ts), and never count toward backlinks.
+ */
+const PAID_PLACEMENT =
+  /advertis(?:e|ing) with us|\/advertis(?:e|ing)\b|media[ -]?kit|rate ?card|\bsponsor(?:ship|ships|ed (?:post|posts|content|article|articles)|\s+us|\s+our|\s+the newsletter|\s+an episode)\b|\/sponsor|advertorial|partner with us|paid (?:placement|post)s?|\bad (?:spots?|slots?|rates?)\b/i;
+export const isPaidPlacement = (url: string, title = "", snippet = "") => PAID_PLACEMENT.test(`${url} ${title} ${snippet}`);
+
+/** Whether a find may go on the backlink list at all: never a page that sells placements. */
+export const keepAsProspect = (p: Pick<Prospect, "url" | "title" | "snippet">) => !isPaidPlacement(p.url, p.title, p.snippet);
+
 export async function readProspects(accountId: string): Promise<ProspectList | null> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
@@ -181,7 +193,7 @@ export async function findProspects(accountId: string, serperKey: string, ourDom
     for (const r of serp?.organic ?? []) {
       const domain = r.domain.toLowerCase().replace(/^www\./, "");
       if (domain === ours || domain.endsWith(`.${ours}`) || NOT_PROSPECTS.test(domain) || isBig(domain) || isOtherClient(domain)) continue;
-      if (found.has(r.link)) continue;
+      if (found.has(r.link) || isPaidPlacement(r.link, r.title, r.snippet ?? "")) continue;
       found.set(r.link, { url: r.link, domain, title: r.title, snippet: r.snippet ?? "", kind, topic, authority: null, status: "new", foundAt: new Date().toISOString() });
     }
   }
@@ -245,6 +257,8 @@ export async function upsertProspects(accountId: string, updates: Prospect[], ou
   const list = (await readProspects(accountId)) ?? { updatedAt: new Date().toISOString(), prospects: [] };
   // Sites not on the list yet are checked by the second AI first; upgrades to a listed page were checked when found.
   const listed = new Set(list.prospects.map((p) => p.url));
+  // Pages that sell placements never become backlink prospects, from any agent.
+  updates = updates.filter(keepAsProspect);
   const newOnes = updates.filter((u) => !listed.has(u.url));
   const passed = new Set(await reviewed(accountId, ourSite, newOnes));
   updates = updates.filter((u) => listed.has(u.url) || passed.has(u));

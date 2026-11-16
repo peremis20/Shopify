@@ -169,6 +169,34 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     fix: () => "It tries again next hour by itself.",
     workaround: "The pages already checked stay on the list until the next pass.",
   },
+  press: {
+    name: "The Journalists agent (reporters on the site's topics, and paid placements)",
+    fix: (d) =>
+      /search key|serper/i.test(d ?? "")
+        ? "Add a Serper search key in Platform keys, so journalists and paid placements can be searched."
+        : /second AI/i.test(d ?? "")
+          ? "Add a key for a second AI service (Claude and Groq) in Platform keys, so pitches can be checked before the owner sees them."
+          : /AI key/i.test(d ?? "")
+            ? "Add an AI key in Platform keys, so pitches can be written."
+            : /limit/i.test(d ?? "")
+              ? "The site used its monthly limit for searches or AI. Raise it in Platform keys or wait for next month; the list from before stays."
+              : /customer list/i.test(d ?? "")
+                ? "The customer list couldn't be read, so nothing was saved. It tries again within a day by itself."
+                : "It tries again next week by itself; the list from before stays.",
+    workaround: "Nothing is ever sent to a journalist by DashPatrol; the owner sends every pitch, and the list from before stays.",
+  },
+  "media-requests": {
+    name: "Media requests (journalists asking for sources)",
+    fix: (d) =>
+      /search key|serper/i.test(d ?? "")
+        ? "Add a Serper search key in Platform keys, so media requests can be searched."
+        : /limit/i.test(d ?? "")
+          ? "The site used its monthly search limit. Raise it in Platform keys or wait for next month."
+          : /customer list/i.test(d ?? "")
+            ? "The customer list couldn't be read, so nothing was saved. It tries again within a day by itself."
+            : "It tries again by itself; the requests from before stay.",
+    workaround: "The Outreach tab lists the sites where the owner can sign up to get requests directly.",
+  },
   "store-audit": {
     name: "The Store audit (key pages checked for what stops a sale)",
     fix: (d) =>
