@@ -1536,15 +1536,15 @@ ${m.fix}
         SELECT 1 FROM insights_press_items p WHERE p.account_id = ${e} AND p.kind = 'journalist' AND (
           (coalesce(x.v -> 'data' ->> 'email', '') <> '' AND lower(p.data ->> 'email') = lower(x.v -> 'data' ->> 'email'))
           OR (coalesce(x.v -> 'data' ->> 'email', '') = ''
-            AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'name')), '\s+', ' ', 'g')
-            AND regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'outlet')), '\s+', ' ', 'g'))))
+            AND regexp_replace(lower(trim(p.data ->> 'name')), '[[:space:]]+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'name')), '[[:space:]]+', ' ', 'g')
+            AND regexp_replace(lower(trim(p.data ->> 'outlet')), '[[:space:]]+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'outlet')), '[[:space:]]+', ' ', 'g'))))
     ON CONFLICT (account_id, kind, item_id) DO NOTHING
     RETURNING item_id`).length}async function XU(e,r,t,n,s=g){if(!Array.isArray(r))throw new Error("Nothing to import.");if(r.length>mT)throw new Error(`Send at most ${mT} rows at a time.`);let i=r.map(f=>Array.isArray(f)?f.slice(0,Ll.length).map(_=>_==null?"":String(_)):[]),o=Yw(t)||null,a=zw(i,Ll,new Set,1),c=await vT(e,s);if(a.add.length&&c<=0)throw new Error(Gw);let l=a.add.slice(0,c),u=a.add.slice(c),d=l.map(f=>TT(f,o,n)),p=0;for(let f=0;f<d.length;f+=Wp)p+=await xT(e,d.slice(f,f+Wp),s);let m=[...a.rejects,...u.map(f=>({line:0,reason:Gw,values:_T(f)}))];return{added:p,duplicates:a.duplicates+(d.length-p),rejects:m}}async function QU(e,r,t=g){if(!Array.isArray(r)||!r.length)return 0;let n=[...new Set(r.map(String))].filter(i=>/^[en]:/.test(i)).slice(0,qw),[s]=await t`
     SELECT count(*) AS n FROM jsonb_array_elements_text(${JSON.stringify(n)}::jsonb) k
     WHERE EXISTS (
       SELECT 1 FROM insights_press_items p WHERE p.account_id = ${e} AND p.kind = 'journalist' AND (
         (left(k, 2) = 'e:' AND lower(p.data ->> 'email') = substr(k, 3))
-        OR (left(k, 2) = 'n:' AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') || '|' || regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = substr(k, 3))))`;return Number(s?.n??0)}function NY(e){if(!e||!/\b(?:location|field)\s*:/i.test(e))return null;let r=null,t=null,n=e.replace(/(?:^|(?<=[;\n|]))\s*(location|field)\s*:\s*([^;\n|]*)/gi,(s,i,o)=>{let a=o.trim()||null;return i.toLowerCase()==="location"?r??=a:t??=a,""}).split(/[;\n|]/).map(s=>s.trim()).filter(Boolean).join("; ");return r===null&&t===null?null:{location:r,field:t,rest:n||null}}var OY=`(^|[;|
+        OR (left(k, 2) = 'n:' AND regexp_replace(lower(trim(p.data ->> 'name')), '[[:space:]]+', ' ', 'g') || '|' || regexp_replace(lower(trim(p.data ->> 'outlet')), '[[:space:]]+', ' ', 'g') = substr(k, 3))))`;return Number(s?.n??0)}function NY(e){if(!e||!/\b(?:location|field)\s*:/i.test(e))return null;let r=null,t=null,n=e.replace(/(?:^|(?<=[;\n|]))\s*(location|field)\s*:\s*([^;\n|]*)/gi,(s,i,o)=>{let a=o.trim()||null;return i.toLowerCase()==="location"?r??=a:t??=a,""}).split(/[;\n|]/).map(s=>s.trim()).filter(Boolean).join("; ");return r===null&&t===null?null:{location:r,field:t,rest:n||null}}var OY=`(^|[;|
 ])[[:space:]]*(location|field)[[:space:]]*:`;async function ZU(e,r=g,t=200){let n=0,s=new Set;for(let i=0;i<t;i++){let o=await r`
       SELECT item_id, owner ->> 'notes' AS notes, data ->> 'location' AS location, data ->> 'field' AS field FROM insights_press_items
       WHERE account_id = ${e} AND kind = 'journalist' AND data ->> 'source' = 'owner' AND data ->> 'notesMoved' IS NULL

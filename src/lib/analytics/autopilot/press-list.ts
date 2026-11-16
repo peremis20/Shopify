@@ -307,8 +307,8 @@ export async function insertBatch(accountId: string, items: { id: string; data: 
         SELECT 1 FROM insights_press_items p WHERE p.account_id = ${accountId} AND p.kind = 'journalist' AND (
           (coalesce(x.v -> 'data' ->> 'email', '') <> '' AND lower(p.data ->> 'email') = lower(x.v -> 'data' ->> 'email'))
           OR (coalesce(x.v -> 'data' ->> 'email', '') = ''
-            AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'name')), '\s+', ' ', 'g')
-            AND regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'outlet')), '\s+', ' ', 'g'))))
+            AND regexp_replace(lower(trim(p.data ->> 'name')), '[[:space:]]+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'name')), '[[:space:]]+', ' ', 'g')
+            AND regexp_replace(lower(trim(p.data ->> 'outlet')), '[[:space:]]+', ' ', 'g') = regexp_replace(lower(trim(x.v -> 'data' ->> 'outlet')), '[[:space:]]+', ' ', 'g'))))
     ON CONFLICT (account_id, kind, item_id) DO NOTHING
     RETURNING item_id`;
   return rows.length;
@@ -352,7 +352,7 @@ export async function countExisting(accountId: string, keys: unknown, q: Sql = s
     WHERE EXISTS (
       SELECT 1 FROM insights_press_items p WHERE p.account_id = ${accountId} AND p.kind = 'journalist' AND (
         (left(k, 2) = 'e:' AND lower(p.data ->> 'email') = substr(k, 3))
-        OR (left(k, 2) = 'n:' AND regexp_replace(lower(trim(p.data ->> 'name')), '\s+', ' ', 'g') || '|' || regexp_replace(lower(trim(p.data ->> 'outlet')), '\s+', ' ', 'g') = substr(k, 3))))`;
+        OR (left(k, 2) = 'n:' AND regexp_replace(lower(trim(p.data ->> 'name')), '[[:space:]]+', ' ', 'g') || '|' || regexp_replace(lower(trim(p.data ->> 'outlet')), '[[:space:]]+', ' ', 'g') = substr(k, 3))))`;
   return Number(r?.n ?? 0);
 }
 
