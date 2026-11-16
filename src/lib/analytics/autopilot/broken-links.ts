@@ -70,7 +70,7 @@ export async function accountsDueForBrokenLinks(limit: number): Promise<string[]
 const SKIP_LINKS = /(^|\.)(facebook|instagram|twitter|x|tiktok|linkedin|pinterest|youtube|reddit|google|apple|amazon|bit\.ly|t\.co|wa\.me)\./i;
 
 /** IPv4 and IPv6 addresses that aren't on the public internet. */
-function privateIp(ip: string): boolean {
+export function privateIp(ip: string): boolean {
   if (ip.includes(":")) {
     const v = ip.toLowerCase();
     return v === "::1" || v === "::" || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith("::ffff:") || v.startsWith("64:ff9b:");

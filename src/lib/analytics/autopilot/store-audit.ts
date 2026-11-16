@@ -1,7 +1,8 @@
 import { ensureSchema, sql } from "../db";
 import { parsePage, toText } from "../site-crawl";
 import { pageKind } from "../landing";
-import { readCapped, safeFetch } from "./broken-links";
+import { safeFetch } from "./broken-links";
+import { siteFetch } from "./site-fetch";
 import { isRisky } from "./claims";
 import { autopilotCanEdit } from "./guards";
 import { isSabbath } from "./sabbath";
@@ -322,7 +323,7 @@ export function pageFacts(url: string, kind: KeyKind, html: string): PageFacts {
     pricePresent: price,
     addToCartPresent: addToCart,
     reviewMarkup: /aggregateRating|"@type"\s*:\s*"Review"|itemprop=["'](?:ratingValue|reviewCount|aggregateRating)/i.test(all),
-    reviewWidget: /jdgm[-_]|judge\.me|yotpo|stamped|loox|okendo|reviews\.io|trustpilot|spr-badge|shopify-product-reviews|class=["'][^"']*(?:rating|stars)[^"']*["']/i.test(body),
+    reviewWidget: reviewWidgetIn(html, url),
     shippingInfo: where(/\b(?:shipping|delivery|ships|dispatch(?:ed)?)\b/i, /ship|deliver/i),
     returnsInfo: where(/\b(?:returns?|refunds?|exchanges?|money back)\b/i, /return|refund/i),
     policyLinks,
@@ -333,6 +334,23 @@ export function pageFacts(url: string, kind: KeyKind, html: string): PageFacts {
     buttons: buttons.slice(0, 8),
     ...(kind === "cart" ? { note: "Fetched as a new visitor, so the cart was empty. Judge only what an empty cart page shows." } : {}),
   };
+}
+
+/** Review apps, by the vendor names appNameFor gives their script hosts. */
+const REVIEW_APPS = new Set(["Judge.me", "Yotpo", "Stamped", "Loox", "Okendo", "REVIEWS.io", "Trustpilot"]);
+/** Review widget class, id and data attribute names (never the page's words). */
+const REVIEW_ATTR = /(?:^|[\s_-])(?:jdgm|yotpo|stamped|loox|okendo|reviews-io|trustpilot|spr-badge|spr-reviews|shopify-product-reviews|star-rating|rating-stars|review-widget|reviews-widget)(?:$|[\s_-])/i;
+
+/**
+ * A review app's widget on the page: a script from a review app's own host, or a review widget's class, id or data
+ * attribute. Free text never counts (a page that says "reviews" has no widget for that).
+ */
+export function reviewWidgetIn(html: string, pageUrl: string): boolean {
+  const host = new URL(pageUrl).hostname;
+  if (scriptStats(html, pageUrl, host).sources.some((s) => s.name && REVIEW_APPS.has(s.name))) return true;
+  for (const m of html.matchAll(/<[a-z][\w-]*\b([^>]*)>/gi))
+    for (const a of m[1].matchAll(/\s(?:class|id|data-[\w-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) if (REVIEW_ATTR.test(a[1] ?? a[2] ?? "")) return true;
+  return false;
 }
 
 /** Text that can't close the data block or pose as markup. */
@@ -393,6 +411,19 @@ export function routeFinding(field: ConversionField, url: string, opts: { shopif
 }
 
 /**
+ * Whether a fact was measured as there: true, text found "in the page content", a list with something in it, or a
+ * title, description or main button that exists. "Only a link in the menu or footer" and "not found" are not.
+ */
+export function factPresent(pf: PageFacts, fact: keyof PageFacts): boolean {
+  const v = pf[fact];
+  if (v === true) return true;
+  if (Array.isArray(v)) return v.length > 0;
+  if (fact === "shippingInfo" || fact === "returnsInfo") return v === "in the page content";
+  if (fact === "title" || fact === "metaDescription" || fact === "mainCallToAction") return typeof v === "string" && v.trim().length > 0;
+  return false;
+}
+
+/**
  * The findings that count: the second AI kept them, they name a page that was checked and a fact it has, they don't
  * contradict a fact that was measured as present, and they pass the guards (no number the facts don't hold, no
  * promised results or statistics, no claims, no AI tells). Each is routed to the autopilot or the owner.
@@ -409,9 +440,8 @@ export function supportedFindings(
     const pf = facts.get(f.page);
     if (!pf || !f.problem || !f.fix || !f.why) return;
     if (!(FACT_NAMES as string[]).includes(f.fact)) return;
-    const value = pf[f.fact as keyof PageFacts];
-    // "No reviews" when review markup was measured on the page is contradicted by the facts.
-    if (value === true && SAYS_MISSING.test(f.problem)) return;
+    // "No reviews" when review data was measured on the page is contradicted by the facts.
+    if (factPresent(pf, f.fact as keyof PageFacts) && SAYS_MISSING.test(f.problem)) return;
     const text = `${f.problem} ${f.why} ${f.fix}`;
     if (!numbersKnown(text, JSON.stringify(pf))) return;
     if (PROMISE.test(text) || isUnsourced(text) || hasAiTell(text)) return;
@@ -433,12 +463,28 @@ export function supportedFindings(
   return out;
 }
 
-/** No hyphens or dashes in what the owner reads; a page address or file name (with a slash or dot) is kept as it is. */
+/** A web address, page path or email address: kept whole. */
+const ADDRESS = /^[("'\[]*(?:https?:\/\/|www\.|\/[\w%~]|[\w.+]+@[\w-]+\.)|\.[a-z]{2,}\/\S/i;
+
+/**
+ * No hyphens or dashes in what the owner reads: "30-day" reads "30 day", "one-line" reads "one line", a dash between
+ * words becomes a comma, and any other dash goes. Web addresses, paths and email addresses are left whole.
+ */
 export const plainWords = (text: string) =>
   polish(text)
     .split(/(\s+)/)
-    .map((t) => (/[/.@]\S/.test(t) ? t : t.replace(/(?<=\p{L})[-\u2010\u2011](?=\p{L})/gu, " ")))
-    .join("");
+    .map((t) =>
+      ADDRESS.test(t)
+        ? t
+        : t
+            .replace(/(?<=[\p{L}\p{N}])[-\u2010-\u2015\u2212]+(?=[\p{L}\p{N}])/gu, " ")
+            .replace(/[-\u2010-\u2015\u2212]+/g, ""),
+    )
+    .join("")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/,\s*,/g, ",")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
 
 const IMPACT: Record<StoreFinding["impact"], number> = { high: 0, medium: 1, low: 2 };
 const KIND_ORDER: Record<KeyKind, number> = { product: 0, cart: 1, home: 2, collection: 3 };
@@ -529,7 +575,7 @@ export interface PageReport extends KeyPage {
   facts: PageFacts | null;
 }
 
-export type ReviewState = "checked" | "no-ai" | "no-second-ai" | "out-of-time" | "failed";
+export type ReviewState = "checked" | "no-ai" | "no-second-ai" | "out-of-time" | "failed" | "ai-limit";
 
 export interface StoreAudit {
   at: string;
@@ -537,6 +583,8 @@ export interface StoreAudit {
   slowApps: SlowApp[];
   findings: StoreFinding[];
   review: ReviewState;
+  /** When the findings shown were checked: this run, or an earlier one kept because this run's review didn't finish. */
+  findingsAt: string | null;
   note: string;
 }
 
@@ -545,6 +593,8 @@ const IMAGE_HEADS = 12;
 const IMAGES_PER_PAGE = 4;
 /** An image file over this size slows a phone noticeably. */
 export const LARGE_IMAGE = 300_000;
+/** The checker isn't started with less time than this left: a half done check counts for nothing. */
+const CHECK_MIN_MS = 15_000;
 
 async function schema() {
   await ensureSchema();
@@ -571,8 +621,9 @@ export async function accountsDueForStoreAudit(limit: number): Promise<string[]>
 }
 
 /**
- * The run marker: the site had its turn. A short wait (the Sabbath, or a site not yet shown to be the account's)
- * comes back in a day; anything else in a week. Saved on every exit, so one site can never hold up the queue.
+ * The run marker: the site had its turn. A short wait (the Sabbath, a run cut short, a review that didn't finish)
+ * comes back in a day; anything else in a week. Saved before the work starts and again on every exit, so one site
+ * can never hold up the queue, even when its run is killed.
  */
 async function saveMarker(accountId: string, note: string, retryInDays = 7): Promise<void> {
   const back = Math.max(0, 7 - retryInDays);
@@ -581,13 +632,33 @@ async function saveMarker(accountId: string, note: string, retryInDays = 7): Pro
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`;
 }
 
+/** The marker saved before the work starts; it stays only when the run is killed before it ends. */
+export const STARTED_NOTE = "The last store audit didn't finish. It tries again within a day.";
+
+/** What the owner reads about a failed run: the known plain reasons as they are, anything else in plain words. */
+export function plainFailure(e: unknown): string {
+  const msg = String((e as Error)?.message ?? e ?? "");
+  if ((e as Error)?.name === "SpendingLimitReached") return msg;
+  if (/^None of the store's key pages could be read/.test(msg)) return "None of the store's key pages could be read this week.";
+  return "The store audit hit a problem and tries again next week.";
+}
+
 /** What a run needs from outside, so the exits can be tested without a database or network. */
 export interface RunDeps {
   sabbath: () => boolean;
   autopilotOn: (accountId: string) => Promise<boolean>;
   mark: (accountId: string, note: string, retryInDays?: number) => Promise<void>;
   report: (ok: boolean, detail: string | null) => Promise<void> | void;
-  audit: (accountId: string, deadline: number) => Promise<{ note: string; skip?: boolean; retryInDays?: number }>;
+  audit: (accountId: string, deadline: number) => Promise<AuditOutcome>;
+}
+
+export interface AuditOutcome {
+  note: string;
+  /** A normal wait (paused, not a store, not yet shown to be the account's): nothing is reported either way. */
+  skip?: boolean;
+  retryInDays?: number;
+  /** Something the Inspector must see, in plain words: reported as not working. */
+  problem?: string;
 }
 
 const DEFAULT_DEPS: RunDeps = {
@@ -599,31 +670,34 @@ const DEFAULT_DEPS: RunDeps = {
 };
 
 /**
- * One site's store audit. Rests in the Sabbath and while the autopilot is paused. Whatever happens (a skip, an early
- * stop or an error), the run marker is saved and the status board says how it went, so a broken site never blocks the
- * others and no failure is quiet.
+ * One site's store audit. Rests in the Sabbath and while the autopilot is paused. A provisional marker is saved before
+ * the work starts and the real one on every exit, and the status board says how it went, so a broken or killed run
+ * never blocks the others and no failure is quiet.
  */
 export async function runStoreAudit(accountId: string, deadline = Date.now() + 120_000, deps: RunDeps = DEFAULT_DEPS): Promise<string> {
   const mark = (note: string, days?: number) =>
     deps.mark(accountId, note, days).catch((e) => console.error(`store audit not marked for account ${accountId}: ${(e as Error).message}`));
   if (deps.sabbath()) {
-    await mark("rests for the Sabbath", 1);
+    await mark("Store audit rests for the Sabbath.", 1);
     return "Store audit rests for the Sabbath.";
   }
   try {
     if (!(await deps.autopilotOn(accountId))) {
-      await mark("the autopilot is paused");
+      await mark("Store audit skipped: the autopilot is paused.");
       return "Store audit skipped: the autopilot is paused.";
     }
+    await mark(STARTED_NOTE, 1);
     const r = await deps.audit(accountId, deadline);
     await mark(r.note, r.retryInDays);
-    if (!r.skip) await deps.report(true, null);
+    if (r.problem) await deps.report(false, r.problem);
+    else if (!r.skip) await deps.report(true, null);
     return r.note;
   } catch (e) {
-    const msg = `Store audit failed: ${(e as Error).message}`;
-    await mark(msg);
-    await deps.report(false, msg);
-    return msg;
+    const plain = plainFailure(e);
+    console.error(`store audit failed for account ${accountId}: ${(e as Error)?.message ?? e}`);
+    await mark(plain);
+    await deps.report(false, `${plain} (${String((e as Error)?.message ?? e).slice(0, 200)})`);
+    return plain;
   }
 }
 
@@ -641,16 +715,61 @@ export async function takeRunNow(accountId: string): Promise<boolean> {
   return got.length > 0;
 }
 
-/** Reads one page as a first time visitor: the HTML, or why it couldn't be read. */
-async function fetchHtml(url: string): Promise<{ status: number | null; html: string; error?: string }> {
-  const res = await safeFetch(url, "GET", 12_000).catch(() => null);
-  if (!res || res === "unresolved") return { status: null, html: "", error: "The page couldn't be reached." };
-  if (!res.ok || !/html/i.test(res.headers.get("content-type") ?? "html")) {
-    await res.body?.cancel().catch(() => undefined);
-    return { status: res.status, html: "", error: `The page answered ${res.status}.` };
-  }
-  const html = await readCapped(res, 2_000_000).catch(() => "");
-  return { status: res.status, html, ...(html ? {} : { error: "The page came back empty." }) };
+/** Plain reasons a review didn't complete, for the owner and the status board. */
+export const REVIEW_PROBLEM: Record<Exclude<ReviewState, "checked">, string> = {
+  "no-ai": "No AI key is set up, so the conversion review couldn't run.",
+  "no-second-ai": "No second AI from another service was free to check the conversion review.",
+  "out-of-time": "The conversion review ran out of time.",
+  failed: "The AI conversion review failed.",
+  "ai-limit": "The site reached its monthly AI limit, so the conversion review waits.",
+};
+
+/**
+ * What a run keeps from its review. A checked review replaces the findings. One that didn't complete never replaces
+ * them with nothing: the last checked findings stay, the site comes back in a day, and the status board is told why.
+ */
+export function settleReview(
+  review: ReviewState,
+  fresh: StoreFinding[],
+  previous: Pick<StoreAudit, "findings" | "findingsAt"> | null,
+  now: string,
+): { findings: StoreFinding[]; findingsAt: string | null; retryInDays?: number; problem?: string } {
+  if (review === "checked") return { findings: fresh, findingsAt: now };
+  return { findings: previous?.findings ?? [], findingsAt: previous?.findingsAt ?? null, retryInDays: 1, problem: REVIEW_PROBLEM[review] };
+}
+
+/** Business types that sell products online. */
+const STORE_TYPES = new Set(["ecommerce", "fashion", "home_goods", "supplements", "skincare", "fitness", "health_store"]);
+
+/** A store: a Shopify store, a site whose profile says it sells products, or one with product pages. */
+export const isStore = (p: { shopify: boolean; businessType: string | null; productPages: number }) =>
+  p.shopify || (p.businessType !== null && STORE_TYPES.has(p.businessType)) || p.productPages > 0;
+
+class OutOfTime extends Error {
+  name = "OutOfTime";
+}
+
+/** Waits for `work` until the deadline at most: a run (and Run now) stays bounded even if an AI answers slowly. */
+export function byDeadline<T>(work: Promise<T>, deadline: number): Promise<T> {
+  const left = deadline - Date.now();
+  if (left <= 0) return Promise.reject(new OutOfTime("out of time"));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work.finally(() => clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new OutOfTime("out of time")), left);
+    }),
+  ]);
+}
+
+/** Reads one page of the site itself as a first time visitor: the HTML, or why it couldn't be read. */
+async function fetchHtml(url: string, siteHost: string, deadline: number): Promise<{ status: number | null; html: string; error?: string }> {
+  const left = deadline - Date.now();
+  if (left < 2_000) return { status: null, html: "", error: "Not read: out of time this run." };
+  const r = await siteFetch(url, siteHost, { timeoutMs: Math.min(12_000, left) }).catch(() => ({ refused: "The page couldn't be reached." }));
+  if ("refused" in r) return { status: null, html: "", error: r.refused };
+  if (r.status >= 400 || !/html/i.test(r.headers["content-type"] ?? "html")) return { status: r.status, html: "", error: `The page answered ${r.status}.` };
+  return { status: r.status, html: r.body, ...(r.body ? {} : { error: "The page came back empty." }) };
 }
 
 const isoTime = (t: string) => {
@@ -675,6 +794,7 @@ export function imageUrls(html: string, pageUrl: string, max = IMAGES_PER_PAGE):
   return out;
 }
 
+/** An image's size from a HEAD request (only its headers are read, never sent anywhere); every hop must be public. */
 async function imageSize(url: string): Promise<number | null> {
   const res = await safeFetch(url, "HEAD", 5_000).catch(() => null);
   if (!res || res === "unresolved" || !res.ok) return null;
@@ -683,9 +803,9 @@ async function imageSize(url: string): Promise<number | null> {
 }
 
 /** The whole audit of one site. Throws on a failure the Inspector must see; returns `skip` for a normal wait. */
-export async function auditStore(accountId: string, deadline: number): Promise<{ note: string; skip?: boolean; retryInDays?: number }> {
+export async function auditStore(accountId: string, deadline: number): Promise<AuditOutcome> {
   await schema();
-  const [{ readProfile, healthRulesApply }, { siteVerified }, { readAccountAutopilot, readPlatformSettings, aiProvider }, { siteFor }] = await Promise.all([
+  const [{ readProfile, healthRulesApply, siteBrief }, { siteVerified }, { readAccountAutopilot, readPlatformSettings, aiProvider }, { siteFor }] = await Promise.all([
     import("../profile"),
     import("./usage"),
     import("./settings"),
@@ -699,6 +819,8 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
   const origin = `https://${domain}`;
   const [acct, site] = await Promise.all([readAccountAutopilot(accountId), siteFor(accountId).catch(() => null)]);
   const shopify = site?.mode === "shopify" || profile.platform === "shopify";
+  /** Failures that didn't stop the audit but that the Inspector must see. */
+  const issues: string[] = [];
 
   // The site's own traffic, each source only when it is connected.
   const [{ getConnection }, { salesFor }, { pageValues }, { pageImpressions90d }, { sitePages }] = await Promise.all([
@@ -709,11 +831,18 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
     import("../site-crawl"),
   ]);
   const conn = await getConnection(accountId).catch(() => null);
+  // Shopify sales report their own failures to the status board (shopify-sales).
   const sales = shopify ? await salesFor(accountId).catch(() => null) : null;
   // A source that fails only narrows the choice of pages (the crawl still has them); it's logged, not hidden.
   const ga = conn?.gaPropertyId ? await pageValues(conn).catch((e) => (console.warn(`store audit: Analytics pages not read for ${accountId}: ${(e as Error).message}`), null)) : null;
   const gsc = conn?.gscSiteUrl ? await pageImpressions90d(conn).catch((e) => (console.warn(`store audit: Search Console pages not read for ${accountId}: ${(e as Error).message}`), null)) : null;
-  const crawled = (await sitePages(accountId).catch(() => [])).map((p) => p.url);
+  const crawled = (
+    await sitePages(accountId).catch((e) => {
+      console.error(`store audit: page list not read for ${accountId}: ${(e as Error).message}`);
+      issues.push("The site's page list couldn't be read, so product pages may be missing.");
+      return [];
+    })
+  ).map((p) => p.url);
   const keys = pickKeyPages({
     origin,
     shopify,
@@ -722,13 +851,16 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
     gscPages: gsc?.pages,
     crawled,
   });
+  // Store advice only for stores; any other site is skipped with a plain note.
+  if (!isStore({ shopify, businessType: profile.businessType, productPages: keys.filter((k) => k.kind === "product").length }))
+    return { note: "Store audit skipped: this site doesn't sell products online, so there is no store to check.", skip: true, ...(issues.length ? { problem: issues.join(" ") } : {}) };
 
-  // Each key page, read as a first time visitor gets it.
+  // Each key page of the site itself, read as a first time visitor gets it.
   const pages: PageReport[] = [];
   const htmlOf = new Map<string, string>();
   await Promise.all(
     keys.map(async (k) => {
-      const r = Date.now() < deadline ? await fetchHtml(k.url) : { status: null, html: "", error: "Not read: out of time this run." };
+      const r = await fetchHtml(k.url, domain, deadline);
       if (r.html) htmlOf.set(k.url, r.html);
       pages.push({
         ...k,
@@ -747,7 +879,7 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
 
   // The largest images, by a HEAD request each, bounded per page and per run.
   const queue = read.flatMap((p) => imageUrls(htmlOf.get(p.url) ?? "", p.url).map((u) => ({ p, u }))).slice(0, IMAGE_HEADS);
-  for (let i = 0; i < queue.length && Date.now() < deadline; i += 4) {
+  for (let i = 0; i < queue.length && deadline - Date.now() > 6_000; i += 4) {
     await Promise.all(
       queue.slice(i, i + 4).map(async ({ p, u }) => {
         const bytes = await imageSize(u);
@@ -758,7 +890,11 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
   for (const p of pages) p.images.sort((a, b) => b.bytes - a.bytes);
 
   // PageSpeed results the health check already stored for these pages (never fetched again here).
-  const health = await sql`SELECT url, perf_score, lcp_ms, cls, checked_at FROM insights_page_health WHERE account_id = ${accountId}`.catch(() => []);
+  const health = await sql`SELECT url, perf_score, lcp_ms, cls, checked_at FROM insights_page_health WHERE account_id = ${accountId}`.catch((e) => {
+    console.error(`store audit: page health not read for ${accountId}: ${(e as Error).message}`);
+    issues.push("The stored phone speed results couldn't be read.");
+    return [];
+  });
   const norm = (u: string) => u.replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
   for (const p of pages) {
     const h = health.find((r) => norm(String(r.url)) === norm(p.url));
@@ -774,45 +910,54 @@ export async function auditStore(accountId: string, deadline: number): Promise<{
 
   const slow = slowApps(read.map((p) => ({ url: p.url, sources: p.scripts?.sources ?? [] })));
 
-  // The conversion review: the writing AI, then a second AI from another service, then the rules.
+  // The conversion review: the writing AI, then a second AI from another service, then the rules. Both AI calls are
+  // bounded by the run's deadline, and the checker isn't started without time to finish.
   let review: ReviewState = "checked";
-  let findings: StoreFinding[] = [];
+  let fresh: StoreFinding[] = [];
   const base = aiProvider(await readPlatformSettings());
   const { loadRests, hasSecondAi, reviewConversion, checkConversionFindings } = await import("./writer");
   await loadRests();
   if (!base) review = "no-ai";
   else if (!hasSecondAi(base)) review = "no-second-ai";
-  else if (Date.now() > deadline) review = "out-of-time";
+  else if (deadline - Date.now() < 2 * CHECK_MIN_MS) review = "out-of-time";
   else {
-    const { siteBrief } = await import("../profile");
     const ai = { ...base, site: siteBrief(profile) };
     const facts = new Map(read.map((p) => [p.url, p.facts!]));
     const block = factsBlock(read.map((p) => ({ url: p.url, facts: p.facts! })));
     const healthSite = healthRulesApply(profile);
-    // An AI failure is already on the status board (the writer's or the checker's part); the measured audit is still saved.
     try {
-      const found = await reviewConversion(ai, block, healthSite);
-      const keep = await checkConversionFindings(ai, block, found);
-      if (keep === null) review = "no-second-ai";
-      else findings = rankFindings(supportedFindings(found, keep, facts, { shopify: site?.mode === "shopify", allowContent: acct.allowContent, health: healthSite }));
+      const found = await byDeadline(reviewConversion(ai, block, healthSite), deadline - CHECK_MIN_MS);
+      if (deadline - Date.now() < CHECK_MIN_MS) review = "out-of-time";
+      else {
+        const keep = await byDeadline(checkConversionFindings(ai, block, found), deadline);
+        if (keep === null) review = "no-second-ai";
+        else fresh = rankFindings(supportedFindings(found, keep, facts, { shopify: site?.mode === "shopify", allowContent: acct.allowContent, health: healthSite }));
+      }
     } catch (e) {
+      // Out of time, the site's monthly AI limit (spend refuses before any call), or an AI failure: never quiet.
       console.error(`store audit review failed for account ${accountId}: ${(e as Error).message}`);
-      review = "failed";
+      review = (e as Error).name === "OutOfTime" ? "out-of-time" : (e as Error).name === "SpendingLimitReached" ? "ai-limit" : "failed";
     }
   }
 
+  const at = new Date().toISOString();
+  const previous = review === "checked" ? null : await readStoreAudit(accountId).catch(() => null);
+  const settled = settleReview(review, fresh, previous, at);
+  const findings = settled.findings;
   const audit: StoreAudit = {
-    at: new Date().toISOString(),
+    at,
     pages,
     slowApps: slow,
     findings,
     review,
-    note: `${read.length} of ${pages.length} key pages read, ${slow.length} slow ${slow.length === 1 ? "app" : "apps"}, ${findings.length} ${findings.length === 1 ? "fix" : "fixes"} (${findings.filter((f) => f.who === "autopilot").length} for the autopilot)`,
+    findingsAt: settled.findingsAt,
+    note: `${read.length} of ${pages.length} key pages read, ${slow.length} slow ${slow.length === 1 ? "app" : "apps"}, ${findings.length} ${findings.length === 1 ? "fix" : "fixes"} (${findings.filter((f) => f.who === "autopilot").length} for the autopilot)${settled.problem ? `. ${settled.problem}` : ""}`,
   };
   await sql`
     INSERT INTO insights_store_audit (account_id, data, ran_at) VALUES (${accountId}, ${JSON.stringify(audit)}::jsonb, now())
     ON CONFLICT (account_id) DO UPDATE SET data = EXCLUDED.data, ran_at = now()`;
-  return { note: audit.note };
+  if (settled.problem) issues.unshift(settled.problem);
+  return { note: audit.note, ...(settled.retryInDays ? { retryInDays: settled.retryInDays } : {}), ...(issues.length ? { problem: issues.join(" ") } : {}) };
 }
 
 /** The latest store audit of one site, or null. */
@@ -821,7 +966,8 @@ export async function readStoreAudit(accountId: string): Promise<StoreAudit | nu
   const [row] = await sql`SELECT data FROM insights_store_audit WHERE account_id = ${accountId}`;
   if (!row?.data) return null;
   try {
-    return (typeof row.data === "string" ? JSON.parse(row.data) : row.data) as StoreAudit;
+    const a = (typeof row.data === "string" ? JSON.parse(row.data) : row.data) as StoreAudit;
+    return { ...a, findingsAt: a.findingsAt ?? (a.review === "checked" ? a.at : null) };
   } catch {
     return null;
   }
@@ -831,13 +977,16 @@ export async function readStoreAudit(accountId: string): Promise<StoreAudit | nu
 export const sourceLabel = (s: Pick<ScriptOrigin, "key" | "name">) =>
   s.name ? s.name : s.key.startsWith("cdn.shopify.com/extensions/") ? `An app in your theme (${s.key})` : s.key;
 
-const REVIEW_NOTE: Record<ReviewState, string | null> = {
-  checked: null,
-  "no-ai": "The conversion review needs an AI key. Only what was measured is shown.",
-  "no-second-ai": "The conversion review waits for a second AI from another service to check it. Only what was measured is shown.",
-  "out-of-time": "The conversion review ran out of time this run and tries again next week. Only what was measured is shown.",
-  failed: "The conversion review failed this run and tries again next week. Only what was measured is shown.",
-};
+/** What the card says about a review that didn't complete this run. */
+export function reviewNote(a: Pick<StoreAudit, "review" | "findingsAt">): string | null {
+  if (a.review === "checked") return null;
+  const kept = a.findingsAt ? ` The fixes shown are from the check on ${new Date(a.findingsAt).toLocaleDateString("en-US")}.` : " Only what was measured is shown.";
+  return `${REVIEW_PROBLEM[a.review]} It tries again within a day.${kept}`;
+}
+
+/** Notes saved by this agent are already plain; anything else (an older marker) is shown in plain words. */
+const KNOWN_NOTE = /^(?:Store audit |The last store audit |None of the store's key pages |This site |The store audit hit |\d+ of \d+ key pages read)/;
+export const plainNote = (note: string | null) => (note === null ? null : KNOWN_NOTE.test(note) ? note : "The last store audit hit a problem and tries again soon.");
 
 /** Everything the Store audit card shows. */
 export async function storeAuditView(accountId: string) {
@@ -861,8 +1010,8 @@ export async function storeAuditView(accountId: string) {
       slowApps: audit.slowApps.map((a) => ({ ...a, label: sourceLabel(a) })),
       pages: audit.pages.map((p) => ({ ...p, scripts: p.scripts && { ...p.scripts, sources: p.scripts.sources.map((s) => ({ ...s, label: sourceLabel(s) })) } })),
     },
-    reviewNote: audit ? REVIEW_NOTE[audit.review] : null,
-    lastNote,
+    reviewNote: audit ? reviewNote(audit) : null,
+    lastNote: plainNote(lastNote),
     canRunNow: canRunNow(lastManual),
     largeImage: LARGE_IMAGE,
   };

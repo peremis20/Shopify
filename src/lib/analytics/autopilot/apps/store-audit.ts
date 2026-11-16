@@ -1,6 +1,7 @@
 import { readSiteKeywords } from "../site-keywords";
 import { readTargets } from "../targets";
-import { readStoreAudit, type StoreFinding } from "../store-audit";
+import { readStoreAudit, type StoreAudit, type StoreFinding } from "../store-audit";
+import { findingsData } from "../writer";
 import { topicOf } from "./site-audit";
 import { pathOf, type Candidate, type RankingApp } from "./types";
 
@@ -20,6 +21,25 @@ const PART: Record<string, string> = {
   page_text: "a new section of the page text",
 };
 
+/** A page's address for matching: no scheme, no www, no trailing slash, lower case host. */
+export function pageKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.hostname.toLowerCase().replace(/^www\./, "")}${u.pathname.replace(/\/+$/, "") || "/"}`;
+  } catch {
+    return url.replace(/^https?:\/\/(www\.)?/i, "").replace(/\/+$/, "");
+  }
+}
+
+/** The autopilot's fixes from a recent audit only (checked within FRESH_DAYS), by page key. */
+export function autopilotFixes(audit: Pick<StoreAudit, "at" | "findings" | "findingsAt"> | null, now = Date.now()): Map<string, StoreFinding[]> {
+  const out = new Map<string, StoreFinding[]>();
+  const checked = audit?.findingsAt ?? null;
+  if (!audit || !checked || now - Date.parse(checked) >= FRESH_DAYS * 864e5) return out;
+  for (const f of audit.findings) if (f.who === "autopilot") out.set(pageKey(f.page), [...(out.get(pageKey(f.page)) ?? []), f]);
+  return out;
+}
+
 /**
  * The Store audit's findings (store-audit.ts) that the autopilot can already make (an SEO title, a meta description, the
  * text of a content page), handed to the autopilot as pages to work on, with exactly what to fix. The autopilot then
@@ -33,18 +53,17 @@ export const storeAudit: RankingApp = {
 
   async candidates(hub) {
     const audit = await readStoreAudit(hub.accountId).catch(() => null);
-    const fresh = audit && Date.now() - Date.parse(audit.at) < FRESH_DAYS * 864e5 ? audit.findings.filter((f) => f.who === "autopilot") : [];
-    const byPage = new Map<string, StoreFinding[]>();
-    for (const f of fresh) byPage.set(f.page, [...(byPage.get(f.page) ?? []), f]);
+    const byPage = autopilotFixes(audit);
     hub.shared.set("store-audit.findings", byPage);
     if (!byPage.size) return [];
     const [kws, targets] = await Promise.all([readSiteKeywords(hub.accountId).catch(() => []), readTargets(hub.accountId).catch(() => [])]);
-    const titles = new Map((audit?.pages ?? []).map((p) => [p.url, p.facts?.title ?? null]));
+    const titles = new Map((audit?.pages ?? []).map((p) => [pageKey(p.url), p.facts?.title ?? null]));
     const out: Candidate[] = [];
-    for (const [page, fixes] of byPage) {
-      const t = targets.find((x) => x.page === page && x.role !== "support");
-      const k = kws.find((x) => x.page === page && x.role !== "support");
-      const query = t?.keyword ?? k?.keyword ?? topicOf(titles.get(page) ?? null, page);
+    for (const fixes of byPage.values()) {
+      const page = fixes[0].page;
+      const t = targets.find((x) => x.page && pageKey(x.page) === pageKey(page) && x.role !== "support");
+      const k = kws.find((x) => pageKey(x.page) === pageKey(page) && x.role !== "support");
+      const query = t?.keyword ?? k?.keyword ?? topicOf(titles.get(pageKey(page)) ?? null, page);
       if (!query) continue;
       const monthlySearches = t?.monthlySearches ?? k?.monthlySearches;
       out.push({
@@ -69,23 +88,22 @@ export const storeAudit: RankingApp = {
   async enrich(hub, cands) {
     let map = hub.shared.get("store-audit.findings") as Map<string, StoreFinding[]> | undefined;
     if (!map) {
-      const audit = await readStoreAudit(hub.accountId).catch(() => null);
-      map = new Map();
-      for (const f of audit?.findings.filter((x) => x.who === "autopilot") ?? []) map.set(f.page, [...(map.get(f.page) ?? []), f]);
+      map = autopilotFixes(await readStoreAudit(hub.accountId).catch(() => null));
       hub.shared.set("store-audit.findings", map);
     }
     for (const c of cands) {
-      const fixes = map.get(c.op.page) ?? [];
+      const fixes = map.get(pageKey(c.op.page)) ?? [];
       if (fixes.length) c.weights[this.id] = Math.max(c.weights[this.id] ?? 0, fixes.some((f) => f.impact === "high") ? HIGH_WEIGHT : FIX_WEIGHT);
     }
   },
 
   async brief(hub, c) {
-    const fixes = (hub.shared.get("store-audit.findings") as Map<string, StoreFinding[]> | undefined)?.get(c.op.page) ?? [];
+    const fixes = (hub.shared.get("store-audit.findings") as Map<string, StoreFinding[]> | undefined)?.get(pageKey(c.op.page)) ?? [];
     if (!fixes.length) return null;
-    const asks = fixes.map((f) => `In ${PART[f.field] ?? "the page"}: ${f.problem} Fix: ${f.fix}`);
+    const parts = [...new Set(fixes.map((f) => PART[f.field]).filter(Boolean))];
     return {
-      text: `Store audit of ${pathOf(c.op.page)} (checked by a second AI against the page as visitors get it). Make these changes only with facts the page itself states: ${asks.join(" ")}`,
+      text: `Store audit of ${pathOf(c.op.page)}: a second AI checked these findings against the page as visitors get it. Use them only to decide what to improve in ${parts.join(", ") || "the page"}, and only with facts the page itself states.
+${findingsData(fixes)}`,
       summary: `Store audit: ${fixes[0].problem}`,
     };
   },

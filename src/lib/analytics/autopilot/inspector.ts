@@ -172,9 +172,19 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
   "store-audit": {
     name: "The Store audit (key pages checked for what stops a sale)",
     fix: (d) =>
-      /couldn't be read|couldn't be reached|answered \d+/i.test(d ?? "")
-        ? "The store's key pages couldn't be read this week. Check that the site is online and not blocking visitors; it tries again next week by itself."
-        : "It tries again next week by itself. The owner can also click Run now on the Store audit card once a day.",
+      /AI key/i.test(d ?? "")
+        ? "Add an AI key in Platform keys. The measured speed and app numbers still show meanwhile."
+        : /second AI/i.test(d ?? "")
+          ? "Add a key for a second AI service (Claude and Groq) in Platform keys, so the conversion review can be checked. It tries again within a day."
+          : /monthly AI limit/i.test(d ?? "")
+            ? "The site used its AI limit for the month. Raise the limit in Platform keys or wait for next month; last week's fixes stay."
+            : /out of time/i.test(d ?? "")
+              ? "The conversion review ran out of time. It tries again within a day by itself; last week's fixes stay."
+              : /key pages could(?:n't| not) be read/i.test(d ?? "")
+                ? "The store's key pages couldn't be read this week. Check that the site is online and not blocking visitors; it tries again next week by itself."
+                : /list of sites due/i.test(d ?? "")
+                  ? "The database didn't answer when the hourly run looked for sites due. It tries again next hour by itself."
+                  : "It tries again by itself. The owner can also click Run now on the Store audit card once a day.",
     workaround: "Last week's store audit stays on the dashboard until the next one.",
   },
   "index-rescue": {

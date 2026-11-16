@@ -1668,7 +1668,11 @@ export async function autopilotTick(): Promise<Response> {
     }
     // The Store audit: the store's key pages checked weekly for what stops a sale, one site per hour. Every exit saves
     // the site's run marker and reports to the status board (runStoreAudit), so a broken site never blocks the queue.
-    for (const accountId of late() ? [] : await accountsDueForStoreAudit(1).catch((e) => (console.error(`store audit list failed: ${message(e)}`), []))) {
+    for (const accountId of late() ? [] : await accountsDueForStoreAudit(1).catch(async (e) => {
+      console.error(`store audit list failed: ${message(e)}`);
+      await report("store-audit", false, `The list of sites due for a store audit couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
       if (late()) break;
       const note = await forSite(accountId, () => runStoreAudit(accountId, Math.min(Date.now() + 120_000, started + budget))).catch(
         (e) => (console.error(`store audit failed: ${message(e)}`), null),
