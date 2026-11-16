@@ -12,7 +12,7 @@ import type { NewsResult, SerpResult } from "./serp";
 import type { Row } from "../db";
 import { byDeadline, canRunNow } from "./store-audit";
 import { asData } from "./writer";
-import { dayOf, followUpDue, manualJournalist, normalStatus, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
+import { crmMetrics, dayOf, followUpDue, manualJournalist, normalStatus, ownerPatch, type CrmStatus, type ManualInput, type OwnerAction } from "./press-crm";
 import { onSite, siteFetch } from "./site-fetch";
 
 /**
@@ -1332,9 +1332,11 @@ export async function outreachView(accountId: string) {
       due: followUpDue({ ...j, status: normalStatus(j.status) }, today),
     }))
     .sort((a, b) => Number(b.due) - Number(a.due) || order[a.status] - order[b.status] || Number(Boolean(b.pitch)) - Number(Boolean(a.pitch)) || b.foundAt.localeCompare(a.foundAt));
+  const metrics = crmMetrics(list);
   return {
     journalists: list,
-    followUpsToday: list.filter((j) => j.due).length,
+    metrics,
+    followUpsToday: metrics.followUpsToday,
     topics: pressMeta?.topics ?? [],
     canFindNow: canRunNow(findRow?.value ? String(findRow.value) : null),
     paid: paid.filter((p) => !p.dismissed && !isOther(p.domain)),

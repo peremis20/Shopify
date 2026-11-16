@@ -33,9 +33,9 @@ export function statusPatch(status: CrmStatus, now = Date.now()): Record<string,
   return { status, statusAt: new Date(now).toISOString() };
 }
 
-/** A follow up is due on or before today, while the journalist was emailed and hasn't answered either way. */
+/** A follow up is due on or before today, while the journalist hasn't replied, covered the site, or said no. */
 export const followUpDue = (j: { status: string; followUp?: string | null }, today = dayOf(Date.now())) =>
-  j.status === "emailed" && isDay(j.followUp) && j.followUp <= today;
+  !["replied", "covered", "not_interested"].includes(j.status) && isDay(j.followUp) && j.followUp <= today;
 
 /**
  * The mailto link the Email button opens in the owner's own email app: To (when an address is known), subject and body
@@ -144,4 +144,58 @@ export function ownerPatch(a: OwnerAction, now = Date.now()): { ok: true; patch:
       return subject && body ? { ok: true, patch: { pitchEdit: { subject, body } } } : { ok: false, error: "The subject and the email can't be empty." };
     }
   }
+}
+
+/** What the metrics strip counts, for each journalist: their status in today's words and the owner's dates. */
+export interface MetricItem {
+  status: CrmStatus;
+  foundAt: string;
+  lastContacted?: string | null;
+  followUp?: string | null;
+  pitch?: unknown;
+  pitchEdit?: unknown;
+}
+
+export interface CrmMetrics {
+  /** Journalists on the list, Not interested left out. */
+  total: number;
+  /** Of them, found or added in the last seven days. */
+  newThisWeek: number;
+  /** Emailed in the last seven days (by the last contacted day). */
+  emailedThisWeek: number;
+  /** Ever emailed: a last contacted day, or a status that comes after emailing. */
+  emailedEver: number;
+  /** Replied or Covered us. */
+  replies: number;
+  /** Replies over ever emailed, as a whole percent; null when nobody was emailed yet. */
+  replyRate: number | null;
+  coverage: number;
+  followUpsToday: number;
+  /** A draft waits (written or edited) while the status is still New. */
+  readyToSend: number;
+  funnel: { found: number; emailed: number; replied: number; covered: number };
+}
+
+const WEEK_MS = 7 * 864e5;
+
+/** The strip's numbers, counted from the list as it is. Nothing estimated: an empty list gives zeros. */
+export function crmMetrics(items: MetricItem[], now = Date.now()): CrmMetrics {
+  const today = dayOf(now);
+  const inWeek = (t: number) => Number.isFinite(t) && now - t < WEEK_MS && t <= now;
+  const active = items.filter((j) => j.status !== "not_interested");
+  const emailedEver = items.filter((j) => isDay(j.lastContacted) || ["emailed", "replied", "covered"].includes(j.status)).length;
+  const replies = items.filter((j) => j.status === "replied" || j.status === "covered").length;
+  const coverage = items.filter((j) => j.status === "covered").length;
+  return {
+    total: active.length,
+    newThisWeek: active.filter((j) => inWeek(Date.parse(j.foundAt))).length,
+    emailedThisWeek: items.filter((j) => isDay(j.lastContacted) && inWeek(Date.parse(`${j.lastContacted}T00:00:00Z`)) && j.lastContacted <= today).length,
+    emailedEver,
+    replies,
+    replyRate: emailedEver > 0 ? Math.round((replies / emailedEver) * 100) : null,
+    coverage,
+    followUpsToday: items.filter((j) => followUpDue(j, today)).length,
+    readyToSend: items.filter((j) => j.status === "new" && Boolean(j.pitch || j.pitchEdit)).length,
+    funnel: { found: items.length, emailed: emailedEver, replied: replies, covered: coverage },
+  };
 }

@@ -493,3 +493,54 @@ test("hunter: a refused key or a used up quota is a plain message without the ke
   assert.match(calls[0].text, /ON CONFLICT \(account_id\) DO UPDATE SET hunter = .* WHERE \(SELECT count\(\*\) FROM unnest\(insights_press_drafts\.hunter\).*< \$ RETURNING/);
   assert.ok(calls[0].values.includes(HUNTER_WEEKLY_CAP));
 });
+
+// ---------- the metrics strip ----------
+
+import { crmMetrics, type MetricItem } from "../src/lib/analytics/autopilot/press-crm";
+
+test("metrics: counts come from the list itself, with a seven day window", () => {
+  const now = Date.parse("2026-11-16T12:00:00Z");
+  const ago = (d: number) => new Date(now - d * 864e5).toISOString();
+  const day = (d: number) => ago(d).slice(0, 10);
+  const items: MetricItem[] = [
+    { status: "new", foundAt: ago(1) },
+    { status: "new", foundAt: ago(10), pitch: { subject: "s" } },
+    { status: "new", foundAt: ago(2), pitchEdit: { subject: "s", body: "b" } },
+    { status: "emailed", foundAt: ago(20), lastContacted: day(3), followUp: day(-4), pitch: {} },
+    { status: "emailed", foundAt: ago(30), lastContacted: day(9), followUp: day(2) },
+    { status: "replied", foundAt: ago(40), lastContacted: day(20), followUp: day(13) },
+    { status: "covered", foundAt: ago(50), lastContacted: day(30) },
+    { status: "not_interested", foundAt: ago(1), lastContacted: day(1), followUp: day(1) },
+  ];
+  const m = crmMetrics(items, now);
+  assert.equal(m.total, 7); // Not interested left out
+  assert.equal(m.newThisWeek, 2); // found 1 and 2 days ago; the Not interested one doesn't count
+  assert.equal(m.emailedThisWeek, 2); // 3 and 1 days ago; 9 days ago is outside the week
+  assert.equal(m.emailedEver, 5);
+  assert.equal(m.replies, 2);
+  assert.equal(m.replyRate, 40);
+  assert.equal(m.coverage, 1);
+  assert.equal(m.followUpsToday, 1); // due 2 days ago and still Emailed; not Replied, not Not interested, not in the future
+  assert.equal(m.readyToSend, 2); // a draft or an edit, still New; the Emailed one with a pitch doesn't count
+  assert.deepEqual(m.funnel, { found: 8, emailed: 5, replied: 2, covered: 1 });
+});
+
+test("metrics: the reply rate shows only once someone was emailed, and an empty list is all zeros", () => {
+  const empty = crmMetrics([], Date.parse("2026-11-16T12:00:00Z"));
+  assert.equal(empty.replyRate, null);
+  assert.deepEqual(
+    [empty.total, empty.newThisWeek, empty.emailedThisWeek, empty.emailedEver, empty.replies, empty.coverage, empty.followUpsToday, empty.readyToSend],
+    [0, 0, 0, 0, 0, 0, 0, 0],
+  );
+  assert.equal(crmMetrics([{ status: "new", foundAt: "2026-11-15T00:00:00Z" }], Date.parse("2026-11-16T12:00:00Z")).replyRate, null);
+  assert.equal(crmMetrics([{ status: "emailed", foundAt: "2026-11-01T00:00:00Z", lastContacted: "2026-11-10" }], Date.parse("2026-11-16T12:00:00Z")).replyRate, 0);
+});
+
+test("metrics: a follow up is due today or earlier unless they replied, covered or said no", () => {
+  const today = "2026-11-16";
+  assert.equal(followUpDue({ status: "new", followUp: "2026-11-16" }, today), true);
+  assert.equal(followUpDue({ status: "emailed", followUp: "2026-11-15" }, today), true);
+  assert.equal(followUpDue({ status: "covered", followUp: "2026-11-10" }, today), false);
+  assert.equal(followUpDue({ status: "not_interested", followUp: "2026-11-10" }, today), false);
+  assert.equal(followUpDue({ status: "emailed", followUp: "2026-11-17" }, today), false);
+});

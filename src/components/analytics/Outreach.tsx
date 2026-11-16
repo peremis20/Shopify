@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Journalist, MediaRequest, PaidOpportunity } from "@/lib/analytics/autopilot/press";
-import { CRM_STATUSES, journalistsCsv, mailtoFor, STATUS_LABEL, type CrmStatus } from "@/lib/analytics/autopilot/press-crm";
+import { CRM_STATUSES, journalistsCsv, mailtoFor, STATUS_LABEL, type CrmMetrics, type CrmStatus } from "@/lib/analytics/autopilot/press-crm";
 import { isEmbedded } from "./embedded-client";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
@@ -12,6 +12,7 @@ type Row = Journalist & { status: CrmStatus; due: boolean };
 interface View {
   journalists: Row[];
   followUpsToday: number;
+  metrics: CrmMetrics;
   topics: string[];
   canFindNow: boolean;
   paid: PaidOpportunity[];
@@ -251,6 +252,49 @@ function AddJournalist({ onView, onDone }: { onView: (v: View) => void; onDone: 
   );
 }
 
+function Tile({ label, value, sub, active, onClick }: { label: string; value: number; sub?: React.ReactNode; active?: boolean; onClick?: () => void }) {
+  const body = (
+    <>
+      <p className="text-xs text-dash-muted">{label}</p>
+      <p className="text-2xl font-semibold tabular-nums text-dash-ink">{value.toLocaleString()}</p>
+      {sub ? <p className="text-xs text-dash-muted">{sub}</p> : null}
+    </>
+  );
+  const cls = `min-w-0 rounded-xl border p-3 text-left ${active ? "border-dash-green bg-dash-bg" : "border-dash-line"}`;
+  return onClick ? (
+    <button onClick={onClick} className={`${cls} hover:border-dash-green`} aria-pressed={active}>
+      {body}
+    </button>
+  ) : (
+    <div className={cls}>{body}</div>
+  );
+}
+
+/** The numbers above the list, counted on the server from the list itself. A tile with nothing to count shows 0. */
+function MetricsStrip({ m, filter, onFilter }: { m: CrmMetrics; filter: "due" | "covered" | null; onFilter: (f: "due" | "covered") => void }) {
+  return (
+    <div className="mb-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        <Tile label="Total contacts" value={m.total} sub={`${m.newThisWeek} new this week`} />
+        <Tile label="Emailed" value={m.emailedThisWeek} sub={`this week, ${m.emailedEver} in all`} />
+        <Tile label="Replies" value={m.replies} sub={m.replyRate !== null ? `${m.replyRate}% reply rate` : null} />
+        <Tile
+          label="Coverage"
+          value={m.coverage}
+          sub={<span className="font-semibold text-dash-green">{filter === "covered" ? "Show all" : "See them"}</span>}
+          active={filter === "covered"}
+          onClick={() => onFilter("covered")}
+        />
+        <Tile label="Follow up today" value={m.followUpsToday} active={filter === "due"} onClick={() => onFilter("due")} />
+        <Tile label="Ready to send" value={m.readyToSend} sub="drafts waiting" />
+      </div>
+      <p className="mt-2 break-words text-xs text-dash-muted">
+        Found {m.funnel.found} → Emailed {m.funnel.emailed} → Replied {m.funnel.replied} → Covered {m.funnel.covered}
+      </p>
+    </div>
+  );
+}
+
 function downloadCsv(rows: Row[]) {
   const blob = new Blob([journalistsCsv(rows)], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -325,14 +369,15 @@ function PaidCard({ p, onView }: { p: PaidOpportunity; onView: (v: View) => void
  */
 export function Outreach({ advanced = false }: { advanced?: boolean }) {
   const [view, setView] = useState<View | null>(null);
-  const [onlyDue, setOnlyDue] = useState(false);
+  const [filter, setFilter] = useState<"due" | "covered" | null>(null);
   const [adding, setAdding] = useState(false);
   const { busy, error, act } = useAct(setView);
   useEffect(() => {
     api<View>("/api/outreach").then(setView).catch(() => setView(null));
   }, []);
   if (!view) return null;
-  const rows = onlyDue ? view.journalists.filter((j) => j.due) : view.journalists;
+  const rows = filter === "due" ? view.journalists.filter((j) => j.due) : filter === "covered" ? view.journalists.filter((j) => j.status === "covered") : view.journalists;
+  const toggle = (f: "due" | "covered") => setFilter((cur) => (cur === f ? null : f));
   return (
     <>
       <Card className="mt-6">
@@ -341,8 +386,9 @@ export function Outreach({ advanced = false }: { advanced?: boolean }) {
           People who recently wrote about {view.topics.length ? view.topics.join(", ") : "your products"}, as printed on their article. Email opens your own email
           app; DashPatrol never sends anything. Up to {view.cap} new drafts a week ({view.draftsLeft} left).
         </p>
+        <MetricsStrip m={view.metrics} filter={filter} onFilter={toggle} />
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <button className={onlyDue ? primary : btn} onClick={() => setOnlyDue((v) => !v)}>
+          <button className={filter === "due" ? primary : btn} onClick={() => toggle("due")}>
             Follow up today ({view.followUpsToday})
           </button>
           <button className={btn} onClick={() => setAdding((v) => !v)}>
@@ -365,7 +411,7 @@ export function Outreach({ advanced = false }: { advanced?: boolean }) {
             ))}
           </div>
         ) : (
-          <p className="text-sm text-dash-muted">{onlyDue ? "No follow ups due today." : (view.lastRun.press ?? "The first search for journalists runs within the week.")}</p>
+          <p className="text-sm text-dash-muted">{filter === "due" ? "No follow ups due today." : filter === "covered" ? "No coverage yet." : (view.lastRun.press ?? "The first search for journalists runs within the week.")}</p>
         )}
       </Card>
 
