@@ -88,7 +88,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
                   : "key events"
           }
         />
-        <Stat label="Work done" value={n(data.week.changes + data.week.articles + data.week.links)} sub={`${data.week.changes} changes, ${data.week.articles} ${data.week.articles === 1 ? "article" : "articles"}, ${data.week.links} ${data.week.links === 1 ? "link" : "links"}`} />
+        <Stat label="Work done (7 days)" value={n(data.week.changes + data.week.articles + data.week.links)} sub={`${data.week.changes} changes, ${data.week.articles} ${data.week.articles === 1 ? "article" : "articles"}, ${data.week.links} ${data.week.links === 1 ? "link" : "links"}`} />
       </div>
 
       {/* Sales straight from Shopify */}

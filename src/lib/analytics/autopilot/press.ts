@@ -784,6 +784,18 @@ async function makePitch(ctx: Context, j: Journalist): Promise<Made> {
 }
 
 /**
+ * What the weekly run does after one pitch couldn't be written. "next": the checks turned down this one pitch (the
+ * guardrails working), so the next journalist gets a try. "wait": no second AI from another service is free to check
+ * pitches, which only a key or time fixes; the run stops drafting and says so plainly, without a failure. "stop": a
+ * real fault (no AI key, the monthly AI limit, out of time), shown to the Inspector.
+ */
+export function pitchFailure(error: string): "next" | "wait" | "stop" {
+  if (/^No second AI/i.test(error)) return "wait";
+  if (/AI key|AI limit|ran out of time/i.test(error)) return "stop";
+  return "next";
+}
+
+/**
  * The claim guard on a pitch: no wording that reads as a medical or unprovable claim (every site), nothing that cures,
  * treats, heals or prevents on a health site, no sources nobody can check, no promised results.
  */
@@ -1168,18 +1180,22 @@ async function pressWork(accountId: string, deadline: number): Promise<RunOutcom
 
   // Pitches for the newest journalists, within the week's five drafts and the run's deadline.
   let drafted = 0;
+  let waitNote = "";
   for (const j of (await readItems<Journalist>(accountId, "journalist")).filter((x) => autoDraftable(x))) {
     if (deadline - Date.now() < 30_000) break;
     const r = await draftPitch(accountId, j.id, deadline).catch((e) => ({ ok: false as const, status: 500, error: (e as Error).message }));
     if (r.ok) drafted++;
     else if (r.status === 429) break;
-    else if (/second AI|AI key|AI limit|ran out of time/i.test(r.error)) {
-      issues.push(r.error);
+    else {
+      const kind = pitchFailure(r.error);
+      if (kind === "next") continue;
+      if (kind === "wait") waitNote = " Pitches wait for a second AI from another service to check them; journalists are still found and listed.";
+      else issues.push(r.error);
       break;
     }
   }
   return {
-    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${hunted ? `${hunted} ${hunted === 1 ? "email" : "emails"} found by Hunter, ` : ""}${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${paidAdded} new paid ${paidAdded === 1 ? "opportunity" : "opportunities"}`,
+    note: `${fresh.length} new ${fresh.length === 1 ? "journalist" : "journalists"}, ${hunted ? `${hunted} ${hunted === 1 ? "email" : "emails"} found by Hunter, ` : ""}${drafted} ${drafted === 1 ? "pitch" : "pitches"} written, ${paidAdded} new paid ${paidAdded === 1 ? "opportunity" : "opportunities"}${waitNote ? `.${waitNote}` : ""}`,
     ...(issues.length ? { problem: [...new Set(issues)].join(" ") } : {}),
   };
 }

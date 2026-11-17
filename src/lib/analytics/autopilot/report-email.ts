@@ -260,7 +260,7 @@ ${img ? `<td valign="middle" style="width:172px;padding-right:12px">${img}</td>`
     ["Changes on your fix list", d.week.suggested],
   ] as const;
   const maxWork = Math.max(...work.map(([, v]) => v), 1);
-  parts.push(section("What the agents did this week", `<table role="presentation" cellpadding="0" cellspacing="0" width="100%">${work.map(([l, v]) => barRow(l, v, maxWork, BRAND)).join("")}</table>`));
+  parts.push(section("What the agents did in the last 7 days", `<table role="presentation" cellpadding="0" cellspacing="0" width="100%">${work.map(([l, v]) => barRow(l, v, maxWork, BRAND)).join("")}</table>`));
   // Agents: one clear status line, then each agent's own record.
   const status = x.needsYou === null
     ? ""

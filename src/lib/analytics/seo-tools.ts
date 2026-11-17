@@ -64,16 +64,16 @@ export async function findOpportunities(conn: Connection, rangeKey: RangeKey): P
 }
 
 /**
- * How many searches Search Console has for the site in the last 28 days.
+ * How many searches Search Console has for the site in the last 28 days (only those `workable` keeps, when given).
  * Few means the property is new (Google takes days to report) or the site
  * barely shows up yet; the autopilot then works from Keyword Planner too.
  */
-export async function gscSearchCount(conn: Connection): Promise<number> {
+export async function gscSearchCount(conn: Connection, workable: (query: string, position: number) => boolean = () => true): Promise<number> {
   if (!conn.gscSiteUrl) return 0;
   const { auth, site } = requireSite(conn);
   const { current } = resolveRange("28d", 3);
-  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query"], rowLimit: 100 });
-  return rows.length;
+  const rows = await gscQuery(auth, site, { startDate: current.start, endDate: current.end, dimensions: ["query"], rowLimit: 500 });
+  return rows.filter((r) => workable(String(r.keys[0] ?? "").toLowerCase(), r.position)).length;
 }
 
 export interface QueryPageRow {

@@ -42,6 +42,8 @@ export interface FieldStats {
   down: number;
   undone: number;
   gainSum: number;
+  /** Made in the last 7 days and still on the site: counted exactly like the weekly summary's "Last 7 days" line. */
+  week?: number;
 }
 
 const n = (k: number, unit: [string, string]) => `${k} ${k === 1 ? unit[0] : unit[1]}`;
@@ -50,11 +52,14 @@ const n = (k: number, unit: [string, string]) => `${k} ${k === 1 ? unit[0] : uni
 export function scoreChanges(stats: FieldStats[]): AgentScore[] {
   return CHANGE_AGENTS.map(({ agent, fields, unit, ranked, judged }) => {
     const s = stats.filter((x) => fields.includes(x.field));
-    const sum = (k: keyof Omit<FieldStats, "field">) => s.reduce((a, x) => a + x[k], 0);
+    const sum = (k: keyof Omit<FieldStats, "field">) => s.reduce((a, x) => a + (x[k] ?? 0), 0);
     const made = sum("made");
     const suggested = sum("suggested");
     const compared = sum("compared");
-    const did = `${n(made, unit)} made on the site${suggested ? `, ${suggested} suggested` : ""}`;
+    // "made" counts every change since the start (undone ones too); the weekly summary counts the last 7 days, so
+    // both are named, and the two never read as one number contradicting the other.
+    const week = s.some((x) => x.week !== undefined) ? sum("week") : null;
+    const did = `${n(made, unit)} made on the site${week !== null ? ` since the start, ${week} in the last 7 days` : ""}${suggested ? `, ${suggested} suggested` : ""}`;
     if (ranked === false) return { agent, did, result: made ? "Not measured by ranking." : null };
     if (!compared) return { agent, did, result: made ? (judged ?? "Nothing measured yet (four weeks after each change).") : null };
     const avg = sum("gainSum") / compared;
@@ -88,6 +93,7 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     SELECT field,
       count(*) FILTER (WHERE status IN ('applied', 'kept', 'reverted')) AS made,
       count(*) FILTER (WHERE status = 'suggested') AS suggested,
+      count(*) FILTER (WHERE status IN ('applied', 'kept') AND created_at > now() - interval '7 days') AS week,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL) AS compared,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position < baseline_position - 0.5) AS up,
       count(*) FILTER (WHERE evaluated_at IS NOT NULL AND result_position IS NOT NULL AND baseline_position IS NOT NULL AND baseline_position <> 25 AND across_update IS NULL AND result_position > baseline_position + 0.5) AS down,
@@ -103,6 +109,7 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     down: Number(r.down),
     undone: Number(r.undone),
     gainSum: Number(r.gain),
+    week: Number(r.week),
   }));
   const out = scoreChanges(stats);
   const list = await readProspects(accountId).catch(() => null);

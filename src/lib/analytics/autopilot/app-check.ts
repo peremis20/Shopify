@@ -9,6 +9,7 @@ import { readStrategy } from "./strategist";
 import { asPlatform, siteVerified } from "./usage";
 import { readClientErrors } from "./client-errors";
 import { findProspects } from "./backlinks";
+import { readSiteKeywords } from "./site-keywords";
 const domainOf = (site: string) => new URL(site.replace(/^sc-domain:/, "https://")).hostname.replace(/^www\./, "");
 import { hasSecondAi, reviewCustomerView } from "./writer";
 
@@ -204,6 +205,14 @@ async function repairSection(accountId: string, s: Section, conn: Connection | n
       if (!profile?.siteDomain || profile.aboutSource === "owner") return null;
       await sql`DELETE FROM insights_settings WHERE key = ${`business_tried:${accountId}`}`;
       return "The business profile agent was told to read the site again on the next hourly check.";
+    case "keywords": {
+      // The list is filled from the Strategist's targets; it can only pick searches the agents already know. With
+      // keyword ideas for the site's pages on hand, it plans again on the next hourly check and adds them as targets.
+      if (!(await readSiteKeywords(accountId).catch(() => [])).some((k) => k.role !== "support")) return null;
+      await sql`DELETE FROM insights_settings WHERE key = ${`strategy_tried:${accountId}`}`;
+      await sql`UPDATE insights_settings SET updated_at = now() - interval '8 days' WHERE key = ${`strategy:${accountId}`}`;
+      return "The Strategist was told to plan again on the next hourly check, from the keyword ideas found for this site's pages.";
+    }
     case "ranks":
       if (!shape.keywords) return null;
       await sql`UPDATE insights_account_autopilot SET upkeep_tried_at = NULL WHERE account_id = ${accountId}`;

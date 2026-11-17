@@ -3,7 +3,7 @@ import type { Problem } from "./inspector";
 import { readScorecard } from "./scorecard";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
 import { readStatus, report } from "./status";
-import { readStrategy } from "./strategist";
+import { readStrategy, type StrategyReport } from "./strategist";
 import { trimWords } from "./guards";
 import { polish } from "./writer";
 import { readProspects } from "./backlinks";
@@ -121,7 +121,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const lines = ["Hello,", "", "Here is your DashPatrol week."];
   lines.push(
     "",
-    `This week: ${plural(week.changes, "page change")} made, ${plural(week.articles, "new article")}, ${plural(week.links, "link")} between your pages` +
+    `Last 7 days: ${plural(week.changes, "page change")} made, ${plural(week.articles, "new article")}, ${plural(week.links, "link")} between your pages` +
       (Number(week.suggested) ? `, ${plural(week.suggested, "change")} on your fix list` : "") +
       "."
   );
@@ -133,6 +133,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     if (fresh.assessment) lines.push("", `Where things stood on ${made}: ${polish(fresh.assessment)}`);
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
     if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${planLine(m)}`));
+    else if (fresh.checked !== false) lines.push("", weeklyFocus(fresh)!);
   }
   // Read once for both sections: the site's own Google Analytics, never another site's.
   const conn = await getConnection(accountId).catch(() => null);
@@ -234,6 +235,21 @@ export interface WeeklyReportData {
   shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
 }
 
+/**
+ * The week's focus, one sentence: the Strategist's biggest opportunity only when a kept move works on it, else the first
+ * kept move itself. With a plan checked and no move kept, it says plainly that nothing is planned, never a focus the
+ * plan doesn't act on. Null while there's no recent plan or it still waits for its check (the page says so). Pure.
+ */
+export function weeklyFocus(fresh: Pick<StrategyReport, "assessment" | "moves" | "checked"> | null): string | null {
+  if (!fresh || fresh.checked === false) return null;
+  const kept = fresh.moves.filter((m) => m.kept);
+  if (!kept.length) return "No move is planned this week: the checks found none backed by this site's data.";
+  const named = kept.flatMap((m) => [m.keyword, m.page]).filter((x): x is string => Boolean(x && x.trim())).map((x) => x.trim().toLowerCase());
+  const sentences = (fresh.assessment ?? "").split(/(?<=\.)\s+/).filter(Boolean);
+  const best = sentences.find((x) => /opportunit/i.test(x) && named.some((k) => x.toLowerCase().includes(k)));
+  return best ? polish(best) : `This week's focus: ${planLine(kept[0])}`;
+}
+
 /** One plan step as the owner reads it (page and email alike): it names the search or page it works on. */
 function planLine(m: { action: string; keyword: string | null; page?: string | null }): string {
   const text = polish(m.action);
@@ -275,8 +291,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
   return {
     week: { changes: Number(week.changes), articles: Number(week.articles), links: Number(week.links), suggested: Number(week.suggested) },
     visitors: fresh && fresh.visitors != null ? { value: Number(fresh.visitors), goal: Number(fresh.goal), at: fresh.at } : null,
-    // One sentence only, the biggest opportunity when the Strategist named one: the page shows numbers, not paragraphs.
-    focus: fresh?.assessment ? polish(((ss) => ss.find((x) => /opportunit/i.test(x)) ?? ss[0])(fresh.assessment.split(/(?<=\.)\s+/))) : null,
+    focus: weeklyFocus(fresh),
     plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map(planLine) : [],
     planNote: fresh && fresh.checked === false
       ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."

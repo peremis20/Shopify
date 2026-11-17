@@ -131,6 +131,21 @@ export async function accountsDueForKeywords(limit: number): Promise<string[]> {
   return rows.map((r) => r.account_id!);
 }
 
+/**
+ * A Search Console search the agents can work from: not the site's own name (written with or without spaces, so
+ * "acme shop hours" is the brand for acmeshop.org) and past the keyword guardrail. A site whose searches are all its own
+ * name, its address or "near me" has nothing to aim at from Search Console, so Keyword Planner finds its topics instead.
+ */
+export function workableSearch(query: string, brands: (string | null | undefined)[], faith: boolean): boolean {
+  const q = query.trim().toLowerCase();
+  const squashed = q.replace(/[^\p{L}\p{N}]+/gu, "");
+  for (const b of brands) {
+    const name = (b ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+    if (name.length >= 4 && squashed.includes(name)) return false;
+  }
+  return !isJunkKeyword(q, { faith });
+}
+
 /** Faith topics count as on topic for a faith and health publication. */
 export const faithAllowed = async (accountId: string) => allowsFaith((await readProfile(accountId).catch(() => null))?.businessType);
 

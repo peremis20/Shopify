@@ -6,7 +6,7 @@ import { siteFor } from "./autopilot/site-source";
 import { accountsDueForPrune, markPruneTried, runPruner } from "./autopilot/pruner";
 import { accountsDueForStrategy, liveStatus, markStrategyTried, readStrategy, runStrategist } from "./autopilot/strategist";
 import { inspect } from "./autopilot/inspector";
-import { accountsDueForDrafts, accountsDueForLinkCheck, checkWonLinks, findProspects, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
+import { accountsDueForDrafts, accountsDueForLinkCheck, checkWonLinks, drafterHealth, findProspects, isTurnedDown, markDraftTried, markDraftsMade, pickForDrafts, prospectsDue, readProspects, saveDrafts, setProspectStatus, type OutreachDraft, type Prospect, type ProspectStatus } from "./autopilot/backlinks";
 import { backfillDifficulty, difficulties } from "./autopilot/difficulty";
 import { authorityOf, authorityReady, checkOprKey, forgetOprKey, readAuthorityHistory, recordAuthority, rivals } from "./autopilot/authority";
 import { readStatus, report } from "./autopilot/status";
@@ -42,7 +42,7 @@ import {
 import { accountsDueForBusiness, detectSiteTypes, learnBusiness } from "./autopilot/business-profile";
 import { accountsDueForInspection, accountsDueForRescue, accountsDueForRun, markRescueTried, rescueUnindexed, autopilotHistory, logChange, markSuggestion, approveChange, revertChange, runAutopilot } from "./autopilot/engine";
 import { manualSite } from "./autopilot/site-source";
-import { accountsDueForKeywords, readSiteKeywords, refreshSiteKeywords } from "./autopilot/site-keywords";
+import { accountsDueForKeywords, faithAllowed, readSiteKeywords, refreshSiteKeywords, workableSearch } from "./autopilot/site-keywords";
 import { addTarget, matchTargetPages, readTargets, removeTarget } from "./autopilot/targets";
 import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
@@ -999,7 +999,10 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
     return "nothing new to write";
   }
   const drafts = new Map<string, OutreachDraft>();
-  let failure: unknown = null;
+  // A real fault (an AI outage, a limit, a missing key) and the checks turning down one site's email are different:
+  // the second is the guardrails working, and that site is set aside for a week while the others are written.
+  let fault: unknown = null;
+  let turnedDown: unknown = null;
   const failed: string[] = [];
   // About two minutes per hour, so a slow AI never holds up the other agents; the rest is written next hour.
   const started = Date.now();
@@ -1008,7 +1011,7 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
     if (tried && Date.now() - started > 120_000) break;
     tried++;
     // Only a site whose email couldn't be written safely is set aside; an AI outage or limit sets nothing aside.
-    const d = await composeOutreach(accountId, p).catch((e) => ((failure = e), /^Couldn't write a safe email/.test(message(e)) && failed.push(p.url), null));
+    const d = await composeOutreach(accountId, p).catch((e) => (isTurnedDown(e) ? ((turnedDown = e), failed.push(p.url)) : (fault = e), null));
     if (d) drafts.set(p.url, d);
   }
   const saved = await saveDrafts(accountId, drafts);
@@ -1021,8 +1024,10 @@ async function runOutreachDrafter(accountId: string): Promise<string> {
     const still = queue.filter((d) => open.has(d));
     await sql`UPDATE insights_settings SET value = ${JSON.stringify(still)} WHERE key = ${`draft_queue:${accountId}`}`.catch(() => undefined);
   }
-  // Any one failing is a fault the Inspector must see.
-  await report("outreach-drafter", !failure, failure ? message(failure) : null);
+  // Any real fault is one the Inspector must see; so is a run where the checks turned down every email it wrote.
+  const health = drafterHealth({ saved, turnedDown: failed.length, fault: fault ? message(fault) : null, turnedDownText: turnedDown ? message(turnedDown) : null });
+  await report("outreach-drafter", health.ok, health.detail);
+  const failure = fault ?? turnedDown;
   if (saved === 0 && failure && !left) throw failure;
   return `${left ? "partial: " : ""}${saved} ${saved === 1 ? "email" : "emails"} ready to review${left ? `, ${left} more next hour` : ""}`;
 }
@@ -1447,7 +1452,11 @@ async function maintain(accountId: string, force = false): Promise<string> {
   const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : profile.siteDomain;
   if (!conn || !domain) return `no website yet, pages read ${read}, links ${links}, claims ${claims}, overlaps ${overlaps}`;
   // Without Search Console, or while it has too little data (new property, small site), Keyword Planner picks the searches to track for each page.
-  const thin = !conn.gscSiteUrl || (await gscSearchCount(conn).catch(() => 0)) < THIN_GSC;
+  // Only searches the agents can work from count (on the first two pages, like the daily rank check): a site whose
+  // searches are all its own name or "near me" is thin too, so Keyword Planner finds the topics of its pages.
+  const faith = await faithAllowed(accountId).catch(() => false);
+  const workable = (q: string, position: number) => position <= 20 && workableSearch(q, [profile.brandName, domain.split(".")[0]], faith);
+  const thin = !conn.gscSiteUrl || (await gscSearchCount(conn, workable).catch(() => 0)) < THIN_GSC;
   const picked = thin
     ? (await refreshSiteKeywords(accountId, profile.brandName ?? domain.split(".")[0], platform.serperKey, domain).catch((e) => (console.error(`site keywords failed: ${message(e)}`), []))).length
     : 0;

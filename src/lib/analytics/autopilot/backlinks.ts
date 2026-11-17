@@ -350,6 +350,25 @@ export function pickForDrafts(list: ProspectList | null, n = DRAFTS_PER_WEEK, fi
   return [...queued.slice(0, n), ...rest.slice(0, Math.max(0, n - waiting - queued.length))];
 }
 
+/** The checks (the safety filter or the second AI) turned down the email for one site: the guardrails working, not a fault. */
+export const isTurnedDown = (e: unknown): boolean => /^Couldn't write a safe email/.test(e instanceof Error ? e.message : String(e));
+
+/**
+ * What the Outreach Drafter tells the status board after a run. A real fault (an AI outage, a limit, a missing key) is
+ * a failure. One site's email turned down by the checks is not: that site waits a week and the others are written. Only
+ * a run where the checks turned down every email it wrote is shown, so a checker that rejects everything is still seen.
+ */
+export function drafterHealth(r: { saved: number; turnedDown: number; fault: string | null; turnedDownText?: string | null }): { ok: boolean; detail: string | null } {
+  if (r.fault) return { ok: false, detail: r.fault };
+  if (r.turnedDown > 0 && r.saved === 0) {
+    return {
+      ok: false,
+      detail: `The checks turned down every email written this time (${r.turnedDown} ${r.turnedDown === 1 ? "site" : "sites"}), so those sites wait a week. ${r.turnedDownText ?? ""}`.trim(),
+    };
+  }
+  return { ok: true, detail: null };
+}
+
 /** Notes the sites whose email couldn't be written safely, so the next tries go to other sites. */
 export async function markDraftTried(accountId: string, urls: string[]): Promise<void> {
   if (!urls.length) return;

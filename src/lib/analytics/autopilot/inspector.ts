@@ -178,8 +178,10 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           ? "Hunter's monthly quota is used up. Its email lookups wait until it renews, or upgrade the Hunter plan."
           : /search key|serper/i.test(d ?? "")
         ? "Add a Serper search key in Platform keys, so journalists and paid placements can be searched."
-        : /second AI/i.test(d ?? "")
+        : /no second AI/i.test(d ?? "")
           ? "Add a key for a second AI from a different provider in Platform keys, so pitches can be checked before the owner sees them."
+          : /turned it down/i.test(d ?? "")
+            ? "Nothing to fix: the checking AI turned down one pitch, so that journalist was skipped. Journalists are still found and listed, and it tries again next week by itself."
           : /AI key/i.test(d ?? "")
             ? "Add an AI key in Platform keys, so pitches can be written."
             : /limit/i.test(d ?? "")
@@ -226,7 +228,12 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
   },
   "outreach-drafter": {
     name: "The Outreach Drafter (backlink emails written ahead)",
-    fix: (d) => (/AI key/i.test(d) ? "Add an AI key in Platform keys." : "It tries again by itself. Write the email on a site by hand meanwhile."),
+    fix: (d) =>
+      /AI key/i.test(d)
+        ? "Add an AI key in Platform keys."
+        : /turned down every email|Couldn't write a safe email/i.test(d)
+          ? "Not a missing key or an outage: the checks turned down the emails written for these sites, so those sites wait a week. The drafter writes for other sites on its next run by itself; write the email on a site by hand meanwhile."
+          : "It tries again by itself. Write the email on a site by hand meanwhile.",
     workaround: "Each site on the Backlinks list still has Write the email.",
   },
   "idea-finder": {
