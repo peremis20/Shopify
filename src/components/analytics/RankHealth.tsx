@@ -59,9 +59,9 @@ export function RankHealth({ connected }: { connected: boolean }) {
   return (
     <div className="mt-5 grid gap-5 xl:grid-cols-2">
       <Card>
-        <CardHeader title="Page one watch">{checkButton}</CardHeader>
+        <CardHeader title="Google rank watch">{checkButton}</CardHeader>
         <Explainer>
-          Your position on Google for your most important searches, checked every morning. Search Console runs about 3 days
+          Your position on Google for your most important searches, checked every morning in the top 30 (pages one to three). Search Console runs about 3 days
           behind; this catches a drop the next day, and the autopilot defends it in that day&apos;s run.
         </Explainer>
         {error && <p className="mb-3 rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{error}</p>}
@@ -103,7 +103,7 @@ function RankTable({ rows }: { rows: RankWatchRow[] }) {
     rows,
     {
       query: (r) => r.query,
-      position: (r) => r.position ?? 99,
+      position: (r) => r.position ?? (r.deep || 99),
       change: (r) => (r.position !== null && r.previous !== null ? r.previous - r.position : null),
       best: (r) => r.best7,
     },
@@ -138,7 +138,7 @@ function RankTable({ rows }: { rows: RankWatchRow[] }) {
                   {r.url && <span className="block truncate text-xs text-dash-muted" title={r.url}>{pathOf(r.url)}</span>}
                 </td>
                 <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
-                  {r.position === null ? <span className="text-dash-muted">Off page one</span> : `#${r.position}`}
+                  {r.position === null ? <span className="text-dash-muted">{r.deep ? `#${r.deep} (page ${Math.ceil(r.deep / 10)})` : r.deep === 0 ? "Not in top 30" : "Off page one"}</span> : `#${r.position}`}
                 </td>
                 <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                   {!change ? (
@@ -154,9 +154,9 @@ function RankTable({ rows }: { rows: RankWatchRow[] }) {
                   {r.best7 === null ? "Not yet" : `#${r.best7}`}
                 </td>
                 <td className="hidden px-1 py-1 sm:table-cell">
-                  {r.history.filter((h) => h.position !== null).length > 1 && (
-                    // Higher line means a better position; days off page one sit at the bottom.
-                    <Sparkline values={r.history.map((h) => (h.position === null ? 0 : 11 - h.position))} />
+                  {r.history.filter((h) => h.position !== null || h.deep).length > 1 && (
+                    // Higher line means a better position; days out of the top 30 (or not recorded past page one) sit at the bottom.
+                    <Sparkline values={r.history.map((h) => 31 - (h.position ?? (h.deep || 31)))} />
                   )}
                 </td>
               </tr>

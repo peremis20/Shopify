@@ -4,16 +4,17 @@ import { ensureSchema, sql } from "../db";
 import { toIso } from "../dates";
 import { googleRequest } from "../google-auth";
 import { getLists, THIN_GSC } from "../seo-tools";
-import { fetchSerp } from "./serp";
+import { fetchSerpDeep } from "./serp";
 import { isJunkKeyword } from "./keyword-guard";
 import { faithAllowed, isLongTail, readSiteKeywords, type SiteKeyword } from "./site-keywords";
 import { readTargets } from "./targets";
 
 /**
- * Daily rank tracking. Search Console lags about 3 days; this checks Google
- * page one every day for the searches that matter most, so a drop can be
- * defended the next morning. Uses one search results credit per search per
- * day (results are cached for a day and shared between accounts).
+ * Daily rank tracking. Search Console lags about 3 days; this checks the Google
+ * top 30 every day for the searches that matter most, so a drop can be
+ * defended the next morning and a climb from page three shows early. position
+ * stays page one only; 11 to 30 are kept in deep_position. One lookup per
+ * search per day (cached for a day and shared between accounts).
  */
 
 export const TRACK_PER_DAY = 15;
@@ -22,6 +23,8 @@ export interface RankWatchRow {
   query: string;
   /** Today's (or the latest) position on page one, null when off page one. */
   position: number | null;
+  /** When off page one: the position on pages two or three (11 to 30), 0 when checked to 30 and not found, null when only page one was checked. */
+  deep: number | null;
   previous: number | null;
   /** Best position in the last 7 days. */
   best7: number | null;
@@ -29,7 +32,7 @@ export interface RankWatchRow {
   checkedOn: string;
   /** Quoted in Google's answer box on the latest check (null: not recorded). */
   quoted: boolean | null;
-  history: { day: string; position: number | null }[];
+  history: { day: string; position: number | null; deep: number | null }[];
 }
 
 const DAY = 86_400_000;
@@ -60,7 +63,7 @@ const trackablePicks = async (accountId: string) =>
 async function queriesToTrack(accountId: string, conn: Connection, ourDomain: string): Promise<string[]> {
   // The owner's Rank for this picks come first and are all checked, then a few other saved keywords.
   const chosen = (await readTargets(accountId).catch(() => [])).map((t) => t.keyword);
-  const saved = [...chosen, ...(await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords).filter((k) => !chosen.includes(k)).slice(0, 5)];
+  const saved = [...chosen, ...(await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords).filter((k) => !chosen.includes(k)).slice(0, 10)];
   const targets = (
     await sql`SELECT query, max(created_at) AS at FROM insights_autopilot_changes
       WHERE account_id = ${accountId} AND field <> 'intent' AND created_at > now() - interval '120 days'
@@ -134,9 +137,13 @@ export async function trackRanks(accountId: string, conn: Connection, serpKey: s
   for (let i = 0; i < queries.length; i += 5) {
     await Promise.all(
       queries.slice(i, i + 5).map(async (q) => {
-        const serp = await fetchSerp(serpKey, q).catch(nullUnlessLimit);
+        const serp = await fetchSerpDeep(serpKey, q).catch(nullUnlessLimit);
         if (!serp) return;
-        const ours = serp.organic.find((r) => isOurs(r.domain, ourDomain));
+        const found = serp.organic.find((r) => isOurs(r.domain, ourDomain));
+        // position keeps meaning page one (the autopilot acts on it); 11 to 30 go in deep_position.
+        const ours = found && found.position <= 10 ? found : undefined;
+        // 0 means checked to 30 and not found; null (older rows) means only page one was checked.
+        const deep = found ? (found.position > 10 ? found.position : null) : 0;
         // Quoted in Google's answer box? Unknown (null) for page one results cached before this was recorded.
         let quoted: boolean | null = null;
         if (serp.answerLink !== undefined) {
@@ -149,9 +156,9 @@ export async function trackRanks(accountId: string, conn: Connection, serpKey: s
           quoted = Boolean(host) && isOurs(host, ourDomain);
         }
         await sql`
-          INSERT INTO insights_rank_daily (account_id, query, checked_on, position, url, quoted)
-          VALUES (${accountId}, ${q}, ${today}, ${ours?.position ?? null}, ${ours?.link ?? null}, ${quoted})
-          ON CONFLICT (account_id, query, checked_on) DO UPDATE SET position = EXCLUDED.position, url = EXCLUDED.url, quoted = EXCLUDED.quoted`;
+          INSERT INTO insights_rank_daily (account_id, query, checked_on, position, url, quoted, deep_position)
+          VALUES (${accountId}, ${q}, ${today}, ${ours?.position ?? null}, ${ours?.link ?? null}, ${quoted}, ${deep})
+          ON CONFLICT (account_id, query, checked_on) DO UPDATE SET position = EXCLUDED.position, url = EXCLUDED.url, quoted = EXCLUDED.quoted, deep_position = EXCLUDED.deep_position`;
         checked++;
       })
     );
@@ -164,13 +171,13 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
   await ensureSchema();
   const since = toIso(new Date(Date.now() - 14 * DAY));
   const rows = await sql`
-    SELECT query, checked_on, position, url, quoted FROM insights_rank_daily
+    SELECT query, checked_on, position, url, quoted, deep_position FROM insights_rank_daily
     WHERE account_id = ${accountId} AND checked_on >= ${since} ORDER BY query, checked_on`;
-  const byQuery = new Map<string, { day: string; position: number | null; url: string | null; quoted: boolean | null }[]>();
+  const byQuery = new Map<string, { day: string; position: number | null; deep: number | null; url: string | null; quoted: boolean | null }[]>();
   for (const r of rows) {
     const list = byQuery.get(r.query!) ?? [];
     // Booleans come back as text: "t" or "f" (null when not recorded).
-    list.push({ day: r.checked_on!.slice(0, 10), position: r.position === null ? null : Number(r.position), url: r.url, quoted: r.quoted === null ? null : r.quoted === "t" || r.quoted === "true" });
+    list.push({ day: r.checked_on!.slice(0, 10), position: r.position === null ? null : Number(r.position), deep: r.deep_position === null || r.deep_position === undefined ? null : Number(r.deep_position), url: r.url, quoted: r.quoted === null ? null : r.quoted === "t" || r.quoted === "true" });
     byQuery.set(r.query!, list);
   }
   const weekAgo = toIso(new Date(Date.now() - 7 * DAY));
@@ -186,15 +193,16 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
     out.push({
       query,
       position: last.position,
+      deep: last.position === null ? last.deep : null,
       previous: prev?.position ?? null,
       best7: week.length ? Math.min(...week) : null,
       url: last.url ?? [...hist].reverse().find((h) => h.url)?.url ?? null,
       checkedOn: last.day,
       quoted: last.quoted,
-      history: hist.map(({ day, position }) => ({ day, position })),
+      history: hist.map(({ day, position, deep }) => ({ day, position, deep })),
     });
   }
-  return out.sort((a, b) => (a.position ?? 99) - (b.position ?? 99));
+  return out.sort((a, b) => (a.position ?? a.deep ?? 99) - (b.position ?? b.deep ?? 99));
 }
 
 /** Accounts with the autopilot on that haven't had today's rank check. */

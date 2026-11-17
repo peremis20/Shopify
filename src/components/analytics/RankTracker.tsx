@@ -226,7 +226,7 @@ function GoogleToday() {
   const sorted = [...rows].sort(
     (a, b) =>
       Number(roles[a.query] === "support") - Number(roles[b.query] === "support") ||
-      (a.position ?? 999) - (b.position ?? 999) ||
+      (a.position ?? (a.deep || 999)) - (b.position ?? (b.deep || 999)) ||
       a.query.localeCompare(b.query)
   );
 
@@ -266,7 +266,7 @@ function GoogleToday() {
                       )}
                     </td>
                     <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
-                      {r.position === null ? <span className="text-dash-muted">Not on page 1</span> : r.position}
+                      {r.position === null ? <span className="text-dash-muted">{r.deep ? `${r.deep} (page ${Math.ceil(r.deep / 10)})` : r.deep === 0 ? "Not in top 30" : "Not on page 1"}</span> : r.position}
                     </td>
                     <td className="whitespace-nowrap px-1 py-2 text-right tabular-nums">
                       {!change ? (

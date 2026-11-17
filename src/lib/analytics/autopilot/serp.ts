@@ -56,6 +56,11 @@ const domainOf = (url: string) => {
   }
 };
 
+/** How deep the daily rank check reads: the top 30 (pages one to three), so climbs from page three to page one show. */
+export const DEEP_RESULTS = 30;
+const deepKey = (query: string) => `serp30:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`;
+const pageOneOf = (deep: Omit<Serp, "ourPosition">): Omit<Serp, "ourPosition"> => ({ ...deep, organic: deep.organic.filter((r) => r.position <= 10).slice(0, 10) });
+
 /** Page one from the day's cache only: never a paid lookup. Null when it isn't cached. */
 export async function cachedSerp(query: string): Promise<Omit<Serp, "ourPosition"> | null> {
   const cacheKey = `serp:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`;
@@ -73,6 +78,11 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
     SELECT data FROM insights_report_cache
     WHERE cache_key = ${cacheKey} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
   if (row?.data) return JSON.parse(row.data);
+  // Today's deeper rank check already holds page one: no second paid lookup.
+  const [deep] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${deepKey(query)} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
+  if (deep?.data) return pageOneOf(JSON.parse(deep.data));
 
   // Only a real (paid) lookup counts; cached results are free.
   await spend("search");
@@ -102,6 +112,55 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
   await sql`
     INSERT INTO insights_report_cache (cache_key, data, fetched_at)
     VALUES (${cacheKey}, ${JSON.stringify(data)}::jsonb, now())
+    ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
+  return data;
+}
+
+/**
+ * The top 30 for a search, for the daily rank check only (everything else reads page one with fetchSerp).
+ * Positions are Google's own, so 11 to 30 are pages two and three. Cached for a day like fetchSerp, and
+ * counted once against the site's search limit.
+ */
+export async function fetchSerpDeep(apiKey: string, query: string): Promise<Omit<Serp, "ourPosition">> {
+  await ensureSchema();
+  const [row] = await sql`
+    SELECT data FROM insights_report_cache
+    WHERE cache_key = ${deepKey(query)} AND fetched_at > now() - make_interval(hours => ${CACHE_HOURS})`;
+  if (row?.data) return JSON.parse(row.data);
+  // More than 10 results costs the search results API two credits, so it counts as two searches.
+  // (A query fetchSerp already bought today is bought again here at depth; the rank check runs early, so this is rare.)
+  await spend("search");
+  await spend("search");
+  const res = await fetch("https://google.serper.dev/search", {
+    method: "POST",
+    headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ q: query, gl: "us", hl: "en", num: DEEP_RESULTS }),
+    signal: AbortSignal.timeout(15000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if ([401, 402, 403, 429].includes(res.status) || res.status >= 500) await report("serper", false, `${res.status}: ${body?.message ?? "lookup failed"}`);
+    throw new Error(`Search results lookup failed: ${body?.message ?? res.status}`);
+  }
+  await report("serper", true);
+  const data = {
+    query,
+    organic: ((body.organic ?? []) as { position?: number; title?: string; link?: string; snippet?: string }[])
+      .filter((r) => r.link)
+      .slice(0, DEEP_RESULTS)
+      .map((r, i) => ({ position: r.position ?? i + 1, title: r.title ?? "", link: r.link!, domain: domainOf(r.link!), snippet: r.snippet ?? "" })),
+    questions: ((body.peopleAlsoAsk ?? []) as { question?: string }[]).map((q) => q.question ?? "").filter(Boolean).slice(0, 8),
+    related: ((body.relatedSearches ?? []) as { query?: string }[]).map((q) => q.query ?? "").filter(Boolean).slice(0, 8),
+    answerLink: typeof body.answerBox?.link === "string" ? (body.answerBox.link as string) : null,
+  };
+  await sql`
+    INSERT INTO insights_report_cache (cache_key, data, fetched_at)
+    VALUES (${deepKey(query)}, ${JSON.stringify(data)}::jsonb, now())
+    ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
+  // Page one under its usual key too, so cachedSerp and fetchSerp readers get it for free, as before.
+  await sql`
+    INSERT INTO insights_report_cache (cache_key, data, fetched_at)
+    VALUES (${`serp:${crypto.createHash("sha256").update(`us|en|${query.toLowerCase()}`).digest("hex")}`}, ${JSON.stringify(pageOneOf(data))}::jsonb, now())
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
   return data;
 }
