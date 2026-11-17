@@ -119,7 +119,7 @@ export async function fetchSerp(apiKey: string, query: string): Promise<Omit<Ser
 /**
  * The top 30 for a search, for the daily rank check only (everything else reads page one with fetchSerp).
  * Positions are Google's own, so 11 to 30 are pages two and three. Cached for a day like fetchSerp, and
- * counted once against the site's search limit.
+ * counted as two searches against the site's search limit (more than 10 results costs two credits).
  */
 export async function fetchSerpDeep(apiKey: string, query: string): Promise<Omit<Serp, "ourPosition">> {
   await ensureSchema();
@@ -129,8 +129,7 @@ export async function fetchSerpDeep(apiKey: string, query: string): Promise<Omit
   if (row?.data) return JSON.parse(row.data);
   // More than 10 results costs the search results API two credits, so it counts as two searches.
   // (A query fetchSerp already bought today is bought again here at depth; the rank check runs early, so this is rare.)
-  await spend("search");
-  await spend("search");
+  await spend("search", 2);
   const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
     headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },

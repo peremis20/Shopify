@@ -13,8 +13,8 @@ import { readTargets } from "./targets";
  * Daily rank tracking. Search Console lags about 3 days; this checks the Google
  * top 30 every day for the searches that matter most, so a drop can be
  * defended the next morning and a climb from page three shows early. position
- * stays page one only; 11 to 30 are kept in deep_position. One lookup per
- * search per day (cached for a day and shared between accounts).
+ * stays page one only; 11 to 30 are kept in deep_position. One lookup (two
+ * credits) per search per day, cached for a day and shared between accounts.
  */
 
 export const TRACK_PER_DAY = 15;
@@ -202,7 +202,7 @@ export async function rankWatch(accountId: string): Promise<RankWatchRow[]> {
       history: hist.map(({ day, position, deep }) => ({ day, position, deep })),
     });
   }
-  return out.sort((a, b) => (a.position ?? a.deep ?? 99) - (b.position ?? b.deep ?? 99));
+  return out.sort((a, b) => (a.position ?? (a.deep || 99)) - (b.position ?? (b.deep || 99)));
 }
 
 /** Accounts with the autopilot on that haven't had today's rank check. */

@@ -94,21 +94,21 @@ export async function siteVerified(accountId: string): Promise<boolean> {
 /** A month's AI and Google lookups for a site not yet proven to be the account's: enough to show what the app does. */
 export const TRIAL_LIMITS: Record<Spend, number> = { ai: 40, search: 40 };
 
-/** Counts one paid request for the current site, and refuses it once the site's monthly limit is used up. */
-export async function spend(kind: Spend): Promise<void> {
+/** Counts a paid request (n units, 1 by default) for the current site, and refuses it once the site's monthly limit is used up. */
+export async function spend(kind: Spend, n = 1): Promise<void> {
   const accountId = currentSite();
   if (!accountId) return;
   await ensureSchema();
   const verified = await siteVerified(accountId);
   const limit = verified ? (await monthlyLimits())[kind] : TRIAL_LIMITS[kind];
   const [row] = await sql`
-    INSERT INTO insights_usage (account_id, month, ai, search) VALUES (${accountId}, ${month()}, ${kind === "ai" ? 1 : 0}, ${kind === "search" ? 1 : 0})
+    INSERT INTO insights_usage (account_id, month, ai, search) VALUES (${accountId}, ${month()}, ${kind === "ai" ? n : 0}, ${kind === "search" ? n : 0})
     ON CONFLICT (account_id, month) DO UPDATE SET ai = insights_usage.ai + EXCLUDED.ai, search = insights_usage.search + EXCLUDED.search
     RETURNING ai, search`;
   const used = Number(kind === "ai" ? row.ai : row.search);
   if (used > limit) {
     // Refused requests aren't spent, so they don't count.
-    await sql`UPDATE insights_usage SET ai = ai - ${kind === "ai" ? 1 : 0}, search = search - ${kind === "search" ? 1 : 0}
+    await sql`UPDATE insights_usage SET ai = ai - ${kind === "ai" ? n : 0}, search = search - ${kind === "search" ? n : 0}
       WHERE account_id = ${accountId} AND month = ${month()}`.catch(() => undefined);
     throw new SpendingLimitReached(
       verified
