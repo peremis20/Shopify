@@ -67,7 +67,7 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     workaround: "Until then, rivals are studied from Google results and Keyword Planner only.",
   },
   serper: {
-    name: "Google page 1 lookups (serper.dev)",
+    name: "Google results lookups (serper.dev)",
     fix: (d) => (/credit|quota|limit|402|429/i.test(d) ? "The serper.dev credits ran out. Top up or upgrade at serper.dev." : "Check the serper.dev key in Platform keys."),
     workaround: "Rank checks, difficulty scores and backlink searches pause until it works again; cached results are used meanwhile.",
   },
