@@ -85,8 +85,10 @@ export function readLighthouse(url: string, d: { lighthouseResult?: { categories
   }
   const node = firstNode(a["largest-contentful-paint-element"]?.details) ?? firstNode(a["lcp-breakdown-insight"]?.details) ?? firstNode(a["lcp-discovery-insight"]?.details) ?? {};
   // Lighthouse 13 names it in a checklist: eagerlyLoaded false means the main image waits for lazy loading.
-  const checklist = (a["lcp-discovery-insight"]?.details?.items ?? {}) as Record<string, { value?: unknown }>;
-  const lazy = a["lcp-lazy-loaded"]?.score === 0 || (checklist && !Array.isArray(checklist) && checklist.eagerlyLoaded?.value === false);
+  const disc = a["lcp-discovery-insight"]?.details as { type?: string; items?: unknown } | undefined;
+  const lists = disc?.type === "checklist" ? [disc] : Array.isArray(disc?.items) ? (disc!.items as { type?: string; items?: unknown }[]) : [];
+  const checklist = (lists.find((x) => x?.type === "checklist")?.items ?? {}) as Record<string, { value?: unknown }>;
+  const lazy = a["lcp-lazy-loaded"]?.score === 0 || checklist.eagerlyLoaded?.value === false;
   const score = d.lighthouseResult?.categories?.performance?.score;
   return {
     url,
@@ -489,6 +491,7 @@ async function imagesPass(accountId: string, deadline: number): Promise<RunOutco
   const candidates: ImageCandidate[] = [];
   let failed = 0;
   let outside = 0;
+  let missing = 0;
   for (const img of flagged) {
     // Each image can take a search and two downloads: not started without time for them.
     if (deadline - Date.now() < 30_000 || candidates.length >= 8) break;
@@ -507,7 +510,11 @@ async function imagesPass(accountId: string, deadline: number): Promise<RunOutco
       console.error(`images: file ${name} not looked up for ${accountId}: ${(e as Error).message}`);
       continue;
     }
-    if (!file || !sameCdnFile(img.url, file.url)) {
+    if (!file) {
+      missing++;
+      continue;
+    }
+    if (!sameCdnFile(img.url, file.url)) {
       outside++;
       continue;
     }
@@ -540,7 +547,8 @@ async function imagesPass(accountId: string, deadline: number): Promise<RunOutco
   const saved = candidates.reduce((s, c) => s + c.before - c.after, 0);
   const note =
     (candidates.length ? `${candidates.length} ${candidates.length === 1 ? "image" : "images"} can be ${kb(saved)} lighter` : "No image in your Shopify files needs a lighter copy") +
-    (outside ? `. ${outside} flagged ${outside === 1 ? "image comes" : "images come"} from your theme or apps, not your Shopify files` : "");
+    (outside ? `. ${outside} flagged ${outside === 1 ? "image comes" : "images come"} from your theme or apps, not your Shopify files` : "") +
+    (missing ? `. ${missing} flagged ${missing === 1 ? "image wasn't" : "images weren't"} found by name in your Shopify files` : "");
   await savePart(accountId, "images", { at: new Date().toISOString(), candidates, note });
   return { note, ...(failed ? { problem: `${failed} flagged ${failed === 1 ? "image" : "images"} couldn't be checked this week.` } : {}) };
 }
@@ -616,13 +624,32 @@ export async function applyImage(accountId: string, fileId: string, checkAt: str
       RETURNING account_id`;
     if (!taken.length) return "Undo is already running for that image. Look again in a minute.";
     const release = () => setChange(accountId, fileId, { undoAt: null }).catch(() => undefined);
-    const [now, backup] = await Promise.all([fileState(store, fileId), fileState(store, c.backupId)]);
-    if (!backup?.url || backup.status !== "READY") {
+    let now: FileState | null;
+    let backup: FileState | null;
+    try {
+      [now, backup] = await Promise.all([fileState(store, fileId), fileState(store, c.backupId)]);
+    } catch (e) {
+      await release();
+      throw e;
+    }
+    if (backup && (backup.status !== "READY" || !backup.url)) {
+      await release();
+      return "The original copy is still being processed in Shopify. Try Undo again in a minute.";
+    }
+    // The swap never happened (an unclear answer earlier): nothing to undo, so the record and the backup go.
+    if (now && sameSize(now.size, c.before) && !sameSize(now.size, c.after)) {
+      await dropChange(accountId, fileId);
+      await deleteFile(store, c.backupId).catch(() => undefined);
+      return "That image was never changed, so there was nothing to undo. It's off the list.";
+    }
+    if (!backup?.url) {
       await dropChange(accountId, fileId);
       await report("images", false, "An image's original backup is missing from Shopify Files, so it can't be put back from the app.");
       return "The original copy is no longer in your Shopify files, so it can't be put back from here. It's off the list; the lighter image stays.";
     }
-    if (!now || !sameSize(now.size, c.after)) {
+    if (now && now.status === "FAILED") {
+      // A broken image after a failed swap: putting the original back is exactly what's needed.
+    } else if (!now || !sameSize(now.size, c.after)) {
       await release();
       return "That image was changed in Shopify since, so it was left as it is. Your original stays in Shopify Files as dashpatrol original.";
     }
@@ -680,11 +707,16 @@ export async function applyImage(accountId: string, fileId: string, checkAt: str
   }
   const after = await settled(store, fileId, (f) => f.size !== null && !sameSize(f.size, c.before));
   if (after?.status === "FAILED") {
-    // A broken image is never left on the store: the original goes back at once.
+    // A broken image is never left on the store: the original goes back at once, and only a confirmed return counts.
     await replaceFile(store, fileId, backup.url!).catch(() => undefined);
-    await report("images", false, "Shopify couldn't process a lighter image, so the original was put back.");
-    await drop();
-    return "Shopify couldn't process the lighter copy, so the original was put back.";
+    const back = await settled(store, fileId, (f) => sameSize(f.size, c.before));
+    if (back?.status === "READY") {
+      await drop();
+      await deleteFile(store, backupId).catch(() => undefined);
+      return "Shopify couldn't process the lighter copy, so the original was put back.";
+    }
+    await report("images", false, `Shopify couldn't process a lighter image (${c.name}) and the original couldn't be put back by itself; the original is kept in Shopify Files as dashpatrol original.`);
+    return `Shopify couldn't process the lighter copy of ${c.name}, and the original couldn't be put back by itself. The original is safe in your Shopify files (named dashpatrol original); upload it over this image in Shopify, or click Undo to try again.`;
   }
   if (after?.size) await setChange(accountId, fileId, { after: after.size });
   return null;

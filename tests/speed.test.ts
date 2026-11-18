@@ -102,7 +102,8 @@ test("Lighthouse 13's insight audits are read too", () => {
       audits: {
         "largest-contentful-paint": { numericValue: 6000 },
         "image-delivery-insight": { details: { type: "list", items: [{ type: "table", items: [{ url: "https://shop.example/cdn/shop/files/a.png", wastedBytes: 700_000, totalBytes: 900_000 }] }] } } as never,
-        "lcp-discovery-insight": { details: { type: "checklist", items: { eagerlyLoaded: { value: false } } } } as never,
+        // Lighthouse 13.6: a list holding the checklist and the node.
+        "lcp-discovery-insight": { details: { type: "list", items: [{ type: "checklist", items: { eagerlyLoaded: { label: "lazy load not applied", value: false } } }, { type: "node", nodeLabel: "Hero" }] } } as never,
         "lcp-breakdown-insight": { details: { type: "list", items: [{ type: "node", nodeLabel: "Hero banner" }] } } as never,
         "render-blocking-insight": { details: { type: "table", items: [{ url: "https://shop.example/x.css", wastedMs: 500 }] } } as never,
         "third-parties-insight": { details: { type: "table", items: [{ entity: "Some App", transferSize: 100_000, mainThreadTime: 800 }] } } as never,
