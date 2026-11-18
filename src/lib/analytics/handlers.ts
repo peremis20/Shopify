@@ -1715,7 +1715,7 @@ export async function autopilotTick(): Promise<Response> {
       return [] as string[];
     })) {
       if (late()) break;
-      const note = await forSite(accountId, () => runConversion(accountId, Math.min(Date.now() + 100_000, started + budget))).catch(
+      const note = await forSite(accountId, () => runConversion(accountId, Math.min(Date.now() + 90_000, started + budget))).catch(
         (e) => (console.error(`conversion failed: ${message(e)}`), null),
       );
       if (note) results.push(`account ${accountId} conversion: ${note}`);

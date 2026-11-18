@@ -20,7 +20,15 @@ const nums: ConversionNumbers = {
   currency: "USD",
   rate: conversionRate(8, 965),
 };
-const products = [{ id: "gid://shopify/Product/1", title: "Magnesium Glycinate, 90 Count", url: "https://shop.example/products/magnesium" }];
+const products = [
+  {
+    id: "gid://shopify/Product/1",
+    title: "Magnesium Glycinate, 90 Count",
+    url: "https://shop.example/products/magnesium",
+    text: "Magnesium glycinate in vegetable capsules. Take 3 capsules daily with food. 90 capsules per bottle.",
+    hasSection: false,
+  },
+];
 
 test("the conversion rate is paid orders per visit, and unknown when either is missing", () => {
   assert.equal(conversionRate(8, 965), 8 / 965);
@@ -50,7 +58,7 @@ const draft = (m: Partial<ConversionMoveDraft>): ConversionMoveDraft => ({
   action: "Add a short questions section to the product page.",
   kind: "product_page",
   page: "https://shop.example/products/magnesium",
-  draft: "Common questions\nHow many capsules are in a bottle? 90.",
+  draft: "Common questions\nHow many capsules are in a bottle? 90.\nTake 3 capsules daily with food.",
   measure: "Add to cart rate of Magnesium Glycinate.",
   impact: "high",
   ...m,
@@ -78,4 +86,29 @@ test("without a way to write to the store, a product page move is still shown bu
   const kept = keptMoves([draft({})], [true], dataBlock(nums, products, "", null), products, { health: false, canAdd: false });
   assert.equal(kept.length, 1);
   assert.equal(kept[0].add, undefined);
+});
+
+test("invented social proof, stock, ratings, returns and health effects never reach a product page", () => {
+  const data = dataBlock(nums, products, "", null);
+  const bad = [
+    "Trusted by 400 happy customers this month.",
+    "Only 9 left in stock.",
+    "Rated 5 stars by real buyers.",
+    "Helps you fall asleep faster and relieves stress and anxiety.",
+    "Pharmacist formulated and gentle on the stomach.",
+    "Made in the USA from vegan ingredients.",
+    "Every order comes with 28 day returns.",
+  ];
+  for (const line of bad) {
+    const kept = keptMoves([draft({ draft: `Why people choose it\n${line}` })], [true], data, products, { health: true, canAdd: true });
+    assert.equal(kept.length, 0, line);
+  }
+});
+
+test("no second section for a product that already has one, and a draft without words is dropped", () => {
+  const data = dataBlock(nums, products, "", null);
+  assert.equal(keptMoves([draft({})], [true], data, [{ ...products[0], hasSection: true }], { health: false, canAdd: true }).length, 0);
+  assert.equal(keptMoves([draft({})], [true], data, products, { health: false, canAdd: true, added: [products[0].id] }).length, 0);
+  assert.equal(keptMoves([draft({ draft: "**" })], [true], data, products, { health: false, canAdd: true }).length, 0);
+  assert.doesNotThrow(() => sectionHtml("x", "**"));
 });

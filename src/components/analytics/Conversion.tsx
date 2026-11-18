@@ -25,7 +25,7 @@ function Numbers({ n }: { n: ConversionNumbers }) {
     <div className="mb-3 text-sm text-dash-ink">
       <p>
         <span className="font-semibold">Conversion rate: {pct(n.rate)}</span>
-        {n.sessions !== null && n.paidOrders !== null ? ` (${n.paidOrders} paid orders from ${n.sessions.toLocaleString()} visits, last ${n.days} days)` : ""}
+        {n.sessions !== null && n.paidOrders !== null ? ` (${n.paidOrders} paid online orders from ${n.sessions.toLocaleString()} visits, last ${n.days} days)` : ""}
         {n.freeOrders ? `. Free samples: ${n.freeOrders}.` : "."}
       </p>
       {n.funnel && <p className="mt-1 text-xs text-dash-muted">{n.funnel.map((s) => `${s.step} ${s.users.toLocaleString()}`).join(" → ")}</p>}
@@ -50,7 +50,8 @@ export function Conversion() {
   useEffect(() => {
     api<View>("/api/conversion").then(setView).catch(() => setView(null));
   }, []);
-  if (!view) return null;
+  // Nothing to show on a site that doesn't sell online.
+  if (!view || (!view.report && /doesn't sell/i.test(view.lastNote ?? ""))) return null;
   const r = view.report;
   const act = async (action: "add" | "undo", id: string) => {
     setBusy(true);
