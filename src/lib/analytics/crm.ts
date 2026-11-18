@@ -167,9 +167,11 @@ export async function saveStages(accountId: string, input: unknown): Promise<str
   // A stage that was renamed (same number of stages, same place) keeps its contacts under the new name. A contact in a
   // stage that was taken out moves to the first stage, so nobody falls off the board. Each move goes on the timeline.
   for (const { from, to, renamed } of stageMoves(before, stages)) {
-    const moved = await sql`UPDATE insights_crm_contacts SET stage = ${to}, stage_changed_at = now(), updated_at = now()
-      WHERE account_id = ${accountId} AND stage = ${from} RETURNING id`;
-    for (const m of moved) await log(accountId, String(m.id), "stage", renamed ? `Stage ${from} renamed to ${to}` : `Moved to ${to} (stage ${from} was taken out)`);
+    const note = renamed ? `Stage ${from} renamed to ${to}` : `Moved to ${to} (stage ${from} was taken out)`;
+    // One statement moves them all and writes each one's timeline entry.
+    await sql`WITH moved AS (UPDATE insights_crm_contacts SET stage = ${to}, stage_changed_at = now(), updated_at = now()
+        WHERE account_id = ${accountId} AND stage = ${from} RETURNING id)
+      INSERT INTO insights_crm_activities (account_id, contact_id, kind, subject) SELECT ${accountId}, id, 'stage', ${note} FROM moved`;
   }
   return stages;
 }
@@ -512,7 +514,8 @@ export async function contactFromLead(
 }
 
 /**
- * Removes what a website request copied into the CRM (Shopify asked to erase a customer, or a whole store): the
+ * Removes what a website request copied into the CRM. A contact the owner also wrote to or about stays, as the owner's
+ * own record of their dealings with that person; only the request entries go. Used when (Shopify asked to erase a customer, or a whole store): the
  * "Website request" entries, and a contact that holds nothing else. With no email, every request copy on the account.
  */
 export async function forgetLeadCopies(accountId: string, email: string | null): Promise<number> {

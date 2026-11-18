@@ -52,7 +52,7 @@ import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
 import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
-import { accountsWithWaitingLeads, leadAccounts, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
+import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -1941,13 +1941,26 @@ export async function shopifyWebhook(req: Request): Promise<Response> {
     // The store's leads go with it (each lead remembers its store, so this works after an uninstall too), and so do the
     // copies those requests made in the CRM.
     if (topic === "shop/redact") {
-      for (const a of await leadAccounts(shop)) await forgetLeadCopies(a, null).catch((e) => console.error(`CRM copies not erased: ${message(e)}`));
+      // Only the requests from this store: each of its leads' emails, on each account that holds them.
+      for (const a of await leadAccounts(shop)) {
+        for (const em of await leadEmails(shop, a)) {
+          await forgetLeadCopies(a, em).catch(async (e) => {
+            console.error(`CRM copies not erased: ${message(e)}`);
+            await report("leads", false, `A store asked for its data to be erased, but the CRM copies couldn't be (${message(e)})`);
+          });
+        }
+      }
       await forgetShopLeads(shop);
     }
   }
   const email = (() => { try { return String(JSON.parse(raw)?.customer?.email ?? "").trim(); } catch { return ""; } })();
   if (topic === "customers/redact" && email) {
-    for (const a of await leadAccounts(shop, email)) await forgetLeadCopies(a, email).catch((e) => console.error(`CRM copy not erased: ${message(e)}`));
+    for (const a of await leadAccounts(shop, email)) {
+      await forgetLeadCopies(a, email).catch(async (e) => {
+        console.error(`CRM copy not erased: ${message(e)}`);
+        await report("leads", false, `A customer asked for their data to be erased, but the CRM copy couldn't be (${message(e)})`);
+      });
+    }
     await forgetLeadEmail(shop, email);
   }
   if (topic === "customers/data_request" && email) {
@@ -2263,7 +2276,7 @@ export const crmApi = (req: Request) =>
         case "template": await saveCrmTemplate(account.id, b.template); break;
         case "deleteTemplate": await deleteCrmTemplate(account.id, b.templateId); break;
         case "stages": await saveStages(account.id, b.stages); break;
-        case "import": return json({ result: await importContacts(account.id, b.rows), ...(await crmView(account.id)) });
+        case "import": return json({ result: await importContacts(account.id, b.rows) });
         case "email": {
           const out = await emailContact(account.id, b.id, b.email);
           if (!out.ok) return json({ error: out.error }, out.status);

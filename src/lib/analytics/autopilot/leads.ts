@@ -282,3 +282,10 @@ export async function leadAccounts(shopDomain: string, email?: string): Promise<
     : await sql`SELECT DISTINCT account_id FROM insights_leads WHERE shop_domain = ${shopDomain}`;
   return rows.map((r) => String(r.account_id));
 }
+
+/** The emails behind one account's leads from a Shopify store. */
+export async function leadEmails(shopDomain: string, accountId: string): Promise<string[]> {
+  await ensureTable();
+  const rows = await sql`SELECT DISTINCT lower(data->>'email') AS email FROM insights_leads WHERE shop_domain = ${shopDomain} AND account_id = ${accountId}`;
+  return rows.map((r) => String(r.email)).filter(Boolean);
+}

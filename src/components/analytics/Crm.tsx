@@ -52,7 +52,7 @@ export function Crm({ active = true }: { active?: boolean }) {
   const [showImport, setShowImport] = useState(false);
   const [showStages, setShowStages] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const load = useCallback(() => apiFresh<CrmData>("/api/crm").then(setData).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")), []);
+  const load = useCallback(() => apiFresh<CrmData>("/api/crm").then((d) => (setData(d), setError(null))).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")), []);
   // Fresh each time the page is opened again, so new website requests show without reloading the browser.
   useEffect(() => {
     if (active) load();
