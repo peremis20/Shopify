@@ -896,7 +896,7 @@ export async function auditStore(accountId: string, deadline: number): Promise<A
   // the conversion review, bounded on its own, so it never takes the review's time.
   const pricingRun: Promise<PricingCheck | null> =
     site?.mode === "shopify" && site.store
-      ? byDeadline(runPricingCheck(site.store, origin), Math.min(deadline, Date.now() + 30_000)).catch((e) => {
+      ? byDeadline(runPricingCheck(site.store, origin, Math.min(deadline - 5_000, Date.now() + 22_000)), Math.min(deadline, Date.now() + 40_000)).catch((e) => {
           console.error(`store audit: pricing check failed for ${accountId}: ${(e as Error).message}`);
           issues.push("The store's prices couldn't be checked this week.");
           return null;
@@ -1037,11 +1037,13 @@ export async function applyPriceFix(accountId: string, id: string, checkAt: stri
     const c = (audit?.priceChanges ?? []).find((x) => `${x.id}@${x.at}` === id);
     if (!c) return "That change isn't on the list anymore.";
     const now = await readVariant(site.store, c.productId, c.variantId);
-    if (now && now.price === c.price && now.compareAt === c.after) await writeCompareAt(site.store, c.productId, c.variantId, c.before);
+    const ours = !!now && now.price === c.price && now.compareAt === c.after;
+    if (ours) await writeCompareAt(site.store, c.productId, c.variantId, c.before);
     await dropChange(accountId, id);
     if (!now) return "That product isn't in the store anymore, so there was nothing to undo. It's off the list.";
-    if (now.compareAt !== c.after && now.compareAt !== c.before) return "That price was changed in Shopify since, so it was left as it is. It's off the list.";
-    return null;
+    // Already back to what it was: nothing to say.
+    if (ours || now.compareAt === c.before) return null;
+    return "That product's price was changed in Shopify since, so its crossed out price was left as it is. It's off the list.";
   }
   const pricing = audit?.pricing;
   if (!pricing) return "There is no price check yet.";
@@ -1056,6 +1058,7 @@ export async function applyPriceFix(accountId: string, id: string, checkAt: stri
     id,
     checkAt: pricing.at,
     label: f.option ? `${f.product}, ${f.option}` : f.product,
+    currency: pricing.currency,
     productId: a.productId,
     variantId: a.variantId,
     price: a.price,
@@ -1077,7 +1080,11 @@ export async function applyPriceFix(accountId: string, id: string, checkAt: stri
     () => null,
     (e: Error) => e.message,
   );
-  if (!back) return "The change couldn't be saved, so it was put back. Try again.";
+  if (!back) {
+    // In case the record landed after all, so the card matches what this says.
+    await dropChange(accountId, `${id}@${change.at}`).catch(() => undefined);
+    return "The change couldn't be saved, so it was put back. Try again.";
+  }
   console.error(`store audit: crossed out price changed for ${accountId} (${a.variantId}) but neither recorded nor put back: ${back}`);
   await report("store-audit", false, "A crossed out price was changed in Shopify but couldn't be recorded or put back.");
   return `The crossed out price of ${change.label} was changed in Shopify, but the change couldn't be saved here to undo later. Set it back in Shopify if you need to.`;

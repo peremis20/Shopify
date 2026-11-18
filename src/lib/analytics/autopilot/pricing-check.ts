@@ -1,13 +1,13 @@
 import { shopifyGql as gql, type StoreAccess } from "./shopify";
 
-/** A Shopify read that waits and tries again (up to three times) when Shopify says to slow down. */
+/** A Shopify call that waits and tries again (up to three more times) when Shopify says to slow down. */
 async function shopifyGql<T>(store: StoreAccess, query: string, variables: Record<string, unknown> = {}): Promise<T> {
   for (let i = 0; ; i++) {
     try {
       return await gql<T>(store, query, variables);
     } catch (e) {
-      if (i >= 2 || !/throttl/i.test(String((e as Error)?.message))) throw e;
-      await new Promise((r) => setTimeout(r, 2_000 * (i + 1)));
+      if (i >= 3 || !/throttl|\b429\b/i.test(String((e as Error)?.message))) throw e;
+      await new Promise((r) => setTimeout(r, [2_000, 5_000, 10_000][i]));
     }
   }
 }
@@ -53,6 +53,8 @@ export interface SoldPrices {
   top: Map<string, number>;
   /** The oldest order read (ISO date), or null when there were none. */
   since: string | null;
+  /** Some order had more lines than were read, so a sale may be missing: no "never charged" claim is made. */
+  truncated?: boolean;
 }
 
 export type PriceKind = "no-saving" | "small-saving" | "ladder" | "pack-vs-mix" | "compare-at-sum" | "compare-at-missing" | "compare-at-never-charged";
@@ -77,6 +79,7 @@ export interface AppliedChange {
   /** The check the change was made from. */
   checkAt: string;
   label: string;
+  currency: string;
   productId: string;
   variantId: string;
   price: number;
@@ -109,10 +112,15 @@ const PRODUCTS_PER_PAGE = 15;
 const PRODUCT_PAGES = 34;
 
 /** The store's active products and their options, up to about 500 products. */
-export async function readCatalog(store: StoreAccess): Promise<Catalog> {
+export async function readCatalog(store: StoreAccess, stopAt = Infinity): Promise<Catalog> {
   const out: Catalog = { currency: "USD", variants: [], capped: false };
   let after: string | null = null;
   for (let page = 0; page < PRODUCT_PAGES; page++) {
+    // Out of time: the check covers the products read so far, and says so.
+    if (page > 0 && Date.now() > stopAt) {
+      out.capped = true;
+      break;
+    }
     const d: {
       shop: { currencyCode: string };
       products: {
@@ -148,34 +156,38 @@ export async function readCatalog(store: StoreAccess): Promise<Catalog> {
   return out;
 }
 
-/** Orders per request: 10 orders of up to 10 lines (about 430 points) stays under Shopify's 1,000 point limit per query. */
-const ORDERS_PER_PAGE = 10;
-const ORDER_PAGES = 50;
+/** Orders per request: 8 orders of up to 25 lines (about 840 points) stays under Shopify's 1,000 point limit per query. */
+const ORDERS_PER_PAGE = 8;
+const ORDER_LINES = 25;
+const ORDER_PAGES = 63;
 
 /**
  * The highest unit price each variant was charged (before discounts) in the store's recent orders, newest first, up to
  * 500 orders of the last year. Shopify only lets the app read the last 60 days unless the store allows more, so the
  * dates actually covered are returned with it.
  */
-export async function soldPrices(store: StoreAccess, days = 365): Promise<SoldPrices> {
+export async function soldPrices(store: StoreAccess, days = 365, stopAt = Infinity): Promise<SoldPrices> {
   const fromDate = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
   const out: SoldPrices = { top: new Map(), since: null };
   let after: string | null = null;
   for (let page = 0; page < ORDER_PAGES; page++) {
+    // Out of time: what was read stands, and `since` says how far back it goes.
+    if (page > 0 && Date.now() > stopAt) break;
     const d: {
       orders: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
-        nodes: { test: boolean; createdAt: string; lineItems: { nodes: { variant: { id: string } | null; originalUnitPriceSet: { shopMoney: { amount: string } } }[] } }[];
+        nodes: { test: boolean; createdAt: string; lineItems: { pageInfo: { hasNextPage: boolean }; nodes: { variant: { id: string } | null; originalUnitPriceSet: { shopMoney: { amount: string } } }[] } }[];
       };
     } = await shopifyGql(
       store,
       `query($q: String!, $after: String) { orders(first: ${ORDERS_PER_PAGE}, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor }
-        nodes { test createdAt lineItems(first: 10) { nodes { variant { id } originalUnitPriceSet { shopMoney { amount } } } } } } }`,
+        nodes { test createdAt lineItems(first: ${ORDER_LINES}) { pageInfo { hasNextPage } nodes { variant { id } originalUnitPriceSet { shopMoney { amount } } } } } } }`,
       { q: `created_at:>=${fromDate}`, after },
     );
     for (const o of d.orders.nodes) {
       out.since = o.createdAt;
       if (o.test) continue;
+      if (o.lineItems.pageInfo.hasNextPage) out.truncated = true;
       for (const li of o.lineItems.nodes) {
         const c = cents(li.originalUnitPriceSet.shopMoney.amount);
         if (!li.variant || c === null) continue;
@@ -401,7 +413,7 @@ export function checkPricing(catalog: Catalog, origin: string, sold: SoldPrices 
     }
 
   // A single item's crossed out price should be one the store really charged, judged only on the dates actually read.
-  const covers = sold?.since && sold.top.size && now - Date.parse(sold.since) >= MIN_ORDER_DAYS * 864e5;
+  const covers = sold?.since && sold.top.size && !sold.truncated && now - Date.parse(sold.since) >= MIN_ORDER_DAYS * 864e5;
   if (sold && covers)
     for (const s of singles) {
       const shown = shownCompareAt(s);
@@ -431,22 +443,26 @@ export function pricingNote(c: Pick<PricingCheck, "findings" | "checked" | "orde
       : c.orders === "failed"
         ? ". Orders couldn't be read, so crossed out prices weren't checked against them."
         : c.orders === "too-few"
-          ? ". The orders the app can read cover too few days to judge crossed out prices."
+          ? ". The orders the app could read don't cover enough to judge crossed out prices."
           : "";
   return `${what}, ${n ? `${n} ${n === 1 ? "price to fix" : "prices to fix"}` : "nothing to fix"}${orders}`;
 }
 
 /** The whole pricing check of one Shopify store. Throws when the catalog can't be read (the store audit reports it). */
-export async function runPricingCheck(store: StoreAccess, origin: string): Promise<PricingCheck> {
+export async function runPricingCheck(store: StoreAccess, origin: string, stopAt = Date.now() + 22_000): Promise<PricingCheck> {
   const { needsOrderAccess } = await import("./shopify-sales");
-  const catalog = await readCatalog(store);
   let orders: PricingCheck["orders"] = "read";
-  const sold = await soldPrices(store).catch((e) => {
-    orders = needsOrderAccess(e) ? "no-access" : "failed";
-    if (orders === "failed") console.error(`pricing check: orders not read for ${store.shopDomain}: ${(e as Error).message}`);
-    return null;
-  });
+  // The catalog and the orders are read at the same time, each stopping at `stopAt` with what it has.
+  const [catalog, sold] = await Promise.all([
+    readCatalog(store, stopAt),
+    soldPrices(store, 365, stopAt).catch((e) => {
+      orders = needsOrderAccess(e) ? "no-access" : "failed";
+      if (orders === "failed") console.error(`pricing check: orders not read for ${store.shopDomain}: ${(e as Error).message}`);
+      return null;
+    }),
+  ]);
   if (sold && !sold.top.size) orders = "none";
+  else if (sold?.truncated) orders = "too-few";
   else if (sold?.since && Date.now() - Date.parse(sold.since) < MIN_ORDER_DAYS * 864e5) orders = "too-few";
   const m = matchCatalog(catalog.variants);
   const findings = checkPricing(catalog, origin, sold);

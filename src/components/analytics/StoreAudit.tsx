@@ -75,7 +75,7 @@ function PriceFix({ f, applied, busy, onApply }: { f: PriceFinding; applied: boo
 
 const amount = (c: number | null, currency: string) => (c === null ? "none" : `${(c / 100).toFixed(2)} ${currency}`);
 
-function AppliedList({ list, currency, busy, onUndo }: { list: AppliedChange[]; currency: string; busy: boolean; onUndo: (id: string) => void }) {
+function AppliedList({ list, busy, onUndo }: { list: AppliedChange[]; busy: boolean; onUndo: (id: string) => void }) {
   if (!list.length) return null;
   return (
     <div className="mt-3">
@@ -84,7 +84,7 @@ function AppliedList({ list, currency, busy, onUndo }: { list: AppliedChange[]; 
         {[...list].reverse().map((c) => (
           <li key={`${c.id}:${c.at}`} className="flex flex-wrap items-center gap-2">
             <span>
-              {c.label}: {amount(c.before, currency)} to {amount(c.after, currency)}, {new Date(c.at).toLocaleDateString()}
+              {c.label}: {amount(c.before, c.currency)} to {amount(c.after, c.currency)}, {new Date(c.at).toLocaleDateString()}
             </span>
             <button disabled={busy} onClick={() => onUndo(`${c.id}@${c.at}`)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
               Undo
@@ -244,9 +244,9 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
               ) : (
                 <p className="text-sm text-dash-muted">Your packs, bundles and crossed out prices add up.</p>
               )}
-              <AppliedList list={a.priceChanges ?? []} currency={a.pricing.currency} busy={busy} onUndo={(id) => applyPrice(id, true)} />
             </>
           )}
+          <AppliedList list={a.priceChanges ?? []} busy={busy} onUndo={(id) => applyPrice(id, true)} />
           <h3 className="mb-2 mt-4 font-serif text-lg">Apps that slow your store</h3>
           <SlowApps apps={a.slowApps} pages={read} />
           {details && (

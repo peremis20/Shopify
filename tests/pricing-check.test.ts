@@ -187,3 +187,9 @@ test("a free sample is never a price to compare against", () => {
   const two = v("Soap", "2 Pack", "S1-2PK", 1700, null, "S");
   assert.deepEqual(checkPricing({ currency: "USD", capped: false, variants: [sample, two] }, origin, null), []);
 });
+
+test("no 'never charged' claim when an order had more lines than were read", () => {
+  const one = v("Soap", "1 Bar", "S1", 1000, 2500, "S");
+  const f = checkPricing({ currency: "USD", capped: false, variants: [one] }, origin, { ...soldMap([[one.variantId, 1000]]), truncated: true }, NOW);
+  assert.ok(!f.some((x) => x.kind === "compare-at-never-charged"));
+});
