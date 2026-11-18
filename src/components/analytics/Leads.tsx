@@ -10,6 +10,7 @@ const STATE: Record<LeadView["shopify"], string> = {
   waiting: "Saving in Shopify soon",
   access: "Waiting for you to allow customer access in Shopify",
   failed: "Not saved in Shopify yet, trying again",
+  "gave-up": "Shopify refused it five times; add this person in Shopify yourself",
   "no-store": "Kept here; no Shopify store is connected",
   held: "Kept here only: too many requests came in that hour",
 };

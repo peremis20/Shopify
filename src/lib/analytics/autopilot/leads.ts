@@ -181,13 +181,14 @@ export async function syncLeads(accountId: string, store: StoreAccess | null, ma
   const rows = await sql`UPDATE insights_leads SET tried_at = now(), attempts = attempts + 1
     WHERE id IN (
       SELECT id FROM insights_leads WHERE account_id = ${accountId} AND shopify_customer IS NULL AND sync_state <> 'held' AND attempts < ${MAX_TRIES}
-        AND (tried_at IS NULL OR (sync_state = 'access' AND tried_at < now() - interval '1 day') OR (sync_state <> 'access' AND tried_at < now() - interval '50 minutes'))
+        AND (tried_at IS NULL OR (sync_state IN ('access', 'no-store') AND tried_at < now() - interval '1 day') OR (sync_state NOT IN ('access', 'no-store') AND tried_at < now() - interval '50 minutes'))
         AND (${ids ?? ""} = '' OR id = ANY(string_to_array(${ids ?? ""}, ',')::bigint[]))
       ORDER BY created_at LIMIT ${max} FOR UPDATE SKIP LOCKED)
     RETURNING id, created_at, data, attempts`;
   if (!rows.length) return null;
   if (!store) {
-    await sql`UPDATE insights_leads SET sync_state = 'no-store', sync_note = 'No Shopify store is connected.', attempts = ${MAX_TRIES}
+    // Tried again daily without using up its tries, so it goes through once a store is connected.
+    await sql`UPDATE insights_leads SET sync_state = 'no-store', sync_note = 'No Shopify store is connected.', attempts = attempts - 1
       WHERE id = ANY(string_to_array(${rows.map((r) => String(r.id)).join(",")}, ',')::bigint[])`;
     return `${rows.length} lead(s) kept; no Shopify store is connected`;
   }
@@ -197,7 +198,8 @@ export async function syncLeads(accountId: string, store: StoreAccess | null, ma
     const lead = (typeof r.data === "string" ? JSON.parse(r.data) : r.data) as Lead;
     try {
       const id = await saveInShopify(store, lead, new Date(String(r.created_at)));
-      await sql`UPDATE insights_leads SET shopify_customer = ${id}, sync_state = 'saved', sync_note = NULL WHERE id = ${r.id}`;
+      await sql`UPDATE insights_leads SET shopify_customer = ${id}, sync_state = 'saved', sync_note = NULL, shop_domain = coalesce(shop_domain, ${store.shopDomain})
+        WHERE id = ${r.id}`;
       saved++;
     } catch (e) {
       if (needsCustomerAccess(e)) {
@@ -223,27 +225,31 @@ export async function accountsWithWaitingLeads(limit = 5): Promise<string[]> {
   await ensureTable();
   // Due: never tried, or last tried an hour ago (a day ago when Shopify needs customer access), and not given up on.
   const rows = await sql`SELECT account_id FROM insights_leads WHERE shopify_customer IS NULL AND sync_state <> 'held' AND attempts < ${MAX_TRIES}
-        AND (tried_at IS NULL OR (sync_state = 'access' AND tried_at < now() - interval '1 day') OR (sync_state <> 'access' AND tried_at < now() - interval '50 minutes'))
+        AND (tried_at IS NULL OR (sync_state IN ('access', 'no-store') AND tried_at < now() - interval '1 day') OR (sync_state NOT IN ('access', 'no-store') AND tried_at < now() - interval '50 minutes'))
     GROUP BY account_id ORDER BY min(created_at) LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
 
 export interface LeadView extends Lead {
   at: string;
-  shopify: "saved" | "waiting" | "access" | "failed" | "no-store" | "held";
+  shopify: "saved" | "waiting" | "access" | "failed" | "gave-up" | "no-store" | "held";
   customerId: string | null;
 }
 
 /** The site's latest leads for the dashboard, and whether a Shopify store is connected. */
 export async function leadsView(accountId: string): Promise<{ leads: LeadView[] }> {
   await ensureTable();
-  const rows = await sql`SELECT created_at, data, shopify_customer, sync_state FROM insights_leads WHERE account_id = ${accountId} ORDER BY created_at DESC LIMIT 50`;
+  const rows = await sql`SELECT created_at, data, shopify_customer, sync_state, attempts FROM insights_leads WHERE account_id = ${accountId} ORDER BY created_at DESC LIMIT 50`;
   const states = ["access", "failed", "no-store", "held"];
   return {
     leads: rows.map((r) => ({
       ...((typeof r.data === "string" ? JSON.parse(r.data) : r.data) as Lead),
       at: new Date(String(r.created_at)).toISOString(),
-      shopify: (r.shopify_customer ? "saved" : states.includes(String(r.sync_state)) ? r.sync_state : "waiting") as LeadView["shopify"],
+      shopify: (r.shopify_customer
+        ? "saved"
+        : r.sync_state === "failed" && Number(r.attempts) >= MAX_TRIES
+          ? "gave-up"
+          : states.includes(String(r.sync_state)) ? r.sync_state : "waiting") as LeadView["shopify"],
       customerId: r.shopify_customer ?? null,
     })),
   };

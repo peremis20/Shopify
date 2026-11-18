@@ -1741,7 +1741,8 @@ export async function autopilotTick(): Promise<Response> {
     // The Leads keeper: form requests still waiting are saved in each store's Shopify Customers.
     for (const accountId of late() ? [] : await accountsWithWaitingLeads(5).catch((e) => (console.error(`leads list failed: ${message(e)}`), [] as string[]))) {
       if (late()) break;
-      const note = await forSite(accountId, async () => syncLeads(accountId, (await siteFor(accountId).catch(() => null))?.store ?? null)).catch(
+      // siteFor failing skips the store this hour (it throws to the catch below) rather than marking its leads storeless.
+      const note = await forSite(accountId, async () => syncLeads(accountId, (await siteFor(accountId))?.store ?? null)).catch(
         async (e) => {
           console.error(`leads failed: ${message(e)}`);
           await report("leads", false, `Leads couldn't be sent to Shopify (${message(e)})`);
@@ -1945,7 +1946,7 @@ export async function shopifyWebhook(req: Request): Promise<Response> {
     // What the app keeps about this person is the leads they sent; it is kept for the store owner to hand over.
     const leads = await leadsForEmail(shop, email);
     if (leads.length) {
-      await sql`INSERT INTO insights_settings (key, value) VALUES (${`data_request:${shop}:${Date.now()}`}, ${JSON.stringify({ email, leads: leads.length })})`;
+      await sql`INSERT INTO insights_settings (key, value) VALUES (${`data_request:${shop}:${Date.now()}`}, ${JSON.stringify({ leads: leads.length })})`;
       console.warn(`data request from ${shop}: ${leads.length} lead(s) on record for the owner to hand over`);
     }
   }
@@ -2190,7 +2191,8 @@ export async function leadApi(req: Request): Promise<Response> {
     if (Number(req.headers.get("content-length") ?? 0) > 8000) return done(413);
     const accountId = await accountForSiteKey(new URL(req.url).searchParams.get("k") ?? "");
     if (!accountId) return done(404);
-    const [profile, site] = await Promise.all([readProfile(accountId), siteFor(accountId).catch(() => null)]);
+    // A site that couldn't be read just now (undefined) is kept and sent by the hourly run, not marked as storeless.
+    const [profile, site] = await Promise.all([readProfile(accountId), siteFor(accountId).catch(() => undefined)]);
     const store = site?.store ?? null;
     if (!fromSite(origin, profile.siteDomain, store?.shopDomain)) return done(403);
     const text = await readCapped(req, 8000);
@@ -2201,7 +2203,7 @@ export async function leadApi(req: Request): Promise<Response> {
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",").at(-1)?.trim() ?? "";
     const kept = await keepLead(accountId, lead, ip, store?.shopDomain ?? null);
     // Only this request is sent now; anything else waiting goes with the hourly run.
-    if (!kept.held && !isSabbath()) {
+    if (!kept.held && site !== undefined && !isSabbath()) {
       await syncLeads(accountId, store, 1, [kept.id]).catch(async (e) => {
         console.error(`lead not saved in Shopify yet: ${message(e)}`);
         await report("leads", false, `A lead was kept but not sent to Shopify (${message(e)}); the hourly run tries again`);
