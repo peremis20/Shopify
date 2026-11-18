@@ -57,16 +57,18 @@ test("a shelf count works out what sold and what is owed, and refuses more than 
   assert.equal(digestText([{ subject: "Call back", due: "2026-12-01", who: "Ana" }], "2026-11-30"), null);
   const text = digestText([{ subject: "Call back", due: "2026-11-28", who: "Ana" }, { subject: "Count the shelf", due: "2026-11-30", who: "Healing Hands" }], "2026-11-30")!;
   assert.match(text, /2 things to do/);
-  assert.match(text, /Late \(2026-11-28\): Call back for Ana/);
+  assert.match(text, /Late, since Nov 28: Call back for Ana/);
   assert.match(text, /Today: Count the shelf for Healing Hands/);
-  assert.doesNotMatch(text, /[‐-―]| - /);
+  assert.doesNotMatch(text, /[\u2010-\u2015-]/);
   const o = sumOrders([
     { name: "#1003", createdAt: "2026-11-10T00:00:00Z", cancelledAt: null, displayFinancialStatus: "PAID", net: "41.99", currency: "USD" },
     { name: "#1002", createdAt: "2026-10-01T00:00:00Z", cancelledAt: "2026-10-02T00:00:00Z", displayFinancialStatus: "REFUNDED", net: "0", currency: "USD" },
     { name: "#1001", createdAt: "2026-09-01T00:00:00Z", cancelledAt: null, displayFinancialStatus: "PARTIALLY_REFUNDED", net: "10.00", currency: "USD" },
   ], false);
+  // The cancelled order doesn't count; paid and partly refunded ones do.
   assert.equal(o.count, 2);
   assert.equal(o.total, 51.99);
+  assert.equal(sumOrders([{ name: "#9", createdAt: "2026-11-10T00:00:00Z", cancelledAt: null, displayFinancialStatus: "PENDING", net: "30", currency: "USD" }], false).count, 0);
   assert.equal(o.last, "2026-11-10T00:00:00Z");
   assert.equal(o.recent[1].status, "partially refunded");
 });

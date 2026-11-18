@@ -247,6 +247,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
         : "It tries again by itself next week; last week's speed fixes stay.",
     workaround: "Last week's speed results stay on the dashboard.",
   },
+  crm: {
+    name: "The CRM's follow ups and morning email",
+    fix: () => "It tries again by itself within the hour. Your contacts and history are not affected.",
+    workaround: "Follow up tasks and the morning email wait until the next run; everything you add by hand works as usual.",
+  },
   leads: {
     name: "The Leads keeper (form requests saved in Shopify Customers)",
     fix: (d) =>

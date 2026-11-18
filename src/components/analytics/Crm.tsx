@@ -77,9 +77,9 @@ export function Crm({ active = true }: { active?: boolean }) {
     { label: "Open deals", value: money(open_deals.reduce((s, c) => s + c.value, 0)) },
     { label: "To do today", value: String(due.filter((d) => d.date <= today()).length) },
     { label: "Won this month", value: money(wonMonth.reduce((s, c) => s + c.value, 0)) },
-    ...(data.stock.places
+    ...(data.stock.places || data.stock.owed > 0
       ? [
-          { label: "Bottles on consignment", value: `${data.stock.onShelf.toLocaleString()} at ${data.stock.places} place${data.stock.places > 1 ? "s" : ""}` },
+          { label: "Items on consignment", value: `${data.stock.onShelf.toLocaleString()} at ${data.stock.places} place${data.stock.places > 1 ? "s" : ""}` },
           { label: "Owed to you, not paid yet", value: `$${data.stock.owed.toFixed(2)}` },
         ]
       : []),
@@ -708,9 +708,10 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
   const [daily, setDaily] = useState(settings.dailyEmail);
   const [err, setErr] = useState<string | null>(null);
   const save = async () => {
+    if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
-      await post({ action: "stages", stages: list.split("\n") });
       await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily } });
+      await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
     } catch (e) {
@@ -750,19 +751,19 @@ function Orders({ orders }: { orders: ContactOrders | "access" | "failed" | null
     );
   return (
     <div className="mt-4 rounded-xl border border-dash-line p-3">
-      <p className="text-sm font-semibold text-dash-ink">In your store</p>
+      <p className="text-sm font-semibold text-dash-ink">In your store, last 60 days</p>
       {!orders.count ? (
-        <p className="text-sm text-dash-muted">No orders with this email yet.</p>
+        <p className="text-sm text-dash-muted">No paid orders with this email in the last 60 days.</p>
       ) : (
         <>
           <p className="text-sm text-dash-ink">
             {orders.count}
-            {orders.more ? "+" : ""} order{orders.count > 1 ? "s" : ""}, {orders.currency === "USD" ? "$" : `${orders.currency} `}
+            {orders.more ? "+" : ""} paid order{orders.count > 1 ? "s" : ""}, {orders.currency === "USD" ? "$" : `${orders.currency} `}
             {orders.total.toFixed(2)} in total{orders.more ? " for the latest 50" : ""}. Last one {shortDate(orders.last!)}.
           </p>
           <ul className="mt-1 text-xs text-dash-muted">
             {orders.recent.map((o) => (
-              <li key={o.name}>{o.name}, {shortDate(o.at)}, ${o.total.toFixed(2)}{o.status ? `, ${o.status}` : ""}</li>
+              <li key={o.name}>{o.name}, {shortDate(o.at)}, {orders.currency === "USD" ? "$" : `${orders.currency} `}{o.total.toFixed(2)}{o.status ? `, ${o.status}` : ""}</li>
             ))}
           </ul>
         </>
@@ -785,12 +786,12 @@ function Consignment({ contactId, lines, busy, run }: {
         <p className="text-sm font-semibold text-dash-ink">Consignment</p>
         {!adding && <button className={quiet} onClick={() => setAdding({ product: "", qty: "12", price: "", everyDays: "30" })}>Leave stock</button>}
       </div>
-      {!lines.length && !adding && <p className="text-sm text-dash-muted">No stock left here. Click Leave stock when you drop bottles off, and the CRM reminds you when to count.</p>}
+      {!lines.length && !adding && <p className="text-sm text-dash-muted">No stock left here. Click Leave stock when you leave items with them, and the CRM reminds you when to count.</p>}
       {adding && (
         <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
           <Input label="Product" v={adding.product} on={(v) => setAdding({ ...adding, product: v })} />
           <Input label="How many left" v={adding.qty} on={(v) => setAdding({ ...adding, qty: v })} type="number" />
-          <Input label="You get per bottle sold, in dollars" v={adding.price} on={(v) => setAdding({ ...adding, price: v })} />
+          <Input label="You get per item sold, in dollars" v={adding.price} on={(v) => setAdding({ ...adding, price: v })} />
           <Input label="Count every how many days" v={adding.everyDays} on={(v) => setAdding({ ...adding, everyDays: v })} type="number" />
           <div className="flex gap-2 sm:col-span-2">
             <button disabled={busy} className={primary} onClick={() => run({ action: "stock", id: contactId, stock: adding }, () => setAdding(null))}>Save</button>
@@ -805,7 +806,7 @@ function Consignment({ contactId, lines, busy, run }: {
             <li key={l.id} className={`text-sm ${l.closed ? "opacity-60" : ""}`}>
               <p className="font-semibold text-dash-ink break-words">{l.product}</p>
               <p className="text-dash-ink">
-                {l.closed ? "Ended. " : `${l.onShelf} on the shelf. `}${l.price.toFixed(2)} per bottle sold.
+                {l.closed ? "Ended. " : `${l.onShelf} on the shelf. `}${l.price.toFixed(2)} per item sold.
                 {!l.closed && l.nextCount ? ` Next count ${shortDate(l.nextCount)}.` : ""}
                 {unpaid.length ? ` $${unpaid.reduce((s, c) => s + c.owed, 0).toFixed(2)} not paid yet.` : ""}
               </p>
@@ -818,7 +819,7 @@ function Consignment({ contactId, lines, busy, run }: {
               {counting?.stockId === l.id && (
                 <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <Input label={`Still on the shelf (was ${l.onShelf})`} v={counting.counted} on={(v) => setCounting({ ...counting, counted: v })} type="number" />
-                  <Input label="Bottles you added now" v={counting.restock} on={(v) => setCounting({ ...counting, restock: v })} type="number" />
+                  <Input label="Items you added now" v={counting.restock} on={(v) => setCounting({ ...counting, restock: v })} type="number" />
                   {counting.counted !== "" && Number(counting.counted) <= l.onShelf && (
                     <p className="text-sm text-dash-ink sm:col-span-2">
                       {l.onShelf - Number(counting.counted)} sold, ${((l.onShelf - Number(counting.counted)) * l.price).toFixed(2)} owed to you.
@@ -837,7 +838,7 @@ function Consignment({ contactId, lines, busy, run }: {
                       <span>{shortDate(c.countedAt)}: {c.sold} sold, ${c.owed.toFixed(2)}{c.restocked ? `, ${c.restocked} added` : ""}</span>
                       {c.owed > 0 && (
                         <label className="flex items-center gap-1 text-dash-ink">
-                          <input type="checkbox" checked={c.paid} onChange={() => run({ action: "paid", countId: c.id, paid: !c.paid })} />
+                          <input type="checkbox" disabled={busy} checked={c.paid} onChange={() => run({ action: "paid", countId: c.id, paid: !c.paid })} />
                           Paid
                         </label>
                       )}

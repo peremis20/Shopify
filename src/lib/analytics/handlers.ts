@@ -1741,13 +1741,18 @@ export async function autopilotTick(): Promise<Response> {
     }
     // The CRM: follow up tasks for emails with no reply and consignment counts that are due, and each morning (from
     // 13:00 UTC, early morning in the Americas) an email to the owner with what is due today and late.
-    for (const accountId of late() ? [] : await accountsDueForCrm(10).catch((e) => (console.error(`crm list failed: ${message(e)}`), [] as string[]))) {
+    for (const accountId of late() ? [] : await accountsDueForCrm(10).catch(async (e) => {
+      console.error(`crm list failed: ${message(e)}`);
+      await report("crm", false, `The list of CRMs due couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
       if (late()) break;
       await forSite(accountId, async () => {
-        const added = await addDueFollowUps(accountId);
+        const added = await addDueFollowUps(accountId).finally(() => markCrmUpkeep(accountId).catch(() => undefined));
         if (added) results.push(`account ${accountId} crm: ${added} follow up task(s) added`);
         const settings = await readCrmSettings(accountId);
-        if (settings.dailyEmail && new Date().getUTCHours() >= 13) {
+        // Off when the owner turned emails off for the site, or turned the CRM's morning email off.
+        if (settings.dailyEmail && (await readAccountAutopilot(accountId)).emailAlerts && new Date().getUTCHours() >= 13) {
           const d = await digestFor(accountId);
           if (!d.sentToday) {
             const [owner] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
@@ -1756,8 +1761,11 @@ export async function autopilotTick(): Promise<Response> {
             if (d.text && owner?.email) await sendEmail(owner.email, "Your CRM to do list today", d.text);
           }
         }
-        await markCrmUpkeep(accountId);
-      }).catch((e) => console.error(`crm upkeep failed for ${accountId}: ${message(e)}`));
+        await report("crm", true);
+      }).catch(async (e) => {
+        console.error(`crm upkeep failed for ${accountId}: ${message(e)}`);
+        await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
+      });
     }
     // The Leads keeper: form requests still waiting are saved in each store's Shopify Customers.
     for (const accountId of late() ? [] : await accountsWithWaitingLeads(5).catch((e) => (console.error(`leads list failed: ${message(e)}`), [] as string[]))) {

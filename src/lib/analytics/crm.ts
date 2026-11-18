@@ -405,6 +405,9 @@ export async function setTaskDone(accountId: string, taskId: unknown, done: bool
 export async function deleteActivity(accountId: string, id: unknown): Promise<void> {
   await schema();
   if (typeof id !== "string" || !ID.test(id)) throw new Error("That item isn't here anymore.");
+  // A reminder the CRM added is marked done instead, so the hourly check doesn't add it again.
+  const [auto] = await sql`UPDATE insights_crm_activities SET done = true WHERE id = ${id} AND account_id = ${accountId} AND kind = 'task' AND auto_key IS NOT NULL RETURNING id`;
+  if (auto) return;
   const [row] = await sql`DELETE FROM insights_crm_activities WHERE id = ${id} AND account_id = ${accountId} AND kind IN ('note', 'call', 'meeting', 'reply', 'task') RETURNING id`;
   if (!row) throw new Error("That item can't be deleted.");
 }
@@ -568,6 +571,8 @@ export interface CrmSettings {
   followUpDays: number;
   /** A morning email with what is due today and late. */
   dailyEmail: boolean;
+  /** When follow ups started for this site: only emails sent after it get one, so nothing old floods in. */
+  since: string;
 }
 const settingsKey = (accountId: string) => `crm_settings:${accountId}`;
 
@@ -576,14 +581,30 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${settingsKey(accountId)}`;
   const v = (() => { try { return row?.value ? JSON.parse(row.value) : {}; } catch { return {}; } })() as Partial<CrmSettings>;
   const days = Number(v.followUpDays);
-  return { followUpDays: Number.isInteger(days) && days >= 0 && days <= 60 ? days : 5, dailyEmail: v.dailyEmail !== false };
+  const out: CrmSettings = {
+    followUpDays: Number.isInteger(days) && days >= 0 && days <= 60 ? days : 5,
+    dailyEmail: v.dailyEmail !== false,
+    since: typeof v.since === "string" && !Number.isNaN(Date.parse(v.since)) ? v.since : new Date().toISOString(),
+  };
+  if (!v.since) {
+    await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
+      ON CONFLICT (key) DO NOTHING`;
+    const [again] = await sql`SELECT value FROM insights_settings WHERE key = ${settingsKey(accountId)}`;
+    try {
+      const saved = JSON.parse(again?.value ?? "{}") as Partial<CrmSettings>;
+      if (typeof saved.since === "string") out.since = saved.since;
+    } catch {
+      /* keep the fresh date */
+    }
+  }
+  return out;
 }
 
 export async function saveCrmSettings(accountId: string, input: unknown): Promise<CrmSettings> {
   const b = (input ?? {}) as Record<string, unknown>;
   const days = Number(b.followUpDays);
   if (!Number.isInteger(days) || days < 0 || days > 60) throw new Error("Pick between 0 and 60 days.");
-  const value: CrmSettings = { followUpDays: days, dailyEmail: b.dailyEmail !== false };
+  const value: CrmSettings = { followUpDays: days, dailyEmail: b.dailyEmail !== false, since: (await readCrmSettings(accountId)).since };
   await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(value)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
   return value;
@@ -595,7 +616,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
  */
 export async function addDueFollowUps(accountId: string): Promise<number> {
   await schema();
-  const { followUpDays } = await readCrmSettings(accountId);
+  const { followUpDays, since } = await readCrmSettings(accountId);
   let added = 0;
   if (followUpDays > 0) {
     const rows = await sql`INSERT INTO insights_crm_activities (account_id, contact_id, kind, subject, body, due, auto_key)
@@ -605,8 +626,10 @@ export async function addDueFollowUps(accountId: string): Promise<number> {
       FROM insights_crm_activities e
       JOIN insights_crm_contacts c ON c.id = e.contact_id AND NOT c.archived AND lower(c.stage) NOT IN ('won', 'lost')
       WHERE e.account_id = ${accountId} AND e.kind = 'email' AND e.at < now() - make_interval(days => ${followUpDays}::int)
-        AND e.at > now() - interval '60 days'
-        AND NOT EXISTS (SELECT 1 FROM insights_crm_activities x WHERE x.contact_id = e.contact_id AND x.at > e.at AND x.kind IN ('reply', 'call', 'meeting', 'email'))
+        AND e.at > now() - interval '60 days' AND e.at > ${since}::timestamptz
+        AND NOT EXISTS (SELECT 1 FROM insights_crm_activities x WHERE x.contact_id = e.contact_id AND x.at > e.at
+          AND x.kind IN ('reply', 'call', 'meeting', 'email', 'lead', 'stock'))
+      ORDER BY e.at LIMIT 25
       ON CONFLICT (account_id, auto_key) WHERE auto_key IS NOT NULL DO NOTHING
       RETURNING id`;
     added += rows.length;
@@ -640,7 +663,8 @@ export async function markCrmUpkeep(accountId: string): Promise<void> {
 export function digestText(items: { subject: string; due: string | null; who: string }[], todayIso: string): string | null {
   const due = items.filter((i) => i.due && i.due <= todayIso);
   if (!due.length) return null;
-  const lines = due.map((i) => `${i.due! < todayIso ? `Late (${i.due})` : "Today"}: ${i.subject} for ${i.who}`);
+  const nice = (d: string) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  const lines = due.map((i) => `${i.due! < todayIso ? `Late, since ${nice(i.due!)}` : "Today"}: ${i.subject} for ${i.who}`);
   return [`You have ${due.length} thing${due.length > 1 ? "s" : ""} to do in your CRM today.`, "", ...lines, "", "Open DashPatrol and click CRM, then To do."].join("\n");
 }
 
@@ -720,14 +744,18 @@ export async function countStock(accountId: string, stockId: unknown, input: unk
   if (!s) throw new Error("That stock isn't here anymore.");
   const b = (input ?? {}) as Record<string, unknown>;
   const counted = whole(b.counted);
-  const restock = whole(b.restock ?? 0) ?? 0;
+  const restock = b.restock === undefined || b.restock === "" ? 0 : whole(b.restock);
   if (counted === null) throw new Error("Put how many are still on the shelf.");
+  if (restock === null) throw new Error("Put how many you added as a whole number, or leave it empty.");
   const onShelf = Number(s.on_shelf);
   const m = countMath(onShelf, counted, Number(s.price));
   if (!m) throw new Error(`There should be at most ${onShelf} on the shelf. Check the count.`);
+  // The shelf only changes if nobody counted it in the meantime, so a double click never doubles what is owed.
+  const [claimed] = await sql`UPDATE insights_crm_stock SET on_shelf = ${counted + restock}, next_count = current_date + every_days
+    WHERE id = ${stockId} AND account_id = ${accountId} AND on_shelf = ${onShelf} AND NOT closed RETURNING id`;
+  if (!claimed) throw new Error("This shelf was just counted. Open the contact again to see it.");
   await sql`INSERT INTO insights_crm_counts (account_id, stock_id, expected, counted, sold, restocked, owed)
     VALUES (${accountId}, ${stockId}, ${onShelf}, ${counted}, ${m.sold}, ${restock}, ${m.owed})`;
-  await sql`UPDATE insights_crm_stock SET on_shelf = ${counted + restock}, next_count = current_date + every_days WHERE id = ${stockId}`;
   await log(
     accountId,
     String(s.contact_id),
@@ -747,7 +775,7 @@ export async function setCountPaid(accountId: string, countId: unknown, paid: bo
   const [row] = await sql`UPDATE insights_crm_counts SET paid = ${paid}, paid_at = CASE WHEN ${paid} THEN current_date ELSE NULL END
     WHERE id = ${countId} AND account_id = ${accountId} RETURNING stock_id, owed`;
   if (!row) throw new Error("That count isn't here anymore.");
-  const [s] = await sql`SELECT contact_id, product FROM insights_crm_stock WHERE id = ${row.stock_id}`;
+  const [s] = await sql`SELECT contact_id, product FROM insights_crm_stock WHERE id = ${row.stock_id} AND account_id = ${accountId}`;
   if (s && paid) await log(accountId, String(s.contact_id), "stock", `Paid ${money(Number(row.owed))} for ${s.product}`);
 }
 
@@ -757,6 +785,7 @@ export async function closeStock(accountId: string, stockId: unknown): Promise<v
   if (typeof stockId !== "string" || !ID.test(stockId)) throw new Error("That stock isn't here anymore.");
   const [s] = await sql`UPDATE insights_crm_stock SET closed = true WHERE id = ${stockId} AND account_id = ${accountId} RETURNING contact_id, product, on_shelf`;
   if (!s) throw new Error("That stock isn't here anymore.");
+  await sql`UPDATE insights_crm_activities SET done = true WHERE account_id = ${accountId} AND kind = 'task' AND auto_key LIKE ${`count:${stockId}:%`} AND NOT done`;
   await log(accountId, String(s.contact_id), "stock", `Ended consignment of ${s.product}`, `${s.on_shelf} were on the shelf when it ended.`);
 }
 
@@ -817,9 +846,12 @@ export interface ContactOrders {
   more: boolean;
 }
 
-/** Sums a contact's store orders from the orders themselves (paid, not refunded or cancelled amounts count). */
+/** Sums a contact's paid store orders, at their current totals (what is left after refunds of items). */
+const PAID = new Set(["PAID", "PARTIALLY_PAID", "PARTIALLY_REFUNDED"]);
+
 export function sumOrders(nodes: { name: string; email?: string | null; createdAt: string; cancelledAt: string | null; displayFinancialStatus: string | null; net: string; currency: string }[], more: boolean): ContactOrders {
-  const kept = nodes.filter((n) => !n.cancelledAt);
+  // Only orders that were paid count; pending, voided, expired and cancelled ones are not money in.
+  const kept = nodes.filter((n) => !n.cancelledAt && PAID.has(String(n.displayFinancialStatus ?? "").toUpperCase()));
   return {
     count: kept.length,
     total: cents(kept.reduce((s, n) => s + (Number(n.net) || 0), 0)),
