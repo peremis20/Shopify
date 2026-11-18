@@ -51,8 +51,8 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
-import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
-import { accountsWithWaitingLeads, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
+import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { accountsWithWaitingLeads, leadAccounts, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -1938,11 +1938,18 @@ export async function shopifyWebhook(req: Request): Promise<Response> {
     await ensureSchema();
     // Forgetting the store connection, and the store's leads when the store is erased.
     await sql`UPDATE insights_account_autopilot SET shop_domain = NULL, shop_token_enc = NULL, enabled = false WHERE shop_domain = ${shop}`;
-    // The store's leads go with it (each lead remembers its store, so this works after an uninstall too).
-    if (topic === "shop/redact") await forgetShopLeads(shop);
+    // The store's leads go with it (each lead remembers its store, so this works after an uninstall too), and so do the
+    // copies those requests made in the CRM.
+    if (topic === "shop/redact") {
+      for (const a of await leadAccounts(shop)) await forgetLeadCopies(a, null).catch((e) => console.error(`CRM copies not erased: ${message(e)}`));
+      await forgetShopLeads(shop);
+    }
   }
   const email = (() => { try { return String(JSON.parse(raw)?.customer?.email ?? "").trim(); } catch { return ""; } })();
-  if (topic === "customers/redact" && email) await forgetLeadEmail(shop, email);
+  if (topic === "customers/redact" && email) {
+    for (const a of await leadAccounts(shop, email)) await forgetLeadCopies(a, email).catch((e) => console.error(`CRM copy not erased: ${message(e)}`));
+    await forgetLeadEmail(shop, email);
+  }
   if (topic === "customers/data_request" && email) {
     // What the app keeps about this person is the leads they sent; it is kept for the store owner to hand over.
     const leads = await leadsForEmail(shop, email);
@@ -2203,7 +2210,7 @@ export async function leadApi(req: Request): Promise<Response> {
     // The address the platform's proxy added last; earlier entries are whatever the sender wrote.
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",").at(-1)?.trim() ?? "";
     const kept = await keepLead(accountId, lead, ip, store?.shopDomain ?? null);
-    // The request also becomes a contact in the owner's CRM (a held one too: it is a real request, just not sent on).
+    // The request also becomes a contact in the owner's CRM (a held one is not: a flood can't fill the CRM).
     if (!kept.held) {
       await contactFromLead(accountId, lead).catch(async (e) => {
         console.error(`lead not added to the CRM: ${message(e)}`);

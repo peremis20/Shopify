@@ -19,6 +19,7 @@ interface CrmData {
   tasks: Activity[];
   templates: Template[];
   gmail: GmailState;
+  capped?: boolean;
 }
 type View = "pipeline" | "contacts" | "todo" | "templates";
 
@@ -43,22 +44,29 @@ const KIND_LABEL: Record<Activity["kind"], string> = {
 };
 
 /** The owner's CRM: a pipeline board, a contact list, a to do list and email templates, all kept in DashPatrol. */
-export function Crm() {
+export function Crm({ active = true }: { active?: boolean }) {
   const [data, setData] = useState<CrmData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("pipeline");
   const [open, setOpen] = useState<string | "new" | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [showStages, setShowStages] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const load = useCallback(() => apiFresh<CrmData>("/api/crm").then(setData).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")), []);
+  // Fresh each time the page is opened again, so new website requests show without reloading the browser.
   useEffect(() => {
-    api<CrmData>("/api/crm").then(setData).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load."));
-  }, []);
+    if (active) load();
+  }, [active, load]);
+  useEffect(() => {
+    const again = () => document.visibilityState === "visible" && active && load();
+    document.addEventListener("visibilitychange", again);
+    return () => document.removeEventListener("visibilitychange", again);
+  }, [active, load]);
 
   if (!data) return <Card className="mt-2"><p className="text-sm text-dash-muted">{error ?? "Loading your CRM..."}</p></Card>;
 
   const open_deals = data.contacts.filter((c) => !closedStage(c.stage));
-  const wonMonth = data.contacts.filter((c) => /^won$/i.test(c.stage) && c.updatedAt.slice(0, 7) === today().slice(0, 7));
+  const wonMonth = data.contacts.filter((c) => /^won$/i.test(c.stage) && (c.stageChangedAt ?? "").slice(0, 7) === today().slice(0, 7));
   const due = dueItems(data);
   const tiles = [
     { label: "Contacts", value: data.contacts.length.toLocaleString() },
@@ -80,6 +88,7 @@ export function Crm() {
             <button className={quiet} onClick={() => setShowImport(true)}>Import</button>
             <button className={quiet} onClick={() => exportCsv(data.contacts)}>Export</button>
             <button className={quiet} onClick={() => setShowStages(true)}>Stages</button>
+            <button className={quiet} onClick={() => setShowArchived(true)}>Archived</button>
           </div>
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -102,6 +111,7 @@ export function Crm() {
           ))}
         </div>
         {error && <p className="mt-2 text-sm text-dash-down">{error}</p>}
+        {data.capped && <p className="mt-2 text-sm text-dash-muted">Showing your 2,000 most recently updated contacts. Use search to find older ones, or Export.</p>}
         <div className="mt-4">
           {view === "pipeline" && <Pipeline data={data} onOpen={setOpen} onChanged={load} onError={setError} />}
           {view === "contacts" && <ContactList data={data} onOpen={setOpen} />}
@@ -110,7 +120,8 @@ export function Crm() {
         </div>
       </Card>
       {open && <ContactPanel id={open} data={data} onClose={() => setOpen(null)} onChanged={load} onOpenId={setOpen} />}
-      {showImport && <ImportDialog onClose={() => setShowImport(false)} onDone={(d) => { setData(d); }} />}
+      {showImport && <ImportDialog onClose={() => setShowImport(false)} onDone={load} />}
+      {showArchived && <ArchivedDialog onClose={() => setShowArchived(false)} onDone={load} />}
       {showStages && <StagesDialog stages={data.stages} onClose={() => setShowStages(false)} onDone={load} />}
     </div>
   );
@@ -149,7 +160,12 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
             key={s}
             className="w-64 shrink-0 rounded-xl bg-black/[0.03] p-2"
             onDragOver={(e) => e.preventDefault()}
-            onDrop={() => drag && move(drag, s)}
+            onDrop={(e) => {
+              e.preventDefault();
+              const id = drag ?? e.dataTransfer.getData("text/plain");
+              if (id && data.contacts.find((c) => c.id === id)?.stage !== s) move(id, s);
+              setDrag(null);
+            }}
           >
             <div className="mb-2 flex items-baseline justify-between px-1">
               <p className="text-sm font-semibold text-dash-ink">{s}</p>
@@ -160,7 +176,7 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
                 <div
                   key={c.id}
                   draggable
-                  onDragStart={() => setDrag(c.id)}
+                  onDragStart={(e) => { e.dataTransfer.setData("text/plain", c.id); setDrag(c.id); }}
                   onDragEnd={() => setDrag(null)}
                   className="cursor-pointer rounded-lg border border-dash-line bg-white p-2 text-sm shadow-sm hover:border-dash-green"
                   onClick={() => onOpen(c.id)}
@@ -271,7 +287,7 @@ function TodoList({ data, items, onOpen, onChanged, onError }: {
         return (
           <li key={i.key} className="flex flex-wrap items-center gap-3 rounded-xl border border-dash-line p-3 text-sm">
             {i.taskId ? (
-              <input type="checkbox" aria-label="Done" className="h-4 w-4" onChange={() => done(i.taskId!)} />
+              <input type="checkbox" aria-label="Done" className="h-4 w-4" checked={false} onChange={() => done(i.taskId!)} />
             ) : (
               <span className="h-4 w-4" />
             )}
@@ -314,7 +330,20 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
             </div>
             <div className="flex gap-2">
               <button className={quiet} onClick={() => setEdit(t)}>Edit</button>
-              <button className={quiet} onClick={async () => { await post({ action: "deleteTemplate", templateId: t.id }).catch(() => undefined); onChanged(); }}>Delete</button>
+              <button
+                className={quiet}
+                onClick={async () => {
+                  if (!window.confirm(`Delete the template ${t.name}?`)) return;
+                  try {
+                    await post({ action: "deleteTemplate", templateId: t.id });
+                    onChanged();
+                  } catch (e) {
+                    onError(e instanceof Error ? e.message : "Couldn't delete it.");
+                  }
+                }}
+              >
+                Delete
+              </button>
             </div>
           </li>
         ))}
@@ -345,10 +374,13 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
   const [err, setErr] = useState<string | null>(null);
   const [note, setNote] = useState<{ kind: "note" | "call" | "meeting" | "task"; subject: string; body: string; due: string } | null>(null);
   const [mail, setMail] = useState(false);
+  // Tags are typed as one line and split on commas when saved, so typing never jumps or adds spaces.
+  const [tagText, setTagText] = useState("");
   const loadOne = useCallback(async () => {
     if (id === "new") return;
     const t = await apiFresh<{ contact: Contact; activities: Activity[] }>(`/api/crm?contact=${id}`);
     setContact(t.contact);
+    setTagText(t.contact.tags.join(", "));
     setActs(t.activities);
   }, [id]);
   useEffect(() => {
@@ -409,11 +441,11 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             </label>
             <Input label="Deal value in dollars" v={c.value ? String(c.value) : ""} on={(v) => set("value", v)} />
             <Input label="Follow up on" v={c.followUp ?? ""} on={(v) => set("followUp", v || null)} type="date" />
-            <Input label="Tags, separated by commas" v={(c.tags ?? []).join(", ")} on={(v) => set("tags", v.split(","))} />
+            <Input label="Tags, separated by commas" v={tagText} on={setTagText} />
             <Input label="Website" v={c.website} on={(v) => set("website", v)} />
             <Input label="Address" v={c.address} on={(v) => set("address", v)} />
             <div className="flex flex-wrap gap-2 sm:col-span-2">
-              <button disabled={busy} className={primary} onClick={() => run({ action: "save", id: id === "new" ? undefined : id, contact: c }, () => setEditing(false))}>Save</button>
+              <button disabled={busy} className={primary} onClick={() => run({ action: "save", id: id === "new" ? undefined : id, contact: { ...c, tags: tagText } }, () => setEditing(false))}>Save</button>
               {id !== "new" && <button className={quiet} onClick={() => { setEditing(false); loadOne(); }}>Cancel</button>}
               {id !== "new" && (
                 <button className={`${quiet} text-dash-down`} onClick={() => run({ action: "archive", id }, onClose)}>Archive contact</button>
@@ -547,7 +579,18 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
         )}
         <a className={quiet} href={mailto} onClick={() => setOpened(true)}>Open in my email</a>
         {opened && (
-          <button className={quiet} disabled={busy} onClick={async () => { await post({ action: "logEmail", id: contact.id, email: { subject, body } }).catch(() => undefined); onSent(); }}>
+          <button
+            className={quiet}
+            disabled={busy}
+            onClick={async () => {
+              try {
+                await post({ action: "logEmail", id: contact.id, email: { subject, body } });
+                onSent();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : "Couldn't save it.");
+              }
+            }}
+          >
             I sent it, save it here
           </button>
         )}
@@ -558,7 +601,7 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
   );
 }
 
-function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: (d: CrmData) => void }) {
+function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const [rows, setRows] = useState<Record<string, string>[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -572,14 +615,23 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: (d: Cr
   const go = async () => {
     if (!rows) return;
     setBusy(true);
+    const total = { added: 0, updated: 0, skipped: 0 };
+    const list = rows.slice(0, 1000);
     try {
-      const out = await post<CrmData & { result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: rows.slice(0, 1000) });
-      onDone(out);
-      setMsg(`Added ${out.result.added}, filled in ${out.result.updated} that were already here, skipped ${out.result.skipped} without a name, company or valid email.`);
+      // In batches of 100, so a big file never runs into a time limit; a stop part way keeps what was already added.
+      for (let i = 0; i < list.length; i += 100) {
+        setMsg(`Importing ${Math.min(i + 100, list.length).toLocaleString()} of ${list.length.toLocaleString()}...`);
+        const out = await post<{ result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: list.slice(i, i + 100) });
+        total.added += out.result.added;
+        total.updated += out.result.updated;
+        total.skipped += out.result.skipped;
+      }
+      setMsg(`Added ${total.added}, filled in ${total.updated} that were already here, skipped ${total.skipped} without a name, company or valid email.`);
       setRows(null);
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "The import didn't work.");
+      setMsg(`${e instanceof Error ? e.message : "The import stopped."} ${total.added} were added before it stopped.`);
     }
+    onDone();
     setBusy(false);
   };
   return (
@@ -599,6 +651,39 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: (d: Cr
   );
 }
 
+function ArchivedDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+  const [list, setList] = useState<Contact[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const read = useCallback(() => apiFresh<{ contacts: Contact[] }>("/api/crm?archived=1").then((d) => setList(d.contacts)).catch((e) => setErr(e instanceof Error ? e.message : "Couldn't load them.")), []);
+  useEffect(() => {
+    read();
+  }, [read]);
+  const restore = async (id: string) => {
+    try {
+      await post({ action: "restore", id });
+      await read();
+      onDone();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't restore it.");
+    }
+  };
+  return (
+    <Dialog title="Archived contacts" onClose={onClose}>
+      <p className="text-sm text-dash-muted">Archived contacts keep their whole history. Restore puts one back on your lists.</p>
+      {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
+      {list && !list.length && <p className="mt-3 text-sm text-dash-muted">Nothing is archived.</p>}
+      <ul className="mt-3 space-y-2">
+        {(list ?? []).map((c) => (
+          <li key={c.id} className="flex items-center justify-between gap-2 rounded-xl border border-dash-line p-2 text-sm">
+            <span className="min-w-0 break-words text-dash-ink">{label(c)}{c.company && c.name ? `, ${c.company}` : ""}</span>
+            <button className={quiet} onClick={() => restore(c.id)}>Restore</button>
+          </li>
+        ))}
+      </ul>
+    </Dialog>
+  );
+}
+
 function StagesDialog({ stages, onClose, onDone }: { stages: string[]; onClose: () => void; onDone: () => void }) {
   const [list, setList] = useState(stages.join("\n"));
   const [err, setErr] = useState<string | null>(null);
@@ -613,7 +698,9 @@ function StagesDialog({ stages, onClose, onDone }: { stages: string[]; onClose: 
   };
   return (
     <Dialog title="Pipeline stages" onClose={onClose}>
-      <p className="text-sm text-dash-muted">One stage per line, in order. Contacts in a stage you take out move to the first stage.</p>
+      <p className="text-sm text-dash-muted">
+        One stage per line, in order. Rename a stage in its place and its contacts stay with it. Contacts in a stage you take out move to the first stage. Stages named Won or Lost count as closed deals.
+      </p>
       <textarea className={`${field} mt-2 min-h-[180px]`} value={list} onChange={(e) => setList(e.target.value)} />
       {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
       <button className={`${primary} mt-2`} onClick={save}>Save stages</button>
@@ -640,7 +727,7 @@ function exportCsv(contacts: Contact[]) {
   const head = ["Name", "Email", "Phone", "Company", "Title", "Type", "Stage", "Value", "Tags", "Follow up", "Last contact", "Website", "Address", "Came from", "Added"];
   const esc = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   // A cell starting with = + @ or a minus sign would run as a formula in a spreadsheet; a leading apostrophe stops it.
-  const safe = (v: string) => esc(/^[=+@\-\t]/.test(v) ? `'${v}` : v);
+  const safe = (v: string) => esc(/^[=+@\-\t\r]/.test(v) ? `'${v}` : v);
   const lines = [head.join(",")].concat(
     contacts.map((c) =>
       [c.name, c.email, c.phone, c.company, c.title, c.kind, c.stage, c.value ? String(c.value) : "", c.tags.join("; "), c.followUp ?? "", c.lastContactAt?.slice(0, 10) ?? "", c.website, c.address, c.source, c.createdAt.slice(0, 10)]
@@ -648,7 +735,8 @@ function exportCsv(contacts: Contact[]) {
         .join(","),
     ),
   );
-  const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
+  // The byte order mark lets Excel read names with accents correctly.
+  const url = URL.createObjectURL(new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" }));
   const a = document.createElement("a");
   a.href = url;
   a.download = `contacts-${today()}.csv`;

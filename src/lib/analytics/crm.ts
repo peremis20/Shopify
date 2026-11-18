@@ -31,6 +31,8 @@ export interface Contact {
   createdAt: string;
   updatedAt: string;
   lastContactAt: string | null;
+  /** When it last moved to its current stage (for "won this month"). */
+  stageChangedAt: string | null;
   /** Open tasks on this contact. */
   openTasks: number;
 }
@@ -86,6 +88,7 @@ function schema(): Promise<void> {
       last_contact_at timestamptz,
       archived boolean NOT NULL DEFAULT false
     )`;
+    await sql`ALTER TABLE insights_crm_contacts ADD COLUMN IF NOT EXISTS stage_changed_at timestamptz`;
     await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_account ON insights_crm_contacts (account_id, updated_at DESC)`;
     await sql`CREATE TABLE IF NOT EXISTS insights_crm_activities (
       id bigserial PRIMARY KEY,
@@ -144,23 +147,35 @@ export function cleanStages(input: unknown): string[] | null {
   return out.length >= 2 && out.length <= 12 ? out : null;
 }
 
+/** Where contacts in each old stage go: a stage renamed in its place keeps its contacts, a removed one sends them to the first. */
+export function stageMoves(before: string[], after: string[]): { from: string; to: string; renamed: boolean }[] {
+  return before
+    .map((from, i) => {
+      if (after.includes(from)) return { from, to: from, renamed: false };
+      const renamed = before.length === after.length && !before.includes(after[i]);
+      return { from, to: renamed ? after[i] : after[0], renamed };
+    })
+    .filter((m) => m.from !== m.to);
+}
+
 export async function saveStages(accountId: string, input: unknown): Promise<string[]> {
   const stages = cleanStages(input);
   if (!stages) throw new Error("Use between 2 and 12 stage names.");
   const before = await readStages(accountId);
   await sql`INSERT INTO insights_settings (key, value) VALUES (${stagesKey(accountId)}, ${JSON.stringify(stages)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
-  // A contact in a stage that was taken out moves to the first stage, so nobody falls off the board.
-  const gone = before.filter((s) => !stages.includes(s));
-  if (gone.length) {
-    await sql`UPDATE insights_crm_contacts SET stage = ${stages[0]}, updated_at = now()
-      WHERE account_id = ${accountId} AND stage = ANY(string_to_array(${gone.join("\u001f")}, ${"\u001f"}))`;
+  // A stage that was renamed (same number of stages, same place) keeps its contacts under the new name. A contact in a
+  // stage that was taken out moves to the first stage, so nobody falls off the board. Each move goes on the timeline.
+  for (const { from, to, renamed } of stageMoves(before, stages)) {
+    const moved = await sql`UPDATE insights_crm_contacts SET stage = ${to}, stage_changed_at = now(), updated_at = now()
+      WHERE account_id = ${accountId} AND stage = ${from} RETURNING id`;
+    for (const m of moved) await log(accountId, String(m.id), "stage", renamed ? `Stage ${from} renamed to ${to}` : `Moved to ${to} (stage ${from} was taken out)`);
   }
   return stages;
 }
 
 /** A contact's fields from the owner's form or an import row, cleaned. */
-export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "id" | "createdAt" | "updatedAt" | "lastContactAt" | "openTasks"> | null {
+export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "id" | "createdAt" | "updatedAt" | "lastContactAt" | "stageChangedAt" | "openTasks"> | null {
   if (!input || typeof input !== "object") return null;
   const b = input as Record<string, unknown>;
   const email = cut(b.email, 254).toLowerCase();
@@ -216,6 +231,7 @@ const contactOf = (r: Row): Contact => ({
   createdAt: new Date(String(r.created_at)).toISOString(),
   updatedAt: new Date(String(r.updated_at)).toISOString(),
   lastContactAt: r.last_contact_at ? new Date(String(r.last_contact_at)).toISOString() : null,
+  stageChangedAt: r.stage_changed_at ? new Date(String(r.stage_changed_at)).toISOString() : null,
   openTasks: Number(r.open_tasks ?? 0),
 });
 const activityOf = (r: Row): Activity => ({
@@ -235,12 +251,15 @@ export async function crmView(accountId: string) {
   const [contacts, tasks, templates, stages] = await Promise.all([
     sql`SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
       FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived ORDER BY c.updated_at DESC LIMIT 2000`,
-    sql`SELECT * FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'task' AND NOT done ORDER BY due NULLS LAST, at LIMIT 300`,
+    sql`SELECT a.* FROM insights_crm_activities a JOIN insights_crm_contacts c ON c.id = a.contact_id
+      WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done AND NOT c.archived ORDER BY a.due NULLS LAST, a.at LIMIT 300`,
     sql`SELECT * FROM insights_crm_templates WHERE account_id = ${accountId} ORDER BY name`,
     readStages(accountId),
   ]);
   return {
     stages,
+    /** True when there are more contacts than the page shows. */
+    capped: contacts.length >= 2000,
     contacts: contacts.map(contactOf),
     tasks: tasks.map(activityOf),
     templates: templates.map((t) => ({ id: String(t.id), name: t.name ?? "", subject: t.subject ?? "", body: t.body ?? "" })),
@@ -281,7 +300,8 @@ export async function saveContact(accountId: string, input: unknown, id?: unknow
     const [before] = await sql`SELECT stage FROM insights_crm_contacts WHERE id = ${cid}`;
     await sql`UPDATE insights_crm_contacts SET name = ${c.name}, email = ${c.email}, phone = ${c.phone}, company = ${c.company}, title = ${c.title},
       kind = ${c.kind}, stage = ${c.stage}, value = ${c.value}, tags = ${JSON.stringify(c.tags)}::jsonb, source = ${c.source}, address = ${c.address},
-      website = ${c.website}, follow_up = ${c.followUp}, updated_at = now() WHERE id = ${cid}`;
+      website = ${c.website}, follow_up = ${c.followUp}, updated_at = now(),
+      stage_changed_at = CASE WHEN stage_changed_at IS NULL OR ${before?.stage ?? ""} <> ${c.stage} THEN now() ELSE stage_changed_at END WHERE id = ${cid}`;
     if (before?.stage !== c.stage) await log(accountId, cid, "stage", `Moved to ${c.stage}`);
     return cid;
   }
@@ -289,9 +309,9 @@ export async function saveContact(accountId: string, input: unknown, id?: unknow
     const [dup] = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived`;
     if (dup) throw new Error("A contact with that email is already here. Search for it to open it.");
   }
-  const [row] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up)
+  const [row] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
     VALUES (${accountId}, ${c.name}, ${c.email}, ${c.phone}, ${c.company}, ${c.title}, ${c.kind}, ${c.stage}, ${c.value}, ${JSON.stringify(c.tags)}::jsonb,
-      ${c.source || "Added by hand"}, ${c.address}, ${c.website}, ${c.followUp}) RETURNING id`;
+      ${c.source || "Added by hand"}, ${c.address}, ${c.website}, ${c.followUp}, now()) RETURNING id`;
   return String(row!.id);
 }
 
@@ -303,7 +323,7 @@ export async function moveContact(accountId: string, id: unknown, stage: unknown
   const stages = await readStages(accountId);
   const to = stages.find((s) => s === stage);
   if (!to) throw new Error("That stage isn't on your pipeline.");
-  const [before] = await sql`UPDATE insights_crm_contacts SET stage = ${to}, updated_at = now() WHERE id = ${cid} AND stage <> ${to} RETURNING id`;
+  const [before] = await sql`UPDATE insights_crm_contacts SET stage = ${to}, stage_changed_at = now(), updated_at = now() WHERE id = ${cid} AND stage <> ${to} RETURNING id`;
   if (before) await log(accountId, cid, "stage", `Moved to ${to}`);
 }
 
@@ -378,8 +398,14 @@ export async function emailContact(accountId: string, contactId: unknown, input:
   if (!cid) return { ok: false as const, status: 404, error: "That contact isn't here anymore." };
   const b = (input ?? {}) as Record<string, unknown>;
   const out = await sendOneEmail(accountId, { prospectUrl: `crm:${cid}:${crypto.randomUUID()}`, to: b.to, subject: b.subject, body: b.body });
-  if (!out.ok) return out;
-  await log(accountId, cid, "email", cut(b.subject, 300), cut(b.body, 20_000));
+  if (!out.ok) {
+    // Gmail didn't answer clearly: it may have gone out, so the attempt is written down rather than lost.
+    if (out.status === 502 && /may have been sent/i.test(out.error)) {
+      await log(accountId, cid, "email", `${cut(b.subject, 280)} (may have been sent, check Gmail Sent)`, `To: ${cut(b.to, 254)}\n\n${cut(b.body, 20_000)}`).catch(() => undefined);
+    }
+    return out;
+  }
+  await log(accountId, cid, "email", cut(b.subject, 300), `To: ${out.to}\n\n${cut(b.body, 20_000)}`);
   await sql`UPDATE insights_crm_contacts SET last_contact_at = now(), updated_at = now() WHERE id = ${cid}`;
   return out;
 }
@@ -483,4 +509,22 @@ export async function contactFromLead(
     .join("\n");
   await log(accountId, cid, "lead", `Website request${lead.source ? ` (${lead.source})` : ""}`, body);
   await sql`UPDATE insights_crm_contacts SET updated_at = now() WHERE id = ${cid}`;
+}
+
+/**
+ * Removes what a website request copied into the CRM (Shopify asked to erase a customer, or a whole store): the
+ * "Website request" entries, and a contact that holds nothing else. With no email, every request copy on the account.
+ */
+export async function forgetLeadCopies(accountId: string, email: string | null): Promise<number> {
+  await schema();
+  const contacts = email
+    ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${email.toLowerCase()}`
+    : await sql`SELECT DISTINCT contact_id AS id FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'lead'`;
+  for (const c of contacts) {
+    await sql`DELETE FROM insights_crm_activities WHERE contact_id = ${c.id} AND account_id = ${accountId} AND kind = 'lead'`;
+    await sql`DELETE FROM insights_crm_contacts c WHERE c.id = ${c.id} AND c.account_id = ${accountId}
+      AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id)
+      AND c.source NOT IN ('Added by hand', 'Imported')`;
+  }
+  return contacts.length;
 }

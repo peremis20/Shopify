@@ -399,7 +399,7 @@ export function DashboardView() {
               {keep("crm") && (
                 <div hidden={page !== "crm"}>
                   <ErrorBoundary where="crm">
-                  <Crm />
+                  <Crm active={page === "crm"} />
                   </ErrorBoundary>
                 </div>
               )}

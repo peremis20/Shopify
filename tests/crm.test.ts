@@ -41,3 +41,10 @@ test("a CSV with quotes, commas and line breaks is read, and columns are matched
   assert.equal(list[1].email, "bob@y.com");
   assert.deepEqual(rowsToContacts([["Name"]]), []);
 });
+
+test("renaming a stage in place keeps its contacts; removing one sends them to the first stage", async () => {
+  const { stageMoves } = await import("../src/lib/analytics/crm");
+  assert.deepEqual(stageMoves(["New", "Meeting", "Won"], ["New", "Meetings", "Won"]), [{ from: "Meeting", to: "Meetings", renamed: true }]);
+  assert.deepEqual(stageMoves(["New", "Meeting", "Won"], ["New", "Won"]), [{ from: "Meeting", to: "New", renamed: false }]);
+  assert.deepEqual(stageMoves(["New", "Won"], ["New", "Won", "Lost"]), []);
+});
