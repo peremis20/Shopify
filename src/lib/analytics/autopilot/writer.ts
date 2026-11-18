@@ -1406,7 +1406,7 @@ const SOCIAL_KIND: Record<SocialKind, string> = {
 
 const SOCIAL_RULES = (health: boolean) => `Use only what the page says. Never invent a fact, number, study, quote, result or person.
 Sound like a real person who knows the subject: calm, plain words, no hype, no clickbait, no exclamation marks, no emojis, no hashtags.
-No hyphens or dashes anywhere. No digits. No links or web addresses (the link is added after).
+No hyphens or dashes anywhere. No digits. No links or web addresses (the link is added after). Never mention a price or an amount of money (prices change).
 ${health ? "This is a health topic: general, well established information only. No medical claims, no promise to cure, treat, heal or prevent anything, no doses, no advice for a person's own condition." : "Never promise results."}`;
 
 /**
@@ -1520,7 +1520,7 @@ What the business offers (its own words): ${p.offer}
 ${p.expertise ? `What it knows well (its own words): ${p.expertise}` : ""}
 What to offer them: ${p.offerKind === "sample" ? "a free sample of the product to review, with no obligation to write about it" : "a short expert quote or background on the topic for a future story"}.
 "subject": under ten words, plain, no clickbait.
-"body": three to five plain sentences. ${p.articleTitle.trim() ? "Mention their article naturally, say" : "Don't mention any article of theirs (none is known), say"} who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
+"body": three to five plain sentences. ${p.articleTitle.trim() ? "Mention their article naturally, say" : "Don't mention any article of theirs (none is known), say"} who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no prices or amounts of money, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
 ${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
 No hyphens or dashes, no emojis, no exclamation marks.`,
     { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"] },
@@ -1545,7 +1545,7 @@ Answer only from this page of the site: "${p.pageTitle}"
 """
 ${p.pageText.slice(0, 3500)}
 """
-Three to five plain sentences, useful and quotable, only what the page says. If the page doesn't answer the request, return an empty string. No numbers, no links, no promise of results.
+Three to five plain sentences, useful and quotable, only what the page says. If the page doesn't answer the request, return an empty string. No numbers, no prices or amounts of money, no links, no promise of results.
 ${p.health ? "This is a health business: general information only, no medical claims, no advice for anyone's own condition." : ""}
 No hyphens or dashes, no emojis, no exclamation marks.`,
     { type: "object", properties: { text: { type: "string" } }, required: ["text"] },

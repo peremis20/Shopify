@@ -165,20 +165,29 @@ export function claimProblem(text: string, health: boolean): string | null {
   return null;
 }
 
+/** A stated amount of money: a currency sign, or a spelled out number of dollars or cents. */
+const AMOUNT = /[$€£]|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)(?:[\s,]+\w+){0,3}?\s+(?:dollars?|bucks|cents|euros?|pounds)\b/i;
+
+/** Drops each sentence that states an amount of money; everything else stays as written. */
+export function withoutPrices(text: string): string {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .filter((sentence) => !AMOUNT.test(sentence))
+    .join(" ")
+    .trim();
+}
+
 /**
  * The writer's text made safe: links taken out (the tagged one is added after), every sentence with a number, a claim,
  * an unsourced claim or AI wording dropped, no dashes, cut to fit. A problem when too much had to go.
  */
-/** Price wording: prices change and differ by offer, so what the agents write never states one (numbers are dropped already). */
-const PRICE_WORDS = /\b(?:dollars?|bucks|cents|price[sd]?|pricing|costs?|cheap(?:er|est)?|bargain|affordable)\b|[$€£]/i;
-
 export function cleanPost(raw: string, keep: string[], room: number, health: boolean): { text: string; problem: string | null } {
   const noLinks = raw.replace(/https?:\/\/\S+/g, " ").replace(/[ \t]+/g, " ").trim();
   const safe = safeEmailText(noLinks, keep, []);
   if (!safe.text || safe.dropped > safe.total / 3) return { text: "", problem: "The checks removed too much of it (numbers, claims or AI wording)." };
-  const text = fit(noDashes(safe.text), room);
+  // A sentence that states an amount of money goes (prices change); digits were already taken out above.
+  const text = fit(noDashes(withoutPrices(safe.text)), room);
   if (!text) return { text: "", problem: "Nothing was left after the checks." };
-  if (PRICE_WORDS.test(text)) return { text, problem: "It talks about price. Posts and messages never state a price, so they never go out of date." };
   return { text, problem: claimProblem(text, health) };
 }
 

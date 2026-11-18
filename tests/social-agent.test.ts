@@ -4,6 +4,7 @@ import {
   claimProblem,
   classifyReply,
   cleanPost,
+  withoutPrices,
   composePost,
   DOCTOR_LINE,
   findSignupPage,
@@ -146,8 +147,9 @@ test("social agent: someone's reply reaches the AI only inside a marked data blo
   assert.ok(!block.includes('"""'));
 });
 
-test("what the agents write never states a price", () => {
-  assert.match(cleanPost("Our magnesium is the most affordable way to unwind in the evening.", [], 400, false).problem ?? "", /price/);
-  assert.match(cleanPost("Grab it for twenty five dollars today before the week ends.", [], 400, false).problem ?? "", /price/);
-  assert.equal(cleanPost("Magnesium glycinate is a gentle form many people take in the evening with food.", [], 400, false).problem, null);
+test("a sentence that states an amount of money is taken out, ordinary money words stay", () => {
+  assert.equal(withoutPrices("Grab a bottle for twenty five dollars this week. Magnesium is a mineral."), "Magnesium is a mineral.");
+  assert.equal(withoutPrices("It costs €20. Sleep matters."), "Sleep matters.");
+  for (const ok of ["Avoid caffeine at all costs before bed.", "Poor sleep comes at a cost to your mood.", "Happy to send a free sample at no cost to you.", "It bucks the usual advice."])
+    assert.equal(withoutPrices(ok), ok);
 });
