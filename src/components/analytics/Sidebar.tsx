@@ -20,9 +20,10 @@ export const NAV_ADVANCED: NavItem[] = [
   { id: "apps", label: "Connected Apps", icon: PlugIcon },
 ];
 
-/** Simple view: seven places, the home screen first. */
+/** Simple view: eight places, the home screen first. */
 export const NAV_SIMPLE: NavItem[] = [
   { id: "home", label: "Dashboard", icon: HomeIcon },
+  { id: "crm", label: "CRM", icon: ListIcon },
   { id: "keywords", label: "Keywords", icon: KeyIcon },
   { id: "content", label: "Content", icon: FileIcon },
   { id: "backlinks", label: "Backlinks", icon: PlugIcon },

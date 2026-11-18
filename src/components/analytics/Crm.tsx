@@ -1,0 +1,657 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Activity, Contact, Template } from "@/lib/analytics/crm";
+import { parseCsv, rowsToContacts } from "@/lib/analytics/csv";
+import { goToGoogle } from "./Onboarding";
+import { api, apiFresh } from "./seo-ui";
+import { Card } from "./ui";
+
+interface GmailState {
+  connected: boolean;
+  email: string | null;
+  sentToday: number;
+  cap: number;
+}
+interface CrmData {
+  stages: string[];
+  contacts: Contact[];
+  tasks: Activity[];
+  templates: Template[];
+  gmail: GmailState;
+}
+type View = "pipeline" | "contacts" | "todo" | "templates";
+
+const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+const today = () => new Date().toISOString().slice(0, 10);
+const shortDate = (iso: string) => new Date(iso.length === 10 ? `${iso}T12:00:00` : iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const label = (c: Pick<Contact, "name" | "company" | "email">) => c.name || c.company || c.email || "No name";
+const closedStage = (s: string) => /^(won|lost)$/i.test(s);
+const btn = "rounded-lg px-3 py-1.5 text-sm font-semibold disabled:opacity-60";
+const primary = `${btn} bg-dash-green text-white hover:bg-dash-deep`;
+const quiet = `${btn} border border-dash-line text-dash-ink hover:bg-black/5`;
+const field = "w-full rounded-lg border border-dash-line px-3 py-2 text-sm text-dash-ink";
+
+const KIND_LABEL: Record<Activity["kind"], string> = {
+  note: "Note",
+  call: "Call",
+  meeting: "Meeting",
+  email: "Email sent",
+  task: "Task",
+  stage: "Stage",
+  lead: "Website request",
+};
+
+/** The owner's CRM: a pipeline board, a contact list, a to do list and email templates, all kept in DashPatrol. */
+export function Crm() {
+  const [data, setData] = useState<CrmData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("pipeline");
+  const [open, setOpen] = useState<string | "new" | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [showStages, setShowStages] = useState(false);
+  const load = useCallback(() => apiFresh<CrmData>("/api/crm").then(setData).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")), []);
+  useEffect(() => {
+    api<CrmData>("/api/crm").then(setData).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load."));
+  }, []);
+
+  if (!data) return <Card className="mt-2"><p className="text-sm text-dash-muted">{error ?? "Loading your CRM..."}</p></Card>;
+
+  const open_deals = data.contacts.filter((c) => !closedStage(c.stage));
+  const wonMonth = data.contacts.filter((c) => /^won$/i.test(c.stage) && c.updatedAt.slice(0, 7) === today().slice(0, 7));
+  const due = dueItems(data);
+  const tiles = [
+    { label: "Contacts", value: data.contacts.length.toLocaleString() },
+    { label: "Open deals", value: money(open_deals.reduce((s, c) => s + c.value, 0)) },
+    { label: "To do today", value: String(due.filter((d) => d.date <= today()).length) },
+    { label: "Won this month", value: money(wonMonth.reduce((s, c) => s + c.value, 0)) },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-serif text-2xl text-dash-ink">CRM</h2>
+            <p className="text-sm text-dash-muted">Your contacts, deals and follow ups in one place. Website requests land here on their own.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className={primary} onClick={() => setOpen("new")}>Add contact</button>
+            <button className={quiet} onClick={() => setShowImport(true)}>Import</button>
+            <button className={quiet} onClick={() => exportCsv(data.contacts)}>Export</button>
+            <button className={quiet} onClick={() => setShowStages(true)}>Stages</button>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {tiles.map((t) => (
+            <div key={t.label} className="rounded-xl border border-dash-line p-3">
+              <p className="text-xs text-dash-muted">{t.label}</p>
+              <p className="mt-1 text-xl font-semibold text-dash-ink">{t.value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-1 border-b border-dash-line">
+          {(["pipeline", "contacts", "todo", "templates"] as View[]).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm font-semibold ${view === v ? "border-dash-green text-dash-ink" : "border-transparent text-dash-muted hover:text-dash-ink"}`}
+            >
+              {v === "pipeline" ? "Pipeline" : v === "contacts" ? "Contacts" : v === "todo" ? `To do${due.length ? ` (${due.length})` : ""}` : "Email templates"}
+            </button>
+          ))}
+        </div>
+        {error && <p className="mt-2 text-sm text-dash-down">{error}</p>}
+        <div className="mt-4">
+          {view === "pipeline" && <Pipeline data={data} onOpen={setOpen} onChanged={load} onError={setError} />}
+          {view === "contacts" && <ContactList data={data} onOpen={setOpen} />}
+          {view === "todo" && <TodoList data={data} items={due} onOpen={setOpen} onChanged={load} onError={setError} />}
+          {view === "templates" && <Templates data={data} onChanged={load} onError={setError} />}
+        </div>
+      </Card>
+      {open && <ContactPanel id={open} data={data} onClose={() => setOpen(null)} onChanged={load} onOpenId={setOpen} />}
+      {showImport && <ImportDialog onClose={() => setShowImport(false)} onDone={(d) => { setData(d); }} />}
+      {showStages && <StagesDialog stages={data.stages} onClose={() => setShowStages(false)} onDone={load} />}
+    </div>
+  );
+}
+
+/** Open tasks and contacts whose follow up date has come, soonest first. */
+function dueItems(data: CrmData) {
+  const byId = new Map(data.contacts.map((c) => [c.id, c]));
+  const items: { key: string; date: string; contact: Contact | undefined; text: string; taskId?: string }[] = [];
+  for (const t of data.tasks) items.push({ key: `t${t.id}`, date: t.due ?? "9999-12-31", contact: byId.get(t.contactId), text: t.subject || t.body, taskId: t.id });
+  for (const c of data.contacts) if (c.followUp && !closedStage(c.stage)) items.push({ key: `f${c.id}`, date: c.followUp, contact: c, text: "Follow up" });
+  return items.filter((i) => i.contact).sort((a, b) => a.date.localeCompare(b.date));
+}
+
+async function post<T = { ok: true; id?: string }>(body: Record<string, unknown>): Promise<T> {
+  return api<T>("/api/crm", body);
+}
+
+function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void }) {
+  const [drag, setDrag] = useState<string | null>(null);
+  const move = async (id: string, stage: string) => {
+    onError(null);
+    try {
+      await post({ action: "move", id, stage });
+      onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Couldn't move it.");
+    }
+  };
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-2">
+      {data.stages.map((s) => {
+        const list = data.contacts.filter((c) => c.stage === s);
+        return (
+          <div
+            key={s}
+            className="w-64 shrink-0 rounded-xl bg-black/[0.03] p-2"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => drag && move(drag, s)}
+          >
+            <div className="mb-2 flex items-baseline justify-between px-1">
+              <p className="text-sm font-semibold text-dash-ink">{s}</p>
+              <p className="text-xs text-dash-muted">{list.length} · {money(list.reduce((n, c) => n + c.value, 0))}</p>
+            </div>
+            <div className="space-y-2">
+              {list.map((c) => (
+                <div
+                  key={c.id}
+                  draggable
+                  onDragStart={() => setDrag(c.id)}
+                  onDragEnd={() => setDrag(null)}
+                  className="cursor-pointer rounded-lg border border-dash-line bg-white p-2 text-sm shadow-sm hover:border-dash-green"
+                  onClick={() => onOpen(c.id)}
+                >
+                  <p className="font-semibold text-dash-ink break-words [overflow-wrap:anywhere]">{label(c)}</p>
+                  {c.name && c.company && <p className="text-xs text-dash-muted break-words">{c.company}</p>}
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-dash-muted">
+                    {c.value > 0 && <span className="font-semibold text-dash-ink">{money(c.value)}</span>}
+                    {c.followUp && <span className={c.followUp <= today() ? "font-semibold text-dash-down" : ""}>Follow up {shortDate(c.followUp)}</span>}
+                    {c.openTasks > 0 && <span>{c.openTasks} task{c.openTasks > 1 ? "s" : ""}</span>}
+                  </div>
+                  <select
+                    aria-label="Move to stage"
+                    className="mt-2 w-full rounded border border-dash-line px-1 py-0.5 text-xs text-dash-ink"
+                    value={c.stage}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => move(c.id, e.target.value)}
+                  >
+                    {data.stages.map((x) => <option key={x}>{x}</option>)}
+                  </select>
+                </div>
+              ))}
+              {!list.length && <p className="px-1 py-3 text-xs text-dash-muted">Nobody here yet.</p>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ContactList({ data, onOpen }: { data: CrmData; onOpen: (id: string) => void }) {
+  const [q, setQ] = useState("");
+  const [stage, setStage] = useState("");
+  const [tag, setTag] = useState("");
+  const tags = useMemo(() => [...new Set(data.contacts.flatMap((c) => c.tags))].sort(), [data.contacts]);
+  const list = data.contacts.filter((c) => {
+    const text = `${c.name} ${c.company} ${c.email} ${c.phone} ${c.tags.join(" ")} ${c.kind}`.toLowerCase();
+    return (!q || text.includes(q.toLowerCase())) && (!stage || c.stage === stage) && (!tag || c.tags.includes(tag));
+  });
+  return (
+    <div>
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input className={`${field} max-w-xs`} placeholder="Search name, company, email or tag" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className={`${field} w-auto`} value={stage} onChange={(e) => setStage(e.target.value)}>
+          <option value="">All stages</option>
+          {data.stages.map((s) => <option key={s}>{s}</option>)}
+        </select>
+        {tags.length > 0 && (
+          <select className={`${field} w-auto`} value={tag} onChange={(e) => setTag(e.target.value)}>
+            <option value="">All tags</option>
+            {tags.map((t) => <option key={t}>{t}</option>)}
+          </select>
+        )}
+      </div>
+      {!data.contacts.length ? (
+        <p className="text-sm text-dash-muted">No contacts yet. Click Add contact, or Import a spreadsheet. Requests from your website forms are added here on their own.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead className="text-xs text-dash-muted">
+              <tr><th className="py-2">Name</th><th>Company</th><th>Stage</th><th>Value</th><th>Last contact</th><th>Follow up</th></tr>
+            </thead>
+            <tbody>
+              {list.map((c) => (
+                <tr key={c.id} className="cursor-pointer border-t border-dash-line hover:bg-black/[0.03]" onClick={() => onOpen(c.id)}>
+                  <td className="py-2 pr-2">
+                    <p className="font-semibold text-dash-ink">{c.name || c.email || "No name"}</p>
+                    <p className="text-xs text-dash-muted">{c.email}</p>
+                  </td>
+                  <td className="pr-2 text-dash-ink">{c.company}</td>
+                  <td className="pr-2 text-dash-ink">{c.stage}</td>
+                  <td className="pr-2 text-dash-ink">{c.value ? money(c.value) : ""}</td>
+                  <td className="pr-2 text-dash-muted">{c.lastContactAt ? shortDate(c.lastContactAt) : "Never"}</td>
+                  <td className={`pr-2 ${c.followUp && c.followUp <= today() ? "font-semibold text-dash-down" : "text-dash-muted"}`}>{c.followUp ? shortDate(c.followUp) : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!list.length && <p className="mt-2 text-sm text-dash-muted">No contact matches that search.</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TodoList({ data, items, onOpen, onChanged, onError }: {
+  data: CrmData;
+  items: ReturnType<typeof dueItems>;
+  onOpen: (id: string) => void;
+  onChanged: () => void;
+  onError: (e: string | null) => void;
+}) {
+  if (!items.length) return <p className="text-sm text-dash-muted">Nothing to do. Add a task or a follow up date on a contact and it shows here.</p>;
+  const done = async (taskId: string) => {
+    try {
+      await post({ action: "task", taskId, done: true });
+      onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Couldn't mark it done.");
+    }
+  };
+  return (
+    <ul className="space-y-2">
+      {items.map((i) => {
+        const late = i.date < today();
+        const now = i.date === today();
+        return (
+          <li key={i.key} className="flex flex-wrap items-center gap-3 rounded-xl border border-dash-line p-3 text-sm">
+            {i.taskId ? (
+              <input type="checkbox" aria-label="Done" className="h-4 w-4" onChange={() => done(i.taskId!)} />
+            ) : (
+              <span className="h-4 w-4" />
+            )}
+            <button className="min-w-0 flex-1 text-left" onClick={() => i.contact && onOpen(i.contact.id)}>
+              <p className="font-semibold text-dash-ink break-words [overflow-wrap:anywhere]">{i.text}</p>
+              <p className="text-xs text-dash-muted">{i.contact ? label(i.contact) : ""}{i.contact?.company && i.contact.name ? `, ${i.contact.company}` : ""}</p>
+            </button>
+            <span className={`text-xs font-semibold ${late ? "text-dash-down" : now ? "text-dash-green" : "text-dash-muted"}`}>
+              {i.date === "9999-12-31" ? "No date" : late ? `Late, ${shortDate(i.date)}` : now ? "Today" : shortDate(i.date)}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () => void; onError: (e: string | null) => void }) {
+  const [edit, setEdit] = useState<Partial<Template> | null>(null);
+  const save = async () => {
+    try {
+      await post({ action: "template", template: edit });
+      setEdit(null);
+      onChanged();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Couldn't save the template.");
+    }
+  };
+  return (
+    <div>
+      <p className="mb-3 text-sm text-dash-muted">
+        Write an email once and reuse it. In the subject or message, {"{first_name}"}, {"{name}"} and {"{company}"} are filled in for each contact.
+      </p>
+      <ul className="space-y-2">
+        {data.templates.map((t) => (
+          <li key={t.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-dash-line p-3 text-sm">
+            <div className="min-w-0">
+              <p className="font-semibold text-dash-ink">{t.name}</p>
+              <p className="text-xs text-dash-muted break-words">{t.subject}</p>
+            </div>
+            <div className="flex gap-2">
+              <button className={quiet} onClick={() => setEdit(t)}>Edit</button>
+              <button className={quiet} onClick={async () => { await post({ action: "deleteTemplate", templateId: t.id }).catch(() => undefined); onChanged(); }}>Delete</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {!edit && <button className={`${primary} mt-3`} onClick={() => setEdit({ name: "", subject: "", body: "" })}>New template</button>}
+      {edit && (
+        <div className="mt-3 space-y-2 rounded-xl border border-dash-line p-3">
+          <input className={field} placeholder="Template name, like Clinic intro" value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
+          <input className={field} placeholder="Subject" value={edit.subject ?? ""} onChange={(e) => setEdit({ ...edit, subject: e.target.value })} />
+          <textarea className={`${field} min-h-[160px]`} placeholder="Hi {first_name}," value={edit.body ?? ""} onChange={(e) => setEdit({ ...edit, body: e.target.value })} />
+          <div className="flex gap-2">
+            <button className={primary} onClick={save}>Save template</button>
+            <button className={quiet} onClick={() => setEdit(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EMPTY: Partial<Contact> = { name: "", email: "", phone: "", company: "", title: "", kind: "", stage: "", value: 0, tags: [], address: "", website: "", followUp: null };
+
+function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; data: CrmData; onClose: () => void; onChanged: () => void; onOpenId: (id: string) => void }) {
+  const [contact, setContact] = useState<Partial<Contact>>(id === "new" ? { ...EMPTY, stage: data.stages[0] } : {});
+  const [acts, setActs] = useState<Activity[]>([]);
+  const [editing, setEditing] = useState(id === "new");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [note, setNote] = useState<{ kind: "note" | "call" | "meeting" | "task"; subject: string; body: string; due: string } | null>(null);
+  const [mail, setMail] = useState(false);
+  const loadOne = useCallback(async () => {
+    if (id === "new") return;
+    const t = await apiFresh<{ contact: Contact; activities: Activity[] }>(`/api/crm?contact=${id}`);
+    setContact(t.contact);
+    setActs(t.activities);
+  }, [id]);
+  useEffect(() => {
+    loadOne().catch((e) => setErr(e instanceof Error ? e.message : "Couldn't open the contact."));
+  }, [loadOne]);
+
+  const run = async (body: Record<string, unknown>, after?: () => void) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const out = await post(body);
+      after?.();
+      onChanged();
+      if (id === "new" && out.id) onOpenId(out.id);
+      else await loadOne();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That didn't work. Try again.");
+    }
+    setBusy(false);
+  };
+  const c = contact;
+  const set = (k: keyof Contact, v: unknown) => setContact({ ...contact, [k]: v });
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onClick={onClose}>
+      <div className="h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h3 className="font-serif text-xl text-dash-ink break-words">{id === "new" ? "New contact" : label(c as Contact)}</h3>
+            {id !== "new" && <p className="text-sm text-dash-muted">{[c.company, c.stage, c.value ? money(c.value) : ""].filter(Boolean).join(" · ")}</p>}
+          </div>
+          <button className={quiet} onClick={onClose}>Close</button>
+        </div>
+        {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
+
+        {id !== "new" && !editing && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button className={primary} onClick={() => setMail(true)}>Email</button>
+            <button className={quiet} onClick={() => setNote({ kind: "call", subject: "", body: "", due: "" })}>Log call</button>
+            <button className={quiet} onClick={() => setNote({ kind: "meeting", subject: "", body: "", due: "" })}>Log meeting</button>
+            <button className={quiet} onClick={() => setNote({ kind: "note", subject: "", body: "", due: "" })}>Add note</button>
+            <button className={quiet} onClick={() => setNote({ kind: "task", subject: "", body: "", due: today() })}>Add task</button>
+            <button className={quiet} onClick={() => setEditing(true)}>Edit</button>
+            {c.phone && <a className={quiet} href={`tel:${c.phone}`}>Call {c.phone}</a>}
+          </div>
+        )}
+
+        {(editing || id === "new") && (
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <Input label="Name" v={c.name} on={(v) => set("name", v)} />
+            <Input label="Company" v={c.company} on={(v) => set("company", v)} />
+            <Input label="Email" v={c.email} on={(v) => set("email", v)} type="email" />
+            <Input label="Phone" v={c.phone} on={(v) => set("phone", v)} type="tel" />
+            <Input label="Job title" v={c.title} on={(v) => set("title", v)} />
+            <Input label="Type, like Clinic or Store" v={c.kind} on={(v) => set("kind", v)} />
+            <label className="text-xs text-dash-muted">Stage
+              <select className={field} value={c.stage} onChange={(e) => set("stage", e.target.value)}>{data.stages.map((s) => <option key={s}>{s}</option>)}</select>
+            </label>
+            <Input label="Deal value in dollars" v={c.value ? String(c.value) : ""} on={(v) => set("value", v)} />
+            <Input label="Follow up on" v={c.followUp ?? ""} on={(v) => set("followUp", v || null)} type="date" />
+            <Input label="Tags, separated by commas" v={(c.tags ?? []).join(", ")} on={(v) => set("tags", v.split(","))} />
+            <Input label="Website" v={c.website} on={(v) => set("website", v)} />
+            <Input label="Address" v={c.address} on={(v) => set("address", v)} />
+            <div className="flex flex-wrap gap-2 sm:col-span-2">
+              <button disabled={busy} className={primary} onClick={() => run({ action: "save", id: id === "new" ? undefined : id, contact: c }, () => setEditing(false))}>Save</button>
+              {id !== "new" && <button className={quiet} onClick={() => { setEditing(false); loadOne(); }}>Cancel</button>}
+              {id !== "new" && (
+                <button className={`${quiet} text-dash-down`} onClick={() => run({ action: "archive", id }, onClose)}>Archive contact</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {id !== "new" && !editing && (
+          <dl className="mt-4 grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
+            {([
+              ["Email", c.email],
+              ["Phone", c.phone],
+              ["Job title", c.title],
+              ["Type", c.kind],
+              ["Follow up", c.followUp ? shortDate(c.followUp) : ""],
+              ["Tags", (c.tags ?? []).join(", ")],
+              ["Website", c.website],
+              ["Address", c.address],
+              ["Came from", c.source],
+            ] as [string, string | undefined][]).filter(([, v]) => v).map(([k, v]) => (
+              <div key={k} className="min-w-0"><dt className="text-xs text-dash-muted">{k}</dt><dd className="text-dash-ink break-words [overflow-wrap:anywhere]">{v}</dd></div>
+            ))}
+          </dl>
+        )}
+
+        {note && (
+          <div className="mt-4 space-y-2 rounded-xl border border-dash-line p-3">
+            <p className="text-sm font-semibold text-dash-ink">{KIND_LABEL[note.kind]}</p>
+            <input className={field} placeholder={note.kind === "task" ? "What needs doing, like Send samples" : "Short title (optional)"} value={note.subject} onChange={(e) => setNote({ ...note, subject: e.target.value })} />
+            {note.kind !== "task" && <textarea className={`${field} min-h-[100px]`} placeholder="What was said or decided" value={note.body} onChange={(e) => setNote({ ...note, body: e.target.value })} />}
+            {note.kind === "task" && <input type="date" className={field} value={note.due} onChange={(e) => setNote({ ...note, due: e.target.value })} />}
+            <div className="flex gap-2">
+              <button disabled={busy} className={primary} onClick={() => run({ action: "activity", id, activity: note }, () => setNote(null))}>Save</button>
+              <button className={quiet} onClick={() => setNote(null)}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        {mail && <EmailComposer contact={c as Contact} data={data} onClose={() => setMail(false)} onSent={() => { setMail(false); onChanged(); loadOne(); }} />}
+
+        {id !== "new" && (
+          <div className="mt-6">
+            <h4 className="mb-2 text-sm font-semibold text-dash-ink">History</h4>
+            {!acts.length && <p className="text-sm text-dash-muted">Nothing yet. Emails, calls, notes and tasks show here.</p>}
+            <ul className="space-y-2">
+              {acts.map((a) => (
+                <li key={a.id} className="rounded-xl border border-dash-line p-3 text-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-semibold text-dash-ink">
+                      {a.kind === "task" && (
+                        <input type="checkbox" className="mr-2 align-middle" checked={a.done} onChange={() => run({ action: "task", taskId: a.id, done: !a.done })} />
+                      )}
+                      {KIND_LABEL[a.kind]}{a.subject ? `: ${a.subject}` : ""}
+                    </p>
+                    <p className="text-xs text-dash-muted">
+                      {a.kind === "task" && a.due ? `Due ${shortDate(a.due)} · ` : ""}{shortDate(a.at)}
+                      {["note", "call", "meeting", "task"].includes(a.kind) && (
+                        <button className="ml-2 text-dash-muted hover:text-dash-down" onClick={() => run({ action: "deleteActivity", activityId: a.id })}>Delete</button>
+                      )}
+                    </p>
+                  </div>
+                  {a.body && <p className="mt-1 whitespace-pre-wrap text-dash-ink break-words [overflow-wrap:anywhere]">{a.body}</p>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Input({ label: l, v, on, type = "text" }: { label: string; v: string | undefined; on: (v: string) => void; type?: string }) {
+  return (
+    <label className="text-xs text-dash-muted">
+      {l}
+      <input className={field} type={type} value={v ?? ""} onChange={(e) => on(e.target.value)} />
+    </label>
+  );
+}
+
+function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; data: CrmData; onClose: () => void; onSent: () => void }) {
+  const [to, setTo] = useState(contact.email);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [opened, setOpened] = useState(false);
+  const fill = (t: string) => t
+    .replace(/\{first_name\}/gi, contact.name.split(/\s+/)[0] || "there")
+    .replace(/\{name\}/gi, contact.name || "there")
+    .replace(/\{company\}/gi, contact.company || "your business");
+  const pick = (tid: string) => {
+    const t = data.templates.find((x) => x.id === tid);
+    if (t) {
+      setSubject(fill(t.subject));
+      setBody(fill(t.body));
+    }
+  };
+  const send = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await post({ action: "email", id: contact.id, email: { to, subject, body } });
+      onSent();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "It didn't send.");
+    }
+    setBusy(false);
+  };
+  const mailto = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  return (
+    <div className="mt-4 space-y-2 rounded-xl border border-dash-line p-3">
+      <p className="text-sm font-semibold text-dash-ink">Email {label(contact)}</p>
+      {data.templates.length > 0 && (
+        <select className={field} defaultValue="" onChange={(e) => pick(e.target.value)}>
+          <option value="">Start from a template</option>
+          {data.templates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      )}
+      <input className={field} placeholder="To" value={to} onChange={(e) => setTo(e.target.value)} />
+      <input className={field} placeholder="Subject" value={subject} onChange={(e) => setSubject(e.target.value)} />
+      <textarea className={`${field} min-h-[180px]`} placeholder="Your message" value={body} onChange={(e) => setBody(e.target.value)} />
+      {err && <p className="text-sm text-dash-down">{err}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        {data.gmail.connected ? (
+          <button disabled={busy || !to || !subject || !body} className={primary} onClick={send}>Send from {data.gmail.email}</button>
+        ) : (
+          <button className={primary} onClick={() => goToGoogle("gmail").catch((e) => setErr(e instanceof Error ? e.message : "Couldn't open Google."))}>Allow sending from Gmail</button>
+        )}
+        <a className={quiet} href={mailto} onClick={() => setOpened(true)}>Open in my email</a>
+        {opened && (
+          <button className={quiet} disabled={busy} onClick={async () => { await post({ action: "logEmail", id: contact.id, email: { subject, body } }).catch(() => undefined); onSent(); }}>
+            I sent it, save it here
+          </button>
+        )}
+        <button className={quiet} onClick={onClose}>Cancel</button>
+      </div>
+      {data.gmail.connected && <p className="text-xs text-dash-muted">{data.gmail.sentToday} of {data.gmail.cap} emails sent from the app today. Each one is sent only when you click Send.</p>}
+    </div>
+  );
+}
+
+function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: (d: CrmData) => void }) {
+  const [rows, setRows] = useState<Record<string, string>[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  const read = async (f: File) => {
+    setMsg(null);
+    const list = rowsToContacts(parseCsv(await f.text()));
+    if (!list.length) setMsg("That file has no rows to import. Save your spreadsheet as CSV with a header row first.");
+    setRows(list);
+  };
+  const go = async () => {
+    if (!rows) return;
+    setBusy(true);
+    try {
+      const out = await post<CrmData & { result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: rows.slice(0, 1000) });
+      onDone(out);
+      setMsg(`Added ${out.result.added}, filled in ${out.result.updated} that were already here, skipped ${out.result.skipped} without a name, company or valid email.`);
+      setRows(null);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "The import didn't work.");
+    }
+    setBusy(false);
+  };
+  return (
+    <Dialog title="Import contacts" onClose={onClose}>
+      <p className="text-sm text-dash-muted">
+        Pick a CSV file, saved from Excel, Google Sheets or another CRM. Columns like Name, First name, Last name, Email, Phone, Company, Title, Stage, Value and Tags are matched by their names. A contact who is already here only gets their empty fields filled in.
+      </p>
+      <input ref={input} type="file" accept=".csv,text/csv" className="mt-3 text-sm" onChange={(e) => e.target.files?.[0] && read(e.target.files[0])} />
+      {rows && rows.length > 0 && (
+        <div className="mt-3">
+          <p className="text-sm text-dash-ink">{rows.length.toLocaleString()} rows found{rows.length > 1000 ? "; the first 1,000 are imported" : ""}. First one: {rows[0].name || rows[0].email || rows[0].company}.</p>
+          <button disabled={busy} className={`${primary} mt-2`} onClick={go}>{busy ? "Importing..." : "Import"}</button>
+        </div>
+      )}
+      {msg && <p className="mt-3 text-sm text-dash-ink">{msg}</p>}
+    </Dialog>
+  );
+}
+
+function StagesDialog({ stages, onClose, onDone }: { stages: string[]; onClose: () => void; onDone: () => void }) {
+  const [list, setList] = useState(stages.join("\n"));
+  const [err, setErr] = useState<string | null>(null);
+  const save = async () => {
+    try {
+      await post({ action: "stages", stages: list.split("\n") });
+      onDone();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Couldn't save the stages.");
+    }
+  };
+  return (
+    <Dialog title="Pipeline stages" onClose={onClose}>
+      <p className="text-sm text-dash-muted">One stage per line, in order. Contacts in a stage you take out move to the first stage.</p>
+      <textarea className={`${field} mt-2 min-h-[180px]`} value={list} onChange={(e) => setList(e.target.value)} />
+      {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
+      <button className={`${primary} mt-2`} onClick={save}>Save stages</button>
+    </Dialog>
+  );
+}
+
+function Dialog({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
+      <div className="max-h-full w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-2 flex items-center justify-between">
+          <h3 className="font-serif text-xl text-dash-ink">{title}</h3>
+          <button className={quiet} onClick={onClose}>Close</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Downloads every contact as a CSV file the owner can open in Excel or Google Sheets. */
+function exportCsv(contacts: Contact[]) {
+  const head = ["Name", "Email", "Phone", "Company", "Title", "Type", "Stage", "Value", "Tags", "Follow up", "Last contact", "Website", "Address", "Came from", "Added"];
+  const esc = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  // A cell starting with = + @ or a minus sign would run as a formula in a spreadsheet; a leading apostrophe stops it.
+  const safe = (v: string) => esc(/^[=+@\-\t]/.test(v) ? `'${v}` : v);
+  const lines = [head.join(",")].concat(
+    contacts.map((c) =>
+      [c.name, c.email, c.phone, c.company, c.title, c.kind, c.stage, c.value ? String(c.value) : "", c.tags.join("; "), c.followUp ?? "", c.lastContactAt?.slice(0, 10) ?? "", c.website, c.address, c.source, c.createdAt.slice(0, 10)]
+        .map(safe)
+        .join(","),
+    ),
+  );
+  const url = URL.createObjectURL(new Blob([lines.join("\n")], { type: "text/csv" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `contacts-${today()}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

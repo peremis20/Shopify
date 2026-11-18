@@ -15,7 +15,7 @@ import { api } from "./seo-ui";
 import { DeltaBadge, Skeleton } from "./ui";
 import { BarsIcon, BoltIcon, ExternalIcon, FileIcon, SearchIcon } from "./Icons";
 
-export type SimplePage = "home" | "keywords" | "content" | "backlinks" | "outreach" | "report" | "settings";
+export type SimplePage = "home" | "crm" | "keywords" | "content" | "backlinks" | "outreach" | "report" | "settings";
 
 interface Authority { ready: boolean; authority: number | null; history?: { day: string; score: number }[] }
 

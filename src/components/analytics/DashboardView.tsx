@@ -29,6 +29,7 @@ import { Outreach } from "./Outreach";
 import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
 import { Conversion } from "./Conversion";
+import { Crm } from "./Crm";
 import { Leads } from "./Leads";
 import { Speed } from "./Speed";
 import { ExpertReview } from "./ExpertReview";
@@ -392,6 +393,13 @@ export function DashboardView() {
                   <Leads />
                   <Conversion />
                   <Speed />
+                  </ErrorBoundary>
+                </div>
+              )}
+              {keep("crm") && (
+                <div hidden={page !== "crm"}>
+                  <ErrorBoundary where="crm">
+                  <Crm />
                   </ErrorBoundary>
                 </div>
               )}
@@ -800,6 +808,7 @@ export function DashboardView() {
 
 const SIMPLE_TITLE: Record<SimplePage, string> = {
   home: "Welcome back!",
+  crm: "CRM",
   keywords: "Keywords",
   content: "Content",
   backlinks: "Backlinks",
@@ -809,6 +818,7 @@ const SIMPLE_TITLE: Record<SimplePage, string> = {
 };
 const SIMPLE_SUB: Record<SimplePage, string> = {
   home: "Here's how your site is doing on Google, and what to do next.",
+  crm: "Your contacts, deals, emails, notes and follow ups.",
   keywords: "What people search for, how hard each one is, and where you rank.",
   content: "Every change the autopilot made, new articles, and your site's health.",
   backlinks: "Websites that could link to you, with the email written for each one.",

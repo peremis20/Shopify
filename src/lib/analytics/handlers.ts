@@ -51,6 +51,7 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
+import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
 import { accountsWithWaitingLeads, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -2202,6 +2203,13 @@ export async function leadApi(req: Request): Promise<Response> {
     // The address the platform's proxy added last; earlier entries are whatever the sender wrote.
     const ip = (req.headers.get("x-forwarded-for") ?? "").split(",").at(-1)?.trim() ?? "";
     const kept = await keepLead(accountId, lead, ip, store?.shopDomain ?? null);
+    // The request also becomes a contact in the owner's CRM (a held one too: it is a real request, just not sent on).
+    if (!kept.held) {
+      await contactFromLead(accountId, lead).catch(async (e) => {
+        console.error(`lead not added to the CRM: ${message(e)}`);
+        await report("leads", false, `A lead was kept but not added to the CRM (${message(e)})`);
+      });
+    }
     // Only this request is sent now; anything else waiting goes with the hourly run.
     if (!kept.held && site !== undefined && !isSabbath()) {
       await syncLeads(accountId, store, 1, [kept.id]).catch(async (e) => {
@@ -2215,6 +2223,52 @@ export async function leadApi(req: Request): Promise<Response> {
   }
   return done();
 }
+
+/**
+ * The CRM: GET returns the pipeline (or one contact's timeline with ?contact=ID, or archived contacts with
+ * ?archived=1); POST does one action the owner clicked.
+ */
+export const crmApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    const q = new URL(req.url).searchParams;
+    if (req.method === "GET") {
+      const id = q.get("contact");
+      if (id) {
+        const t = await contactTimeline(account.id, id);
+        return t ? json(t) : json({ error: "That contact isn't here anymore." }, 404);
+      }
+      if (q.get("archived")) return json({ contacts: await archivedContacts(account.id) });
+      const gmail = await getGmail(account.id).catch(() => null);
+      return json({ ...(await crmView(account.id)), gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
+    }
+    const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    let id: string | undefined;
+    try {
+      switch (b.action) {
+        case "save": id = await saveContact(account.id, b.contact, b.id); break;
+        case "move": await moveContact(account.id, b.id, b.stage); break;
+        case "archive": await archiveContact(account.id, b.id, true); break;
+        case "restore": await archiveContact(account.id, b.id, false); break;
+        case "activity": await addActivity(account.id, b.id, b.activity); break;
+        case "task": await setTaskDone(account.id, b.taskId, b.done === true); break;
+        case "deleteActivity": await deleteActivity(account.id, b.activityId); break;
+        case "logEmail": await logEmail(account.id, b.id, b.email); break;
+        case "template": await saveCrmTemplate(account.id, b.template); break;
+        case "deleteTemplate": await deleteCrmTemplate(account.id, b.templateId); break;
+        case "stages": await saveStages(account.id, b.stages); break;
+        case "import": return json({ result: await importContacts(account.id, b.rows), ...(await crmView(account.id)) });
+        case "email": {
+          const out = await emailContact(account.id, b.id, b.email);
+          if (!out.ok) return json({ error: out.error }, out.status);
+          return json({ sent: { to: out.to, from: out.from, sentToday: out.sentToday } });
+        }
+        default: return json({ error: "Nothing to do." }, 400);
+      }
+    } catch (e) {
+      return json({ error: publicError(e, "crm") }, 400);
+    }
+    return json({ ok: true, id });
+  });
 
 /** The Leads card: the site's latest form requests and whether each is in Shopify yet. */
 export const leadsApi = (req: Request) => withAccount(req, async (account) => json(await leadsView(account.id)));
