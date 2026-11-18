@@ -33,6 +33,14 @@ export async function snippetKey(accountId: string): Promise<string> {
   return again!.value!;
 }
 
+/** The account behind a public site key, or null. */
+export async function accountForSiteKey(siteKey: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9_-]{8,40}$/.test(siteKey)) return null;
+  await ensureSchema();
+  const [owner] = await sql`SELECT value FROM insights_settings WHERE key = ${accountOfKey(siteKey)}`;
+  return owner?.value ?? null;
+}
+
 export const snippetTag = (appOrigin: string, siteKey: string) => `<script async src="${appOrigin}/s.js?k=${siteKey}"></script>`;
 
 export async function snippetInstalled(accountId: string): Promise<boolean> {

@@ -247,6 +247,14 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
         : "It tries again by itself next week; last week's speed fixes stay.",
     workaround: "Last week's speed results stay on the dashboard.",
   },
+  leads: {
+    name: "The Leads keeper (form requests saved in Shopify Customers)",
+    fix: (d) =>
+      /customer access/i.test(d ?? "")
+        ? "Allow DashPatrol to work with customers in Shopify: approve the app's updated permissions when Shopify asks, or reconnect Shopify from Connections. Only the owner can do this."
+        : "It tries again by itself within the hour.",
+    workaround: "Every request is kept on the Leads card in DashPatrol meanwhile.",
+  },
   images: {
     name: "The Image agent (lighter copies of heavy images)",
     fix: (d) =>

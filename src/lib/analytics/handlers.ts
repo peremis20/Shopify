@@ -50,7 +50,8 @@ import { deleteWp, saveWp, wpHello } from "./autopilot/wordpress";
 import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections";
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
-import { checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
+import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
+import { accountsWithWaitingLeads, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
 import { overlapReport, overlapScanDue, scanOverlap } from "./autopilot/overlap-scan";
@@ -1737,6 +1738,18 @@ export async function autopilotTick(): Promise<Response> {
         if (note) results.push(`account ${accountId} ${agent}: ${note}`);
       }
     }
+    // The Leads keeper: form requests still waiting are saved in each store's Shopify Customers.
+    for (const accountId of late() ? [] : await accountsWithWaitingLeads(5).catch((e) => (console.error(`leads list failed: ${message(e)}`), [] as string[]))) {
+      if (late()) break;
+      const note = await forSite(accountId, async () => syncLeads(accountId, (await siteFor(accountId).catch(() => null))?.store ?? null)).catch(
+        async (e) => {
+          console.error(`leads failed: ${message(e)}`);
+          await report("leads", false, `Leads couldn't be sent to Shopify (${message(e)})`);
+          return null;
+        },
+      );
+      if (note) results.push(`account ${accountId} leads: ${note}`);
+    }
     // The Journalists agent (with paid placements) and Media requests: weekly per site, one site per hour each. Each run
     // saves a provisional marker first and the real one on every exit, and reports to the status board (weekly-run.ts).
     for (const accountId of late() ? [] : await accountsDueForPress(1).catch(async (e) => {
@@ -1921,8 +1934,20 @@ export async function shopifyWebhook(req: Request): Promise<Response> {
   const shop = req.headers.get("x-shopify-shop-domain") ?? "";
   if (topic === "app/uninstalled" || topic === "shop/redact") {
     await ensureSchema();
-    // We keep no customer data from stores; forgetting the store connection is all there is to erase.
+    // Forgetting the store connection, and the store's leads when the store is erased.
     await sql`UPDATE insights_account_autopilot SET shop_domain = NULL, shop_token_enc = NULL, enabled = false WHERE shop_domain = ${shop}`;
+    // The store's leads go with it (each lead remembers its store, so this works after an uninstall too).
+    if (topic === "shop/redact") await forgetShopLeads(shop);
+  }
+  const email = (() => { try { return String(JSON.parse(raw)?.customer?.email ?? "").trim(); } catch { return ""; } })();
+  if (topic === "customers/redact" && email) await forgetLeadEmail(shop, email);
+  if (topic === "customers/data_request" && email) {
+    // What the app keeps about this person is the leads they sent; it is kept for the store owner to hand over.
+    const leads = await leadsForEmail(shop, email);
+    if (leads.length) {
+      await sql`INSERT INTO insights_settings (key, value) VALUES (${`data_request:${shop}:${Date.now()}`}, ${JSON.stringify({ email, leads: leads.length })})`;
+      console.warn(`data request from ${shop}: ${leads.length} lead(s) on record for the owner to hand over`);
+    }
   }
   return new Response(null, { status: 200 });
 }
@@ -2153,6 +2178,44 @@ export const speedApi = (req: Request) =>
     }
     return json(await speedView(account.id));
   });
+
+/**
+ * A lead from a form on the site (public). The page sends a copy of what the visitor typed, keyed by the site's public
+ * key; it is kept on the account, then saved in Shopify Customers. Only the site's own pages may send one.
+ */
+export async function leadApi(req: Request): Promise<Response> {
+  const origin = req.headers.get("origin");
+  const done = (status = 204) => new Response(null, { status, headers: origin ? { "Access-Control-Allow-Origin": origin, Vary: "Origin" } : {} });
+  try {
+    if (Number(req.headers.get("content-length") ?? 0) > 8000) return done(413);
+    const accountId = await accountForSiteKey(new URL(req.url).searchParams.get("k") ?? "");
+    if (!accountId) return done(404);
+    const [profile, site] = await Promise.all([readProfile(accountId), siteFor(accountId).catch(() => null)]);
+    const store = site?.store ?? null;
+    if (!fromSite(origin, profile.siteDomain, store?.shopDomain)) return done(403);
+    const text = await readCapped(req, 8000);
+    const lead = cleanLead((() => { try { return JSON.parse(text); } catch { return null; } })());
+    // A bot or an unusable email gets the same quiet answer as a real request.
+    if (!lead) return done();
+    // The address the platform's proxy added last; earlier entries are whatever the sender wrote.
+    const ip = (req.headers.get("x-forwarded-for") ?? "").split(",").at(-1)?.trim() ?? "";
+    const kept = await keepLead(accountId, lead, ip, store?.shopDomain ?? null);
+    // Only this request is sent now; anything else waiting goes with the hourly run.
+    if (!kept.held && !isSabbath()) {
+      await syncLeads(accountId, store, 1, [kept.id]).catch(async (e) => {
+        console.error(`lead not saved in Shopify yet: ${message(e)}`);
+        await report("leads", false, `A lead was kept but not sent to Shopify (${message(e)}); the hourly run tries again`);
+      });
+    }
+  } catch (e) {
+    console.error(`lead not kept: ${message(e)}`);
+    return done(500);
+  }
+  return done();
+}
+
+/** The Leads card: the site's latest form requests and whether each is in Shopify yet. */
+export const leadsApi = (req: Request) => withAccount(req, async (account) => json(await leadsView(account.id)));
 
 /** The Conversion card: the latest check, and the owner's Add (their approval) and Undo of a product page section. */
 export const conversionApi = (req: Request) =>
