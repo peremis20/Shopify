@@ -637,7 +637,12 @@ export async function applyImage(accountId: string, fileId: string, checkAt: str
       return "The original copy is still being processed in Shopify. Try Undo again in a minute.";
     }
     // The swap never happened (an unclear answer earlier): nothing to undo, so the record and the backup go.
-    if (now && sameSize(now.size, c.before) && !sameSize(now.size, c.after)) {
+    if (now && now.status === "READY" && sameSize(now.size, c.before) && !sameSize(now.size, c.after)) {
+      // A swap can still be on its way for a while: only an old change still at the original size never happened.
+      if (Date.now() - Date.parse(c.at) < 15 * 60_000) {
+        await release();
+        return "Shopify may still be swapping that image in. Try Undo again in a few minutes.";
+      }
       await dropChange(accountId, fileId);
       await deleteFile(store, c.backupId).catch(() => undefined);
       return "That image was never changed, so there was nothing to undo. It's off the list.";
@@ -718,7 +723,8 @@ export async function applyImage(accountId: string, fileId: string, checkAt: str
     await report("images", false, `Shopify couldn't process a lighter image (${c.name}) and the original couldn't be put back by itself; the original is kept in Shopify Files as dashpatrol original.`);
     return `Shopify couldn't process the lighter copy of ${c.name}, and the original couldn't be put back by itself. The original is safe in your Shopify files (named dashpatrol original); upload it over this image in Shopify, or click Undo to try again.`;
   }
-  if (after?.size) await setChange(accountId, fileId, { after: after.size });
+  if (!after) return "Shopify is still processing the lighter copy. It's listed below, and Undo works either way.";
+  if (after.size) await setChange(accountId, fileId, { after: after.size });
   return null;
 }
 
