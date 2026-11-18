@@ -28,6 +28,7 @@ import { SocialAgent } from "./SocialAgent";
 import { Outreach } from "./Outreach";
 import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
+import { Conversion } from "./Conversion";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -386,6 +387,7 @@ export function DashboardView() {
                   <ErrorBoundary where="home">
                   <Home data={data} loading={loading} onGo={go} />
                   <StoreAudit />
+                  <Conversion />
                   </ErrorBoundary>
                 </div>
               )}
@@ -484,6 +486,7 @@ export function DashboardView() {
           <Scorecard />
           <WeeklyReport />
           <StoreAudit advanced />
+          <Conversion />
           </div>
           {/* KPI row */}
           <div className={`mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 ${show("overview")}`}>

@@ -21,6 +21,7 @@ import crypto from "crypto";
 import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
+import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
 import { bulkJournalists, countExisting, deleteTemplate, importJournalists, journalistsByIds, listJournalists, parseListQuery, saveTemplate } from "./autopilot/press-list";
 import { IMPORT_MAX_ROWS } from "./autopilot/press-import";
 import {
@@ -1707,6 +1708,18 @@ export async function autopilotTick(): Promise<Response> {
       );
       if (note) results.push(`account ${accountId} store audit: ${note}`);
     }
+    // The Conversion agent: why visitors don't buy and what to change, weekly per store, one store per hour.
+    for (const accountId of late() ? [] : await accountsDueForConversion(1).catch(async (e) => {
+      console.error(`conversion list failed: ${message(e)}`);
+      await report("conversion", false, `The list of stores due for a conversion check couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runConversion(accountId, Math.min(Date.now() + 100_000, started + budget))).catch(
+        (e) => (console.error(`conversion failed: ${message(e)}`), null),
+      );
+      if (note) results.push(`account ${accountId} conversion: ${note}`);
+    }
     // The Journalists agent (with paid placements) and Media requests: weekly per site, one site per hour each. Each run
     // saves a provisional marker first and the real one on every exit, and reports to the status board (weekly-run.ts).
     for (const accountId of late() ? [] : await accountsDueForPress(1).catch(async (e) => {
@@ -2108,6 +2121,20 @@ export const storeAuditApi = (req: Request) =>
       await runStoreAudit(account.id, Date.now() + 100_000);
     }
     return json(await storeAuditView(account.id));
+  });
+
+/** The Conversion card: the latest check, and the owner's Add (their approval) and Undo of a product page section. */
+export const conversionApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
+      if (b.action !== "add" && b.action !== "undo") return json({ error: "Nothing to do." }, 400);
+      if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+      if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
+      const why = await applyConversionMove(account.id, b.id, typeof b.checkAt === "string" ? b.checkAt : null, b.action === "undo");
+      if (why) return json({ error: why }, 409);
+    }
+    return json(await conversionView(account.id));
   });
 
 /**

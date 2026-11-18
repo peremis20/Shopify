@@ -14,6 +14,8 @@ export interface ShopifySales {
   /** Orders whose visit came from Google search (not ads). */
   fromGoogle: number;
   fromGoogleRevenue: number;
+  /** Free orders (samples) among `orders`, over the whole period. */
+  free?: number;
   /** More orders than were read (over 1,000 in the period): the totals are a lower bound. */
   capped?: boolean;
   /** Orders of the last 7 days and the 7 before, from Shopify; free orders (samples) counted apart. */
@@ -40,7 +42,7 @@ const fromGoogleSearch = (v: Visit | null) => {
 /** Orders of the last `days` days (up to 250), with the Google search share and its landing pages. */
 export async function shopifySales(store: StoreAccess, days = 28): Promise<ShopifySales> {
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  const out: ShopifySales = { days, orders: 0, revenue: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
+  const out: ShopifySales = { days, orders: 0, revenue: 0, free: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
   const now = Date.now();
   const pages = new Map<string, { orders: number; revenue: number }>();
   let after: string | null = null;
@@ -75,6 +77,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       out.orders++;
       out.revenue += amount;
       out.currency ??= o.currentTotalPriceSet.shopMoney.currencyCode;
+      if ((Number(o.totalPriceSet.shopMoney.amount) || 0) === 0) out.free = (out.free ?? 0) + 1;
       const age = now - Date.parse(o.createdAt);
       const bucket = age < 7 * 864e5 ? out.week : age < 14 * 864e5 ? out.weekBefore : null;
       if (bucket) {

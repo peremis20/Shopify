@@ -221,6 +221,22 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
                   : "It tries again by itself. The owner can also click Run now on the Store audit card once a day.",
     workaround: "Last week's store audit stays on the dashboard until the next one.",
   },
+  conversion: {
+    name: "The Conversion agent (why visitors don't buy, and what to change)",
+    fix: (d) =>
+      /AI key/i.test(d ?? "")
+        ? "Add an AI key in Platform keys, so the conversion moves can be planned."
+        : /second AI/i.test(d ?? "")
+          ? "Add a key for a second AI from a different provider in Platform keys, so the conversion moves can be checked."
+          : /monthly AI limit/i.test(d ?? "")
+            ? "The site used its AI limit for the month. Raise the limit in Platform keys or wait for next month; last week's moves stay."
+            : /Analytics/i.test(d ?? "")
+              ? "Google Analytics couldn't be read. It tries again next week; if it keeps failing, reconnect Google."
+              : /recorded or taken off/i.test(d ?? "")
+                ? "A product page section was added but not recorded. Check the product's description in Shopify and remove the DashPatrol section if it shouldn't be there."
+                : "It tries again by itself within a day; last week's moves stay.",
+    workaround: "Last week's conversion moves stay on the dashboard until the next check.",
+  },
   "index-rescue": {
     name: "The Index rescue (pages Google left out)",
     fix: () => "It tries again next week by itself.",
