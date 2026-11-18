@@ -230,6 +230,8 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           ? "Add a key for a second AI from a different provider in Platform keys, so the conversion moves can be checked."
           : /monthly AI limit/i.test(d ?? "")
             ? "The site used its AI limit for the month. Raise the limit in Platform keys or wait for next month; last week's moves stay."
+            : /orders can't be read|reconnect Shopify/i.test(d ?? "")
+              ? "Reconnect Shopify from Connections and allow orders, so paid orders count in the conversion rate. Only the owner can do this."
             : /Analytics/i.test(d ?? "")
               ? "Google Analytics couldn't be read. It tries again next week; if it keeps failing, reconnect Google."
               : /recorded or taken off/i.test(d ?? "")

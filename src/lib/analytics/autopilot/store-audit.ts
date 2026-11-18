@@ -734,7 +734,11 @@ class OutOfTime extends Error {
 /** Waits for `work` until the deadline at most: a run (and Run now) stays bounded even if an AI answers slowly. */
 export function byDeadline<T>(work: Promise<T>, deadline: number): Promise<T> {
   const left = deadline - Date.now();
-  if (left <= 0) return Promise.reject(new OutOfTime("out of time"));
+  if (left <= 0) {
+    // Abandoned before it could be raced: its own failure must never go unhandled.
+    work.catch(() => undefined);
+    return Promise.reject(new OutOfTime("out of time"));
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   return Promise.race([
     work.finally(() => clearTimeout(timer)),

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { conversionRate, dataBlock, keptMoves, sectionHtml, withoutSection, type ConversionNumbers } from "../src/lib/analytics/autopilot/conversion";
+import { conversionRate, dataBlock, keptMoves, sectionHtml, unsourcedWords, withoutSection, type ConversionNumbers } from "../src/lib/analytics/autopilot/conversion";
 import type { ConversionMoveDraft } from "../src/lib/analytics/autopilot/writer";
 
 const nums: ConversionNumbers = {
@@ -111,4 +111,13 @@ test("no second section for a product that already has one, and a draft without 
   assert.equal(keptMoves([draft({})], [true], data, products, { health: false, canAdd: true, added: [products[0].id] }).length, 0);
   assert.equal(keptMoves([draft({ draft: "**" })], [true], data, products, { health: false, canAdd: true }).length, 0);
   assert.doesNotThrow(() => sectionHtml("x", "**"));
+});
+
+test("claim words match whole words in the source, and never through 'not'", () => {
+  assert.deepEqual(unsourcedWords("A 5 star favorite", "Starter Kit"), ["star", "favorite"]);
+  assert.deepEqual(unsourcedWords("On sale now", "Wholesale Candle"), ["sale"]);
+  assert.deepEqual(unsourcedWords("A vegan pair of socks", "These socks are not vegan."), ["vegan"]);
+  assert.deepEqual(unsourcedWords("Gluten free and made in the USA", "Contains gluten. Made in small batches."), ["gluten free", "made in the usa"]);
+  assert.deepEqual(unsourcedWords("Eco friendly and it lasts for years", "A candle."), ["eco friendly", "lasts"]);
+  assert.deepEqual(unsourcedWords("Vegan and gluten free", "Vegan capsules. Gluten free."), []);
 });

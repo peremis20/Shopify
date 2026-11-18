@@ -213,17 +213,25 @@ const PROMISE = /\b(?:will|guaranteed? to)\s+(?:increase|boost|double|triple|rai
  * store's data for a message), so none is invented.
  */
 const CLAIM_WORDS =
-  /\b(?:customers?|buyers?|reviews?|reviewed|rated|ratings?|stars?|testimonials?|trusted|loved|popular|best ?sell(?:ing|er)s?|in stock|left|limited|sold out|selling fast|guarantee[ds]?|warrant(?:y|ies)|returns?|refunds?|money back|made in|vegan|organic|non ?gmo|gluten|dairy|sugar free|natural|pure|clean|lab tested|tested|certified|pharmacist|doctors?|physicians?|clinically|clinical|scientists?|formulated|approved|fda|gmp|award|patent(?:ed)?|recommended|free shipping|ships?|shipping|delivery|discount|% off|percent off|sale)\b/gi;
+  /\b(?:customers?|buyers?|shoppers?|people|reviews?|reviewed|rated|ratings?|stars?|testimonials?|trusted|lov(?:e|es|ed)|favou?rites?|popular|best ?sell(?:ing|er)s?|in stock|left|limited|sold out|selling fast|guarantee[ds]?|warrant(?:y|ies)|returns?|refunds?|money back|satisfaction|made in (?:the )?\w+|made with|vegan|organic|non ?gmo|(?:gluten|dairy|sugar|soy|nut|allergen|cruelty) free|natural|pure|clean|lab tested|third party tested|tested|certified|pharmacist|doctors?|physicians?|experts?|clinically|clinical|scientists?|formulated|approved|fda|gmp|awards?|patent(?:ed)?|recommended|free shipping|ships?|shipping|delivery|discount|% off|percent off|sale|eco ?friendly|sustainab\w*|non ?toxic|toxin|safe|effective|proven|results?|lasts?|lasting|durable|premium|quality|high quality|potent|strongest|best|top rated|number one|#1|award winning)\b/gi;
+
+const escRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Claim words in `text` that its source doesn't state: each must appear in the source as a whole word or phrase, and not
+ * right after "not", "no" or "non" there (so "not vegan" never backs "vegan").
+ */
+export function unsourcedWords(text: string, source: string): string[] {
+  const words = [...new Set((text.match(CLAIM_WORDS) ?? []).map((w) => w.toLowerCase().replace(/\s+/g, " ")))];
+  return words.filter((w) => {
+    const re = new RegExp(`(?<!\\b(?:not|no|non|never|isn't|is not)\\s)(?<![\\p{L}\\p{N}])${escRe(w).replace(/ /g, "\\s+")}(?![\\p{L}\\p{N}])`, "iu");
+    return !re.test(source);
+  });
+}
 
 /** On a health store, any wording about what a product does for the body or mind is left out of drafts entirely. */
 const HEALTH_EFFECT =
   /\b(?:helps?|support(?:s|ing)?|reliev\w*|reduc\w*|improv\w*|boost\w*|promot\w*|enhanc\w*|calm\w*|relax\w*|sleep\w*|stress\w*|anxi\w*|energ\w*|immun\w*|focus\w*|memory|brain|cogniti\w*|mood|pain|inflamm\w*|joint|digest\w*|gut|detox\w*|weight|metabolis\w*|fat|blood|heart|liver|kidney|vision|eyes?|skin|hormon\w*|healthy|wellness|healing|cure\w*|treat\w*|prevent\w*|disease|condition|symptom\w*|benefits?)\b/i;
-
-/** Claim words in `text` that its source doesn't contain. */
-export function unsourcedWords(text: string, source: string): string[] {
-  const src = source.toLowerCase();
-  return [...new Set((text.match(CLAIM_WORDS) ?? []).map((w) => w.toLowerCase()))].filter((w) => !src.includes(w));
-}
 
 /** A draft long enough to be a section: a heading and at least one line, each with words in it. */
 const usableDraft = (d: string) => d.split(/\n+/).filter((l) => /\p{L}{2,}/u.test(l)).length >= 2;
@@ -370,6 +378,8 @@ export async function conversionPass(accountId: string, deadline: number): Promi
     return { note: "Conversion check skipped: this site doesn't sell products online.", skip: true };
   const origin = `https://${domain}`;
   const issues: string[] = [];
+  // Not started without time for the reads and both AI steps; the next hour's run picks it up.
+  if (deadline - Date.now() < 80_000) return { note: "Conversion check waits for a run with more time.", skip: true, retryInDays: 1 };
 
   const conn = await getConnection(accountId).catch(() => null);
   const ga = conn?.gaPropertyId
@@ -409,7 +419,11 @@ export async function conversionPass(accountId: string, deadline: number): Promi
   const audit = await readStoreAudit(accountId).catch(() => null);
   const facts = audit ? factsBlock(audit.pages.filter((p) => p.facts).map((p) => ({ url: p.url, facts: p.facts! }))) : "";
   const previousReport = await readConversion(accountId).catch(() => null);
-  const history = [...(previousReport?.history ?? []), ...(previousReport ? [previousReport.numbers] : [])].slice(-12);
+  // One entry a week: a daily retry or a run with missing numbers never stands in for "a week earlier".
+  const past = previousReport?.history ?? [];
+  const last = past.at(-1);
+  const weekly = previousReport && previousReport.numbers.rate !== null && (!last || Date.parse(previousReport.numbers.at) - Date.parse(last.at) >= 6 * 864e5);
+  const history = [...past, ...(weekly ? [previousReport!.numbers] : [])].slice(-12);
   const shown = productsShown(products, numbers.products);
   const data = dataBlock(numbers, shown, facts, history.at(-1) ?? null);
   const added = (previousReport?.changes ?? []).map((c) => c.productId);
@@ -509,11 +523,15 @@ export async function applyConversionMove(accountId: string, id: string, checkAt
     if (!c) return "That change isn't on the list anymore.";
     const body = await productBody(site.store, c.productId);
     const live = body === null ? null : sectionIn(body, c.block);
-    const mine = live !== null && (!c.html || live === c.html);
-    if (mine) await setProductBody(site.store, c.productId, withoutSection(body!, c.block)!);
+    // Compared as text, so Shopify tidying the HTML never reads as an edit.
+    const mine = live !== null && (!c.html || plainText(live) === plainText(c.html));
+    if (live === null) {
+      await dropChange(accountId, id);
+      return "That section was already gone from the product page. It's off the list.";
+    }
+    if (!mine) return "You edited that section in Shopify, so it was left as it is. Remove it there if you want it gone.";
+    await setProductBody(site.store, c.productId, withoutSection(body!, c.block)!);
     await dropChange(accountId, id);
-    if (live === null) return "That section was already gone from the product page. It's off the list.";
-    if (!mine) return "You edited that section in Shopify, so it was left on the page as it is. It's off the list.";
     return null;
   }
   if (checkAt !== r.at) return "A newer check came in. Look it over and add again.";
@@ -536,13 +554,32 @@ export async function applyConversionMove(accountId: string, id: string, checkAt
       SELECT 1 FROM jsonb_array_elements(coalesce(data->'changes', '[]'::jsonb)) e WHERE e->>'id' = ${id} OR e->>'productId' = ${m.add.productId})
     RETURNING account_id`;
   if (!reserved.length) return "That product page already has a section from this agent. Undo it first to add a different one.";
+  let original: string | null = null;
   try {
     const body = await productBody(site.store, m.add.productId);
     if (body === null) throw new Error("gone");
     if (body.includes("<!-- dashpatrol:conversion:")) throw new Error("has a section");
+    original = body;
     await setProductBody(site.store, m.add.productId, `${body}\n${m.add.html}`);
+    // Kept exactly as Shopify saved it, so Undo compares with what is really there.
+    const saved = await productBody(site.store, m.add.productId);
+    const section = saved === null ? null : sectionIn(saved, block);
+    if (section === null) {
+      // Shopify didn't keep the markers: without them Undo can't find it, so it isn't left on the page.
+      await setProductBody(site.store, m.add.productId, original);
+      throw new Error("no markers");
+    }
+    await sql`UPDATE insights_conversion SET data = jsonb_set(data, '{changes}',
+      (SELECT coalesce(jsonb_agg(CASE WHEN e->>'id' = ${id} THEN jsonb_set(e, '{html}', to_jsonb(${section}::text)) ELSE e END ORDER BY n), '[]'::jsonb)
+       FROM jsonb_array_elements(coalesce(data->'changes', '[]'::jsonb)) WITH ORDINALITY AS t(e, n)))
+      WHERE account_id = ${accountId}`.catch((e) => console.error(`conversion: saved section not stored for ${accountId}: ${(e as Error).message}`));
     return null;
   } catch (e) {
+    // A write that failed on our side but landed in Shopify keeps its record, so it can still be undone.
+    if (original !== null && (e as Error).message !== "no markers") {
+      const now = await productBody(site.store, m.add.productId).catch(() => null);
+      if (now && sectionIn(now, block) !== null) return null;
+    }
     await dropChange(accountId, id).catch(async (err) => {
       console.error(`conversion: reserved change not dropped for ${accountId}: ${(err as Error).message}`);
       await report("conversion", false, "A product page change was reserved but couldn't be cleared after it failed.");
@@ -550,6 +587,7 @@ export async function applyConversionMove(accountId: string, id: string, checkAt
     const msg = (e as Error).message;
     if (msg === "gone") return "That product isn't in the store anymore.";
     if (msg === "has a section") return "That product page already has a section from this agent. Undo it first to add a different one.";
+    if (msg === "no markers") return "Shopify didn't keep the section the way Undo needs it, so it wasn't added. Copy the words into the product page yourself if you want them.";
     throw e;
   }
 }
