@@ -239,6 +239,22 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
                 : "It tries again by itself within a day; last week's moves stay.",
     workaround: "Last week's conversion moves stay on the dashboard until the next check.",
   },
+  speed: {
+    name: "The Speed agent (Google's phone speed test on key pages)",
+    fix: (d) =>
+      /PageSpeed key/i.test(d ?? "")
+        ? "Add a PageSpeed key in Platform keys, so phone speed can be measured."
+        : "It tries again by itself next week; last week's speed fixes stay.",
+    workaround: "Last week's speed results stay on the dashboard.",
+  },
+  images: {
+    name: "The Image agent (lighter copies of heavy images)",
+    fix: (d) =>
+      /reserved/i.test(d ?? "")
+        ? "An image change was started but not cleared. Check the image in Shopify Files; the app tries again next week."
+        : "It tries again by itself next week.",
+    workaround: "Images stay as they are until the next check.",
+  },
   "index-rescue": {
     name: "The Index rescue (pages Google left out)",
     fix: () => "It tries again next week by itself.",

@@ -87,6 +87,8 @@ const routes: Record<string, Handler> = {
   "POST /api/store-audit": api.storeAuditApi,
   "GET /api/conversion": api.conversionApi,
   "POST /api/conversion": api.conversionApi,
+  "GET /api/speed": api.speedApi,
+  "POST /api/speed": api.speedApi,
   "GET /api/outreach": api.outreachApi,
   "POST /api/outreach": api.outreachApi,
   "POST /api/social/agent": api.socialAgent,

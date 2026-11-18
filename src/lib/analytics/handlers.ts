@@ -22,6 +22,7 @@ import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount,
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
+import { accountsDue as accountsDueForSpeed, applyImage, runImages, runSpeed, speedView } from "./autopilot/speed";
 import { bulkJournalists, countExisting, deleteTemplate, importJournalists, journalistsByIds, listJournalists, parseListQuery, saveTemplate } from "./autopilot/press-list";
 import { IMPORT_MAX_ROWS } from "./autopilot/press-import";
 import {
@@ -1720,6 +1721,22 @@ export async function autopilotTick(): Promise<Response> {
       );
       if (note) results.push(`account ${accountId} conversion: ${note}`);
     }
+    // The Speed agent, then the Image agent: phone speed measured on key pages, and lighter copies of heavy images,
+    // weekly per store, one store per hour each.
+    for (const agent of ["speed", "images"] as const) {
+      for (const accountId of late() ? [] : await accountsDueForSpeed(agent, 1).catch(async (e) => {
+        console.error(`${agent} list failed: ${message(e)}`);
+        await report(agent, false, `The list of stores due couldn't be read (${message(e)})`);
+        return [] as string[];
+      })) {
+        if (late()) break;
+        const run = agent === "speed" ? runSpeed : runImages;
+        const note = await forSite(accountId, () => run(accountId, Math.min(Date.now() + 100_000, started + budget))).catch(
+          (e) => (console.error(`${agent} failed: ${message(e)}`), null),
+        );
+        if (note) results.push(`account ${accountId} ${agent}: ${note}`);
+      }
+    }
     // The Journalists agent (with paid placements) and Media requests: weekly per site, one site per hour each. Each run
     // saves a provisional marker first and the real one on every exit, and reports to the status board (weekly-run.ts).
     for (const accountId of late() ? [] : await accountsDueForPress(1).catch(async (e) => {
@@ -2121,6 +2138,20 @@ export const storeAuditApi = (req: Request) =>
       await runStoreAudit(account.id, Date.now() + 100_000);
     }
     return json(await storeAuditView(account.id));
+  });
+
+/** The Speed card: the Speed agent's measurements and fixes, and the Image agent's lighter copies with Shrink and Undo. */
+export const speedApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
+      if (b.action !== "shrink" && b.action !== "undo") return json({ error: "Nothing to do." }, 400);
+      if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+      if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
+      const why = await applyImage(account.id, b.id, typeof b.checkAt === "string" ? b.checkAt : null, b.action === "undo");
+      if (why) return json({ error: why }, 409);
+    }
+    return json(await speedView(account.id));
   });
 
 /** The Conversion card: the latest check, and the owner's Add (their approval) and Undo of a product page section. */

@@ -29,6 +29,7 @@ import { Outreach } from "./Outreach";
 import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
 import { Conversion } from "./Conversion";
+import { Speed } from "./Speed";
 import { ExpertReview } from "./ExpertReview";
 import { SiteAuthority } from "./KeywordResearch";
 import { SortHeader, useSort } from "./sorting";
@@ -388,6 +389,8 @@ export function DashboardView() {
                   <Home data={data} loading={loading} onGo={go} />
                   <StoreAudit />
                   <Conversion />
+          <Speed />
+                  <Speed />
                   </ErrorBoundary>
                 </div>
               )}
