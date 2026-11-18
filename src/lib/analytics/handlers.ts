@@ -2093,11 +2093,11 @@ export const creatorsApi = (req: Request) =>
 export const storeAuditApi = (req: Request) =>
   withAccount(req, async (account) => {
     if (req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string };
+      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
       if (b.action === "apply-price" || b.action === "undo-price") {
         if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
         if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
-        const why = await applyPriceFix(account.id, b.id, b.action === "undo-price");
+        const why = await applyPriceFix(account.id, b.id, typeof b.checkAt === "string" ? b.checkAt : null, b.action === "undo-price");
         if (why) return json({ error: why }, 409);
         return json(await storeAuditView(account.id));
       }
