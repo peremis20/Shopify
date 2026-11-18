@@ -8,6 +8,7 @@ import { isRisky } from "./claims";
 import { autopilotCanEdit } from "./guards";
 import { isSabbath } from "./sabbath";
 import { report } from "./status";
+import { runPricingCheck, setCompareAt, type PricingCheck } from "./pricing-check";
 import { hasAiTell, isUnsourced, numbersKnown, polish, type ConversionField, type ConversionFinding } from "./writer";
 
 /**
@@ -586,6 +587,8 @@ export interface StoreAudit {
   review: ReviewState;
   /** When the findings shown were checked: this run, or an earlier one kept because this run's review didn't finish. */
   findingsAt: string | null;
+  /** Packs, bundles and crossed out prices, from the store's own catalog (Shopify stores only; pricing-check.ts). */
+  pricing?: PricingCheck | null;
   note: string;
 }
 
@@ -884,6 +887,16 @@ export async function auditStore(accountId: string, deadline: number): Promise<A
 
   const slow = slowApps(read.map((p) => ({ url: p.url, sources: p.scripts?.sources ?? [] })));
 
+  // Packs, bundles and crossed out prices, from the store's own Shopify catalog (rules only, no AI).
+  let pricing: PricingCheck | null = null;
+  if (site?.mode === "shopify" && site.store && deadline - Date.now() > 2 * CHECK_MIN_MS + 10_000) {
+    pricing = await byDeadline(runPricingCheck(site.store, origin), Math.min(deadline - 2 * CHECK_MIN_MS, Date.now() + 25_000)).catch((e) => {
+      console.error(`store audit: pricing check failed for ${accountId}: ${(e as Error).message}`);
+      issues.push("The store's prices couldn't be checked this week.");
+      return null;
+    });
+  }
+
   // The conversion review: the writing AI, then a second AI from another service, then the rules. Both AI calls are
   // bounded by the run's deadline, and the checker isn't started without time to finish.
   let review: ReviewState = "checked";
@@ -915,8 +928,8 @@ export async function auditStore(accountId: string, deadline: number): Promise<A
   }
 
   const at = new Date().toISOString();
-  const previous = review === "checked" ? null : await readStoreAudit(accountId).catch(() => null);
-  const settled = settleReview(review, fresh, previous, at);
+  const previous = review === "checked" && pricing ? null : await readStoreAudit(accountId).catch(() => null);
+  const settled = settleReview(review, fresh, review === "checked" ? null : previous, at);
   const findings = settled.findings;
   const audit: StoreAudit = {
     at,
@@ -925,7 +938,8 @@ export async function auditStore(accountId: string, deadline: number): Promise<A
     findings,
     review,
     findingsAt: settled.findingsAt,
-    note: `${read.length} of ${pages.length} key pages read, ${slow.length} slow ${slow.length === 1 ? "app" : "apps"}, ${findings.length} ${findings.length === 1 ? "fix" : "fixes"} (${findings.filter((f) => f.who === "autopilot").length} for the autopilot)${settled.problem ? `. ${settled.problem}` : ""}`,
+    pricing: pricing ?? previous?.pricing ?? null,
+    note: `${read.length} of ${pages.length} key pages read, ${slow.length} slow ${slow.length === 1 ? "app" : "apps"}, ${findings.length} ${findings.length === 1 ? "fix" : "fixes"} (${findings.filter((f) => f.who === "autopilot").length} for the autopilot)${pricing ? `, ${pricing.findings.length} ${pricing.findings.length === 1 ? "price" : "prices"} to fix` : ""}${settled.problem ? `. ${settled.problem}` : ""}`,
   };
   await sql`
     INSERT INTO insights_store_audit (account_id, data, ran_at) VALUES (${accountId}, ${JSON.stringify(audit)}::jsonb, now())
@@ -989,4 +1003,30 @@ export async function storeAuditView(accountId: string) {
     canRunNow: canRunNow(lastManual),
     largeImage: LARGE_IMAGE,
   };
+}
+
+/**
+ * The owner's Apply on a pricing fix: sets that crossed out price in Shopify (only if the price is still what the check
+ * saw) and marks it applied, keeping what it was so Undo can put it back. Returns why not, or null when done.
+ */
+export async function applyPriceFix(accountId: string, id: string, undo = false): Promise<string | null> {
+  const audit = await readStoreAudit(accountId);
+  const f = audit?.pricing?.findings.find((x) => x.id === id);
+  if (!audit?.pricing || !f?.apply) return "That fix isn't in the latest check.";
+  if (undo ? !f.applied : f.applied) return undo ? "That fix wasn't applied." : "That fix is already applied.";
+  const { siteFor } = await import("./site-source");
+  const site = await siteFor(accountId).catch(() => null);
+  if (site?.mode !== "shopify" || !site.store) return "Connect your Shopify store first.";
+  const a = f.apply;
+  const why = await setCompareAt(site.store, {
+    productId: a.productId,
+    variantId: a.variantId,
+    price: a.price,
+    from: undo ? a.compareAtAfter : a.compareAtBefore,
+    to: undo ? a.compareAtBefore : a.compareAtAfter,
+  });
+  if (why) return why;
+  const pricing = { ...audit.pricing, findings: audit.pricing.findings.map((x) => (x.id === id ? { ...x, applied: undo ? undefined : { at: new Date().toISOString() } } : x)) };
+  await sql`UPDATE insights_store_audit SET data = jsonb_set(data, '{pricing}', ${JSON.stringify(pricing)}::jsonb) WHERE account_id = ${accountId}`;
+  return null;
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { PageReport, ReviewState, SlowApp, StoreFinding } from "@/lib/analytics/autopilot/store-audit";
+import type { PriceFinding, PricingCheck } from "@/lib/analytics/autopilot/pricing-check";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
 
@@ -17,6 +18,7 @@ interface View {
     slowApps: Labeled<SlowApp>[];
     findings: StoreFinding[];
     review: ReviewState;
+    pricing?: PricingCheck | null;
     note: string;
   } | null;
   reviewNote: string | null;
@@ -45,6 +47,34 @@ function Fix({ f }: { f: StoreFinding }) {
       <p className="mt-1 text-xs text-dash-muted">
         {pathOf(f.page)} · {f.who === "autopilot" ? "The autopilot fixes this, following your approval settings" : "You fix this"} · {IMPACT[f.impact]}
       </p>
+    </li>
+  );
+}
+
+function PriceFix({ f, busy, onApply }: { f: PriceFinding; busy: boolean; onApply: (id: string, undo: boolean) => void }) {
+  return (
+    <li className="rounded-xl border border-dash-line p-3">
+      <p className="text-sm font-semibold text-dash-ink">{f.problem}</p>
+      <p className="mt-1 text-sm text-dash-ink">{f.fix}</p>
+      <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-dash-muted">
+        <span>
+          {pathOf(f.page)} · {IMPACT[f.impact]}
+        </span>
+        {f.apply && !f.applied && (
+          <button disabled={busy} onClick={() => onApply(f.id, false)} className="rounded-lg bg-dash-green px-2 py-1 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+            Apply crossed out price
+          </button>
+        )}
+        {f.applied && (
+          <>
+            <span className="font-semibold text-dash-ink">Applied {new Date(f.applied.at).toLocaleDateString()}</span>
+            <button disabled={busy} onClick={() => onApply(f.id, true)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
+              Undo
+            </button>
+          </>
+        )}
+        {!f.apply && <span>You change this price in Shopify</span>}
+      </div>
     </li>
   );
 }
@@ -141,6 +171,16 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
     }
     setBusy(false);
   };
+  const applyPrice = async (id: string, undo: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      setView(await api<View>("/api/store-audit", { action: undo ? "undo-price" : "apply-price", id }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't change the price. Try again later.");
+    }
+    setBusy(false);
+  };
   const a = view.audit;
   const read = a ? a.pages.filter((p) => p.facts).length : 0;
   return (
@@ -163,6 +203,21 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
             </ul>
           ) : (
             <p className="text-sm text-dash-muted">{a.review === "checked" ? "Nothing clear to fix on these pages this week." : "No checked fixes yet."}</p>
+          )}
+          {a.pricing && (
+            <>
+              <h3 className="mb-2 mt-4 font-serif text-lg">Prices and bundles</h3>
+              <p className="mb-2 text-xs text-dash-muted">{a.pricing.note}. Prices never change without you.</p>
+              {a.pricing.findings.length ? (
+                <ul className="space-y-2">
+                  {(details ? a.pricing.findings : a.pricing.findings.slice(0, 5)).map((f) => (
+                    <PriceFix key={f.id} f={f} busy={busy} onApply={applyPrice} />
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-dash-muted">Your packs, bundles and crossed out prices add up.</p>
+              )}
+            </>
           )}
           <h3 className="mb-2 mt-4 font-serif text-lg">Apps that slow your store</h3>
           <SlowApps apps={a.slowApps} pages={read} />

@@ -20,7 +20,7 @@ import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
-import { accountsDueForStoreAudit, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
+import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { bulkJournalists, countExisting, deleteTemplate, importJournalists, journalistsByIds, listJournalists, parseListQuery, saveTemplate } from "./autopilot/press-list";
 import { IMPORT_MAX_ROWS } from "./autopilot/press-import";
 import {
@@ -2093,7 +2093,14 @@ export const creatorsApi = (req: Request) =>
 export const storeAuditApi = (req: Request) =>
   withAccount(req, async (account) => {
     if (req.method === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { action?: string };
+      const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string };
+      if (b.action === "apply-price" || b.action === "undo-price") {
+        if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+        if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
+        const why = await applyPriceFix(account.id, b.id, b.action === "undo-price");
+        if (why) return json({ error: why }, 409);
+        return json(await storeAuditView(account.id));
+      }
       if (b.action !== "run") return json({ error: "Nothing to do." }, 400);
       if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Run it again after Saturday sundown." }, 409);
       if (!(await readAccountAutopilot(account.id)).enabled) return json({ error: "The autopilot is paused. Turn it on to run the store audit." }, 409);
