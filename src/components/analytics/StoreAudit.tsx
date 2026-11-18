@@ -19,6 +19,7 @@ interface View {
     findings: StoreFinding[];
     review: ReviewState;
     pricing?: PricingCheck | null;
+    priceChanges?: AppliedChange[];
     note: string;
   } | null;
   reviewNote: string | null;
@@ -194,6 +195,8 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
       setView(await api<View>("/api/store-audit", { action: undo ? "undo-price" : "apply-price", id, checkAt: view.audit?.pricing?.at ?? null }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't change the price. Try again later.");
+      // Show what is saved now (a newer check, or a change taken off the list), so the next click works on it.
+      await api<View>("/api/store-audit").then(setView).catch(() => undefined);
     }
     setBusy(false);
   };
@@ -232,7 +235,7 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
                     <PriceFix
                       key={f.id}
                       f={f}
-                      applied={(a.pricing?.applied ?? []).some((c) => c.id === f.id && c.checkAt === a.pricing?.at)}
+                      applied={(a.priceChanges ?? []).some((c) => c.id === f.id && c.checkAt === a.pricing?.at)}
                       busy={busy}
                       onApply={(id) => applyPrice(id, false)}
                     />
@@ -241,7 +244,7 @@ export function StoreAudit({ advanced = false }: { advanced?: boolean }) {
               ) : (
                 <p className="text-sm text-dash-muted">Your packs, bundles and crossed out prices add up.</p>
               )}
-              <AppliedList list={a.pricing.applied ?? []} currency={a.pricing.currency} busy={busy} onUndo={(id) => applyPrice(id, true)} />
+              <AppliedList list={a.priceChanges ?? []} currency={a.pricing.currency} busy={busy} onUndo={(id) => applyPrice(id, true)} />
             </>
           )}
           <h3 className="mb-2 mt-4 font-serif text-lg">Apps that slow your store</h3>

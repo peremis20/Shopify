@@ -8,7 +8,7 @@ import { isRisky } from "./claims";
 import { autopilotCanEdit } from "./guards";
 import { isSabbath } from "./sabbath";
 import { report } from "./status";
-import { runPricingCheck, setCompareAt, type AppliedChange, type PricingCheck } from "./pricing-check";
+import { readVariant, runPricingCheck, setCompareAt, writeCompareAt, type AppliedChange, type PricingCheck } from "./pricing-check";
 import { hasAiTell, isUnsourced, numbersKnown, polish, type ConversionField, type ConversionFinding } from "./writer";
 
 /**
@@ -589,6 +589,11 @@ export interface StoreAudit {
   findingsAt: string | null;
   /** Packs, bundles and crossed out prices, from the store's own catalog (Shopify stores only; pricing-check.ts). */
   pricing?: PricingCheck | null;
+  /**
+   * Every crossed out price the owner changed from the pricing check, newest last, so each can be undone. Kept apart
+   * from the check and carried from the saved row on every write, so no new check (or a missing one) ever drops it.
+   */
+  priceChanges?: AppliedChange[];
   note: string;
 }
 
@@ -943,12 +948,10 @@ export async function auditStore(accountId: string, deadline: number): Promise<A
   };
   await sql`
     INSERT INTO insights_store_audit (account_id, data, ran_at) VALUES (${accountId}, ${JSON.stringify(audit)}::jsonb, now())
-    ON CONFLICT (account_id) DO UPDATE SET data = CASE
-      -- The owner's applied price changes live only here: taken from the saved row at write time, so a change applied
-      -- while this audit ran is never lost and stays undoable.
-      WHEN jsonb_typeof(EXCLUDED.data->'pricing') = 'object'
-        THEN jsonb_set(EXCLUDED.data, '{pricing,applied}', coalesce(insights_store_audit.data->'pricing'->'applied', '[]'::jsonb))
-      ELSE EXCLUDED.data END, ran_at = now()`;
+    ON CONFLICT (account_id) DO UPDATE SET
+      -- The owner's applied price changes are taken from the saved row at write time, so a change applied while this
+      -- audit ran is never lost and stays undoable.
+      data = jsonb_set(EXCLUDED.data, '{priceChanges}', coalesce(insights_store_audit.data->'priceChanges', '[]'::jsonb)), ran_at = now()`;
   if (settled.problem) issues.unshift(settled.problem);
   return { note: audit.note, ...(settled.retryInDays ? { retryInDays: settled.retryInDays } : {}), ...(issues.length ? { problem: issues.join(" ") } : {}) };
 }
@@ -1010,35 +1013,42 @@ export async function storeAuditView(accountId: string) {
   };
 }
 
+/** Takes one applied change off the saved list (named by its fix and when it was made). */
+async function dropChange(accountId: string, key: string) {
+  await sql`UPDATE insights_store_audit SET data = jsonb_set(data, '{priceChanges}',
+    (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'priceChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n)
+     WHERE (e->>'id') || '@' || (e->>'at') <> ${key}))
+    WHERE account_id = ${accountId}`;
+}
+
 /**
- * The owner's Apply (or Undo) on a pricing fix: sets that crossed out price in Shopify, only if the price is still what
- * was seen, and records the change in the saved audit's list of applied changes (kept across weekly checks, so it can
- * always be undone). `checkAt` is the check the owner was looking at: a newer one refuses, so a click never lands on a
- * different fix. Returns why not, or null when done.
+ * The owner's Apply (or Undo) on a pricing fix. Apply sets that crossed out price in Shopify, only if the price is still
+ * what the check saw, and records it on the saved list of changes. `checkAt` is the check the owner was looking at: a
+ * newer one refuses, so a click never lands on a different fix. Undo (`id` is the change's "fix@time") puts the old
+ * crossed out price back if it is still the one the app set; if it was changed in Shopify since, or is already back,
+ * the change just comes off the list. Returns why not, or null when done.
  */
 export async function applyPriceFix(accountId: string, id: string, checkAt: string | null, undo = false): Promise<string | null> {
   const audit = await readStoreAudit(accountId);
-  const pricing = audit?.pricing;
-  if (!pricing) return "There is no price check yet.";
   const { siteFor } = await import("./site-source");
   const site = await siteFor(accountId).catch(() => null);
   if (site?.mode !== "shopify" || !site.store) return "Connect your Shopify store first.";
-  const applied = pricing.applied ?? [];
   if (undo) {
-    // An applied change is named by its fix and when it was made, so the same fix applied twice is undone one at a time.
-    const c = applied.find((x) => `${x.id}@${x.at}` === id);
+    const c = (audit?.priceChanges ?? []).find((x) => `${x.id}@${x.at}` === id);
     if (!c) return "That change isn't on the list anymore.";
-    const why = await setCompareAt(site.store, { productId: c.productId, variantId: c.variantId, price: c.price, from: c.after, to: c.before });
-    if (why) return why;
-    await sql`UPDATE insights_store_audit SET data = jsonb_set(data, '{pricing,applied}',
-      (SELECT coalesce(jsonb_agg(e), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'pricing'->'applied', '[]'::jsonb)) e WHERE (e->>'id') || '@' || (e->>'at') <> ${id}))
-      WHERE account_id = ${accountId} AND jsonb_typeof(data->'pricing') = 'object'`;
+    const now = await readVariant(site.store, c.productId, c.variantId);
+    if (now && now.price === c.price && now.compareAt === c.after) await writeCompareAt(site.store, c.productId, c.variantId, c.before);
+    await dropChange(accountId, id);
+    if (!now) return "That product isn't in the store anymore, so there was nothing to undo. It's off the list.";
+    if (now.compareAt !== c.after && now.compareAt !== c.before) return "That price was changed in Shopify since, so it was left as it is. It's off the list.";
     return null;
   }
+  const pricing = audit?.pricing;
+  if (!pricing) return "There is no price check yet.";
   if (checkAt !== pricing.at) return "A newer check came in. Look it over and apply again.";
   const f = pricing.findings.find((x) => x.id === id);
   if (!f?.apply) return "That fix isn't in the latest check.";
-  if (applied.some((x) => x.id === id && x.checkAt === pricing.at)) return "That fix is already applied.";
+  if ((audit.priceChanges ?? []).some((x) => x.id === id && x.checkAt === pricing.at)) return "That fix is already applied.";
   const a = f.apply;
   const why = await setCompareAt(site.store, { productId: a.productId, variantId: a.variantId, price: a.price, from: a.compareAtBefore, to: a.compareAtAfter });
   if (why) return why;
@@ -1054,17 +1064,21 @@ export async function applyPriceFix(accountId: string, id: string, checkAt: stri
     at: new Date().toISOString(),
   };
   // Appended in one statement, so two changes at once never erase each other.
-  const done = await sql`UPDATE insights_store_audit SET data = jsonb_set(data, '{pricing,applied}',
-      coalesce(data->'pricing'->'applied', '[]'::jsonb) || ${JSON.stringify([change])}::jsonb)
-      WHERE account_id = ${accountId} AND jsonb_typeof(data->'pricing') = 'object' RETURNING account_id`.catch((e) => {
+  const done = await sql`UPDATE insights_store_audit SET data = jsonb_set(data, '{priceChanges}',
+      coalesce(data->'priceChanges', '[]'::jsonb) || ${JSON.stringify([change])}::jsonb)
+      WHERE account_id = ${accountId} RETURNING account_id`.catch((e) => {
     console.error(`store audit: applied price change not recorded for ${accountId}: ${(e as Error).message}`);
-    return [];
+    return null;
   });
-  if (!done.length) {
-    // Not recorded means no Undo: put the price back rather than leave a change nobody can undo.
-    const back = await setCompareAt(site.store, { productId: a.productId, variantId: a.variantId, price: a.price, from: a.compareAtAfter, to: a.compareAtBefore }).catch(() => "failed");
-    if (back) await report("store-audit", false, `A crossed out price was changed in Shopify for account ${accountId} but couldn't be recorded or put back.`);
-    return "The change couldn't be saved, so it wasn't kept. Try again.";
-  }
-  return null;
+  if (done?.length) return null;
+  // Not recorded means no Undo: put the price back rather than leave a change nobody can undo. (If the record did
+  // land after all, its Undo finds the price already back and simply takes it off the list.)
+  const back = await writeCompareAt(site.store, a.productId, a.variantId, a.compareAtBefore).then(
+    () => null,
+    (e: Error) => e.message,
+  );
+  if (!back) return "The change couldn't be saved, so it was put back. Try again.";
+  console.error(`store audit: crossed out price changed for ${accountId} (${a.variantId}) but neither recorded nor put back: ${back}`);
+  await report("store-audit", false, "A crossed out price was changed in Shopify but couldn't be recorded or put back.");
+  return `The crossed out price of ${change.label} was changed in Shopify, but the change couldn't be saved here to undo later. Set it back in Shopify if you need to.`;
 }

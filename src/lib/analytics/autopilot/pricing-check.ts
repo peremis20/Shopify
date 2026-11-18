@@ -1,4 +1,16 @@
-import { shopifyGql, type StoreAccess } from "./shopify";
+import { shopifyGql as gql, type StoreAccess } from "./shopify";
+
+/** A Shopify read that waits and tries again (up to three times) when Shopify says to slow down. */
+async function shopifyGql<T>(store: StoreAccess, query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await gql<T>(store, query, variables);
+    } catch (e) {
+      if (i >= 2 || !/throttl/i.test(String((e as Error)?.message))) throw e;
+      await new Promise((r) => setTimeout(r, 2_000 * (i + 1)));
+    }
+  }
+}
 
 /**
  * The pricing check, part of the weekly store audit (store-audit.ts): it reads the store's own catalog and asks
@@ -77,8 +89,6 @@ export interface PricingCheck {
   at: string;
   currency: string;
   findings: PriceFinding[];
-  /** Every crossed out price the owner changed from here, newest last (see store-audit.ts). */
-  applied?: AppliedChange[];
   /** Variants checked, packs and bundles matched to their items. */
   checked: { variants: number; packs: number; bundles: number };
   /** Whether order history was read for the crossed out price check (it needs permission to read orders). */
@@ -138,9 +148,9 @@ export async function readCatalog(store: StoreAccess): Promise<Catalog> {
   return out;
 }
 
-/** Orders per request: 20 orders of up to 20 lines stays under Shopify's 1,000 point limit per query. */
-const ORDERS_PER_PAGE = 20;
-const ORDER_PAGES = 25;
+/** Orders per request: 10 orders of up to 10 lines (about 430 points) stays under Shopify's 1,000 point limit per query. */
+const ORDERS_PER_PAGE = 10;
+const ORDER_PAGES = 50;
 
 /**
  * The highest unit price each variant was charged (before discounts) in the store's recent orders, newest first, up to
@@ -160,7 +170,7 @@ export async function soldPrices(store: StoreAccess, days = 365): Promise<SoldPr
     } = await shopifyGql(
       store,
       `query($q: String!, $after: String) { orders(first: ${ORDERS_PER_PAGE}, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor }
-        nodes { test createdAt lineItems(first: 20) { nodes { variant { id } originalUnitPriceSet { shopMoney { amount } } } } } } }`,
+        nodes { test createdAt lineItems(first: 10) { nodes { variant { id } originalUnitPriceSet { shopMoney { amount } } } } } } }`,
       { q: `created_at:>=${fromDate}`, after },
     );
     for (const o of d.orders.nodes) {
@@ -448,23 +458,34 @@ export async function runPricingCheck(store: StoreAccess, origin: string): Promi
 
 const fmtAmount = (c: number | null) => (c === null ? null : (c / 100).toFixed(2));
 
+/** One variant's price and crossed out price now, in cents, or null when it is gone from that product. */
+export async function readVariant(store: StoreAccess, productId: string, variantId: string): Promise<{ price: number | null; compareAt: number | null } | null> {
+  const d = await shopifyGql<{ productVariant: { price: string; compareAtPrice: string | null; product: { id: string } } | null }>(
+    store,
+    `query($id: ID!) { productVariant(id: $id) { price compareAtPrice product { id } } }`,
+    { id: variantId },
+  );
+  const v = d.productVariant;
+  return v && v.product.id === productId ? { price: cents(v.price), compareAt: cents(v.compareAtPrice) } : null;
+}
+
+/** Writes one variant's crossed out price (no checks: callers check what is there first). */
+export async function writeCompareAt(store: StoreAccess, productId: string, variantId: string, to: number | null): Promise<void> {
+  await shopifyGql(
+    store,
+    `mutation($p: ID!, $v: [ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId: $p, variants: $v) { userErrors { field message } } }`,
+    { p: productId, v: [{ id: variantId, compareAtPrice: fmtAmount(to) }] },
+  );
+}
+
 /**
  * Sets one variant's crossed out price, only when its price and crossed out price are still what was seen (so a change
  * made since is never overwritten). Returns why not, or null when done.
  */
 export async function setCompareAt(store: StoreAccess, a: { productId: string; variantId: string; price: number; from: number | null; to: number | null }): Promise<string | null> {
-  const d = await shopifyGql<{ productVariant: { price: string; compareAtPrice: string | null; product: { id: string } } | null }>(
-    store,
-    `query($id: ID!) { productVariant(id: $id) { price compareAtPrice product { id } } }`,
-    { id: a.variantId },
-  );
-  const v = d.productVariant;
-  if (!v || v.product.id !== a.productId) return "That product isn't in the store anymore.";
-  if (cents(v.price) !== a.price || cents(v.compareAtPrice) !== a.from) return "The price changed since the check. Run the store audit again first.";
-  await shopifyGql(
-    store,
-    `mutation($p: ID!, $v: [ProductVariantsBulkInput!]!) { productVariantsBulkUpdate(productId: $p, variants: $v) { userErrors { field message } } }`,
-    { p: a.productId, v: [{ id: a.variantId, compareAtPrice: fmtAmount(a.to) }] },
-  );
+  const now = await readVariant(store, a.productId, a.variantId);
+  if (!now) return "That product isn't in the store anymore.";
+  if (now.price !== a.price || now.compareAt !== a.from) return "The price changed since the check. Run the store audit again first.";
+  await writeCompareAt(store, a.productId, a.variantId, a.to);
   return null;
 }
