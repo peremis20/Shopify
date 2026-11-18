@@ -42,47 +42,73 @@ type Items = Record<string, unknown>[];
 interface Audit {
   score?: number | null;
   numericValue?: number;
-  details?: { items?: Items };
+  details?: { type?: string; items?: unknown };
 }
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-/** One page's phone test from PageSpeed Insights, reduced to what the agents use. */
+/** An audit's table rows, also inside Lighthouse 13's list of tables. */
+function rowsOf(a: Audit | undefined): Items {
+  const items = a?.details?.items;
+  if (!Array.isArray(items)) return [];
+  return (items as Record<string, unknown>[]).flatMap((it) => (it && typeof it === "object" && Array.isArray((it as { items?: unknown }).items) && (it as { type?: string }).type !== undefined ? ((it as { items: Items }).items) : [it]));
+}
+
+/** The first page element named anywhere in an audit's details. */
+function firstNode(v: unknown, depth = 0, isNode = false): Record<string, unknown> | null {
+  if (!v || typeof v !== "object" || depth > 6) return null;
+  const o = v as Record<string, unknown>;
+  if ((o.type === "node" || isNode) && (o.nodeLabel || o.snippet)) return o;
+  if (o.node && typeof o.node === "object") return firstNode(o.node, depth + 1, true);
+  for (const x of Array.isArray(v) ? v : Object.values(o)) {
+    const n = firstNode(x, depth + 1);
+    if (n) return n;
+  }
+  return null;
+}
+
+/**
+ * One page's phone test from PageSpeed Insights, reduced to what the agents use. Reads both the older audits and the
+ * insight audits that replaced them in Lighthouse 13, so it works whichever PageSpeed serves.
+ */
 export function readLighthouse(url: string, d: { lighthouseResult?: { categories?: { performance?: { score?: number } }; audits?: Record<string, Audit> } }): SpeedPage {
   const a = d.lighthouseResult?.audits ?? {};
-  const items = (k: string): Items => a[k]?.details?.items ?? [];
+  const rows = (...keys: string[]) => keys.flatMap((k) => rowsOf(a[k]));
   const images = new Map<string, { url: string; wastedBytes: number; totalBytes: number }>();
-  for (const k of ["uses-optimized-images", "modern-image-formats", "uses-responsive-images"])
-    for (const it of items(k)) {
-      const u = str(it.url);
-      if (!u) continue;
-      const prev = images.get(u);
-      // The same image can be flagged by several checks; its largest saving counts once.
-      if (!prev || num(it.wastedBytes) > prev.wastedBytes) images.set(u, { url: u, wastedBytes: num(it.wastedBytes), totalBytes: num(it.totalBytes) });
-    }
-  // The element Google names as the main content: a nested table of one node.
-  const lcpItems = items("largest-contentful-paint-element");
-  const nested = (lcpItems[0]?.items as Items | undefined)?.[0] ?? lcpItems[0];
-  const node = (nested?.node ?? {}) as Record<string, unknown>;
+  for (const it of rows("image-delivery-insight", "uses-optimized-images", "modern-image-formats", "uses-responsive-images")) {
+    const u = str(it.url);
+    if (!u) continue;
+    const prev = images.get(u);
+    // The same image can be flagged by several checks; its largest saving counts once.
+    if (!prev || num(it.wastedBytes) > prev.wastedBytes) images.set(u, { url: u, wastedBytes: num(it.wastedBytes), totalBytes: num(it.totalBytes) });
+  }
+  const node = firstNode(a["largest-contentful-paint-element"]?.details) ?? firstNode(a["lcp-breakdown-insight"]?.details) ?? firstNode(a["lcp-discovery-insight"]?.details) ?? {};
+  // Lighthouse 13 names it in a checklist: eagerlyLoaded false means the main image waits for lazy loading.
+  const checklist = (a["lcp-discovery-insight"]?.details?.items ?? {}) as Record<string, { value?: unknown }>;
+  const lazy = a["lcp-lazy-loaded"]?.score === 0 || (checklist && !Array.isArray(checklist) && checklist.eagerlyLoaded?.value === false);
   const score = d.lighthouseResult?.categories?.performance?.score;
   return {
     url,
     score: typeof score === "number" ? Math.round(score * 100) : null,
     lcpMs: a["largest-contentful-paint"]?.numericValue != null ? Math.round(num(a["largest-contentful-paint"]?.numericValue)) : null,
     lcpElement: str(node.nodeLabel) || str(node.snippet).slice(0, 160) || null,
-    lcpLazy: a["lcp-lazy-loaded"]?.score === 0,
+    lcpLazy: !!lazy,
     images: [...images.values()].sort((x, y) => y.wastedBytes - x.wastedBytes).slice(0, 10),
-    blocking: items("render-blocking-resources")
+    blocking: rows("render-blocking-insight", "render-blocking-resources")
       .map((it) => ({ url: str(it.url), wastedMs: Math.round(num(it.wastedMs)) }))
       .filter((x) => x.url && x.wastedMs > 0)
       .slice(0, 8),
-    thirdParty: items("third-party-summary")
-      .map((it) => ({ entity: str((it.entity as { text?: string } | undefined)?.text ?? it.entity), transferSize: Math.round(num(it.transferSize)), blockingTime: Math.round(num(it.blockingTime)) }))
+    thirdParty: rows("third-parties-insight", "third-party-summary")
+      .map((it) => ({
+        entity: str((it.entity as { text?: string } | undefined)?.text ?? it.entity),
+        transferSize: Math.round(num(it.transferSize)),
+        blockingTime: Math.round(num(it.blockingTime) || num(it.mainThreadTime)),
+      }))
       .filter((x) => x.entity)
       .sort((x, y) => y.blockingTime - x.blockingTime || y.transferSize - x.transferSize)
       .slice(0, 8),
-    unusedJs: items("unused-javascript")
+    unusedJs: rows("unused-javascript")
       .map((it) => ({ url: str(it.url), wastedBytes: Math.round(num(it.wastedBytes)) }))
       .filter((x) => x.url && x.wastedBytes > 0)
       .slice(0, 8),
@@ -144,7 +170,7 @@ export function speedFixes(p: SpeedPage, storeHost: string): SpeedFix[] {
       id: id("images"),
       page: p.url,
       problem: `Images on this page could be ${kb(saved)} lighter (${p.images.length} flagged, the largest ${fileName(p.images[0].url)}).`,
-      fix: "The Image agent makes lighter copies of the ones in your Shopify files. Shrink each one below.",
+      fix: "The Image agent makes lighter copies of the ones kept in your Shopify files; any it can make are listed under Image agent below. Others come from your theme or apps.",
       impact: saved >= 500_000 ? "high" : "medium",
       byImageAgent: true,
     });
@@ -176,7 +202,11 @@ export function speedFixes(p: SpeedPage, storeHost: string): SpeedFix[] {
     });
   return out;
 }
-const t2own = (entity: string, host: string) => entity.toLowerCase().includes(host.replace(/^www\./, "").split(".")[0].toLowerCase());
+/** Whether a third party is really the store itself (its own brand name), never Shopify or an app. */
+const t2own = (entity: string, host: string) => {
+  const brand = host.replace(/^www\./, "").split(".").slice(-2, -1)[0]?.toLowerCase() ?? "";
+  return brand.length > 2 && entity.toLowerCase().includes(brand);
+};
 
 // ---------- storage ----------
 
@@ -320,6 +350,7 @@ export function pngIsOpaque(buf: Buffer, maxRaw = 60_000_000): boolean {
     else if (kind === "IEND") break;
     off += 12 + len;
   }
+  if (!width || !height) return false;
   if (type === 0 || type === 2) return true;
   if (type === 3) return true;
   if ((type !== 4 && type !== 6) || interlace !== 0 || (depth !== 8 && depth !== 16)) return false;
@@ -329,7 +360,7 @@ export function pngIsOpaque(buf: Buffer, maxRaw = 60_000_000): boolean {
   if ((stride + 1) * height > maxRaw) return false;
   let raw: Buffer;
   try {
-    raw = inflateSync(Buffer.concat(idat));
+    raw = inflateSync(Buffer.concat(idat), { maxOutputLength: (stride + 1) * height + 1024 });
   } catch {
     return false;
   }
@@ -373,11 +404,16 @@ export const MAX_WIDTH = 1600;
 /** A lighter copy is offered only when it is at most this share of the original, and saves at least 50 KB. */
 export const MIN_SHRINK = 0.7;
 
-/** The Shopify file an image address points to: the name after /files/, on the store's own address or Shopify's CDN. */
+/**
+ * The Shopify file an image address points to, by name: an address on the store's own domain (/cdn/shop/files/NAME),
+ * or on Shopify's CDN (/s/files/1/.../files/NAME, matched later against this store's own file path). Theme assets and
+ * other hosts are never replaced.
+ */
 export function storeFileName(url: string, storeHost: string): string | null {
   try {
     const u = new URL(url);
-    const own = u.hostname === storeHost || u.hostname === `www.${storeHost}` || u.hostname === "cdn.shopify.com";
+    const bare = storeHost.replace(/^www\./, "");
+    const own = u.hostname === bare || u.hostname === `www.${bare}` || u.hostname === "cdn.shopify.com";
     const m = u.pathname.match(/\/files\/([^/]+\.(?:png|jpe?g))$/i);
     return own && m ? decodeURIComponent(m[1]) : null;
   } catch {
@@ -385,8 +421,21 @@ export function storeFileName(url: string, storeHost: string): string | null {
   }
 }
 
-async function download(url: string, max = 15_000_000): Promise<Buffer | null> {
-  const res = await fetch(url, { signal: AbortSignal.timeout(20_000) }).catch(() => null);
+/** For a Shopify CDN address, whether it is this store's own file (same folder), not another shop's or an app's. */
+export function sameCdnFile(flagged: string, fileUrl: string): boolean {
+  try {
+    const a = new URL(flagged);
+    if (a.hostname !== "cdn.shopify.com") return true;
+    return a.pathname === new URL(fileUrl).pathname;
+  } catch {
+    return false;
+  }
+}
+
+async function download(url: string, deadline: number, max = 15_000_000): Promise<Buffer | null> {
+  const ms = Math.min(20_000, deadline - Date.now() - 2_000);
+  if (ms < 2_000) return null;
+  const res = await fetch(url, { signal: AbortSignal.timeout(ms) }).catch(() => null);
   if (!res?.ok) return null;
   const b = Buffer.from(await res.arrayBuffer());
   return b.length <= max ? b : null;
@@ -404,11 +453,12 @@ async function findFile(store: StoreAccess, name: string): Promise<FileInfo | nu
   const d = await shopifyGql<{ files: { nodes: { id: string; mimeType?: string; image?: { url: string; width: number } | null; originalSource?: { fileSize: number | null; url: string | null } | null }[] } }>(
     store,
     `query($q: String!) { files(first: 5, query: $q) { nodes { id ... on MediaImage { mimeType image { url width } originalSource { fileSize url } } } } }`,
-    { q: `filename:'${name.replace(/'/g, "")}'` },
+    { q: `filename:'${name.replace(/['\\]/g, (c) => `\\${c}`)}'` },
   );
   const f = d.files.nodes.find((n) => n.image && fileName(n.image.url) === name);
   if (!f?.image || !f.originalSource?.fileSize) return null;
-  return { id: f.id, url: f.image.url.split("?")[0], width: f.image.width, mime: f.mimeType ?? "", size: f.originalSource.fileSize };
+  // The address keeps its version (?v=), so the CDN never answers with an earlier version of the file.
+  return { id: f.id, url: f.image.url, width: f.image.width, mime: f.mimeType ?? "", size: f.originalSource.fileSize };
 }
 
 export function runImages(accountId: string, deadline = Date.now() + 100_000): Promise<string> {
@@ -437,51 +487,117 @@ async function imagesPass(accountId: string, deadline: number): Promise<RunOutco
   const flagged = speed.pages.flatMap((p) => p.images.map((i) => ({ ...i, page: p.url }))).filter((i) => i.wastedBytes >= 50_000);
   const done = new Set((r?.imageChanges ?? []).map((c) => c.fileId));
   const candidates: ImageCandidate[] = [];
+  let failed = 0;
+  let outside = 0;
   for (const img of flagged) {
-    if (deadline - Date.now() < 10_000 || candidates.length >= 8) break;
+    // Each image can take a search and two downloads: not started without time for them.
+    if (deadline - Date.now() < 30_000 || candidates.length >= 8) break;
     const name = storeFileName(img.url, profile.siteDomain);
-    if (!name || seen.has(name)) continue;
+    if (!name) {
+      outside++;
+      continue;
+    }
+    if (seen.has(name)) continue;
     seen.add(name);
-    const file = await findFile(site.store, name).catch(() => null);
-    if (!file || done.has(file.id)) continue;
+    let file: FileInfo | null;
+    try {
+      file = await findFile(site.store, name);
+    } catch (e) {
+      failed++;
+      console.error(`images: file ${name} not looked up for ${accountId}: ${(e as Error).message}`);
+      continue;
+    }
+    if (!file || !sameCdnFile(img.url, file.url)) {
+      outside++;
+      continue;
+    }
+    if (done.has(file.id)) continue;
     const png = /png/i.test(file.mime);
     const jpeg = /jpe?g/i.test(file.mime);
     if (!png && !jpeg) continue;
-    const original = png ? await download(file.url) : null;
+    const original = png ? await download(file.url, deadline) : null;
+    if (png && !original) {
+      failed++;
+      continue;
+    }
     const toJpeg = png && original !== null && pngIsOpaque(original);
     const newWidth = Math.min(file.width, MAX_WIDTH);
     if (!toJpeg && newWidth === file.width && !jpeg) continue;
-    const source = `${file.url}?width=${newWidth}${toJpeg || jpeg ? "&format=pjpg" : ""}`;
-    const copy = await download(source);
-    if (!copy) continue;
+    const source = `${file.url}${file.url.includes("?") ? "&" : "?"}width=${newWidth}${toJpeg || jpeg ? "&format=pjpg" : ""}`;
+    const copy = await download(source, deadline);
+    if (!copy) {
+      failed++;
+      continue;
+    }
     if (copy.length > file.size * MIN_SHRINK || file.size - copy.length < 50_000) continue;
     candidates.push({ fileId: file.id, name, page: img.page, before: file.size, after: copy.length, width: file.width, newWidth, toJpeg, source });
   }
+  // Reservations that never got their backup (a run killed midway) are cleared: nothing was changed for them.
+  await sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
+    (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n)
+     WHERE coalesce(e->>'backupId', '') <> '' OR (e->>'at')::timestamptz > now() - interval '1 hour'))
+    WHERE account_id = ${accountId}`.catch((e) => console.error(`images: old reservations not cleared for ${accountId}: ${(e as Error).message}`));
   const saved = candidates.reduce((s, c) => s + c.before - c.after, 0);
-  const note = candidates.length ? `${candidates.length} ${candidates.length === 1 ? "image" : "images"} can be ${kb(saved)} lighter` : "No image needs a lighter copy";
+  const note =
+    (candidates.length ? `${candidates.length} ${candidates.length === 1 ? "image" : "images"} can be ${kb(saved)} lighter` : "No image in your Shopify files needs a lighter copy") +
+    (outside ? `. ${outside} flagged ${outside === 1 ? "image comes" : "images come"} from your theme or apps, not your Shopify files` : "");
   await savePart(accountId, "images", { at: new Date().toISOString(), candidates, note });
-  return { note };
+  return { note, ...(failed ? { problem: `${failed} flagged ${failed === 1 ? "image" : "images"} couldn't be checked this week.` } : {}) };
 }
 
 // ---------- the owner's Shrink and Undo ----------
 
-async function fileReady(store: StoreAccess, id: string, tries = 10): Promise<string | null> {
+interface FileState {
+  status: string;
+  url: string | null;
+  size: number | null;
+}
+
+async function fileState(store: StoreAccess, id: string): Promise<FileState | null> {
+  const d = await shopifyGql<{ node: { fileStatus: string; image?: { url: string } | null; originalSource?: { fileSize: number | null } | null } | null }>(
+    store,
+    `query($id: ID!) { node(id: $id) { ... on MediaImage { fileStatus image { url } originalSource { fileSize } } } }`,
+    { id },
+  );
+  return d.node ? { status: d.node.fileStatus, url: d.node.image?.url ?? null, size: d.node.originalSource?.fileSize ?? null } : null;
+}
+
+/** Waits until a file is READY and, when given, has the expected size (Shopify replaces content in the background). */
+async function settled(store: StoreAccess, id: string, want: (f: FileState) => boolean, tries = 12): Promise<FileState | null> {
   for (let i = 0; i < tries; i++) {
-    const d = await shopifyGql<{ node: { fileStatus: string; image?: { url: string } | null } | null }>(store, `query($id: ID!) { node(id: $id) { ... on MediaImage { fileStatus image { url } } } }`, { id });
-    if (d.node?.fileStatus === "READY" && d.node.image?.url) return d.node.image.url.split("?")[0];
-    if (d.node?.fileStatus === "FAILED") return null;
-    await new Promise((res) => setTimeout(res, 1_500));
+    const f = await fileState(store, id).catch(() => null);
+    if (f?.status === "FAILED") return f;
+    if (f?.status === "READY" && f.url && want(f)) return f;
+    await new Promise((res) => setTimeout(res, 2_000));
   }
   return null;
 }
 
-const fileSize = async (store: StoreAccess, id: string) =>
-  (await shopifyGql<{ node: { originalSource?: { fileSize: number | null } | null } | null }>(store, `query($id: ID!) { node(id: $id) { ... on MediaImage { originalSource { fileSize } } } }`, { id })).node?.originalSource?.fileSize ?? null;
+/** Sizes that are the same file: Shopify can add a few bytes of its own when it stores a copy. */
+export const sameSize = (a: number | null, b: number) => a !== null && Math.abs(a - b) <= Math.max(1024, b * 0.01);
+
+const deleteFile = (store: StoreAccess, id: string) => shopifyGql(store, `mutation($ids: [ID!]!) { fileDelete(fileIds: $ids) { userErrors { field message } } }`, { ids: [id] });
+const replaceFile = (store: StoreAccess, id: string, source: string) =>
+  shopifyGql(store, `mutation($f: [FileUpdateInput!]!) { fileUpdate(files: $f) { userErrors { field message } } }`, { f: [{ id, originalSource: source }] });
+/** Only Shopify's own refusal is certain: anything else (a timeout, a server error) may still have gone through. */
+const refused = (e: unknown) => /Shopify rejected the change/.test(String((e as Error)?.message));
+
+const setChange = (accountId: string, fileId: string, patch: Record<string, unknown>) =>
+  sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
+    (SELECT coalesce(jsonb_agg(CASE WHEN e->>'fileId' = ${fileId} THEN e || ${JSON.stringify(patch)}::jsonb ELSE e END ORDER BY n), '[]'::jsonb)
+     FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n)))
+    WHERE account_id = ${accountId}`;
+const dropChange = (accountId: string, fileId: string) =>
+  sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
+    (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n) WHERE e->>'fileId' <> ${fileId}))
+    WHERE account_id = ${accountId}`;
 
 /**
- * The owner's Shrink on one image: reserved first (one statement, so two clicks never do it twice), the original kept
- * as a backup file, then the file's content replaced in place with the measured lighter copy. Undo puts the backup's
- * content back. Returns why not, or null when done.
+ * The owner's Shrink on one image, and its Undo. Shrink: reserved first (one statement, so two clicks never do it
+ * twice), the original kept as a backup file and checked to be the same size, then the file's content replaced in
+ * place, and the result checked once Shopify has processed it (a failure puts the original back by itself). Undo:
+ * reserved the same way, done only while the file is still the lighter copy, and the backup is deleted only once the
+ * original is confirmed back. Returns why not, or null when done.
  */
 export async function applyImage(accountId: string, fileId: string, checkAt: string | null, undo = false): Promise<string | null> {
   const r = await readSpeed(accountId);
@@ -490,52 +606,87 @@ export async function applyImage(accountId: string, fileId: string, checkAt: str
   if (site?.mode !== "shopify" || !site.store) return "Connect your Shopify store first.";
   const store = site.store;
   if (undo) {
-    const c = (r?.imageChanges ?? []).find((x) => x.fileId === fileId);
+    const c = (r?.imageChanges ?? []).find((x) => x.fileId === fileId && x.backupId);
     if (!c) return "That change isn't on the list anymore.";
-    const backup = await fileReady(store, c.backupId, 2);
-    if (!backup) return "The original copy couldn't be found in your Shopify files, so it can't be put back from here.";
-    await shopifyGql(store, `mutation($f: [FileUpdateInput!]!) { fileUpdate(files: $f) { userErrors { field message } } }`, { f: [{ id: c.fileId, originalSource: backup }] });
-    await sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
-      (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n) WHERE e->>'fileId' <> ${fileId}))
-      WHERE account_id = ${accountId}`;
-    await shopifyGql(store, `mutation($ids: [ID!]!) { fileDelete(fileIds: $ids) { userErrors { field message } } }`, { ids: [c.backupId] }).catch(() => undefined);
+    const taken = await sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
+      (SELECT jsonb_agg(CASE WHEN e->>'fileId' = ${fileId} THEN e || jsonb_build_object('undoAt', now()) ELSE e END ORDER BY n)
+       FROM jsonb_array_elements(data->'imageChanges') WITH ORDINALITY AS t(e, n)))
+      WHERE account_id = ${accountId} AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) e
+        WHERE e->>'fileId' = ${fileId} AND (e->>'undoAt' IS NULL OR (e->>'undoAt')::timestamptz < now() - interval '5 minutes'))
+      RETURNING account_id`;
+    if (!taken.length) return "Undo is already running for that image. Look again in a minute.";
+    const release = () => setChange(accountId, fileId, { undoAt: null }).catch(() => undefined);
+    const [now, backup] = await Promise.all([fileState(store, fileId), fileState(store, c.backupId)]);
+    if (!backup?.url || backup.status !== "READY") {
+      await dropChange(accountId, fileId);
+      await report("images", false, "An image's original backup is missing from Shopify Files, so it can't be put back from the app.");
+      return "The original copy is no longer in your Shopify files, so it can't be put back from here. It's off the list; the lighter image stays.";
+    }
+    if (!now || !sameSize(now.size, c.after)) {
+      await release();
+      return "That image was changed in Shopify since, so it was left as it is. Your original stays in Shopify Files as dashpatrol original.";
+    }
+    try {
+      await replaceFile(store, fileId, backup.url);
+    } catch (e) {
+      await release();
+      throw e;
+    }
+    const back = await settled(store, fileId, (f) => sameSize(f.size, c.before));
+    if (!back || back.status !== "READY") {
+      await release();
+      await report("images", false, "An image's Undo didn't finish in Shopify; its original backup was kept.");
+      return "Shopify is still putting the original back. Look again in a minute; the original copy is kept until it's done.";
+    }
+    await dropChange(accountId, fileId);
+    await deleteFile(store, c.backupId).catch(() => undefined);
     return null;
   }
   const images = r?.images;
   if (!images || checkAt !== images.at) return "A newer check came in. Look it over and shrink again.";
   const c = images.candidates.find((x) => x.fileId === fileId);
   if (!c) return "That image isn't in the latest check.";
-  if ((await fileSize(store, fileId)) !== c.before) return "That image changed since the check. It's checked again next week.";
+  const current = await fileState(store, fileId);
+  if (!current?.url || current.size !== c.before) return "That image changed since the check. It's checked again next week.";
   const change: ImageChange = { fileId, name: c.name, backupId: "", before: c.before, after: c.after, at: new Date().toISOString() };
   const reserved = await sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}', coalesce(data->'imageChanges', '[]'::jsonb) || ${JSON.stringify([change])}::jsonb)
     WHERE account_id = ${accountId} AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) e WHERE e->>'fileId' = ${fileId})
     RETURNING account_id`;
   if (!reserved.length) return "That image was already made lighter.";
-  const drop = () =>
-    sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
-      (SELECT coalesce(jsonb_agg(e ORDER BY n), '[]'::jsonb) FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n) WHERE e->>'fileId' <> ${fileId}))
-      WHERE account_id = ${accountId}`.catch(async () => report("images", false, "An image change was reserved but couldn't be cleared after it failed."));
-  // The original, kept first as its own file, so Undo can always put it back.
+  const drop = () => dropChange(accountId, fileId).catch(async () => report("images", false, "An image change was reserved but couldn't be cleared after it failed."));
+  // The original, kept first as its own file and checked to be the same file, so Undo can always put it back.
   const made = await shopifyGql<{ fileCreate: { files: { id: string }[] } }>(store, `mutation($f: [FileCreateInput!]!) { fileCreate(files: $f) { files { id } userErrors { field message } } }`, {
-    f: [{ originalSource: (await fileReady(store, fileId, 1)) ?? "", filename: `dashpatrol-original-${c.name}`, contentType: "IMAGE" }],
+    f: [{ originalSource: current.url, filename: `dashpatrol-original-${c.name}`, contentType: "IMAGE" }],
   }).catch(() => null);
   const backupId = made?.fileCreate.files[0]?.id;
-  if (!backupId || !(await fileReady(store, backupId))) {
+  const backup = backupId ? await settled(store, backupId, (f) => f.size !== null) : null;
+  if (!backupId || backup?.status !== "READY" || !sameSize(backup.size, c.before)) {
     await drop();
-    if (backupId) await shopifyGql(store, `mutation($ids: [ID!]!) { fileDelete(fileIds: $ids) { userErrors { field message } } }`, { ids: [backupId] }).catch(() => undefined);
-    return "The original couldn't be backed up, so nothing was changed. Try again later.";
+    if (backupId) await deleteFile(store, backupId).catch(() => undefined);
+    return "The original couldn't be backed up exactly, so nothing was changed. Try again later.";
   }
-  await sql`UPDATE insights_speed SET data = jsonb_set(data, '{imageChanges}',
-    (SELECT coalesce(jsonb_agg(CASE WHEN e->>'fileId' = ${fileId} THEN jsonb_set(e, '{backupId}', to_jsonb(${backupId}::text)) ELSE e END ORDER BY n), '[]'::jsonb)
-     FROM jsonb_array_elements(coalesce(data->'imageChanges', '[]'::jsonb)) WITH ORDINALITY AS t(e, n)))
-    WHERE account_id = ${accountId}`;
+  await setChange(accountId, fileId, { backupId });
   try {
-    await shopifyGql(store, `mutation($f: [FileUpdateInput!]!) { fileUpdate(files: $f) { userErrors { field message } } }`, { f: [{ id: fileId, originalSource: c.source }] });
+    await replaceFile(store, fileId, c.source);
   } catch (e) {
-    await drop();
-    await shopifyGql(store, `mutation($ids: [ID!]!) { fileDelete(fileIds: $ids) { userErrors { field message } } }`, { ids: [backupId] }).catch(() => undefined);
-    throw e;
+    if (refused(e)) {
+      await drop();
+      await deleteFile(store, backupId).catch(() => undefined);
+      return "Shopify didn't accept the lighter copy, so nothing was changed.";
+    }
+    // It may still go through: the record and the backup stay, so Undo works either way.
+    await report("images", false, `An image swap didn't answer clearly (${String((e as Error)?.message).slice(0, 120)}); its original backup was kept.`);
+    return "Shopify didn't answer clearly, so the original is kept and the change is listed. If the image looks wrong, click Undo.";
   }
+  const after = await settled(store, fileId, (f) => f.size !== null && !sameSize(f.size, c.before));
+  if (after?.status === "FAILED") {
+    // A broken image is never left on the store: the original goes back at once.
+    await replaceFile(store, fileId, backup.url!).catch(() => undefined);
+    await report("images", false, "Shopify couldn't process a lighter image, so the original was put back.");
+    await drop();
+    return "Shopify couldn't process the lighter copy, so the original was put back.";
+  }
+  if (after?.size) await setChange(accountId, fileId, { after: after.size });
   return null;
 }
 

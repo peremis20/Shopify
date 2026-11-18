@@ -32,7 +32,8 @@ export function Speed() {
   if (!view) return null;
   const sp = view.report?.speed;
   const im = view.report?.images;
-  const changes = view.report?.imageChanges ?? [];
+  // A change shows once its original is safely backed up (a bare reservation changed nothing).
+  const changes = (view.report?.imageChanges ?? []).filter((c) => c.backupId);
   const act = async (action: "shrink" | "undo", id: string) => {
     setBusy(true);
     setError(null);
@@ -82,6 +83,7 @@ export function Speed() {
       {im && (
         <>
           <p className="mb-2 text-sm text-dash-ink">{im.note}.</p>
+          {im.candidates.length > 0 && <p className="mb-2 text-xs text-dash-muted">Lighter copies are at most 1600 pixels wide, so a zoomed in photo can look a little softer. Undo puts the original back anytime.</p>}
           {im.candidates.length > 0 && (
             <ul className="space-y-2">
               {im.candidates.map((c) => (
@@ -113,7 +115,7 @@ export function Speed() {
                 <span>
                   {c.name}: {kb(c.before)} to {kb(c.after)}, {new Date(c.at).toLocaleDateString()}
                 </span>
-                <button disabled={busy || !c.backupId} onClick={() => act("undo", c.fileId)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
+                <button disabled={busy} onClick={() => act("undo", c.fileId)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
                   Undo
                 </button>
               </li>

@@ -389,7 +389,6 @@ export function DashboardView() {
                   <Home data={data} loading={loading} onGo={go} />
                   <StoreAudit />
                   <Conversion />
-          <Speed />
                   <Speed />
                   </ErrorBoundary>
                 </div>
@@ -490,6 +489,7 @@ export function DashboardView() {
           <WeeklyReport />
           <StoreAudit advanced />
           <Conversion />
+          <Speed />
           </div>
           {/* KPI row */}
           <div className={`mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 ${show("overview")}`}>
