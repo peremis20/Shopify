@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Activity, Contact, Template } from "@/lib/analytics/crm";
+import type { Activity, Contact, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { parseCsv, rowsToContacts } from "@/lib/analytics/csv";
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
@@ -20,6 +20,8 @@ interface CrmData {
   templates: Template[];
   gmail: GmailState;
   capped?: boolean;
+  stock: { onShelf: number; owed: number; dueSoon: number; places: number };
+  settings: CrmSettings;
 }
 type View = "pipeline" | "contacts" | "todo" | "templates";
 
@@ -41,6 +43,8 @@ const KIND_LABEL: Record<Activity["kind"], string> = {
   task: "Task",
   stage: "Stage",
   lead: "Website request",
+  reply: "They replied",
+  stock: "Consignment",
 };
 
 /** The owner's CRM: a pipeline board, a contact list, a to do list and email templates, all kept in DashPatrol. */
@@ -73,6 +77,12 @@ export function Crm({ active = true }: { active?: boolean }) {
     { label: "Open deals", value: money(open_deals.reduce((s, c) => s + c.value, 0)) },
     { label: "To do today", value: String(due.filter((d) => d.date <= today()).length) },
     { label: "Won this month", value: money(wonMonth.reduce((s, c) => s + c.value, 0)) },
+    ...(data.stock.places
+      ? [
+          { label: "Bottles on consignment", value: `${data.stock.onShelf.toLocaleString()} at ${data.stock.places} place${data.stock.places > 1 ? "s" : ""}` },
+          { label: "Owed to you, not paid yet", value: `$${data.stock.owed.toFixed(2)}` },
+        ]
+      : []),
   ];
 
   return (
@@ -87,7 +97,7 @@ export function Crm({ active = true }: { active?: boolean }) {
             <button className={primary} onClick={() => setOpen("new")}>Add contact</button>
             <button className={quiet} onClick={() => setShowImport(true)}>Import</button>
             <button className={quiet} onClick={() => exportCsv(data.contacts)}>Export</button>
-            <button className={quiet} onClick={() => setShowStages(true)}>Stages</button>
+            <button className={quiet} onClick={() => setShowStages(true)}>Settings</button>
             <button className={quiet} onClick={() => setShowArchived(true)}>Archived</button>
           </div>
         </div>
@@ -122,7 +132,7 @@ export function Crm({ active = true }: { active?: boolean }) {
       {open && <ContactPanel id={open} data={data} onClose={() => setOpen(null)} onChanged={load} onOpenId={setOpen} />}
       {showImport && <ImportDialog onClose={() => setShowImport(false)} onDone={load} />}
       {showArchived && <ArchivedDialog onClose={() => setShowArchived(false)} onDone={load} />}
-      {showStages && <StagesDialog stages={data.stages} onClose={() => setShowStages(false)} onDone={load} />}
+      {showStages && <StagesDialog stages={data.stages} settings={data.settings} onClose={() => setShowStages(false)} onDone={load} />}
     </div>
   );
 }
@@ -372,16 +382,20 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
   const [editing, setEditing] = useState(id === "new");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [note, setNote] = useState<{ kind: "note" | "call" | "meeting" | "task"; subject: string; body: string; due: string } | null>(null);
+  const [note, setNote] = useState<{ kind: "note" | "call" | "meeting" | "reply" | "task"; subject: string; body: string; due: string } | null>(null);
+  const [stock, setStock] = useState<StockLine[]>([]);
+  const [orders, setOrders] = useState<ContactOrders | "access" | "failed" | null>(null);
   const [mail, setMail] = useState(false);
   // Tags are typed as one line and split on commas when saved, so typing never jumps or adds spaces.
   const [tagText, setTagText] = useState("");
   const loadOne = useCallback(async () => {
     if (id === "new") return;
-    const t = await apiFresh<{ contact: Contact; activities: Activity[] }>(`/api/crm?contact=${id}`);
+    const t = await apiFresh<{ contact: Contact; activities: Activity[]; stock: StockLine[]; orders: ContactOrders | "access" | "failed" | null }>(`/api/crm?contact=${id}`);
     setContact(t.contact);
     setTagText(t.contact.tags.join(", "));
     setActs(t.activities);
+    setStock(t.stock ?? []);
+    setOrders(t.orders ?? null);
   }, [id]);
   useEffect(() => {
     loadOne().catch((e) => setErr(e instanceof Error ? e.message : "Couldn't open the contact."));
@@ -423,6 +437,7 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             <button className={quiet} onClick={() => setNote({ kind: "meeting", subject: "", body: "", due: "" })}>Log meeting</button>
             <button className={quiet} onClick={() => setNote({ kind: "note", subject: "", body: "", due: "" })}>Add note</button>
             <button className={quiet} onClick={() => setNote({ kind: "task", subject: "", body: "", due: today() })}>Add task</button>
+            <button className={quiet} onClick={() => setNote({ kind: "reply", subject: "", body: "", due: "" })}>They replied</button>
             <button className={quiet} onClick={() => setEditing(true)}>Edit</button>
             {c.phone && <a className={quiet} href={`tel:${c.phone}`}>Call {c.phone}</a>}
           </div>
@@ -475,7 +490,7 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
         {note && (
           <div className="mt-4 space-y-2 rounded-xl border border-dash-line p-3">
             <p className="text-sm font-semibold text-dash-ink">{KIND_LABEL[note.kind]}</p>
-            <input className={field} placeholder={note.kind === "task" ? "What needs doing, like Send samples" : "Short title (optional)"} value={note.subject} onChange={(e) => setNote({ ...note, subject: e.target.value })} />
+            <input className={field} placeholder={note.kind === "task" ? "What needs doing, like Send samples" : note.kind === "reply" ? "What they said, in a few words (optional)" : "Short title (optional)"} value={note.subject} onChange={(e) => setNote({ ...note, subject: e.target.value })} />
             {note.kind !== "task" && <textarea className={`${field} min-h-[100px]`} placeholder="What was said or decided" value={note.body} onChange={(e) => setNote({ ...note, body: e.target.value })} />}
             {note.kind === "task" && <input type="date" className={field} value={note.due} onChange={(e) => setNote({ ...note, due: e.target.value })} />}
             <div className="flex gap-2">
@@ -484,6 +499,9 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             </div>
           </div>
         )}
+
+        {id !== "new" && !editing && <Orders orders={orders} />}
+        {id !== "new" && !editing && <Consignment contactId={id} lines={stock} busy={busy} run={run} />}
 
         {mail && <EmailComposer contact={c as Contact} data={data} onClose={() => setMail(false)} onSent={() => { setMail(false); onChanged(); loadOne(); }} />}
 
@@ -684,27 +702,154 @@ function ArchivedDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
   );
 }
 
-function StagesDialog({ stages, onClose, onDone }: { stages: string[]; onClose: () => void; onDone: () => void }) {
+function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[]; settings: CrmSettings; onClose: () => void; onDone: () => void }) {
   const [list, setList] = useState(stages.join("\n"));
+  const [days, setDays] = useState(String(settings.followUpDays));
+  const [daily, setDaily] = useState(settings.dailyEmail);
   const [err, setErr] = useState<string | null>(null);
   const save = async () => {
     try {
       await post({ action: "stages", stages: list.split("\n") });
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily } });
       onDone();
       onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Couldn't save the stages.");
+      setErr(e instanceof Error ? e.message : "Couldn't save the settings.");
     }
   };
   return (
-    <Dialog title="Pipeline stages" onClose={onClose}>
+    <Dialog title="CRM settings" onClose={onClose}>
+      <p className="text-sm font-semibold text-dash-ink">Pipeline stages</p>
       <p className="text-sm text-dash-muted">
         One stage per line, in order. Rename a stage in its place and its contacts stay with it. Contacts in a stage you take out move to the first stage. Stages named Won or Lost count as closed deals.
       </p>
-      <textarea className={`${field} mt-2 min-h-[180px]`} value={list} onChange={(e) => setList(e.target.value)} />
+      <textarea className={`${field} mt-2 min-h-[160px]`} value={list} onChange={(e) => setList(e.target.value)} />
+      <p className="mt-4 text-sm font-semibold text-dash-ink">Follow ups</p>
+      <label className="mt-1 block text-sm text-dash-ink">
+        Add a follow up task when nothing is logged from a contact this many days after you email them (0 turns it off)
+        <input type="number" min={0} max={60} className={`${field} mt-1 w-24`} value={days} onChange={(e) => setDays(e.target.value)} />
+      </label>
+      <p className="mt-1 text-xs text-dash-muted">Click They replied on a contact when they answer, so no follow up is added.</p>
+      <label className="mt-3 flex items-center gap-2 text-sm text-dash-ink">
+        <input type="checkbox" checked={daily} onChange={(e) => setDaily(e.target.checked)} />
+        Email me each morning with what is due today and late
+      </label>
       {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
-      <button className={`${primary} mt-2`} onClick={save}>Save stages</button>
+      <button className={`${primary} mt-3`} onClick={save}>Save settings</button>
     </Dialog>
+  );
+}
+
+function Orders({ orders }: { orders: ContactOrders | "access" | "failed" | null }) {
+  if (!orders) return null;
+  if (orders === "access" || orders === "failed")
+    return (
+      <p className="mt-4 text-xs text-dash-muted">
+        {orders === "access" ? "Store orders can't be read yet: reconnect Shopify from Connections and allow orders." : "Store orders couldn't be read just now. Open the contact again later."}
+      </p>
+    );
+  return (
+    <div className="mt-4 rounded-xl border border-dash-line p-3">
+      <p className="text-sm font-semibold text-dash-ink">In your store</p>
+      {!orders.count ? (
+        <p className="text-sm text-dash-muted">No orders with this email yet.</p>
+      ) : (
+        <>
+          <p className="text-sm text-dash-ink">
+            {orders.count}
+            {orders.more ? "+" : ""} order{orders.count > 1 ? "s" : ""}, {orders.currency === "USD" ? "$" : `${orders.currency} `}
+            {orders.total.toFixed(2)} in total{orders.more ? " for the latest 50" : ""}. Last one {shortDate(orders.last!)}.
+          </p>
+          <ul className="mt-1 text-xs text-dash-muted">
+            {orders.recent.map((o) => (
+              <li key={o.name}>{o.name}, {shortDate(o.at)}, ${o.total.toFixed(2)}{o.status ? `, ${o.status}` : ""}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function Consignment({ contactId, lines, busy, run }: {
+  contactId: string;
+  lines: StockLine[];
+  busy: boolean;
+  run: (body: Record<string, unknown>, after?: () => void) => Promise<void>;
+}) {
+  const [adding, setAdding] = useState<{ product: string; qty: string; price: string; everyDays: string } | null>(null);
+  const [counting, setCounting] = useState<{ stockId: string; counted: string; restock: string } | null>(null);
+  return (
+    <div className="mt-4 rounded-xl border border-dash-line p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-dash-ink">Consignment</p>
+        {!adding && <button className={quiet} onClick={() => setAdding({ product: "", qty: "12", price: "", everyDays: "30" })}>Leave stock</button>}
+      </div>
+      {!lines.length && !adding && <p className="text-sm text-dash-muted">No stock left here. Click Leave stock when you drop bottles off, and the CRM reminds you when to count.</p>}
+      {adding && (
+        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <Input label="Product" v={adding.product} on={(v) => setAdding({ ...adding, product: v })} />
+          <Input label="How many left" v={adding.qty} on={(v) => setAdding({ ...adding, qty: v })} type="number" />
+          <Input label="You get per bottle sold, in dollars" v={adding.price} on={(v) => setAdding({ ...adding, price: v })} />
+          <Input label="Count every how many days" v={adding.everyDays} on={(v) => setAdding({ ...adding, everyDays: v })} type="number" />
+          <div className="flex gap-2 sm:col-span-2">
+            <button disabled={busy} className={primary} onClick={() => run({ action: "stock", id: contactId, stock: adding }, () => setAdding(null))}>Save</button>
+            <button className={quiet} onClick={() => setAdding(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      <ul className="mt-2 space-y-3">
+        {lines.map((l) => {
+          const unpaid = l.counts.filter((c) => !c.paid && c.owed > 0);
+          return (
+            <li key={l.id} className={`text-sm ${l.closed ? "opacity-60" : ""}`}>
+              <p className="font-semibold text-dash-ink break-words">{l.product}</p>
+              <p className="text-dash-ink">
+                {l.closed ? "Ended. " : `${l.onShelf} on the shelf. `}${l.price.toFixed(2)} per bottle sold.
+                {!l.closed && l.nextCount ? ` Next count ${shortDate(l.nextCount)}.` : ""}
+                {unpaid.length ? ` $${unpaid.reduce((s, c) => s + c.owed, 0).toFixed(2)} not paid yet.` : ""}
+              </p>
+              {!l.closed && counting?.stockId !== l.id && (
+                <div className="mt-1 flex flex-wrap gap-2">
+                  <button className={quiet} onClick={() => setCounting({ stockId: l.id, counted: "", restock: "" })}>Count</button>
+                  <button className={quiet} onClick={() => window.confirm(`End the consignment of ${l.product}? Its history stays.`) && run({ action: "closeStock", stockId: l.id })}>End</button>
+                </div>
+              )}
+              {counting?.stockId === l.id && (
+                <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Input label={`Still on the shelf (was ${l.onShelf})`} v={counting.counted} on={(v) => setCounting({ ...counting, counted: v })} type="number" />
+                  <Input label="Bottles you added now" v={counting.restock} on={(v) => setCounting({ ...counting, restock: v })} type="number" />
+                  {counting.counted !== "" && Number(counting.counted) <= l.onShelf && (
+                    <p className="text-sm text-dash-ink sm:col-span-2">
+                      {l.onShelf - Number(counting.counted)} sold, ${((l.onShelf - Number(counting.counted)) * l.price).toFixed(2)} owed to you.
+                    </p>
+                  )}
+                  <div className="flex gap-2 sm:col-span-2">
+                    <button disabled={busy || counting.counted === ""} className={primary} onClick={() => run({ action: "count", stockId: l.id, count: { counted: counting.counted, restock: counting.restock || 0 } }, () => setCounting(null))}>Save count</button>
+                    <button className={quiet} onClick={() => setCounting(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+              {l.counts.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-dash-muted">
+                  {l.counts.slice(0, 6).map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-center gap-2">
+                      <span>{shortDate(c.countedAt)}: {c.sold} sold, ${c.owed.toFixed(2)}{c.restocked ? `, ${c.restocked} added` : ""}</span>
+                      {c.owed > 0 && (
+                        <label className="flex items-center gap-1 text-dash-ink">
+                          <input type="checkbox" checked={c.paid} onChange={() => run({ action: "paid", countId: c.id, paid: !c.paid })} />
+                          Paid
+                        </label>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

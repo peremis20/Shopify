@@ -51,7 +51,7 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
-import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -1739,6 +1739,26 @@ export async function autopilotTick(): Promise<Response> {
         if (note) results.push(`account ${accountId} ${agent}: ${note}`);
       }
     }
+    // The CRM: follow up tasks for emails with no reply and consignment counts that are due, and each morning (from
+    // 13:00 UTC, early morning in the Americas) an email to the owner with what is due today and late.
+    for (const accountId of late() ? [] : await accountsDueForCrm(10).catch((e) => (console.error(`crm list failed: ${message(e)}`), [] as string[]))) {
+      if (late()) break;
+      await forSite(accountId, async () => {
+        const added = await addDueFollowUps(accountId);
+        if (added) results.push(`account ${accountId} crm: ${added} follow up task(s) added`);
+        const settings = await readCrmSettings(accountId);
+        if (settings.dailyEmail && new Date().getUTCHours() >= 13) {
+          const d = await digestFor(accountId);
+          if (!d.sentToday) {
+            const [owner] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
+            // Marked first, so a failed send waits for tomorrow instead of retrying every hour; the status board shows it.
+            await markDigest(accountId);
+            if (d.text && owner?.email) await sendEmail(owner.email, "Your CRM to do list today", d.text);
+          }
+        }
+        await markCrmUpkeep(accountId);
+      }).catch((e) => console.error(`crm upkeep failed for ${accountId}: ${message(e)}`));
+    }
     // The Leads keeper: form requests still waiting are saved in each store's Shopify Customers.
     for (const accountId of late() ? [] : await accountsWithWaitingLeads(5).catch((e) => (console.error(`leads list failed: ${message(e)}`), [] as string[]))) {
       if (late()) break;
@@ -2255,11 +2275,18 @@ export const crmApi = (req: Request) =>
       const id = q.get("contact");
       if (id) {
         const t = await contactTimeline(account.id, id);
-        return t ? json(t) : json({ error: "That contact isn't here anymore." }, 404);
+        if (!t) return json({ error: "That contact isn't here anymore." }, 404);
+        // What they bought in the store is read live; a slow or failed read never holds up the contact.
+        const orders = await Promise.race([
+          (async () => contactOrders((await siteFor(account.id).catch(() => null))?.store ?? null, t.contact.email))(),
+          new Promise<null>((done) => setTimeout(() => done(null), 8000)),
+        ]).catch((e) => (console.error(`contact orders not read: ${message(e)}`), "failed" as const));
+        return json({ ...t, stock: await stockFor(account.id, t.contact.id), orders });
       }
       if (q.get("archived")) return json({ contacts: await archivedContacts(account.id) });
       const gmail = await getGmail(account.id).catch(() => null);
-      return json({ ...(await crmView(account.id)), gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
+      const [view, stock, settings] = await Promise.all([crmView(account.id), stockSummary(account.id), readCrmSettings(account.id)]);
+      return json({ ...view, stock, settings, gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
     }
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     let id: string | undefined;
@@ -2276,6 +2303,11 @@ export const crmApi = (req: Request) =>
         case "template": await saveCrmTemplate(account.id, b.template); break;
         case "deleteTemplate": await deleteCrmTemplate(account.id, b.templateId); break;
         case "stages": await saveStages(account.id, b.stages); break;
+        case "settings": await saveCrmSettings(account.id, b.settings); break;
+        case "stock": await addStock(account.id, b.id, b.stock); break;
+        case "count": await countStock(account.id, b.stockId, b.count); break;
+        case "paid": await setCountPaid(account.id, b.countId, b.paid === true); break;
+        case "closeStock": await closeStock(account.id, b.stockId); break;
         case "import": return json({ result: await importContacts(account.id, b.rows) });
         case "email": {
           const out = await emailContact(account.id, b.id, b.email);
