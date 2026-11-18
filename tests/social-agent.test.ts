@@ -145,3 +145,9 @@ test("social agent: someone's reply reaches the AI only inside a marked data blo
   assert.ok(block.trimEnd().endsWith("</public_text>"));
   assert.ok(!block.includes('"""'));
 });
+
+test("what the agents write never states a price", () => {
+  assert.match(cleanPost("Our magnesium is the most affordable way to unwind in the evening.", [], 400, false).problem ?? "", /price/);
+  assert.match(cleanPost("Grab it for twenty five dollars today before the week ends.", [], 400, false).problem ?? "", /price/);
+  assert.equal(cleanPost("Magnesium glycinate is a gentle form many people take in the evening with food.", [], 400, false).problem, null);
+});
