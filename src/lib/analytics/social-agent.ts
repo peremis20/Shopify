@@ -166,14 +166,20 @@ export function claimProblem(text: string, health: boolean): string | null {
 }
 
 /** A stated amount of money: a currency sign, or a spelled out number of dollars or cents. */
-const AMOUNT = /[$€£]|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)(?:[\s,]+\w+){0,3}?\s+(?:dollars?|bucks|cents|euros?|pounds)\b/i;
+const AMOUNT = /[$€£]|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)(?:[\s,]+\w+){0,3}?\s+(?:dollars?|bucks|euros?)\b/i;
 
 /** Drops each sentence that states an amount of money; everything else stays as written. */
 export function withoutPrices(text: string): string {
+  // Line by line, so the writer's line breaks stay.
   return text
-    .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !AMOUNT.test(sentence))
-    .join(" ")
+    .split("\n")
+    .map((line) =>
+      line
+        .split(/(?<=[.!?])[ \t]+/)
+        .filter((sentence) => !AMOUNT.test(sentence))
+        .join(" "),
+    )
+    .join("\n")
     .trim();
 }
 

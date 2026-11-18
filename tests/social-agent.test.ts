@@ -152,4 +152,6 @@ test("a sentence that states an amount of money is taken out, ordinary money wor
   assert.equal(withoutPrices("It costs €20. Sleep matters."), "Sleep matters.");
   for (const ok of ["Avoid caffeine at all costs before bed.", "Poor sleep comes at a cost to your mood.", "Happy to send a free sample at no cost to you.", "It bucks the usual advice."])
     assert.equal(withoutPrices(ok), ok);
+  assert.equal(withoutPrices("A large dog can gain ten pounds over a winter."), "A large dog can gain ten pounds over a winter.");
+  assert.equal(withoutPrices("Hi there.\nWe make candles."), "Hi there.\nWe make candles.");
 });
