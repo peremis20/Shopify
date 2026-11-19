@@ -29,22 +29,26 @@ export function parseCsv(text: string): string[][] {
 /** Turns spreadsheet rows into contacts by their column names (Name, First name, Last name, Email, Company and so on). */
 export function rowsToContacts(rows: string[][]): Record<string, string>[] {
   if (rows.length < 2) return [];
-  const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]/g, ""));
+  const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
   const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
   const m = {
-    name: col("name", "fullname", "contact", "contactname"),
-    first: col("firstname", "first"),
-    last: col("lastname", "last", "surname"),
-    email: col("email", "emailaddress", "mail"),
-    phone: col("phone", "phonenumber", "mobile", "tel", "telephone"),
-    company: col("company", "business", "businessname", "organization", "organisation", "account"),
+    name: col("name", "fullname", "contact", "contactname", "contactperson", "person", "doctor", "owner", "primarycontact", "decisionmaker"),
+    first: col("firstname", "first", "givenname"),
+    last: col("lastname", "last", "surname", "familyname"),
+    email: col("email", "emailaddress", "mail", "workemail"),
+    phone: col("phone", "phonenumber", "mobile", "cell", "tel", "telephone", "officephone", "mainphone", "workphone"),
+    company: col("company", "companyname", "business", "businessname", "organization", "organisation", "account", "accountname", "clinic", "clinicname", "practice", "practicename", "store", "storename", "shop", "office"),
     title: col("title", "jobtitle", "role", "position"),
-    kind: col("type", "kind", "businesstype", "category"),
+    kind: col("type", "kind", "businesstype", "category", "industry"),
     stage: col("stage", "status", "dealstage"),
     value: col("value", "dealvalue", "amount"),
     tags: col("tags", "tag", "labels"),
-    website: col("website", "url", "site"),
-    address: col("address", "streetaddress"),
+    website: col("website", "websiteurl", "web", "url", "site", "domain"),
+    address: col("address", "streetaddress", "street", "address1", "addressline1"),
+    city: col("city", "town"),
+    state: col("state", "province", "region"),
+    zip: col("zip", "zipcode", "postalcode", "postcode"),
+    notes: col("notes", "note", "comments", "comment", "description"),
   };
   const get = (r: string[], i: number) => (i >= 0 ? (r[i] ?? "").trim() : "");
   return rows.slice(1).map((r) => ({
@@ -58,6 +62,8 @@ export function rowsToContacts(rows: string[][]): Record<string, string>[] {
     value: get(r, m.value),
     tags: get(r, m.tags),
     website: get(r, m.website),
-    address: get(r, m.address),
+    // Street, city, state and zip become one address line.
+    address: [get(r, m.address), get(r, m.city), [get(r, m.state), get(r, m.zip)].filter(Boolean).join(" ")].filter(Boolean).join(", "),
+    notes: get(r, m.notes),
   }));
 }

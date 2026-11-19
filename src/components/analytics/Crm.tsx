@@ -644,7 +644,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
         total.updated += out.result.updated;
         total.skipped += out.result.skipped;
       }
-      setMsg(`Added ${total.added}, filled in ${total.updated} that were already here, skipped ${total.skipped} without a name, company or valid email.`);
+      setMsg(`Added ${total.added}, filled in ${total.updated} that were already here, skipped ${total.skipped} without a name, company, phone or valid email.`);
       setRows(null);
     } catch (e) {
       setMsg(`${e instanceof Error ? e.message : "The import stopped."} ${total.added} were added before it stopped.`);
@@ -655,7 +655,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
   return (
     <Dialog title="Import contacts" onClose={onClose}>
       <p className="text-sm text-dash-muted">
-        Pick a CSV file, saved from Excel, Google Sheets or another CRM. Columns like Name, First name, Last name, Email, Phone, Company, Title, Stage, Value and Tags are matched by their names. A contact who is already here only gets their empty fields filled in.
+        Pick a CSV file, saved from Excel, Google Sheets or another CRM. Columns like Name, Contact person, Clinic or Company, Email, Phone, Address, City, Stage, Value, Tags and Notes are matched by their names. Notes go on each contact's history. A contact who is already here only gets their empty fields filled in.
       </p>
       <input ref={input} type="file" accept=".csv,text/csv" className="mt-3 text-sm" onChange={(e) => e.target.files?.[0] && read(e.target.files[0])} />
       {rows && rows.length > 0 && (

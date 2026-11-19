@@ -213,7 +213,7 @@ export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "i
   const name = cut(b.name, 120);
   const company = cut(b.company, 120);
   if (email && !EMAIL.test(email)) return null;
-  if (!name && !email && !company) return null;
+  if (!name && !email && !company && !cut(b.phone, 40)) return null;
   const stage = stages.find((s) => s.toLowerCase() === cut(b.stage, 30).toLowerCase()) ?? stages[0];
   const raw = typeof b.value === "number" ? b.value : Number(String(b.value ?? "").replace(/[$,\s]/g, ""));
   const tags = (Array.isArray(b.tags) ? b.tags : String(b.tags ?? "").split(","))
@@ -324,7 +324,7 @@ export async function saveContact(accountId: string, input: unknown, id?: unknow
   await schema();
   const stages = await readStages(accountId);
   const c = cleanContact(input, stages);
-  if (!c) throw new Error("Add at least a name, a company or a valid email.");
+  if (!c) throw new Error("Add at least a name, a company, a phone or a valid email.");
   if (id !== undefined && id !== null && id !== "") {
     const cid = await owned(accountId, id);
     if (!cid) throw new Error("That contact isn't here anymore.");
@@ -495,7 +495,21 @@ export async function importContacts(accountId: string, rows: unknown): Promise<
       skipped++;
       continue;
     }
-    const [dup] = c.email ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived` : [];
+    // The same person: the same email, or without one, the same phone number or the same company name.
+    const digits = c.phone.replace(/\D/g, "");
+    const [dup] = c.email
+      ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived`
+      : digits.length >= 7 || c.company
+        ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email = ''
+            AND ((${digits} <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ${digits}) OR (${c.company} <> '' AND lower(company) = lower(${c.company})))
+            ORDER BY id LIMIT 1`
+        : [];
+    const notes = cut((r as Record<string, unknown>)?.notes, 2000);
+    const keepNote = async (cid: string) => {
+      if (!notes) return;
+      const [same] = await sql`SELECT id FROM insights_crm_activities WHERE contact_id = ${cid} AND kind = 'note' AND body = ${notes}`;
+      if (!same) await log(accountId, cid, "note", "From the import", notes);
+    };
     if (dup) {
       await sql`UPDATE insights_crm_contacts SET
         name = CASE WHEN name = '' THEN ${c.name} ELSE name END, phone = CASE WHEN phone = '' THEN ${c.phone} ELSE phone END,
@@ -503,12 +517,14 @@ export async function importContacts(accountId: string, rows: unknown): Promise<
         kind = CASE WHEN kind = '' THEN ${c.kind} ELSE kind END, address = CASE WHEN address = '' THEN ${c.address} ELSE address END,
         website = CASE WHEN website = '' THEN ${c.website} ELSE website END, updated_at = now()
         WHERE id = ${dup.id}`;
+      await keepNote(String(dup.id));
       updated++;
       continue;
     }
-    await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up)
+    const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
       VALUES (${accountId}, ${c.name}, ${c.email}, ${c.phone}, ${c.company}, ${c.title}, ${c.kind}, ${c.stage}, ${c.value}, ${JSON.stringify(c.tags)}::jsonb,
-        ${c.source}, ${c.address}, ${c.website}, ${c.followUp})`;
+        ${c.source}, ${c.address}, ${c.website}, ${c.followUp}, now()) RETURNING id`;
+    await keepNote(String(made!.id));
     added++;
   }
   return { added, updated, skipped };

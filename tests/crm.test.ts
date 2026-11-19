@@ -72,3 +72,16 @@ test("a shelf count works out what sold and what is owed, and refuses more than 
   assert.equal(o.last, "2026-11-10T00:00:00Z");
   assert.equal(o.recent[1].status, "partially refunded");
 });
+
+test("a clinic list with Contact Person, Clinic, City and Notes columns is read in full", () => {
+  const rows = parseCsv('Clinic,Contact Person,Email,Phone,Address,City,Notes\n"Atlas Chiropractic & Wellness","Dr. Brown M. Hamer III, DC","info@atlas.net","(214) 999-1019","2811 McKinney Ave #240","Dallas","4.9 stars"\n"Uptown Chiropractic","Dr. Lynne Auerbach, DC","","(214) 979-9013","2909 Cole Ave","Dallas","No email"\n');
+  const list = rowsToContacts(rows);
+  assert.equal(list[0].company, "Atlas Chiropractic & Wellness");
+  assert.equal(list[0].name, "Dr. Brown M. Hamer III, DC");
+  assert.equal(list[0].address, "2811 McKinney Ave #240, Dallas");
+  assert.equal(list[0].notes, "4.9 stars");
+  assert.equal(list[1].email, "");
+  // A row without an email is still a contact.
+  assert.ok(cleanContact(list[1], DEFAULT_STAGES));
+  assert.ok(cleanContact({ phone: "(817) 413-0080" }, DEFAULT_STAGES));
+});
