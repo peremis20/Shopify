@@ -135,3 +135,12 @@ test("a lone title is no name", async () => {
   const { greetingFor } = await import("../src/lib/analytics/crm");
   assert.equal(greetingFor("Dr."), "Hello,");
 });
+
+test("two word surnames and legal endings", async () => {
+  const { fillTemplate } = await import("../src/lib/analytics/crm");
+  assert.equal(fillTemplate("{first_name}", { name: "Dr. Troy Van Biezen, DC", company: "" }), "Dr. Van Biezen");
+  assert.equal(fillTemplate("{first_name}", { name: "Dr. Brown M. Hamer III, DC", company: "" }), "Dr. Hamer");
+  assert.equal(fillTemplate("{first_name}", { name: "Dr. Van", company: "" }), "Dr. Van");
+  assert.equal(fillTemplate("{company}", { name: "", company: "Expressions Chiropractic of Dallas PC" }), "Expressions Chiropractic of Dallas");
+  assert.equal(fillTemplate("{company}", { name: "", company: "Atlas Chiropractic & Wellness" }), "Atlas Chiropractic & Wellness");
+});

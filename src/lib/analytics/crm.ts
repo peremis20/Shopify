@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { ensureSchema, sql } from "./db";
 import { sendOneEmail } from "./gmail";
-import { addressName } from "./names";
+import { addressName, plainCompany } from "./names";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { aiProvider, readPlatformSettings } from "./autopilot/settings";
 import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer";
@@ -434,7 +434,7 @@ export function fillTemplate(text: string, c: Pick<Contact, "name" | "company">,
   return text
     .replace(/\{first_name\}/gi, addressName(c.name) || "there")
     .replace(/\{name\}/gi, c.name || "there")
-    .replace(/\{company\}/gi, c.company || "your business")
+    .replace(/\{company\}/gi, plainCompany(c.company) || "your business")
     .replace(/\{my_business\}/gi, business);
 }
 

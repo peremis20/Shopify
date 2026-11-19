@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Activity, Contact, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
-import { addressName } from "@/lib/analytics/names";
+import { addressName, plainCompany } from "@/lib/analytics/names";
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
 import { Card } from "./ui";
@@ -598,7 +598,7 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
   const fill = (t: string) => t
     .replace(/\{first_name\}/gi, addressName(contact.name) || "there")
     .replace(/\{name\}/gi, contact.name || "there")
-    .replace(/\{company\}/gi, contact.company || "your business");
+    .replace(/\{company\}/gi, plainCompany(contact.company) || "your business");
   const pick = (tid: string) => {
     const t = data.templates.find((x) => x.id === tid);
     if (t) {

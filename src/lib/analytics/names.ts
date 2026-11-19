@@ -8,10 +8,19 @@ export function addressName(name: string): string {
   if (!parts.length) return "";
   const title = /^(dr|mr|mrs|ms|miss)\.?$/i.exec(parts[0]);
   if (title && parts.length > 1) {
-    const last = parts.filter((p) => !/^(Jr|Sr|II|III|IV)\.?$/i.test(p)).at(-1)!;
+    const rest = parts.slice(1).filter((p) => !/^(Jr|Sr|II|III|IV)\.?$/i.test(p));
+    // A surname can have more than one word: "Van Biezen", "De La Cruz".
+    let i = rest.length - 1;
+    while (i > 1 && /^(van|von|der|den|de|del|della|di|da|du|la|le|st\.?|mac|bin|al)$/i.test(rest[i - 1])) i--;
+    const last = rest.slice(Math.max(i, 0)).join(" ");
     const t = title[1].toLowerCase() === "miss" ? "Miss" : `${title[1][0].toUpperCase()}${title[1].slice(1).toLowerCase()}.`;
     return `${t} ${last}`;
   }
   // A title alone ("Dr.") is no name to greet.
   return title ? "" : parts[0];
+}
+
+/** A business name without its legal ending: "Expressions Chiropractic of Dallas PC" reads "Expressions Chiropractic of Dallas". */
+export function plainCompany(company: string): string {
+  return company.replace(/[,\s]+(PC|P\.C\.|PLLC|LLC|L\.L\.C\.|Inc\.?|Incorporated|Ltd\.?|Corp\.?|Co\.)$/i, "").trim();
 }
