@@ -118,3 +118,9 @@ test("emails written for the owner: greeting, city, and the owner's offer kept w
   const body = composeDraft({ name: "Dr. Tim Davis", opening: "I run Peremis.", offer, link: "https://peremis.com/pages/wholesale", signoff: "Jimmy, Peremis", brand: "Peremis" });
   assert.match(body, /^Hi Dr\. Davis,\n\nI run Peremis\.\n\nClinics keep 30% of every sale\. 12 bottles, nothing up front\.\n\nMore here: https:\/\/peremis\.com\/pages\/wholesale\n\nThank you,\nJimmy, Peremis$/);
 });
+
+test("greetings use Mr, Mrs and Ms with the last name", async () => {
+  const { greetingFor } = await import("../src/lib/analytics/crm");
+  assert.equal(greetingFor("Mr. John Smith"), "Hi Mr. Smith,");
+  assert.equal(greetingFor("mrs Ana Lopez"), "Hi Mrs. Lopez,");
+});

@@ -2336,7 +2336,7 @@ export const crmApi = (req: Request) =>
         case "draftAll": {
           if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
           const out = await draftDueEmails(account.id, 5, Date.now() + 50_000);
-          return json({ written: out.written, failed: out.failed });
+          return json({ written: out.written, failed: out.waiting ? [out.waiting] : out.failed });
         }
         case "import": return json({ result: await importContacts(account.id, b.rows) });
         case "email": {

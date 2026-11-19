@@ -3,7 +3,7 @@ import { ensureSchema, sql } from "./db";
 import { sendOneEmail } from "./gmail";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { aiProvider, readPlatformSettings } from "./autopilot/settings";
-import { secondCheck, writeContactIntro } from "./autopilot/writer";
+import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer";
 import { healthRulesApply, readProfile, siteBrief } from "./profile";
 import { claimProblem, cleanPost, noDashes } from "./social-agent";
 
@@ -956,9 +956,11 @@ export function greetingFor(name: string): string {
   const clean = name.replace(/,.*$/, "").replace(/\([^)]*\)/g, " ").replace(/\b(Jr|Sr|II|III|IV|PhD|MD|DC)\.?$/i, "").trim();
   const parts = clean.split(/\s+/).filter(Boolean);
   if (!parts.length) return "Hello,";
-  if (/^dr\.?$/i.test(parts[0]) && parts.length > 1) {
+  const title = /^(dr|mr|mrs|ms|miss)\.?$/i.exec(parts[0]);
+  if (title && parts.length > 1) {
     const last = parts.filter((p) => !/^(Jr|Sr|II|III|IV)\.?$/i.test(p)).at(-1)!;
-    return `Hi Dr. ${last},`;
+    const t = title[1].toLowerCase() === "miss" ? "Miss" : `${title[1][0].toUpperCase()}${title[1].slice(1).toLowerCase()}.`;
+    return `Hi ${t} ${last},`;
   }
   return `Hi ${parts[0]},`;
 }
@@ -1038,18 +1040,25 @@ export async function discardDraft(accountId: string, contactId: unknown): Promi
   const cid = await owned(accountId, contactId);
   if (!cid) throw new Error("That contact isn't here anymore.");
   // Remembered as thrown away, so the hourly run doesn't write it again; "Write an email for me" still can.
-  await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ discarded: true, at: new Date().toISOString() })}::jsonb WHERE id = ${cid}`;
+  await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ discarded: true, at: new Date().toISOString() })}::jsonb, updated_at = now() WHERE id = ${cid}`;
 }
 
 /**
  * Writes the emails that are due, up to `max`: a first email for contacts with an email in the first stage who were
  * never emailed, and a follow up for contacts with an open "no reply yet" task. Contacts without an email are skipped.
  */
-export async function draftDueEmails(accountId: string, max = 5, deadline = Date.now() + 120_000): Promise<{ written: number; failed: string[] }> {
+export async function draftDueEmails(accountId: string, max = 5, deadline = Date.now() + 120_000): Promise<{ written: number; failed: string[]; waiting: string | null }> {
   await schema();
   const settings = await readCrmSettings(accountId);
-  const out = { written: 0, failed: [] as string[] };
+  const out = { written: 0, failed: [] as string[], waiting: null as string | null };
   if (!settings.autoDraft) return out;
+  // Nothing is written by itself until the owner's offer, an AI key and a second AI to check are all there; the
+  // page says what is missing instead of the status board turning red for a site that never set this up.
+  const profile = await readProfile(accountId);
+  if (!(settings.offer || profile.about?.offer?.trim())) return { ...out, waiting: "Write what your first email offers under CRM Settings, and emails are written for you." };
+  const base = aiProvider(await readPlatformSettings());
+  if (!base) return { ...out, waiting: "An AI key is needed in Platform keys before emails can be written." };
+  if (!hasSecondAi(base)) return { ...out, waiting: "A second AI from another provider is needed to check each email before it is written for you." };
   const stages = await readStages(accountId);
   // Waiting to be written: no draft yet, or one that failed three days ago (a thrown away one is left alone).
   const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> ''
@@ -1060,7 +1069,7 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
   const follows = await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t
       JOIN insights_crm_contacts c ON c.id = t.contact_id AND NOT c.archived AND c.email <> ''
         AND (c.draft IS NULL OR (c.draft ? 'failed' AND (c.draft->>'at')::timestamptz < now() - interval '3 days'))
-      JOIN insights_crm_activities e ON e.id = substring(t.auto_key from 9)::bigint
+      JOIN insights_crm_activities e ON e.id = CASE WHEN t.auto_key ~ '^noreply:[0-9]+$' THEN substring(t.auto_key from 9)::bigint END
     WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done AND t.auto_key LIKE 'noreply:%'
     ORDER BY c.id, t.at DESC LIMIT ${max}`;
   const jobs = [...follows.map((f) => ({ id: String(f.id), kind: "followup" as const, last: f.subject ?? null })), ...intros.map((r) => ({ id: String(r.id), kind: "intro" as const, last: null }))];
@@ -1074,7 +1083,7 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
       out.failed.push(why);
       // Not written again for three days, so one that keeps failing doesn't use AI every hour.
       await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ failed: why, at: new Date().toISOString() })}::jsonb
-        WHERE id = ${j.id} AND account_id = ${accountId} AND draft IS NULL`.catch(() => undefined);
+        WHERE id = ${j.id} AND account_id = ${accountId} AND (draft IS NULL OR draft ? 'failed')`.catch(() => undefined);
       // A setting or key problem would fail the same way for every contact: stop here.
       if (/Settings|AI key|offer text/i.test(String((e as Error)?.message))) break;
     }

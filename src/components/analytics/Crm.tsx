@@ -539,7 +539,7 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             </div>
           </div>
         )}
-        {id !== "new" && !editing && !mail && !c.draft && c.email && data.settings.autoDraft && (
+        {id !== "new" && !editing && !mail && !c.draft && c.email && (
           <button className={`${quiet} mt-4`} disabled={busy} onClick={() => run({ action: "draft", id, kind: acts.some((a) => a.kind === "email") ? "followup" : "intro", lastSubject: acts.find((a) => a.kind === "email")?.subject ?? null })}>
             {busy ? "Writing..." : "Write an email for me"}
           </button>
