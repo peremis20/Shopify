@@ -83,7 +83,7 @@ import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/track
 import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
 import { postNote, pruneBoard, readBoard, syncNeeds } from "./autopilot/team";
-import { accountsDueForFinder, runFinder } from "./autopilot/prospect-finder";
+import { accountsDueForFinder, isoWeek, runFinder } from "./autopilot/prospect-finder";
 import { checkAiKey, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -2309,7 +2309,12 @@ export async function leadApi(req: Request): Promise<Response> {
         return false;
       });
       // The rest of the team hears about it (no names or addresses on the board, and none of the visitor's own words).
-      if (added) await postNote(accountId, "Leads keeper", "found", "A request came in from the website form and is in the CRM as a new contact.", { ref: `lead:${kept.id}` });
+      // One note a week with the count, so a busy form doesn't push the other agents' notes off the board.
+      if (added) {
+        const [n] = await sql`SELECT count(*) AS n FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'lead' AND at > date_trunc('week', now())`.catch(() => [{ n: 1 }]);
+        const count = Math.max(1, Number(n?.n ?? 1));
+        await postNote(accountId, "Leads keeper", "found", `${count} ${count === 1 ? "request" : "requests"} came in from the website form this week, each in the CRM as a new contact.`, { ref: `leads:${isoWeek()}` });
+      }
     }
     // Only this request is sent now; anything else waiting goes with the hourly run.
     if (!kept.held && site !== undefined && !isSabbath()) {

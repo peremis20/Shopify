@@ -260,8 +260,10 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
   "prospect-finder": {
     name: "The Prospect finder (new businesses for your CRM)",
     fix: (d) =>
-      /limit/i.test(d ?? "")
-        ? "This month's search limit for the site is used up. It carries on next month by itself."
+      /search results key/i.test(d ?? "")
+        ? "Add a search results key (serper.dev) in Platform keys."
+        : /limit|trial/i.test(d ?? "")
+          ? "This month's search limit for the site is used up. It carries on by itself when the limit allows."
         : "It tries again by itself within the hour. Contacts already found are not affected.",
     workaround: "Contacts you add or import by hand work as usual meanwhile.",
   },

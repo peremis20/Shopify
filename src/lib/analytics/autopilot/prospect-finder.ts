@@ -5,7 +5,7 @@ import { clientListKnown, otherClient } from "./clients";
 import { findContactEmail } from "./contact-finder";
 import { report } from "./status";
 import { closeNeed, postNote } from "./team";
-import { spend } from "./usage";
+import { spend, SpendingLimitReached } from "./usage";
 
 /**
  * The Prospect finder: the start of the owner's sales pipeline. Each week it looks up the kinds of businesses the
@@ -41,6 +41,12 @@ interface FinderState {
   pair: number;
   /** Places already looked at, so a search that comes back the same doesn't cost a second look. */
   seen: string[];
+  /** Searches in a row that had nothing new. */
+  dry: number;
+  /** No work before this time: the week's count is full, or every search was worked through. */
+  idleUntil: string | null;
+  /** The settings the counts above belong to; new kinds or places start the searches fresh. */
+  setup: string;
 }
 
 const stateKey = (accountId: string) => `finder_state:${accountId}`;
@@ -98,9 +104,11 @@ export function cleanPlace(raw: unknown): Place | null {
 async function lookUp(apiKey: string, query: string): Promise<{ places: Place[]; paid: boolean }> {
   const key = `places:${crypto.createHash("sha256").update(`us|${query.toLowerCase()}`).digest("hex")}`;
   const [hit] = await sql`SELECT data FROM insights_report_cache WHERE cache_key = ${key} AND fetched_at > now() - interval '7 days'`.catch(() => [] as { data: unknown }[]);
+  // The listings are cached as Google gives them (raw), and cleaned the same way on every read.
   if (hit?.data) {
     const v = typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data;
-    return { places: ((v as { places?: unknown[] }).places ?? []).map(cleanPlace).filter((p): p is Place => Boolean(p)), paid: false };
+    const raw = (v as { raw?: unknown[] }).raw;
+    if (Array.isArray(raw)) return { places: raw.map(cleanPlace).filter((p): p is Place => Boolean(p)), paid: false };
   }
   await spend("search");
   const res = await fetch("https://google.serper.dev/places", {
@@ -115,13 +123,14 @@ async function lookUp(apiKey: string, query: string): Promise<{ places: Place[];
     throw new Error(`The Google Maps lookup failed: ${body?.message ?? res.status}`);
   }
   await report("serper", true);
-  const places = (body.places ?? []).map(cleanPlace).filter((p): p is Place => Boolean(p));
-  await sql`INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${key}, ${JSON.stringify({ places })}::jsonb, now())
+  const raw = Array.isArray(body.places) ? body.places.slice(0, 40) : [];
+  const places = raw.map(cleanPlace).filter((p): p is Place => Boolean(p));
+  await sql`INSERT INTO insights_report_cache (cache_key, data, fetched_at) VALUES (${key}, ${JSON.stringify({ raw })}::jsonb, now())
     ON CONFLICT (cache_key) DO UPDATE SET data = EXCLUDED.data, fetched_at = now()`.catch(() => undefined);
   return { places, paid: true };
 }
 
-async function readState(accountId: string, week: string): Promise<FinderState> {
+async function readState(accountId: string, week: string, setup: string): Promise<FinderState> {
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${stateKey(accountId)}`;
   const v = (() => {
     try {
@@ -131,10 +140,21 @@ async function readState(accountId: string, week: string): Promise<FinderState> 
     }
   })();
   const seen = Array.isArray(v.seen) ? v.seen.filter((x): x is string => typeof x === "string").slice(-3000) : [];
-  const pair = Number.isInteger(v.pair) ? Number(v.pair) : 0;
+  // New kinds or places: the searches start from the first again and any rest ends.
+  const same = v.setup === setup;
+  const pair = same && Number.isInteger(v.pair) ? Number(v.pair) : 0;
+  const dry = same ? Number(v.dry) || 0 : 0;
+  const idleUntil = same && typeof v.idleUntil === "string" ? v.idleUntil : null;
   // A new week starts the counts again; what was seen is kept.
-  if (v.week !== week) return { week, added: 0, emails: 0, calls: 0, lookups: 0, pair, seen };
-  return { week, added: Number(v.added) || 0, emails: Number(v.emails) || 0, calls: Number(v.calls) || 0, lookups: Number(v.lookups) || 0, pair, seen };
+  if (v.week !== week) return { week, added: 0, emails: 0, calls: 0, lookups: 0, pair, seen, dry, idleUntil, setup };
+  return { week, added: Number(v.added) || 0, emails: Number(v.emails) || 0, calls: Number(v.calls) || 0, lookups: Number(v.lookups) || 0, pair, seen, dry, idleUntil, setup };
+}
+
+/** Monday 00:00 UTC after a date: when a full week's count opens again. */
+export function nextWeekStart(d = new Date()): string {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + (8 - (t.getUTCDay() || 7)));
+  return t.toISOString();
 }
 
 async function saveState(accountId: string, st: FinderState): Promise<void> {
@@ -142,12 +162,17 @@ async function saveState(accountId: string, st: FinderState): Promise<void> {
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
 }
 
-/** Sites with the finder on whose weekly count isn't full, the longest waiting first. */
+/**
+ * Sites with the finder on that have work: not run in the last 50 minutes, and not resting (a full week, or every
+ * search worked through). New settings end a rest, since the state then belongs to the old ones. Longest waiting first.
+ */
 export async function accountsDueForFinder(limit = 1): Promise<string[]> {
   const rows = await sql`SELECT substring(s.key from 14) AS account_id FROM insights_settings s
     LEFT JOIN insights_settings st ON st.key = 'finder_state:' || substring(s.key from 14)
     WHERE s.key LIKE 'crm_settings:%' AND s.value LIKE '%"finder":{"on":true%'
       AND (st.updated_at IS NULL OR st.updated_at < now() - interval '50 minutes')
+      AND (st.value IS NULL OR st.updated_at < s.updated_at
+        OR coalesce((st.value::jsonb ->> 'idleUntil')::timestamptz, '-infinity'::timestamptz) < now())
     ORDER BY st.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id)).filter((id) => /^\d{1,18}$/.test(id));
 }
@@ -158,20 +183,17 @@ export async function accountsDueForFinder(limit = 1): Promise<string[]> {
  */
 export async function runFinder(accountId: string, apiKey: string | null, ourDomain: string | null, deadline: number): Promise<string | null> {
   const { finder } = await readCrmSettings(accountId);
-  if (!finder.on) return null;
-  const st = await readState(accountId, isoWeek());
+  if (!finder.on || !finder.kinds.length || !finder.places.length) return null;
+  const setup = crypto.createHash("sha1").update(JSON.stringify([finder.kinds, finder.places])).digest("hex").slice(0, 12);
+  const st = await readState(accountId, isoWeek(), setup);
   const touch = () => saveState(accountId, st);
-  if (!finder.kinds.length || !finder.places.length) {
-    await touch();
-    return null;
-  }
+  // A platform key only the platform owner adds: the status board shows it (not the site owner's to do list).
   if (!apiKey) {
     await touch();
-    await postNote(accountId, "Prospect finder", "needs", "A search results key (serper.dev) is needed in Platform keys before new businesses can be found.", { ref: "key" });
+    await report("prospect-finder", false, "A search results key (serper.dev) is needed in Platform keys before new businesses can be found.");
     return "prospect finder waits: no search results key";
   }
-  await closeNeed(accountId, "Prospect finder", "key");
-  if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) {
+  if (st.idleUntil && Date.parse(st.idleUntil) > Date.now()) {
     await touch();
     return null;
   }
@@ -184,41 +206,63 @@ export async function runFinder(accountId: string, apiKey: string | null, ourDom
   const searches = searchesFor(finder);
   const seen = new Set(st.seen);
   let addedNow = 0;
-  // Up to as many searches as there are, so a search with nothing new moves straight on to the next.
-  for (let tries = 0; tries < searches.length && Date.now() < deadline - 20_000; tries++) {
-    if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) break;
-    const query = searches[st.pair % searches.length];
-    const { places, paid } = await lookUp(apiKey, query);
-    if (paid) st.lookups++;
-    const fresh = places.filter((p) => !seen.has(p.cid));
-    for (const p of fresh) {
-      if (Date.now() > deadline - 15_000 || st.added >= finder.perWeek) break;
-      seen.add(p.cid);
-      st.seen.push(p.cid);
-      const host = p.website ? new URL(p.website).hostname.replace(/^www\./, "") : "";
-      if (host && isClient(host)) continue;
-      if (await knownContact(accountId, { phone: p.phone, website: p.website, company: p.title, address: p.address })) continue;
-      const email = p.website && host ? await findContactEmail(p.website, host).catch(() => null) : null;
-      const made = await addFoundContact(accountId, {
-        company: p.title,
-        email,
-        phone: p.phone,
-        address: p.address,
-        website: p.website,
-        kind: p.category,
-        note: `Found on Google Maps searching "${query}"${p.category ? `, listed as ${p.category}` : ""}${p.rating !== null ? `, rated ${p.rating}${p.reviews !== null ? ` from ${p.reviews} reviews` : ""}` : ""}.${email ? ` The email is the one printed on ${host}.` : " No email is printed on their website."}`,
-      });
-      if (!made) continue;
-      st.added++;
-      addedNow++;
-      if (email) st.emails++;
-      if (made.call) st.calls++;
+  let note: string | null = null;
+  try {
+    // Up to as many searches as there are, so a search with nothing new moves straight on to the next.
+    for (let tries = 0; tries < searches.length && Date.now() < deadline - 20_000; tries++) {
+      if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) break;
+      const query = searches[st.pair % searches.length];
+      const { places, paid } = await lookUp(apiKey, query);
+      if (paid) st.lookups++;
+      const fresh = places.filter((p) => !seen.has(p.cid));
+      st.dry = fresh.length ? 0 : st.dry + 1;
+      for (const p of fresh) {
+        if (Date.now() > deadline - 15_000 || st.added >= finder.perWeek) break;
+        seen.add(p.cid);
+        const host = p.website ? new URL(p.website).hostname.replace(/^www\./, "") : "";
+        if (host && isClient(host)) continue;
+        if (await knownContact(accountId, { phone: p.phone, website: p.website, company: p.title, address: p.address, email: null })) continue;
+        const email = p.website && host ? await findContactEmail(p.website, host).catch(() => null) : null;
+        // The same email already in the CRM (a lead, an import, a turned down one): not added twice.
+        if (email && (await knownContact(accountId, { phone: "", website: "", company: "", address: "", email }))) continue;
+        const made = await addFoundContact(accountId, {
+          company: p.title,
+          email,
+          phone: p.phone,
+          address: p.address,
+          website: p.website,
+          kind: p.category,
+          note: `Found on Google Maps searching "${query}"${p.category ? `, listed as ${p.category}` : ""}${p.rating !== null ? `, rated ${p.rating}${p.reviews !== null ? ` from ${p.reviews} reviews` : ""}` : ""}.${email ? ` The email is the one printed on ${host}.` : " No email is printed on their website."}`,
+        });
+        if (!made) continue;
+        st.added++;
+        addedNow++;
+        if (made.email) st.emails++;
+        if (made.call) st.calls++;
+      }
+      // Done with this search once all its places are looked at; otherwise it carries on next hour.
+      if (!places.every((p) => seen.has(p.cid))) break;
+      st.pair = (st.pair + 1) % searches.length;
+      // Every search came back with nothing new: rest four weeks instead of paying for the same lists again, and say so.
+      if (st.dry >= searches.length) {
+        st.idleUntil = new Date(Date.now() + 28 * 86_400_000).toISOString();
+        st.dry = 0;
+        await postNote(accountId, "Prospect finder", "needs", "Every search in your list has been worked through. Add more places or kinds of businesses under CRM, Settings, to find more.", { ref: "dry" });
+        break;
+      }
     }
-    // Done with this search once all its places are looked at; otherwise it carries on next hour.
-    if (places.every((p) => seen.has(p.cid))) st.pair = (st.pair + 1) % searches.length;
-    else break;
+    if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) st.idleUntil = nextWeekStart();
+    await report("prospect-finder", true);
+  } catch (e) {
+    // This month's search limit: a pause, not a fault; the count is kept and it carries on when the limit allows.
+    if (!(e instanceof SpendingLimitReached)) throw e;
+    st.idleUntil = nextWeekStart();
+    note = "prospect finder waits: this month's search limit is used up";
+  } finally {
+    st.seen = [...seen];
+    await touch().catch((e) => console.error(`finder state not saved: ${(e as Error).message}`));
   }
-  await touch();
+  if (addedNow) await closeNeed(accountId, "Prospect finder", "dry");
   if (st.added) {
     await postNote(
       accountId,
@@ -228,6 +272,5 @@ export async function runFinder(accountId: string, apiKey: string | null, ourDom
       { ref: `week:${st.week}` },
     );
   }
-  await report("prospect-finder", true);
-  return addedNow ? `prospect finder: ${addedNow} new ${addedNow === 1 ? "business" : "businesses"} added to the CRM` : null;
+  return note ?? (addedNow ? `prospect finder: ${addedNow} new ${addedNow === 1 ? "business" : "businesses"} added to the CRM` : null);
 }

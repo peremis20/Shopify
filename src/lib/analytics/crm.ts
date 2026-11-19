@@ -376,11 +376,13 @@ export async function moveContact(accountId: string, id: unknown, stage: unknown
   if (before) {
     await log(accountId, cid, "stage", `Moved to ${to}`);
     // A won deal is news for the whole team: the Strategist plans with it and the weekly report shows it.
+    // Only a business from a public listing is named; anything else (a website request, a person) stays unnamed.
     if (/^won$/i.test(to)) {
-      const [c] = await sql`SELECT company, name, kind, address FROM insights_crm_contacts WHERE id = ${cid}`;
-      const who = plainCompany(c?.company ?? "") || "a contact";
-      const where = cityOf(c?.address ?? "");
-      await postNote(accountId, "CRM", "found", `Won a deal with ${who}${c?.kind ? ` (${c.kind})` : ""}${where ? ` in ${where}` : ""}.`, { ref: `won:${cid}` });
+      const [c] = await sql`SELECT company, kind, address, source FROM insights_crm_contacts WHERE id = ${cid}`;
+      const listed = c?.source === "Prospect finder";
+      const who = listed ? plainCompany(c?.company ?? "") : "";
+      const where = listed ? cityOf(c?.address ?? "") : "";
+      await postNote(accountId, "CRM", "found", who ? `Won a deal with ${who}${c?.kind ? ` (${c.kind})` : ""}${where ? ` in ${where}` : ""}.` : "Won a deal with a contact in the CRM.", { ref: `won:${cid}` });
     }
   }
 }
@@ -615,10 +617,12 @@ export async function forgetLeadCopies(accountId: string, email: string | null):
 export async function addFoundContact(
   accountId: string,
   f: { company: string; email: string | null; phone: string; address: string; website: string; kind: string; note: string },
-): Promise<{ id: string; call: boolean } | null> {
+): Promise<{ id: string; call: boolean; email: boolean } | null> {
   await schema();
   const stages = await readStages(accountId);
-  const c = cleanContact({ company: f.company, email: f.email ?? "", phone: f.phone, address: f.address, website: f.website, kind: f.kind, source: "Prospect finder", tags: ["Found by DashPatrol"] }, stages);
+  // An address the site prints in an odd form is left out, and the business is added to call instead.
+  const email = f.email && EMAIL.test(f.email.trim().toLowerCase()) ? f.email.trim() : "";
+  const c = cleanContact({ company: f.company, email, phone: f.phone, address: f.address, website: f.website, kind: f.kind, source: "Prospect finder", tags: ["Found by DashPatrol"] }, stages);
   if (!c || !c.company) return null;
   const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
     VALUES (${accountId}, '', ${c.email}, ${c.phone}, ${c.company}, '', ${c.kind}, ${stages[0]}, 0, ${JSON.stringify(c.tags)}::jsonb, ${c.source}, ${c.address}, ${c.website}, NULL, now())
@@ -627,7 +631,7 @@ export async function addFoundContact(
   await log(accountId, id, "note", "Found by the Prospect finder", cut(f.note, 2000));
   const call = !c.email && Boolean(c.phone);
   if (call) await log(accountId, id, "task", `Call ${plainCompany(c.company) || c.company}`, "Added by the Prospect finder: no email is printed on their website, so a call is the way in.", nextWeekday());
-  return { id, call };
+  return { id, call, email: Boolean(c.email) };
 }
 
 /** Tomorrow, or Monday when tomorrow is Saturday or Sunday (an ISO date). */
@@ -638,7 +642,7 @@ export function nextWeekday(from = new Date()): string {
 }
 
 /** Whether a found business is already a contact, archived ones included (a turned down clinic isn't added again). */
-export async function knownContact(accountId: string, f: { phone: string; website: string; company: string; address: string }): Promise<boolean> {
+export async function knownContact(accountId: string, f: { phone: string; website: string; company: string; address: string; email: string | null }): Promise<boolean> {
   await schema();
   const digits = f.phone.replace(/[^0-9]/g, "").slice(-10);
   const host = (() => {
@@ -648,10 +652,12 @@ export async function knownContact(accountId: string, f: { phone: string; websit
       return "";
     }
   })();
+  const email = (f.email ?? "").trim().toLowerCase();
   const [hit] = await sql`SELECT 1 FROM insights_crm_contacts WHERE account_id = ${accountId} AND (
-      (${digits} <> '' AND length(${digits}) >= 7 AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
+      (${email} <> '' AND lower(email) = ${email})
+      OR (${digits} <> '' AND length(${digits}) >= 7 AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
       OR (${host} <> '' AND lower(regexp_replace(regexp_replace(website, '^https?://(www[.])?', ''), '[/?#].*$', '')) = ${host})
-      OR (lower(company) = lower(${f.company}) AND lower(address) = lower(${f.address}) AND ${f.address} <> ''))
+      OR (${f.company} <> '' AND lower(company) = lower(${f.company}) AND lower(address) = lower(${f.address}) AND ${f.address} <> ''))
     LIMIT 1`;
   return Boolean(hit);
 }
@@ -766,6 +772,8 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     finder: b.finder === undefined ? cur.finder : cleanFinder(b.finder),
   };
   if (value.finder.on && (!value.finder.kinds.length || !value.finder.places.length)) throw new Error("Write what kinds of businesses to find and where, or turn the finder off.");
+  const asked = Number((b.finder as Record<string, unknown> | undefined)?.perWeek);
+  if (b.finder !== undefined && value.finder.on && !(Number.isInteger(asked) && asked >= 5 && asked <= 100)) throw new Error("Pick between 5 and 100 new businesses a week.");
   await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(value)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
   return value;

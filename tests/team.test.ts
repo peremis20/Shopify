@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { boardFacts, type TeamNote } from "../src/lib/analytics/autopilot/team";
 import { teamLines } from "../src/lib/analytics/autopilot/alerts";
-import { cleanPlace, isoWeek, searchesFor } from "../src/lib/analytics/autopilot/prospect-finder";
+import { cleanPlace, isoWeek, nextWeekStart, searchesFor } from "../src/lib/analytics/autopilot/prospect-finder";
 import { cleanFinder, nextWeekday } from "../src/lib/analytics/crm";
 
 const note = (agent: string, kind: TeamNote["kind"], text: string, extra: Partial<TeamNote> = {}): TeamNote => ({
@@ -80,4 +80,17 @@ test("weeks and weekdays", () => {
   assert.equal(nextWeekday(new Date("2026-11-19T12:00:00Z")), "2026-11-20");
   assert.equal(nextWeekday(new Date("2026-11-20T12:00:00Z")), "2026-11-23");
   assert.equal(nextWeekday(new Date("2026-11-21T12:00:00Z")), "2026-11-23");
+});
+
+test("a full week rests until the next Monday", () => {
+  assert.equal(nextWeekStart(new Date("2026-11-19T12:00:00Z")), "2026-11-23T00:00:00.000Z");
+  assert.equal(nextWeekStart(new Date("2026-11-22T23:00:00Z")), "2026-11-23T00:00:00.000Z");
+  assert.equal(nextWeekStart(new Date("2026-11-23T01:00:00Z")), "2026-11-30T00:00:00.000Z");
+});
+
+test("a listing cleaned twice keeps nothing, so only the raw listing is cached", () => {
+  const raw = { title: "Phone only clinic", phoneNumber: "214-555-0101", address: "Dallas, TX" };
+  assert.equal(cleanPlace(raw)!.phone, "214-555-0101");
+  // The cleaned shape has no phoneNumber: reading it back as a listing loses the phone (why the raw one is kept).
+  assert.equal(cleanPlace(cleanPlace(raw)), null);
 });
