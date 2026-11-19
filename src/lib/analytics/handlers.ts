@@ -82,6 +82,8 @@ import { checkSerpKey, fetchSerp } from "./autopilot/serp";
 import { accountsDueForTracking, rankWatch, trackRanks } from "./autopilot/tracking";
 import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } from "./autopilot/expert-review";
 import { readScorecard } from "./autopilot/scorecard";
+import { postNote, pruneBoard, readBoard, syncNeeds } from "./autopilot/team";
+import { accountsDueForFinder, runFinder } from "./autopilot/prospect-finder";
 import { checkAiKey, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -1157,6 +1159,9 @@ export async function clientErrors(req: Request): Promise<Response> {
 /** Each agent's record on this site (Advanced view). */
 export const agentScorecard = (req: Request) => withAccount(req, async (account) => json({ scores: await readScorecard(account.id) }));
 
+/** The team board: what every agent did, found and needs this week. */
+export const teamBoard = (req: Request) => withAccount(req, async (account) => json({ notes: await readBoard(account.id, 7) }));
+
 export const authorityPlanReport = (req: Request) => withAccount(req, async (account) => json({ plan: await readAuthorityPlan(account.id) }));
 
 /** What the Inspector found: problems, what agents repaired, and what needs the owner. */
@@ -1620,6 +1625,8 @@ export async function autopilotTick(): Promise<Response> {
         (e) => ((inspected = false), console.error(`inspector failed: ${message(e)}`), [] as Awaited<ReturnType<typeof inspect>>)
       );
       if (found.length) results.push(`account ${accountId} inspector: ${found.map((p) => `[${p.who}] ${p.text}`).join(" ")}`);
+      // What only the site owner can fix goes on the team board too, so the other agents plan around it.
+      if (inspected) await syncNeeds(accountId, "Inspector", found.filter((p) => p.who === "owner" && !p.platform).map((p) => ({ ref: p.id, text: `${p.text} ${p.fix}` })));
       // What only the owner can fix reaches them by email, not just on the dashboard.
       // Only from a complete check: a failed one says nothing about what cleared.
       const mailed = inspected ? await sendUrgentAlerts(accountId, found).catch((e) => (console.error(`alerts failed: ${message(e)}`), 0)) : 0;
@@ -1773,11 +1780,43 @@ export async function autopilotTick(): Promise<Response> {
           }
         }
         if (!draftFailed) await report("crm", true);
+        // What is waiting on the owner in the CRM goes on the team board, so every agent and the weekly report see it.
+        const [w] = await sql`SELECT
+            (SELECT count(*) FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND draft ? 'subject') AS drafts,
+            (SELECT count(*) FROM insights_crm_activities a JOIN insights_crm_contacts c ON c.id = a.contact_id AND NOT c.archived
+              WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done AND a.due <= current_date) AS due`;
+        const drafts = Number(w?.drafts ?? 0);
+        const due = Number(w?.due ?? 0);
+        await syncNeeds(accountId, "CRM", [
+          ...(drafts ? [{ ref: "drafts", text: `${drafts} ${drafts === 1 ? "email is" : "emails are"} written and waiting for your Send click (CRM, To do).` }] : []),
+          ...(due ? [{ ref: "due", text: `${due} ${due === 1 ? "call or follow up is" : "calls and follow ups are"} due today or late (CRM, To do).` }] : []),
+        ]);
       }).catch(async (e) => {
         console.error(`crm upkeep failed for ${accountId}: ${message(e)}`);
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
       });
     }
+    // The Prospect finder: new businesses the owner sells to, found on Google Maps and added to the CRM (one site an hour).
+    for (const accountId of late() ? [] : await accountsDueForFinder(1).catch(async (e) => {
+      console.error(`finder list failed: ${message(e)}`);
+      await report("prospect-finder", false, `The list of sites due for the Prospect finder couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, async () => {
+        const profile = await readProfile(accountId);
+        const conn = await getConnection(accountId).catch(() => null);
+        const domain = conn?.gscSiteUrl ? domainOf(conn.gscSiteUrl) : (profile.siteDomain ?? null);
+        return runFinder(accountId, (await readPlatformSettings()).serperKey ?? null, domain, Math.min(Date.now() + 120_000, started + budget));
+      }).catch(async (e) => {
+        console.error(`prospect finder failed for ${accountId}: ${message(e)}`);
+        await report("prospect-finder", false, `The Prospect finder couldn't finish (${message(e)})`);
+        return null;
+      });
+      if (note) results.push(`account ${accountId} ${note}`);
+    }
+    // The team board keeps four months of notes.
+    if (new Date().getUTCHours() === 4 && !late()) await pruneBoard().catch((e) => console.error(`team board not pruned: ${message(e)}`));
     // The Leads keeper: form requests still waiting are saved in each store's Shopify Customers.
     for (const accountId of late() ? [] : await accountsWithWaitingLeads(5).catch((e) => (console.error(`leads list failed: ${message(e)}`), [] as string[]))) {
       if (late()) break;
@@ -2264,10 +2303,13 @@ export async function leadApi(req: Request): Promise<Response> {
     const kept = await keepLead(accountId, lead, ip, store?.shopDomain ?? null);
     // The request also becomes a contact in the owner's CRM (a held one is not: a flood can't fill the CRM).
     if (!kept.held) {
-      await contactFromLead(accountId, lead).catch(async (e) => {
+      const added = await contactFromLead(accountId, lead).then(() => true, async (e) => {
         console.error(`lead not added to the CRM: ${message(e)}`);
         await report("leads", false, `A lead was kept but not added to the CRM (${message(e)})`);
+        return false;
       });
+      // The rest of the team hears about it (no names or addresses on the board, and none of the visitor's own words).
+      if (added) await postNote(accountId, "Leads keeper", "found", "A request came in from the website form and is in the CRM as a new contact.", { ref: `lead:${kept.id}` });
     }
     // Only this request is sent now; anything else waiting goes with the hourly run.
     if (!kept.held && site !== undefined && !isSabbath()) {

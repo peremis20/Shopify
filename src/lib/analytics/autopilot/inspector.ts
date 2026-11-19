@@ -257,6 +257,14 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           : "It tries again by itself within the hour. Your contacts and history are not affected.",
     workaround: "Follow up tasks and the morning email wait until the next run; everything you add by hand works as usual.",
   },
+  "prospect-finder": {
+    name: "The Prospect finder (new businesses for your CRM)",
+    fix: (d) =>
+      /limit/i.test(d ?? "")
+        ? "This month's search limit for the site is used up. It carries on next month by itself."
+        : "It tries again by itself within the hour. Contacts already found are not affected.",
+    workaround: "Contacts you add or import by hand work as usual meanwhile.",
+  },
   leads: {
     name: "The Leads keeper (form requests saved in Shopify Customers)",
     fix: (d) =>

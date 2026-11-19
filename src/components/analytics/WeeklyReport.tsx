@@ -205,6 +205,26 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
           </div>
       </Card>
 
+      {/* The team board */}
+      {Boolean(data.team?.needs.length || data.team?.did.length) && (
+        <Card>
+          <CardHeader title="Team board" />
+          <p className="mb-2 text-xs text-dash-muted">Every agent writes here what it did, found and needs, and every agent reads it, so they all plan from the same picture.</p>
+          {Boolean(data.team?.needs.length) && (
+            <div className="mb-3">
+              <p className="text-xs font-semibold text-dash-ink">Waiting on you</p>
+              <ul className="mt-1 space-y-1 text-sm text-dash-ink">{data.team!.needs.map((t) => <li key={t}>{t}</li>)}</ul>
+            </div>
+          )}
+          {Boolean(data.team?.did.length) && (
+            <div>
+              <p className="text-xs font-semibold text-dash-ink">This week</p>
+              <ul className="mt-1 space-y-1 text-sm text-dash-ink">{data.team!.did.map((t) => <li key={t}>{t}</li>)}</ul>
+            </div>
+          )}
+        </Card>
+      )}
+
       <p className="text-center text-xs text-dash-muted">A rise after a change is a good sign, not proof the change caused it.</p>
     </div>
   );

@@ -17,6 +17,8 @@ import { aiProvider, readPlatformSettings, type AiProvider } from "./settings";
 import { faithAllowed, readSiteKeywords } from "./site-keywords";
 import { addTarget, readTargets, saveTarget } from "./targets";
 import { rankWatch } from "./tracking";
+import { boardFacts, postNote, readBoard } from "./team";
+import { crmFacts } from "../crm";
 import { pagesForQuery } from "./guards";
 import { rescuable } from "./engine";
 import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type StrategyMove } from "./writer";
@@ -208,6 +210,9 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   if (authority?.studied.length) {
     lines.push(`Link sources found from competitors (Authority Coach, ${authority.at.slice(0, 10)}): ` + authority.studied.map((s) => `${s.domain}: ${s.found}`).join("; ") + ".");
   }
+  // What the rest of the team did and found this week (the team board), and the owner's own sales pipeline.
+  lines.push(...boardFacts(await readBoard(accountId, 7).catch(() => []).then((n) => n.filter((x) => x.agent !== "Strategist" && x.agent !== "Inspector"))));
+  lines.push(...(await crmFacts(accountId).catch(() => [])));
   lines.push(visitors !== null ? `Visitors from Google search, last 28 days: ${visitors}. Goal: ${GOAL} a month.` : `Google visitors: unknown (Search Console not connected). Goal: ${GOAL} a month.`);
   // Revenue matters as much as visitors: fewer visitors who buy beat many who don't.
   let revenue: number | null = null;
@@ -346,6 +351,14 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     out.push({ ...m, keyword: k, kept, challenge, done });
   }
   const report: StrategyReport = { at: new Date().toISOString(), assessment: plan.assessment, moves: out, visitors, revenue, goal: GOAL, facts, checked };
+  const keptMoves = out.filter((m) => m.kept);
+  await postNote(
+    accountId,
+    "Strategist",
+    "did",
+    `Planned the week: ${keptMoves.length} of ${out.length} moves kept${checked ? " after the second AI's challenge" : ""}${keptMoves.length ? `: ${keptMoves.slice(0, 3).map((m) => m.action).join("; ")}` : ""}.`,
+    { ref: `plan:${report.at.slice(0, 10)}` },
+  );
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${KEY(accountId)}, ${JSON.stringify(report)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;

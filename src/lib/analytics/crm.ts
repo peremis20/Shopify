@@ -7,6 +7,7 @@ import { aiProvider, readPlatformSettings } from "./autopilot/settings";
 import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer";
 import { healthRulesApply, readProfile, siteBrief } from "./profile";
 import { claimProblem, cleanPost, noDashes } from "./social-agent";
+import { postNote } from "./autopilot/team";
 
 /**
  * The owner's own CRM: contacts, a sales pipeline, and everything done with each contact (notes, calls, meetings,
@@ -372,7 +373,16 @@ export async function moveContact(accountId: string, id: unknown, stage: unknown
   const to = stages.find((s) => s === stage);
   if (!to) throw new Error("That stage isn't on your pipeline.");
   const [before] = await sql`UPDATE insights_crm_contacts SET stage = ${to}, stage_changed_at = now(), updated_at = now() WHERE id = ${cid} AND stage <> ${to} RETURNING id`;
-  if (before) await log(accountId, cid, "stage", `Moved to ${to}`);
+  if (before) {
+    await log(accountId, cid, "stage", `Moved to ${to}`);
+    // A won deal is news for the whole team: the Strategist plans with it and the weekly report shows it.
+    if (/^won$/i.test(to)) {
+      const [c] = await sql`SELECT company, name, kind, address FROM insights_crm_contacts WHERE id = ${cid}`;
+      const who = plainCompany(c?.company ?? "") || "a contact";
+      const where = cityOf(c?.address ?? "");
+      await postNote(accountId, "CRM", "found", `Won a deal with ${who}${c?.kind ? ` (${c.kind})` : ""}${where ? ` in ${where}` : ""}.`, { ref: `won:${cid}` });
+    }
+  }
 }
 
 /** Takes a contact off the lists. Its history is kept, and Restore brings it back. */
@@ -598,6 +608,76 @@ export async function forgetLeadCopies(accountId: string, email: string | null):
   return contacts.length;
 }
 
+/**
+ * A business the Prospect finder found, added as a new contact at the first stage with a note on where it was found.
+ * One without an email gets a call task instead, due on the next weekday. Returns its id.
+ */
+export async function addFoundContact(
+  accountId: string,
+  f: { company: string; email: string | null; phone: string; address: string; website: string; kind: string; note: string },
+): Promise<{ id: string; call: boolean } | null> {
+  await schema();
+  const stages = await readStages(accountId);
+  const c = cleanContact({ company: f.company, email: f.email ?? "", phone: f.phone, address: f.address, website: f.website, kind: f.kind, source: "Prospect finder", tags: ["Found by DashPatrol"] }, stages);
+  if (!c || !c.company) return null;
+  const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
+    VALUES (${accountId}, '', ${c.email}, ${c.phone}, ${c.company}, '', ${c.kind}, ${stages[0]}, 0, ${JSON.stringify(c.tags)}::jsonb, ${c.source}, ${c.address}, ${c.website}, NULL, now())
+    RETURNING id`;
+  const id = String(made!.id);
+  await log(accountId, id, "note", "Found by the Prospect finder", cut(f.note, 2000));
+  const call = !c.email && Boolean(c.phone);
+  if (call) await log(accountId, id, "task", `Call ${plainCompany(c.company) || c.company}`, "Added by the Prospect finder: no email is printed on their website, so a call is the way in.", nextWeekday());
+  return { id, call };
+}
+
+/** Tomorrow, or Monday when tomorrow is Saturday or Sunday (an ISO date). */
+export function nextWeekday(from = new Date()): string {
+  const d = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + 1));
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Whether a found business is already a contact, archived ones included (a turned down clinic isn't added again). */
+export async function knownContact(accountId: string, f: { phone: string; website: string; company: string; address: string }): Promise<boolean> {
+  await schema();
+  const digits = f.phone.replace(/[^0-9]/g, "").slice(-10);
+  const host = (() => {
+    try {
+      return f.website ? new URL(f.website).hostname.toLowerCase().replace(/^www\./, "") : "";
+    } catch {
+      return "";
+    }
+  })();
+  const [hit] = await sql`SELECT 1 FROM insights_crm_contacts WHERE account_id = ${accountId} AND (
+      (${digits} <> '' AND length(${digits}) >= 7 AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
+      OR (${host} <> '' AND lower(regexp_replace(regexp_replace(website, '^https?://(www[.])?', ''), '[/?#].*$', '')) = ${host})
+      OR (lower(company) = lower(${f.company}) AND lower(address) = lower(${f.address}) AND ${f.address} <> ''))
+    LIMIT 1`;
+  return Boolean(hit);
+}
+
+/** The pipeline in plain facts for the Strategist: what the owner's sales work looks like this month. */
+export async function crmFacts(accountId: string): Promise<string[]> {
+  await schema();
+  const [counts, recent] = await Promise.all([
+    sql`SELECT stage, count(*) AS n FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived GROUP BY stage`,
+    sql`SELECT
+        (SELECT count(*) FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'email' AND at > now() - interval '7 days') AS emails,
+        (SELECT count(*) FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'reply' AND at > now() - interval '30 days') AS replies,
+        (SELECT count(*) FROM insights_crm_activities WHERE account_id = ${accountId} AND kind IN ('call', 'meeting') AND at > now() - interval '30 days') AS calls,
+        (SELECT count(*) FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'stage' AND lower(subject) = 'moved to won' AND at > now() - interval '30 days') AS won,
+        (SELECT count(*) FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND draft ? 'subject') AS drafts`,
+  ]);
+  if (!counts.length) return [];
+  const r = recent[0] ?? {};
+  const stages = await readStages(accountId);
+  const by = new Map(counts.map((c) => [String(c.stage), Number(c.n)]));
+  return [
+    `CRM pipeline (the owner's sales outreach): ${stages.map((s) => `${s} ${by.get(s) ?? 0}`).join(", ")}.`,
+    `CRM last 7 days: ${Number(r.emails ?? 0)} emails sent; last 30 days: ${Number(r.replies ?? 0)} replies, ${Number(r.calls ?? 0)} calls or meetings, ${Number(r.won ?? 0)} deals won; ${Number(r.drafts ?? 0)} emails written and waiting for the owner's Send.`,
+  ];
+}
+
 // ---------- follow ups the CRM adds by itself, and the daily to do email ----------
 
 export interface CrmSettings {
@@ -615,6 +695,27 @@ export interface CrmSettings {
   link: string;
   /** How the owner signs off, like "Jimmy, Peremis". */
   signoff: string;
+  /** The Prospect finder: finds businesses the owner sells to on Google Maps and adds them as new contacts. */
+  finder: FinderSettings;
+}
+
+export interface FinderSettings {
+  on: boolean;
+  /** What kinds of businesses, in the owner's words, like "chiropractor". */
+  kinds: string[];
+  /** Where, like "Dallas, TX". */
+  places: string[];
+  /** New contacts a week at most. */
+  perWeek: number;
+}
+
+/** The finder's settings from whatever was saved or sent; off and empty when nothing usable is there. */
+export function cleanFinder(input: unknown): FinderSettings {
+  const b = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const list = (v: unknown) =>
+    [...new Set((Array.isArray(v) ? v : String(v ?? "").split(/[;\n]/)).map((x) => cut(x, 60)).filter((x) => x.length >= 3))].slice(0, 8);
+  const n = Number(b.perWeek);
+  return { on: b.on === true, kinds: list(b.kinds), places: list(b.places), perWeek: Number.isInteger(n) && n >= 5 && n <= 100 ? n : 25 };
 }
 const settingsKey = (accountId: string) => `crm_settings:${accountId}`;
 
@@ -631,6 +732,7 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
     offer: typeof v.offer === "string" ? v.offer.slice(0, 1500) : "",
     link: typeof v.link === "string" && /^https:\/\/\S+$/.test(v.link) ? v.link.slice(0, 300) : "",
     signoff: typeof v.signoff === "string" ? v.signoff.slice(0, 120) : "",
+    finder: cleanFinder(v.finder),
   };
   if (!v.since) {
     await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
@@ -661,7 +763,9 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     offer: b.offer === undefined ? cur.offer : cut(b.offer, 1500),
     link,
     signoff: b.signoff === undefined ? cur.signoff : cut(b.signoff, 120),
+    finder: b.finder === undefined ? cur.finder : cleanFinder(b.finder),
   };
+  if (value.finder.on && (!value.finder.kinds.length || !value.finder.places.length)) throw new Error("Write what kinds of businesses to find and where, or turn the finder off.");
   await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(value)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
   return value;

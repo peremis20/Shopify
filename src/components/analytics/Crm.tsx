@@ -789,11 +789,16 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
   const [offer, setOffer] = useState(settings.offer);
   const [link, setLink] = useState(settings.link);
   const [signoff, setSignoff] = useState(settings.signoff);
+  const [findOn, setFindOn] = useState(settings.finder?.on ?? false);
+  const [kinds, setKinds] = useState((settings.finder?.kinds ?? []).join("\n"));
+  const [places, setPlaces] = useState((settings.finder?.places ?? []).join("\n"));
+  const [perWeek, setPerWeek] = useState(String(settings.finder?.perWeek ?? 25));
   const [err, setErr] = useState<string | null>(null);
   const save = async () => {
     if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
-      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff } });
+      const finder = { on: findOn, kinds: kinds.split("\n"), places: places.split("\n"), perWeek: Number(perWeek) };
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder } });
       await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
@@ -835,6 +840,30 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
         Sign off with
         <input className={`${field} mt-1`} placeholder="Your name, your business" value={signoff} onChange={(e) => setSignoff(e.target.value)} />
       </label>
+      <p className="mt-4 text-sm font-semibold text-dash-ink">Find new businesses for me</p>
+      <label className="mt-1 flex items-center gap-2 text-sm text-dash-ink">
+        <input type="checkbox" checked={findOn} onChange={(e) => setFindOn(e.target.checked)} />
+        Each week, find businesses you sell to on Google Maps and add them here as new contacts
+      </label>
+      <p className="mt-1 text-xs text-dash-muted">
+        Only real listings, with the email each business prints on its own website. Ones with an email get a first email written for your Send click; the others get a call task. Nothing is sent by itself.
+      </p>
+      {findOn && (
+        <>
+          <label className="mt-2 block text-sm text-dash-ink">
+            Kinds of businesses, one per line
+            <textarea className={`${field} mt-1 min-h-[80px]`} placeholder={"chiropractor\nnaturopathic doctor"} value={kinds} onChange={(e) => setKinds(e.target.value)} />
+          </label>
+          <label className="mt-2 block text-sm text-dash-ink">
+            Where, one place per line
+            <textarea className={`${field} mt-1 min-h-[80px]`} placeholder={"Dallas, TX\nPlano, TX"} value={places} onChange={(e) => setPlaces(e.target.value)} />
+          </label>
+          <label className="mt-2 block text-sm text-dash-ink">
+            New businesses a week at most
+            <input type="number" min={5} max={100} className={`${field} mt-1 w-24`} value={perWeek} onChange={(e) => setPerWeek(e.target.value)} />
+          </label>
+        </>
+      )}
       {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
       <button className={`${primary} mt-3`} onClick={save}>Save settings</button>
     </Dialog>

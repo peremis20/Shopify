@@ -273,6 +273,10 @@ ${img ? `<td valign="middle" style="width:172px;padding-right:12px">${img}</td>`
     .map((a) => `<div style="font-size:14px;color:${INK};padding:4px 0;border-top:1px solid ${LINE}"><strong>${esc(a.agent)}:</strong> ${esc(a.did)}.${a.result ? ` <span style="color:${MUTED}">${esc(a.result)}</span>` : ""}</div>`)
     .join("");
   if (status || agents) parts.push(section("Your agents", status + agents));
+  // The team board: what waits on the owner, and what the agents did and found together this week.
+  const row = (t: string) => `<div style="font-size:14px;color:${INK};padding:4px 0;border-top:1px solid ${LINE}">${esc(t)}</div>`;
+  if (d.team?.needs.length) parts.push(section("Waiting on you", d.team.needs.map(row).join("")));
+  if (d.team?.did.length) parts.push(section("From the team board", d.team.did.map(row).join("")));
   if (d.plan.length) parts.push(section("This week's plan", `<ol style="margin:0;padding-left:20px;font-size:14px;color:${INK}">${d.plan.map((p) => `<li style="margin:4px 0">${esc(p)}</li>`).join("")}</ol>`));
   if (x.usage) parts.push(section("Spending this month", `${meter("AI requests", x.usage.ai, x.usage.limits.ai)}${meter("Google results lookups", x.usage.search, x.usage.limits.search)}<div style="font-size:12px;color:${MUTED}">Counted from the first of the month; cached lookups are free.</div>`));
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>Your DashPatrol week</title></head>

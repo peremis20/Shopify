@@ -14,6 +14,7 @@ import { weeklyReportHtml } from "./report-email";
 import { usageThisMonth } from "./usage";
 import { readProfile } from "../profile";
 import { readAuthorityPlan, type AuthorityPlan } from "./authority-coach";
+import { readBoard, type TeamNote } from "./team";
 
 /**
  * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
@@ -160,6 +161,9 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   }
   lines.push(...(await backlinkLines(accountId, results ?? null)));
   if (scores.length) lines.push("", "What each agent did:", ...scores.map((s) => `${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`));
+  const team = teamLines(await readBoard(accountId, 7).catch(() => []));
+  if (team.needs.length) lines.push("", "Waiting on you:", ...team.needs.map((t) => `${t}`));
+  if (team.did.length) lines.push("", "From the team board this week:", ...team.did);
   lines.push("", "You can turn these emails off in Autopilot settings.");
   return lines.join("\n");
 }
@@ -237,6 +241,8 @@ export interface WeeklyReportData {
   totalsBefore?: { visits: number; leads: number; revenue: number } | null;
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
+  /** The team board: what waits on the owner and what the agents did and found this week. */
+  team?: { needs: string[]; did: string[] };
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
   shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
 }
@@ -278,6 +284,24 @@ function planLine(m: { action: string; keyword: string | null; page?: string | n
   const named = m.keyword ?? (m.page ? (() => { try { return new URL(m.page).pathname; } catch { return m.page; } })() : null);
   if (!named || text.toLowerCase().includes(named.toLowerCase())) return text;
   return `${text} (${m.keyword ? `for "${named}"` : `on ${named}`})`;
+}
+
+/**
+ * The team board for the weekly report: what still waits on the owner, and the latest few notes from each agent.
+ * The Inspector's own notes are left out of "did" (its problems are the "waiting on you" items). Pure.
+ */
+export function teamLines(notes: TeamNote[]): { needs: string[]; did: string[] } {
+  const needs = notes.filter((n) => n.kind === "needs" && !n.done).slice(0, 8).map((n) => `${n.agent}: ${n.text}`);
+  const count = new Map<string, number>();
+  const did: string[] = [];
+  for (const n of notes) {
+    if (n.kind === "needs" || n.agent === "Inspector") continue;
+    const c = count.get(n.agent) ?? 0;
+    if (c >= 2) continue;
+    count.set(n.agent, c + 1);
+    did.push(`${n.agent}: ${n.text}`);
+  }
+  return { needs, did: did.slice(0, 12) };
 }
 
 /** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
@@ -345,6 +369,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
         }
       : null,
     agents: scores.map((x) => ({ agent: x.agent, did: x.did, result: x.result })),
+    team: teamLines(await readBoard(accountId, 7).catch(() => [])),
     // A failed read is "error", never mistaken for "no store".
     shopify: await salesFor(accountId).catch((e) => (console.error(`weekly shopify sales failed: ${(e as Error).message}`), "error" as const)),
   };
