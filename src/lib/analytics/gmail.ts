@@ -83,10 +83,22 @@ export async function sentToday(accountId: string): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** The Gmail address may only be one this account already signed in or connected Google with. */
+/** Free email services: anyone can make an address there, so only the exact address counts. */
+const PUBLIC_DOMAINS = new Set(["gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "yandex.com", "zoho.com", "mail.com"]);
+
+/**
+ * The Gmail address may only be one this account already signed in or connected Google with, or another address on
+ * the same company domain (info@ next to jimmy@ at the business's own domain): only the business can make those,
+ * while on a free email service anyone can, so there only the exact address counts.
+ */
 export function sameOwner(gmail: string, known: (string | null | undefined)[]): boolean {
   const g = gmail.trim().toLowerCase();
-  return known.some((k) => typeof k === "string" && k.trim().toLowerCase() === g);
+  const domain = (e: string) => e.slice(e.lastIndexOf("@") + 1);
+  return known.some((k) => {
+    if (typeof k !== "string" || !k.includes("@")) return false;
+    const o = k.trim().toLowerCase();
+    return o === g || (domain(o) === domain(g) && !PUBLIC_DOMAINS.has(domain(g)) && g.includes("@"));
+  });
 }
 
 /** One plain email address and nothing else (no list, no name part, no header tricks). */

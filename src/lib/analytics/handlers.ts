@@ -320,7 +320,7 @@ export async function authCallback(req: Request): Promise<Response> {
       // So a link someone else sends can't put a stranger's Gmail on their account.
       const [owner, main] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null)]);
       if (!sameOwner(email, [owner, main?.email])) {
-        throw new Error("Use the same Google account you connected to the app to send from Gmail.");
+        throw new Error("Send from the Google account you use for the app, or another address at your own business domain.");
       }
       // Saved on its own: the Search Console and Analytics connection is left as it was.
       await saveGmail(link.accountId, { refreshToken, email });
