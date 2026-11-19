@@ -491,11 +491,16 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   if (!name || !subject || !body) throw new Error("A template needs a name, a subject and a message.");
   if (typeof b.id === "string" && ID.test(b.id)) {
     const [before] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${b.id} AND account_id = ${accountId}`;
+    const chosen = (await readCrmSettings(accountId)).firstTemplate === b.id;
+    if (chosen) {
+      const problem = await templateProblem(accountId, subject, body);
+      if (problem) throw new Error(problem);
+    }
     const [row] = await sql`UPDATE insights_crm_templates SET name = ${name}, subject = ${subject}, body = ${body} WHERE id = ${b.id} AND account_id = ${accountId} RETURNING id`;
     if (!row) throw new Error("That template isn't here anymore.");
     // The first email template's words changed: first emails still waiting are written again from the new words.
     const changed = before?.subject !== subject || before?.body !== body;
-    if (changed && (await readCrmSettings(accountId)).firstTemplate === b.id) await redoIntroDrafts(accountId);
+    if (changed && chosen) await redoIntroDrafts(accountId);
     return;
   }
   const [n] = await sql`SELECT count(*)::int AS n FROM insights_crm_templates WHERE account_id = ${accountId}`;
@@ -509,12 +514,24 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
  */
 export async function redoIntroDrafts(accountId: string): Promise<void> {
   if (!(await readCrmSettings(accountId)).firstTemplate) return;
-  await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE account_id = ${accountId} AND NOT archived AND draft ? 'failed'`;
+  // Only first emails the old template stopped are let through again; other failures keep their wait.
+  await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE account_id = ${accountId} AND NOT archived AND draft ? 'failed'
+    AND draft->>'failed' ILIKE '%template%'`;
   const rows = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email <> ''
-    AND draft ? 'subject' AND draft->>'kind' = 'intro' ORDER BY id LIMIT 200`;
-  for (const r of rows) {
+    AND draft ? 'subject' AND draft->>'kind' = 'intro' ORDER BY id`;
+  // The first 40 now, so saving stays quick; the rest are cleared and the hourly run writes them from the template.
+  for (const r of rows.slice(0, 40)) {
     await draftEmail(accountId, String(r.id), "intro").catch((e) => console.error(`first email not rewritten: ${(e as Error).message}`));
   }
+  const rest = rows.slice(40).map((r) => String(r.id)).join(",");
+  if (rest) await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE account_id = ${accountId} AND id = ANY(string_to_array(${rest}, ',')::bigint[])`;
+}
+
+/** Why a template can't be used for first emails (the claim guard on its words), or null. */
+async function templateProblem(accountId: string, subject: string, body: string): Promise<string | null> {
+  const health = healthRulesApply(await readProfile(accountId));
+  const problem = claimProblem(`${subject}\n${body}`, health);
+  return problem ? `This template can't be used for first emails yet. ${problem}` : null;
 }
 
 export async function deleteTemplate(accountId: string, id: unknown): Promise<void> {
@@ -797,8 +814,10 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     firstTemplate: b.firstTemplate === undefined ? cur.firstTemplate : typeof b.firstTemplate === "string" && ID.test(b.firstTemplate) ? b.firstTemplate : "",
   };
   if (value.firstTemplate) {
-    const [t] = await sql`SELECT id FROM insights_crm_templates WHERE id = ${value.firstTemplate} AND account_id = ${accountId}`;
+    const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${value.firstTemplate} AND account_id = ${accountId}`;
     if (!t) throw new Error("That template isn't here anymore. Pick another one for first emails.");
+    const problem = await templateProblem(accountId, t.subject ?? "", t.body ?? "");
+    if (problem) throw new Error(problem);
   }
   const redo = value.firstTemplate !== cur.firstTemplate;
   if (value.finder.on && (!value.finder.kinds.length || !value.finder.places.length)) throw new Error("Write what kinds of businesses to find and where, or turn the finder off.");
