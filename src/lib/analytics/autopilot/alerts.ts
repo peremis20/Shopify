@@ -125,9 +125,8 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const lines = ["Hello,", "", "Here is your DashPatrol week."];
   lines.push(
     "",
-    `Last 7 days: ${plural(week.changes, "page change")} made, ${plural(week.articles, "new article")}, ${plural(week.links, "link")} between your pages` +
-      (Number(week.suggested) ? `, ${plural(week.suggested, "change")} on your fix list` : "") +
-      "."
+    `Last 7 days: ${plural(week.changes, "page change")} made, ${plural(week.articles, "new article")}, ${plural(week.links, "link")} between your pages.` +
+      (Number(week.suggested) ? ` Waiting on your fix list: ${plural(week.suggested, "change")}.` : ""),
   );
   // From the Strategist's latest plan, dated, and only when it's recent; only moves a second AI checked.
   const fresh = strategy && Date.now() - Date.parse(strategy.at) < 8 * 864e5 ? strategy : null;

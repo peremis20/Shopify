@@ -257,10 +257,11 @@ ${img ? `<td valign="middle" style="width:172px;padding-right:12px">${img}</td>`
     ["Page improvements", d.week.changes],
     ["New articles", d.week.articles],
     ["Links between your pages", d.week.links],
-    ["Changes on your fix list", d.week.suggested],
   ] as const;
   const maxWork = Math.max(...work.map(([, v]) => v), 1);
-  parts.push(section("What the agents did in the last 7 days", `<table role="presentation" cellpadding="0" cellspacing="0" width="100%">${work.map(([l, v]) => barRow(l, v, maxWork, BRAND)).join("")}</table>`));
+  // The fix list is what waits for the owner now, whenever it was suggested, so it sits under the week's work, not in it.
+  const waiting = d.week.suggested ? `<div style="font-size:14px;color:${INK};margin-top:10px">${d.week.suggested} ${d.week.suggested === 1 ? "change is" : "changes are"} waiting on your fix list.</div>` : "";
+  parts.push(section("What the agents did in the last 7 days", `<table role="presentation" cellpadding="0" cellspacing="0" width="100%">${work.map(([l, v]) => barRow(l, v, maxWork, BRAND)).join("")}</table>${waiting}`));
   // Agents: one clear status line, then each agent's own record.
   const status = x.needsYou === null
     ? ""
