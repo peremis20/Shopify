@@ -80,6 +80,8 @@ export function cleanPlace(raw: unknown): Place | null {
     const w = s(r.website, 200);
     try {
       const u = new URL(w);
+      // A Google redirect (google.com/goto, goo.gl) is not the business's own site: left out, so no email is read from Google.
+      if (/(^|\.)(google\.[a-z.]+|goo\.gl|g\.page)$/i.test(u.hostname)) return "";
       return u.protocol === "https:" || u.protocol === "http:" ? `${u.protocol}//${u.hostname}${u.pathname === "/" ? "" : u.pathname}` : "";
     } catch {
       return "";

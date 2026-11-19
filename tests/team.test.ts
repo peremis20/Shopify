@@ -94,3 +94,9 @@ test("a listing cleaned twice keeps nothing, so only the raw listing is cached",
   // The cleaned shape has no phoneNumber: reading it back as a listing loses the phone (why the raw one is kept).
   assert.equal(cleanPlace(cleanPlace(raw)), null);
 });
+
+test("a Google redirect is not kept as the business's website", () => {
+  const p = cleanPlace({ title: "The Joint Chiropractic", phoneNumber: "214-555-0101", website: "https://www.google.com/goto?url=x" })!;
+  assert.equal(p.website, "");
+  assert.equal(cleanPlace({ title: "Only a redirect", website: "https://g.page/x" }), null);
+});
