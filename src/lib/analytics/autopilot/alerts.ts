@@ -13,6 +13,7 @@ import { salesFor } from "./shopify-sales";
 import { weeklyReportHtml } from "./report-email";
 import { usageThisMonth } from "./usage";
 import { readProfile } from "../profile";
+import { readAuthorityPlan, type AuthorityPlan } from "./authority-coach";
 
 /**
  * Emails to the site owner: urgent problems only a person can fix, as soon as the Inspector finds them (each once
@@ -112,9 +113,12 @@ const plural = (n: unknown, word: string) => `${Number(n)} ${word}${Number(n) ==
 export async function weeklyReportText(accountId: string): Promise<string> {
   const strategy = await readStrategy(accountId).catch(() => null);
   const scores = await readScorecard(accountId).catch(() => []);
+  const authorityKept = plannedMoves(null, await readAuthorityPlan(accountId).catch(() => null)).authority;
   const [week] = await sql`
     SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
-      count(*) FILTER (WHERE status = 'suggested') AS suggested,
+      -- Every suggestion still waiting for the owner, whenever it was made: the fix list as it stands, the same count
+      -- each agent's line shows.
+      (SELECT count(*) FROM insights_autopilot_changes s WHERE s.account_id = ${accountId} AND s.status = 'suggested') AS suggested,
       count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'new_article') AS articles,
       count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'internal_link') AS links
     FROM insights_autopilot_changes WHERE account_id = ${accountId} AND created_at > now() - interval '7 days'`;
@@ -133,7 +137,10 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     if (fresh.assessment) lines.push("", `Where things stood on ${made}: ${polish(fresh.assessment)}`);
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
     if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${planLine(m)}`));
-    else if (fresh.checked !== false) lines.push("", weeklyFocus(fresh)!);
+    else if (fresh.checked !== false && !authorityKept.length) lines.push("", weeklyFocus(fresh)!);
+  }
+  if (authorityKept.length) {
+    lines.push("", "The Authority Coach's plan for links this week:", ...authorityKept.map((m, i) => `${i + 1}. ${planLine(m)}`));
   }
   // Read once for both sections: the site's own Google Analytics, never another site's.
   const conn = await getConnection(accountId).catch(() => null);
@@ -250,6 +257,22 @@ export function weeklyFocus(fresh: Pick<StrategyReport, "assessment" | "moves" |
   return best ? polish(best) : `This week's focus: ${planLine(kept[0])}`;
 }
 
+/**
+ * This week's planned moves: the Strategist's and the Authority Coach's, each only when made in the last 8 days and
+ * checked by a second AI, and only the moves that check kept. Pure.
+ */
+export function plannedMoves(
+  strategy: Pick<StrategyReport, "at" | "moves" | "checked"> | null,
+  authority: Pick<AuthorityPlan, "at" | "moves" | "checked"> | null,
+  now = Date.now(),
+): { strategist: { action: string; keyword: string | null; page?: string | null }[]; authority: { action: string; keyword: string | null }[] } {
+  const recent = (at?: string) => Boolean(at && now - Date.parse(at) < 8 * 864e5);
+  return {
+    strategist: strategy && recent(strategy.at) && strategy.checked !== false ? strategy.moves.filter((m) => m.kept) : [],
+    authority: authority && recent(authority.at) && authority.checked !== false ? authority.moves.filter((m) => m.kept) : [],
+  };
+}
+
 /** One plan step as the owner reads it (page and email alike): it names the search or page it works on. */
 function planLine(m: { action: string; keyword: string | null; page?: string | null }): string {
   const text = polish(m.action);
@@ -260,15 +283,19 @@ function planLine(m: { action: string; keyword: string | null; page?: string | n
 
 /** The same report as the weekly email, as numbers for the Report page's charts. Only this site's data. */
 export async function weeklyReportData(accountId: string): Promise<WeeklyReportData> {
-  const [strategy, scores, conn, list] = await Promise.all([
+  const [strategy, scores, conn, list, authority] = await Promise.all([
     readStrategy(accountId).catch(() => null),
     readScorecard(accountId).catch(() => []),
     getConnection(accountId).catch(() => null),
     readProspects(accountId).catch(() => "error" as const),
+    readAuthorityPlan(accountId).catch(() => null),
   ]);
+  const planned = plannedMoves(strategy, authority);
   const [week] = await sql`
     SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
-      count(*) FILTER (WHERE status = 'suggested') AS suggested,
+      -- Every suggestion still waiting for the owner, whenever it was made: the fix list as it stands, the same count
+      -- each agent's line shows.
+      (SELECT count(*) FROM insights_autopilot_changes s WHERE s.account_id = ${accountId} AND s.status = 'suggested') AS suggested,
       count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'new_article') AS articles,
       count(*) FILTER (WHERE status IN ('applied', 'kept') AND field = 'internal_link') AS links
     FROM insights_autopilot_changes WHERE account_id = ${accountId} AND created_at > now() - interval '7 days'`;
@@ -291,13 +318,16 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
   return {
     week: { changes: Number(week.changes), articles: Number(week.articles), links: Number(week.links), suggested: Number(week.suggested) },
     visitors: fresh && fresh.visitors != null ? { value: Number(fresh.visitors), goal: Number(fresh.goal), at: fresh.at } : null,
-    focus: weeklyFocus(fresh),
-    plan: fresh && fresh.checked !== false ? fresh.moves.filter((m) => m.kept).map(planLine) : [],
-    planNote: fresh && fresh.checked === false
-      ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
-      : fresh && !fresh.moves.some((m) => m.kept)
-        ? "The second AI check found no move this week backed by the data, so none are planned."
-        : null,
+    // With no Strategist move kept, the Authority Coach's kept moves are the plan, so the focus doesn't say "nothing".
+    focus: !planned.strategist.length && planned.authority.length ? `This week's focus: ${planLine(planned.authority[0])}` : weeklyFocus(fresh),
+    plan: [...planned.strategist, ...planned.authority].map(planLine),
+    planNote: planned.strategist.length || planned.authority.length
+      ? null
+      : fresh && fresh.checked === false
+        ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
+        : fresh && !fresh.moves.some((m) => m.kept)
+          ? "The second AI check found no move this week backed by the data, so none are planned."
+          : null,
     traffic: results === null ? "none" : !results ? "error" : results.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 6).map((c) => ({ ...c, name: c.name.replace(/\s*[-–—]\s*/g, " ") })),
     totals: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })

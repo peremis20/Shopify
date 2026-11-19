@@ -90,3 +90,17 @@ test("weekly focus: never names an opportunity the plan doesn't act on", () => {
     "This week's focus: Rewrite the title of the partners coupon page",
   );
 });
+
+test("the weekly plan includes the Authority Coach's checked moves, recent ones only", async () => {
+  const { plannedMoves } = await import("../src/lib/analytics/autopilot/alerts");
+  const now = Date.parse("2026-11-19T12:00:00Z");
+  const am = (action: string, kept: boolean) => ({ kind: "outreach" as const, keyword: null, action, why: "", evidence: "", kept, challenge: "" });
+  const sm = (action: string, kept: boolean) => ({ keyword: null, page: null, action, kept }) as never;
+  const authority = { at: "2026-11-17T00:00:00Z", checked: true, moves: [am("Email two health blogs", true), am("Dropped one", false)] };
+  const strategy = { at: "2026-11-17T00:00:00Z", checked: true, moves: [sm("Not kept", false)] };
+  const p = plannedMoves(strategy, authority, now);
+  assert.equal(p.strategist.length, 0);
+  assert.deepEqual(p.authority.map((m) => m.action), ["Email two health blogs"]);
+  assert.equal(plannedMoves(strategy, { ...authority, at: "2026-11-01T00:00:00Z" }, now).authority.length, 0);
+  assert.equal(plannedMoves(strategy, { ...authority, checked: false }, now).authority.length, 0);
+});
