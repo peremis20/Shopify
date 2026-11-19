@@ -318,8 +318,9 @@ export async function authCallback(req: Request): Promise<Response> {
     if (gmail && link) {
       // Only the owner's own Google account: the one this account signs in or connected Google with.
       // So a link someone else sends can't put a stranger's Gmail on their account.
-      const [owner, main, profile] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null), readProfile(link.accountId).catch(() => null)]);
-      if (!sameOwner(email, [owner, main?.email], profile?.siteDomain, verified)) {
+      // Another address counts only at the domain Google verified the owner controls (their Search Console property).
+      const [owner, main] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null)]);
+      if (!sameOwner(email, [owner, main?.email], main?.gscSiteUrl ? domainOf(main.gscSiteUrl) : null, verified)) {
         throw new Error("Send from the Google account you use for the app, or another address at your own website domain.");
       }
       // Saved on its own: the Search Console and Analytics connection is left as it was.
