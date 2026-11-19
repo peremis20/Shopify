@@ -2322,6 +2322,8 @@ export const crmApi = (req: Request) =>
       const [view, stock, settings] = await Promise.all([crmView(account.id), stockSummary(account.id), readCrmSettings(account.id)]);
       return json({ ...view, stock, settings, gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
     }
+    // Nothing bigger than a 3 MB file (about 4 MB as text) is read at all.
+    if (Number(req.headers.get("content-length") ?? 0) > 4_400_000) return json({ error: "Files up to 3 MB can be kept here. For bigger files, put them in Google Drive and add the link." }, 413);
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     let id: string | undefined;
     try {

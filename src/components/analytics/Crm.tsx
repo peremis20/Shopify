@@ -883,6 +883,22 @@ function Files({ contactId, files, busy, run }: {
 }) {
   const [adding, setAdding] = useState<{ mode: "upload" | "link"; kind: string; name: string; url: string } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Fetched (so the app's sign in goes with it, inside Shopify admin too), then saved as a download.
+  const download = async (f: ContactFile) => {
+    setErr(null);
+    try {
+      const res = await fetch(`/api/crm?file=${f.id}`);
+      if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? "That file couldn't be opened.");
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That file couldn't be opened.");
+    }
+  };
   const upload = async (f: File) => {
     setErr(null);
     if (f.size > 3_000_000) return setErr("Files up to 3 MB can be kept here. For bigger files, put them in Google Drive and add the link.");
@@ -931,14 +947,15 @@ function Files({ contactId, files, busy, run }: {
         {files.map((f) => (
           <li key={f.id} className="flex flex-wrap items-center gap-2">
             <span className="rounded bg-black/5 px-1.5 py-0.5 text-xs text-dash-muted">{f.kind}</span>
-            <a
-              className="min-w-0 break-words font-semibold text-dash-green hover:underline [overflow-wrap:anywhere]"
-              href={f.url ?? `/api/crm?file=${f.id}`}
-              target={f.url ? "_blank" : undefined}
-              rel="noopener noreferrer"
-            >
-              {f.name}
-            </a>
+            {f.url ? (
+              <a className="min-w-0 break-words font-semibold text-dash-green hover:underline [overflow-wrap:anywhere]" href={f.url} target="_blank" rel="noopener noreferrer">
+                {f.name}
+              </a>
+            ) : (
+              <button className="min-w-0 break-words text-left font-semibold text-dash-green hover:underline [overflow-wrap:anywhere]" onClick={() => download(f)}>
+                {f.name}
+              </button>
+            )}
             <span className="text-xs text-dash-muted">{f.url ? "link" : sizeText(f.size)}, {shortDate(f.at)}</span>
             <button className="text-xs text-dash-muted hover:text-dash-down" disabled={busy} onClick={() => window.confirm(`Remove ${f.name}?`) && run({ action: "deleteFile", fileId: f.id })}>Remove</button>
           </li>

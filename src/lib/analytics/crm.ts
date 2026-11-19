@@ -1150,6 +1150,7 @@ async function filesTable(): Promise<void> {
     created_at timestamptz NOT NULL DEFAULT now()
   )`;
   await sql`CREATE INDEX IF NOT EXISTS insights_crm_files_contact ON insights_crm_files (contact_id, created_at DESC)`;
+  await sql`CREATE INDEX IF NOT EXISTS insights_crm_files_account ON insights_crm_files (account_id)`;
 }
 
 const kindOf = (v: unknown) => FILE_KINDS.find((k) => k === v) ?? "Other";
@@ -1195,14 +1196,16 @@ export async function uploadFile(accountId: string, contactId: unknown, input: u
   const mime = uploadType(name);
   if (!name || !mime) throw new Error("Upload a PDF, Word, Excel, CSV, text or image file.");
   const data = typeof b.data === "string" ? b.data.replace(/^data:[^,]*,/, "") : "";
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error("That file couldn't be read. Try again.");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data) || data.length % 4 !== 0) throw new Error("That file couldn't be read. Try again.");
   const size = Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
   if (size > MAX_UPLOAD_BYTES) throw new Error("Files up to 3 MB can be kept here. For bigger files, put them in Google Drive and add the link.");
-  const [n] = await sql`SELECT coalesce(sum(size), 0)::bigint AS total FROM insights_crm_files WHERE account_id = ${accountId}`;
-  if (Number(n?.total ?? 0) + size > 300_000_000) throw new Error("Your files here are full (300 MB). Keep new ones in Google Drive and add the link.");
   const kind = kindOf(b.kind);
-  await sql`INSERT INTO insights_crm_files (account_id, contact_id, name, kind, mime, size, data)
-    VALUES (${accountId}, ${cid}, ${name}, ${kind}, ${mime}, ${size}, decode(${data}, 'base64'))`;
+  // One statement checks the 300 MB room and keeps the file, so two uploads at once can't both squeeze past it.
+  const [kept] = await sql`INSERT INTO insights_crm_files (account_id, contact_id, name, kind, mime, size, data)
+    SELECT ${accountId}, ${cid}, ${name}, ${kind}, ${mime}, ${size}, decode(${data}, 'base64')
+    WHERE (SELECT coalesce(sum(size), 0) FROM insights_crm_files WHERE account_id = ${accountId}) + ${size}::bigint <= 300000000
+    RETURNING id`;
+  if (!kept) throw new Error("Your files here are full (300 MB). Keep new ones in Google Drive and add the link.");
   await log(accountId, cid, "file", `${kind}: ${name}`);
   await sql`UPDATE insights_crm_contacts SET updated_at = now() WHERE id = ${cid}`;
 }
