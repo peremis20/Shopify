@@ -2313,7 +2313,7 @@ export async function leadApi(req: Request): Promise<Response> {
       if (added) {
         const [n] = await sql`SELECT count(*) AS n FROM insights_crm_activities WHERE account_id = ${accountId} AND kind = 'lead' AND at > date_trunc('week', now())`.catch(() => [{ n: 1 }]);
         const count = Math.max(1, Number(n?.n ?? 1));
-        await postNote(accountId, "Leads keeper", "found", `${count} ${count === 1 ? "request" : "requests"} came in from the website form this week, each in the CRM as a new contact.`, { ref: `leads:${isoWeek()}` });
+        await postNote(accountId, "Leads keeper", "found", `${count} ${count === 1 ? "request" : "requests"} came in from the website form this week, and each is in the CRM.`, { ref: `leads:${isoWeek()}` });
       }
     }
     // Only this request is sent now; anything else waiting goes with the hourly run.

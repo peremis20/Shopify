@@ -7,7 +7,7 @@ import { aiProvider, readPlatformSettings } from "./autopilot/settings";
 import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer";
 import { healthRulesApply, readProfile, siteBrief } from "./profile";
 import { claimProblem, cleanPost, noDashes } from "./social-agent";
-import { postNote } from "./autopilot/team";
+import { closeNeed, postNote } from "./autopilot/team";
 
 /**
  * The owner's own CRM: contacts, a sales pipeline, and everything done with each contact (notes, calls, meetings,
@@ -776,6 +776,9 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   if (b.finder !== undefined && value.finder.on && !(Number.isInteger(asked) && asked >= 5 && asked <= 100)) throw new Error("Pick between 5 and 100 new businesses a week.");
   await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(value)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  // The finder turned off or given new kinds or places: what it asked of the owner no longer applies.
+  const same = JSON.stringify([cur.finder.kinds, cur.finder.places]) === JSON.stringify([value.finder.kinds, value.finder.places]);
+  if (!value.finder.on || !same) for (const ref of ["dry", "limit", "key"]) await closeNeed(accountId, "Prospect finder", ref);
   return value;
 }
 

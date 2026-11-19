@@ -251,13 +251,19 @@ export async function runFinder(accountId: string, apiKey: string | null, ourDom
         break;
       }
     }
-    if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) st.idleUntil = nextWeekStart();
+    // Full for the week: rest until Monday, unless a longer rest (every search worked through) is already set.
+    if (st.added >= finder.perWeek || st.lookups >= MAX_LOOKUPS) {
+      const monday = nextWeekStart();
+      st.idleUntil = st.idleUntil && Date.parse(st.idleUntil) > Date.parse(monday) ? st.idleUntil : monday;
+    }
     await report("prospect-finder", true);
+    await closeNeed(accountId, "Prospect finder", "limit");
   } catch (e) {
     // This month's search limit: a pause, not a fault; the count is kept and it carries on when the limit allows.
     if (!(e instanceof SpendingLimitReached)) throw e;
     st.idleUntil = nextWeekStart();
     note = "prospect finder waits: this month's search limit is used up";
+    await postNote(accountId, "Prospect finder", "needs", "This month's search limit is used up, so new businesses wait until it allows more.", { ref: "limit" });
   } finally {
     st.seen = [...seen];
     await touch().catch((e) => console.error(`finder state not saved: ${(e as Error).message}`));
