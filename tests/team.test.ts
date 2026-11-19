@@ -99,4 +99,8 @@ test("a Google redirect is not kept as the business's website", () => {
   const p = cleanPlace({ title: "The Joint Chiropractic", phoneNumber: "214-555-0101", website: "https://www.google.com/goto?url=x" })!;
   assert.equal(p.website, "");
   assert.equal(cleanPlace({ title: "Only a redirect", website: "https://g.page/x" }), null);
+  for (const site of ["https://mygoogledoc.com", "https://google-chiro.com", "https://notgoogle.com", "https://google.smithdental.com", "https://sites.google.com/view/clinic"]) {
+    assert.ok(cleanPlace({ title: "Real site", website: site })!.website.startsWith(site.replace(/\/view\/clinic$/, "")), site);
+  }
+  assert.equal(cleanPlace({ title: "UK redirect", phoneNumber: "214-555-0101", website: "https://www.google.co.uk/url?q=x" })!.website, "");
 });

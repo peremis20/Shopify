@@ -81,7 +81,8 @@ export function cleanPlace(raw: unknown): Place | null {
     try {
       const u = new URL(w);
       // A Google redirect (google.com/goto, goo.gl) is not the business's own site: left out, so no email is read from Google.
-      if (/(^|\.)(google\.[a-z.]+|goo\.gl|g\.page)$/i.test(u.hostname)) return "";
+      // Google Sites (sites.google.com) can be a business's real site, so it stays.
+      if (u.hostname.toLowerCase() !== "sites.google.com" && /(^|\.)(google\.(com|[a-z]{2}|co\.[a-z]{2}|com\.[a-z]{2})|goo\.gl|g\.page|g\.co)$/i.test(u.hostname)) return "";
       return u.protocol === "https:" || u.protocol === "http:" ? `${u.protocol}//${u.hostname}${u.pathname === "/" ? "" : u.pathname}` : "";
     } catch {
       return "";
