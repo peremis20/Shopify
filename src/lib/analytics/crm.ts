@@ -490,10 +490,12 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   const body = cut(b.body, 20_000);
   if (!name || !subject || !body) throw new Error("A template needs a name, a subject and a message.");
   if (typeof b.id === "string" && ID.test(b.id)) {
+    const [before] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${b.id} AND account_id = ${accountId}`;
     const [row] = await sql`UPDATE insights_crm_templates SET name = ${name}, subject = ${subject}, body = ${body} WHERE id = ${b.id} AND account_id = ${accountId} RETURNING id`;
     if (!row) throw new Error("That template isn't here anymore.");
-    // The first email template changed: first emails still waiting are written again from the new words.
-    if ((await readCrmSettings(accountId)).firstTemplate === b.id) await redoIntroDrafts(accountId);
+    // The first email template's words changed: first emails still waiting are written again from the new words.
+    const changed = before?.subject !== subject || before?.body !== body;
+    if (changed && (await readCrmSettings(accountId)).firstTemplate === b.id) await redoIntroDrafts(accountId);
     return;
   }
   const [n] = await sql`SELECT count(*)::int AS n FROM insights_crm_templates WHERE account_id = ${accountId}`;
@@ -501,16 +503,27 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   await sql`INSERT INTO insights_crm_templates (account_id, name, subject, body) VALUES (${accountId}, ${name}, ${subject}, ${body})`;
 }
 
-/** First emails written but not sent yet are cleared, so the next run writes them again (from the current template). */
+/**
+ * With a first email template chosen, first emails written but not sent yet are written again from it right away (no
+ * AI needed), and ones that failed are let through on the next run. With none chosen, waiting emails stay as they are.
+ */
 export async function redoIntroDrafts(accountId: string): Promise<void> {
-  await sql`UPDATE insights_crm_contacts SET draft = NULL, updated_at = now()
-    WHERE account_id = ${accountId} AND NOT archived AND draft ? 'subject' AND draft->>'kind' = 'intro'`;
+  if (!(await readCrmSettings(accountId)).firstTemplate) return;
+  await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE account_id = ${accountId} AND NOT archived AND draft ? 'failed'`;
+  const rows = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email <> ''
+    AND draft ? 'subject' AND draft->>'kind' = 'intro' ORDER BY id LIMIT 200`;
+  for (const r of rows) {
+    await draftEmail(accountId, String(r.id), "intro").catch((e) => console.error(`first email not rewritten: ${(e as Error).message}`));
+  }
 }
 
 export async function deleteTemplate(accountId: string, id: unknown): Promise<void> {
   await schema();
   if (typeof id !== "string" || !ID.test(id)) return;
   await sql`DELETE FROM insights_crm_templates WHERE id = ${id} AND account_id = ${accountId}`;
+  // The template first emails were using is gone: first emails go back to being written around the offer.
+  const settings = await readCrmSettings(accountId);
+  if (settings.firstTemplate === id) await saveCrmSettings(accountId, { ...settings, firstTemplate: "" });
 }
 
 /**
@@ -1079,8 +1092,8 @@ export interface EmailDraft {
   subject: string;
   body: string;
   kind: "intro" | "followup";
-  /** "ai": a second AI checked it; "owner": no second AI was free, so the owner is the check. */
-  checked: "ai" | "owner";
+  /** "ai": a second AI checked it; "owner": no second AI was free, so the owner is the check; "template": the owner's own template. */
+  checked: "ai" | "owner" | "template";
   at: string;
 }
 
@@ -1125,10 +1138,6 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
   const settings = await readCrmSettings(accountId);
   const profile = await readProfile(accountId);
   const health = healthRulesApply(profile);
-  const offer = settings.offer || profile.about?.offer?.trim() || "";
-  if (!offer) throw new Error("Write what your first email offers under CRM Settings first.");
-  const offerProblem = claimProblem(offer, health);
-  if (offerProblem) throw new Error(`Your offer text needs a change first. ${offerProblem}`);
   // The owner's own first email template, word for word with the names filled in: the owner's words, read before Send.
   if (kind === "intro" && settings.firstTemplate) {
     const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
@@ -1138,11 +1147,15 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
       const problem = claimProblem(`${filled.subject}\n${filled.body}`, health);
       if (problem) throw new Error(`Your first email template needs a change first. ${problem}`);
       if (!filled.subject.trim() || !filled.body.trim()) throw new Error("Your first email template needs a subject and a message.");
-      const draft: EmailDraft = { subject: filled.subject.slice(0, 200), body: filled.body, kind, checked: "owner", at: new Date().toISOString() };
+      const draft: EmailDraft = { subject: filled.subject.slice(0, 300), body: filled.body, kind, checked: "template", at: new Date().toISOString() };
       await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify(draft)}::jsonb, updated_at = now() WHERE id = ${contactId} AND account_id = ${accountId}`;
       return draft.subject;
     }
   }
+  const offer = settings.offer || profile.about?.offer?.trim() || "";
+  if (!offer) throw new Error("Write what your first email offers under CRM Settings first.");
+  const offerProblem = claimProblem(offer, health);
+  if (offerProblem) throw new Error(`Your offer text needs a change first. ${offerProblem}`);
   const base = aiProvider(await readPlatformSettings());
   if (!base) throw new Error("An AI key is needed to write emails.");
   const ai = { ...base, site: siteBrief(profile) };
@@ -1193,11 +1206,17 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
   if (!settings.autoDraft) return out;
   // Nothing is written by itself until the owner's offer, an AI key and a second AI to check are all there; the
   // page says what is missing instead of the status board turning red for a site that never set this up.
+  // With the owner's own first email template, first emails need no AI; follow ups still do.
   const profile = await readProfile(accountId);
-  if (!(settings.offer || profile.about?.offer?.trim())) return { ...out, waiting: "Write what your first email offers under CRM Settings, and emails are written for you." };
   const base = aiProvider(await readPlatformSettings());
-  if (!base) return { ...out, waiting: "An AI key is needed in Platform keys before emails can be written." };
-  if (!hasSecondAi(base)) return { ...out, waiting: "A second AI from another provider is needed to check each email before it is written for you." };
+  const aiWaiting = !(settings.offer || profile.about?.offer?.trim())
+    ? "Write what your first email offers under CRM Settings, and emails are written for you."
+    : !base
+      ? "An AI key is needed in Platform keys before emails can be written."
+      : !hasSecondAi(base)
+        ? "A second AI from another provider is needed to check each email before it is written for you."
+        : null;
+  if (aiWaiting && !settings.firstTemplate) return { ...out, waiting: aiWaiting };
   const stages = await readStages(accountId);
   // Waiting to be written: no draft yet, or one that failed three days ago (a thrown away one is left alone).
   const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> ''
@@ -1205,7 +1224,7 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
       AND c.stage = ${stages[0]}
       AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind IN ('email', 'reply', 'call', 'meeting'))
     ORDER BY c.created_at LIMIT ${max}`;
-  const follows = await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t
+  const follows = aiWaiting ? [] : await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t
       JOIN insights_crm_contacts c ON c.id = t.contact_id AND NOT c.archived AND c.email <> ''
         AND (c.draft IS NULL OR (c.draft ? 'failed' AND (c.draft->>'at')::timestamptz < now() - interval '3 days'))
       JOIN insights_crm_activities e ON e.id = CASE WHEN t.auto_key ~ '^noreply:[0-9]+$' THEN substring(t.auto_key from 9)::bigint END
@@ -1224,7 +1243,7 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
       await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ failed: why, at: new Date().toISOString() })}::jsonb
         WHERE id = ${j.id} AND account_id = ${accountId} AND (draft IS NULL OR draft ? 'failed')`.catch(() => undefined);
       // A setting or key problem would fail the same way for every contact: stop here.
-      if (/Settings|AI key|offer text/i.test(String((e as Error)?.message))) break;
+      if (/Settings|AI key|offer text|template/i.test(String((e as Error)?.message))) break;
     }
   }
   return out;

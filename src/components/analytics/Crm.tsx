@@ -536,7 +536,7 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             <p className="font-semibold text-dash-ink">{c.draft.kind === "followup" ? "A follow up is written and ready" : "An email is written and ready"}</p>
             <p className="mt-1 text-dash-ink break-words">{c.draft.subject}</p>
             <p className="mt-1 text-xs text-dash-muted">
-              {c.draft.checked === "ai" ? "Checked by a second AI. Read it before you send." : "No second AI was free to check it. Read it carefully before you send."}
+              {c.draft.checked === "ai" ? "Checked by a second AI. Read it before you send." : c.draft.checked === "template" ? "Your own template, with the names filled in. Read it before you send." : "No second AI was free to check it. Read it carefully before you send."}
             </p>
             <div className="mt-2 flex flex-wrap gap-2">
               <button className={primary} onClick={() => setMail(true)}>Review and send</button>
@@ -789,7 +789,7 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
   const [offer, setOffer] = useState(settings.offer);
   const [link, setLink] = useState(settings.link);
   const [signoff, setSignoff] = useState(settings.signoff);
-  const [firstTemplate, setFirstTemplate] = useState(settings.firstTemplate ?? "");
+  const [firstTemplate, setFirstTemplate] = useState(templates.some((t) => t.id === settings.firstTemplate) ? settings.firstTemplate : "");
   const [findOn, setFindOn] = useState(settings.finder?.on ?? false);
   const [kinds, setKinds] = useState((settings.finder?.kinds ?? []).join("\n"));
   const [places, setPlaces] = useState((settings.finder?.places ?? []).join("\n"));
