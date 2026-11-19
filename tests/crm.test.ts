@@ -130,3 +130,8 @@ test("templates greet a doctor as Dr. Lastname", async () => {
   assert.equal(fillTemplate("Hi {first_name},", { name: "Dr. Brown M. Hamer III, DC", company: "" }), "Hi Dr. Hamer,");
   assert.equal(fillTemplate("Hi {first_name},", { name: "Ana Lopez", company: "" }), "Hi Ana,");
 });
+
+test("a lone title is no name", async () => {
+  const { greetingFor } = await import("../src/lib/analytics/crm");
+  assert.equal(greetingFor("Dr."), "Hello,");
+});

@@ -12,5 +12,6 @@ export function addressName(name: string): string {
     const t = title[1].toLowerCase() === "miss" ? "Miss" : `${title[1][0].toUpperCase()}${title[1].slice(1).toLowerCase()}.`;
     return `${t} ${last}`;
   }
-  return parts[0];
+  // A title alone ("Dr.") is no name to greet.
+  return title ? "" : parts[0];
 }
