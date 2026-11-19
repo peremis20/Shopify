@@ -492,11 +492,19 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   if (typeof b.id === "string" && ID.test(b.id)) {
     const [row] = await sql`UPDATE insights_crm_templates SET name = ${name}, subject = ${subject}, body = ${body} WHERE id = ${b.id} AND account_id = ${accountId} RETURNING id`;
     if (!row) throw new Error("That template isn't here anymore.");
+    // The first email template changed: first emails still waiting are written again from the new words.
+    if ((await readCrmSettings(accountId)).firstTemplate === b.id) await redoIntroDrafts(accountId);
     return;
   }
   const [n] = await sql`SELECT count(*)::int AS n FROM insights_crm_templates WHERE account_id = ${accountId}`;
   if (Number(n?.n ?? 0) >= 50) throw new Error("You have 50 templates, the most allowed. Delete one first.");
   await sql`INSERT INTO insights_crm_templates (account_id, name, subject, body) VALUES (${accountId}, ${name}, ${subject}, ${body})`;
+}
+
+/** First emails written but not sent yet are cleared, so the next run writes them again (from the current template). */
+export async function redoIntroDrafts(accountId: string): Promise<void> {
+  await sql`UPDATE insights_crm_contacts SET draft = NULL, updated_at = now()
+    WHERE account_id = ${accountId} AND NOT archived AND draft ? 'subject' AND draft->>'kind' = 'intro'`;
 }
 
 export async function deleteTemplate(accountId: string, id: unknown): Promise<void> {
@@ -703,6 +711,8 @@ export interface CrmSettings {
   signoff: string;
   /** The Prospect finder: finds businesses the owner sells to on Google Maps and adds them as new contacts. */
   finder: FinderSettings;
+  /** A template the owner wrote for first emails, used word for word (names filled in); "" lets the AI write them. */
+  firstTemplate: string;
 }
 
 export interface FinderSettings {
@@ -739,6 +749,7 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
     link: typeof v.link === "string" && /^https:\/\/\S+$/.test(v.link) ? v.link.slice(0, 300) : "",
     signoff: typeof v.signoff === "string" ? v.signoff.slice(0, 120) : "",
     finder: cleanFinder(v.finder),
+    firstTemplate: typeof v.firstTemplate === "string" && ID.test(v.firstTemplate) ? v.firstTemplate : "",
   };
   if (!v.since) {
     await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
@@ -770,7 +781,13 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     link,
     signoff: b.signoff === undefined ? cur.signoff : cut(b.signoff, 120),
     finder: b.finder === undefined ? cur.finder : cleanFinder(b.finder),
+    firstTemplate: b.firstTemplate === undefined ? cur.firstTemplate : typeof b.firstTemplate === "string" && ID.test(b.firstTemplate) ? b.firstTemplate : "",
   };
+  if (value.firstTemplate) {
+    const [t] = await sql`SELECT id FROM insights_crm_templates WHERE id = ${value.firstTemplate} AND account_id = ${accountId}`;
+    if (!t) throw new Error("That template isn't here anymore. Pick another one for first emails.");
+  }
+  const redo = value.firstTemplate !== cur.firstTemplate;
   if (value.finder.on && (!value.finder.kinds.length || !value.finder.places.length)) throw new Error("Write what kinds of businesses to find and where, or turn the finder off.");
   const asked = Number((b.finder as Record<string, unknown> | undefined)?.perWeek);
   if (b.finder !== undefined && value.finder.on && !(Number.isInteger(asked) && asked >= 5 && asked <= 100)) throw new Error("Pick between 5 and 100 new businesses a week.");
@@ -779,6 +796,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   // The finder turned off or given new kinds or places: what it asked of the owner no longer applies.
   const same = JSON.stringify([cur.finder.kinds, cur.finder.places]) === JSON.stringify([value.finder.kinds, value.finder.places]);
   if (!value.finder.on || !same) for (const ref of ["dry", "limit", "key"]) await closeNeed(accountId, "Prospect finder", ref);
+  if (redo) await redoIntroDrafts(accountId);
   return value;
 }
 
@@ -1111,6 +1129,20 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
   if (!offer) throw new Error("Write what your first email offers under CRM Settings first.");
   const offerProblem = claimProblem(offer, health);
   if (offerProblem) throw new Error(`Your offer text needs a change first. ${offerProblem}`);
+  // The owner's own first email template, word for word with the names filled in: the owner's words, read before Send.
+  if (kind === "intro" && settings.firstTemplate) {
+    const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
+    if (t) {
+      const who = { name: String(c.name ?? ""), company: String(c.company ?? "") };
+      const filled = { subject: fillTemplate(t.subject ?? "", who, profile.brandName ?? ""), body: fillTemplate(t.body ?? "", who, profile.brandName ?? "") };
+      const problem = claimProblem(`${filled.subject}\n${filled.body}`, health);
+      if (problem) throw new Error(`Your first email template needs a change first. ${problem}`);
+      if (!filled.subject.trim() || !filled.body.trim()) throw new Error("Your first email template needs a subject and a message.");
+      const draft: EmailDraft = { subject: filled.subject.slice(0, 200), body: filled.body, kind, checked: "owner", at: new Date().toISOString() };
+      await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify(draft)}::jsonb, updated_at = now() WHERE id = ${contactId} AND account_id = ${accountId}`;
+      return draft.subject;
+    }
+  }
   const base = aiProvider(await readPlatformSettings());
   if (!base) throw new Error("An AI key is needed to write emails.");
   const ai = { ...base, site: siteBrief(profile) };

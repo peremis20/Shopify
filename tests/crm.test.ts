@@ -154,3 +154,9 @@ test("only documents and images can be uploaded", async () => {
   assert.equal(uploadType("run.exe"), null);
   assert.equal(uploadType("noextension"), null);
 });
+
+test("the owner's first email template fills Dr. and the last name, and a missing name reads well", () => {
+  const body = "Hi {first_name},\n\nI'm Jimmy with Peremis.";
+  assert.equal(fillTemplate(body, { name: "Dr. Paul L. Fowler", company: "Expressions Chiropractic of Dallas PC" }).split("\n")[0], "Hi Dr. Fowler,");
+  assert.equal(fillTemplate(body, { name: "", company: "Inwood Chiropractic" }).split("\n")[0], "Hi there,");
+});

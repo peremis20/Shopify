@@ -134,7 +134,7 @@ export function Crm({ active = true }: { active?: boolean }) {
       {open && <ContactPanel id={open} data={data} onClose={() => setOpen(null)} onChanged={load} onOpenId={setOpen} />}
       {showImport && <ImportDialog onClose={() => setShowImport(false)} onDone={load} />}
       {showArchived && <ArchivedDialog onClose={() => setShowArchived(false)} onDone={load} />}
-      {showStages && <StagesDialog stages={data.stages} settings={data.settings} onClose={() => setShowStages(false)} onDone={load} />}
+      {showStages && <StagesDialog stages={data.stages} settings={data.settings} templates={data.templates} onClose={() => setShowStages(false)} onDone={load} />}
     </div>
   );
 }
@@ -781,7 +781,7 @@ function ArchivedDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
   );
 }
 
-function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[]; settings: CrmSettings; onClose: () => void; onDone: () => void }) {
+function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages: string[]; settings: CrmSettings; templates: Template[]; onClose: () => void; onDone: () => void }) {
   const [list, setList] = useState(stages.join("\n"));
   const [days, setDays] = useState(String(settings.followUpDays));
   const [daily, setDaily] = useState(settings.dailyEmail);
@@ -789,6 +789,7 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
   const [offer, setOffer] = useState(settings.offer);
   const [link, setLink] = useState(settings.link);
   const [signoff, setSignoff] = useState(settings.signoff);
+  const [firstTemplate, setFirstTemplate] = useState(settings.firstTemplate ?? "");
   const [findOn, setFindOn] = useState(settings.finder?.on ?? false);
   const [kinds, setKinds] = useState((settings.finder?.kinds ?? []).join("\n"));
   const [places, setPlaces] = useState((settings.finder?.places ?? []).join("\n"));
@@ -798,7 +799,7 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
     if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
       const finder = { on: findOn, kinds: kinds.split("\n"), places: places.split("\n"), perWeek: Number(perWeek) };
-      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder } });
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder, firstTemplate } });
       await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
@@ -828,6 +829,14 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
         <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
         Write a first email for each new contact with an email, and a follow up when they don&apos;t reply. You read each one and click Send.
       </label>
+      <label className="mt-2 block text-sm text-dash-ink">
+        First emails
+        <select className={`${field} mt-1`} value={firstTemplate} onChange={(e) => setFirstTemplate(e.target.value)}>
+          <option value="">Written by the AI around your offer below</option>
+          {templates.map((t) => <option key={t.id} value={t.id}>Your template, word for word: {t.name}</option>)}
+        </select>
+      </label>
+      <p className="mt-1 text-xs text-dash-muted">With a template, {"{first_name}"} becomes Dr. and the last name for doctors, and {"{company}"} the practice name. Follow ups are still written for you.</p>
       <label className="mt-2 block text-sm text-dash-ink">
         What you offer, in your own words. It goes into every first email exactly as you write it.
         <textarea className={`${field} mt-1 min-h-[110px]`} value={offer} onChange={(e) => setOffer(e.target.value)} />
