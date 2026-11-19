@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { ensureSchema, sql } from "./db";
 import { sendOneEmail } from "./gmail";
+import { addressName } from "./names";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { aiProvider, readPlatformSettings } from "./autopilot/settings";
 import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer";
@@ -430,9 +431,8 @@ export async function deleteActivity(accountId: string, id: unknown): Promise<vo
 
 /** Fills {first_name}, {name}, {company} and {my_business} in a template for one contact. */
 export function fillTemplate(text: string, c: Pick<Contact, "name" | "company">, business = ""): string {
-  const first = c.name.split(/\s+/)[0] ?? "";
   return text
-    .replace(/\{first_name\}/gi, first || "there")
+    .replace(/\{first_name\}/gi, addressName(c.name) || "there")
     .replace(/\{name\}/gi, c.name || "there")
     .replace(/\{company\}/gi, c.company || "your business")
     .replace(/\{my_business\}/gi, business);
@@ -953,16 +953,8 @@ export interface EmailDraft {
 
 /** "Hi Dr. Hamer," for "Dr. Brown M. Hamer III, DC"; "Hi Ana," for "Ana Lopez"; "Hello," with no name. */
 export function greetingFor(name: string): string {
-  const clean = name.replace(/,.*$/, "").replace(/\([^)]*\)/g, " ").replace(/\b(Jr|Sr|II|III|IV|PhD|MD|DC)\.?$/i, "").trim();
-  const parts = clean.split(/\s+/).filter(Boolean);
-  if (!parts.length) return "Hello,";
-  const title = /^(dr|mr|mrs|ms|miss)\.?$/i.exec(parts[0]);
-  if (title && parts.length > 1) {
-    const last = parts.filter((p) => !/^(Jr|Sr|II|III|IV)\.?$/i.test(p)).at(-1)!;
-    const t = title[1].toLowerCase() === "miss" ? "Miss" : `${title[1][0].toUpperCase()}${title[1].slice(1).toLowerCase()}.`;
-    return `Hi ${t} ${last},`;
-  }
-  return `Hi ${parts[0]},`;
+  const n = addressName(name);
+  return n ? `Hi ${n},` : "Hello,";
 }
 
 /** The city from an address written "street, city" or "street, city, state zip". */

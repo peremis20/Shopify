@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Activity, Contact, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
+import { addressName } from "@/lib/analytics/names";
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
 import { Card } from "./ui";
@@ -352,7 +353,7 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
   return (
     <div>
       <p className="mb-3 text-sm text-dash-muted">
-        Write an email once and reuse it. In the subject or message, {"{first_name}"}, {"{name}"} and {"{company}"} are filled in for each contact.
+        Write an email once and reuse it. In the subject or message, {"{first_name}"} (like Ana, or Dr. Hamer for a doctor), {"{name}"} and {"{company}"} are filled in for each contact.
       </p>
       <ul className="space-y-2">
         {data.templates.map((t) => (
@@ -595,7 +596,7 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
   const [err, setErr] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const fill = (t: string) => t
-    .replace(/\{first_name\}/gi, contact.name.split(/\s+/)[0] || "there")
+    .replace(/\{first_name\}/gi, addressName(contact.name) || "there")
     .replace(/\{name\}/gi, contact.name || "there")
     .replace(/\{company\}/gi, contact.company || "your business");
   const pick = (tid: string) => {

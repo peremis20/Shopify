@@ -124,3 +124,9 @@ test("greetings use Mr, Mrs and Ms with the last name", async () => {
   assert.equal(greetingFor("Mr. John Smith"), "Hi Mr. Smith,");
   assert.equal(greetingFor("mrs Ana Lopez"), "Hi Mrs. Lopez,");
 });
+
+test("templates greet a doctor as Dr. Lastname", async () => {
+  const { fillTemplate } = await import("../src/lib/analytics/crm");
+  assert.equal(fillTemplate("Hi {first_name},", { name: "Dr. Brown M. Hamer III, DC", company: "" }), "Hi Dr. Hamer,");
+  assert.equal(fillTemplate("Hi {first_name},", { name: "Ana Lopez", company: "" }), "Hi Ana,");
+});
