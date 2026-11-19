@@ -2445,3 +2445,33 @@ Return JSON "supported": one true or false per statement, in order.`,
   for (const k of Object.keys(fields)) if (isRisky(fields[k]) || isUnsourced(fields[k])) fields[k] = "";
   return fields;
 }
+
+/**
+ * The personal opening of a first email (or a follow up) from a business owner to a contact in their CRM. Only the
+ * contact's public details (their business, their type, their city) are used; the owner's own offer text is added
+ * after it word for word by the app, so no price, number or promise comes from the AI. The owner sends it themselves.
+ */
+export async function writeContactIntro(
+  ai: AiProvider,
+  p: { company: string; kind: string; city: string; offer: string; brand: string | null; site: string; health: boolean; followUp: string | null },
+): Promise<{ subject: string; opening: string }> {
+  const who = asData([p.company && `Business: ${p.company}`, p.kind && `Type: ${p.kind}`, p.city && `City: ${p.city}`].filter(Boolean).join("\n") || "A local business", 400);
+  const out = await askJson<{ subject: string; opening: string }>(
+    ai,
+    p.followUp
+      ? `Write a short, polite follow up from the owner of ${p.brand ?? p.site} to this business, which hasn't replied yet to an email with the subject "${p.followUp.slice(0, 120)}".
+${who}
+"subject": under eight words, plain.
+"opening": two plain sentences: a friendly check in, and that the details are below again. No pressure, no guilt, no flattery.`
+      : `Write the opening of a first email from the owner of ${p.brand ?? p.site} to this business.
+${who}
+What the owner offers (its own words, for context only; the app adds it after your text): ${asData(p.offer, 600)}
+"subject": under eight words, plain, about working together, no clickbait.
+"opening": two or three plain sentences: who is writing in one line, why this business is a good fit given its type and city, and that the details are below. No flattery, no claims about the business you can't know (reviews, how good they are), no numbers, no prices, no links, no promise of results.`
+      + `
+${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
+No greeting line and no sign off (the app adds both). No hyphens or dashes, no emojis, no exclamation marks.`,
+    { type: "object", properties: { subject: { type: "string" }, opening: { type: "string" } }, required: ["subject", "opening"] },
+  );
+  return { subject: String(out.subject ?? ""), opening: String(out.opening ?? "") };
+}

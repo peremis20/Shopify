@@ -2,6 +2,10 @@ import crypto from "crypto";
 import { ensureSchema, sql } from "./db";
 import { sendOneEmail } from "./gmail";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
+import { aiProvider, readPlatformSettings } from "./autopilot/settings";
+import { secondCheck, writeContactIntro } from "./autopilot/writer";
+import { healthRulesApply, readProfile, siteBrief } from "./profile";
+import { claimProblem, cleanPost, noDashes } from "./social-agent";
 
 /**
  * The owner's own CRM: contacts, a sales pipeline, and everything done with each contact (notes, calls, meetings,
@@ -32,6 +36,8 @@ export interface Contact {
   createdAt: string;
   updatedAt: string;
   lastContactAt: string | null;
+  /** An email written for the owner and waiting for their Send click. */
+  draft: EmailDraft | null;
   /** When it last moved to its current stage (for "won this month"). */
   stageChangedAt: string | null;
   /** Open tasks on this contact. */
@@ -90,6 +96,8 @@ function schema(): Promise<void> {
       archived boolean NOT NULL DEFAULT false
     )`;
     await sql`ALTER TABLE insights_crm_contacts ADD COLUMN IF NOT EXISTS stage_changed_at timestamptz`;
+    // An email written for the owner, waiting for their Send click.
+    await sql`ALTER TABLE insights_crm_contacts ADD COLUMN IF NOT EXISTS draft jsonb`;
     await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_account ON insights_crm_contacts (account_id, updated_at DESC)`;
     await sql`CREATE TABLE IF NOT EXISTS insights_crm_activities (
       id bigserial PRIMARY KEY,
@@ -206,7 +214,7 @@ export async function saveStages(accountId: string, input: unknown): Promise<str
 }
 
 /** A contact's fields from the owner's form or an import row, cleaned. */
-export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "id" | "createdAt" | "updatedAt" | "lastContactAt" | "stageChangedAt" | "openTasks"> | null {
+export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "id" | "createdAt" | "updatedAt" | "lastContactAt" | "stageChangedAt" | "openTasks" | "draft"> | null {
   if (!input || typeof input !== "object") return null;
   const b = input as Record<string, unknown>;
   const email = cut(b.email, 254).toLowerCase();
@@ -263,6 +271,14 @@ const contactOf = (r: Row): Contact => ({
   updatedAt: new Date(String(r.updated_at)).toISOString(),
   lastContactAt: r.last_contact_at ? new Date(String(r.last_contact_at)).toISOString() : null,
   stageChangedAt: r.stage_changed_at ? new Date(String(r.stage_changed_at)).toISOString() : null,
+  draft: (() => {
+    try {
+      const d = typeof r.draft === "string" ? JSON.parse(r.draft) : r.draft;
+      return d && typeof d === "object" && typeof d.subject === "string" ? (d as EmailDraft) : null;
+    } catch {
+      return null;
+    }
+  })(),
   openTasks: Number(r.open_tasks ?? 0),
 });
 const activityOf = (r: Row): Activity => ({
@@ -440,7 +456,7 @@ export async function emailContact(accountId: string, contactId: unknown, input:
     return out;
   }
   await log(accountId, cid, "email", cut(b.subject, 300), `To: ${out.to}\n\n${cut(b.body, 20_000)}`);
-  await sql`UPDATE insights_crm_contacts SET last_contact_at = now(), updated_at = now() WHERE id = ${cid}`;
+  await afterEmail(accountId, cid);
   return out;
 }
 
@@ -451,7 +467,7 @@ export async function logEmail(accountId: string, contactId: unknown, input: unk
   if (!cid) throw new Error("That contact isn't here anymore.");
   const b = (input ?? {}) as Record<string, unknown>;
   await log(accountId, cid, "email", cut(b.subject, 300) || "Email sent from my email", cut(b.body, 20_000));
-  await sql`UPDATE insights_crm_contacts SET last_contact_at = now(), updated_at = now() WHERE id = ${cid}`;
+  await afterEmail(accountId, cid);
 }
 
 export async function saveTemplate(accountId: string, input: unknown): Promise<void> {
@@ -591,6 +607,14 @@ export interface CrmSettings {
   dailyEmail: boolean;
   /** When follow ups started for this site: only emails sent after it get one, so nothing old floods in. */
   since: string;
+  /** Emails are written for new contacts and for follow ups, waiting for the owner's Send click. */
+  autoDraft: boolean;
+  /** The owner's own words about what they offer, added to every first email word for word. */
+  offer: string;
+  /** A page to point to, like a wholesale page. */
+  link: string;
+  /** How the owner signs off, like "Jimmy, Peremis". */
+  signoff: string;
 }
 const settingsKey = (accountId: string) => `crm_settings:${accountId}`;
 
@@ -603,6 +627,10 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
     followUpDays: Number.isInteger(days) && days >= 0 && days <= 60 ? days : 5,
     dailyEmail: v.dailyEmail !== false,
     since: typeof v.since === "string" && !Number.isNaN(Date.parse(v.since)) ? v.since : new Date().toISOString(),
+    autoDraft: v.autoDraft !== false,
+    offer: typeof v.offer === "string" ? v.offer.slice(0, 1500) : "",
+    link: typeof v.link === "string" && /^https:\/\/\S+$/.test(v.link) ? v.link.slice(0, 300) : "",
+    signoff: typeof v.signoff === "string" ? v.signoff.slice(0, 120) : "",
   };
   if (!v.since) {
     await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
@@ -622,7 +650,18 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   const b = (input ?? {}) as Record<string, unknown>;
   const days = Number(b.followUpDays);
   if (!Number.isInteger(days) || days < 0 || days > 60) throw new Error("Pick between 0 and 60 days.");
-  const value: CrmSettings = { followUpDays: days, dailyEmail: b.dailyEmail !== false, since: (await readCrmSettings(accountId)).since };
+  const cur = await readCrmSettings(accountId);
+  const link = cut(b.link ?? cur.link, 300);
+  if (link && !/^https:\/\/\S+$/.test(link)) throw new Error("The link must start with https://");
+  const value: CrmSettings = {
+    followUpDays: days,
+    dailyEmail: b.dailyEmail !== false,
+    since: cur.since,
+    autoDraft: b.autoDraft === undefined ? cur.autoDraft : b.autoDraft !== false,
+    offer: b.offer === undefined ? cur.offer : cut(b.offer, 1500),
+    link,
+    signoff: b.signoff === undefined ? cur.signoff : cut(b.signoff, 120),
+  };
   await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(value)})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
   return value;
@@ -899,4 +938,154 @@ export async function contactOrders(store: StoreAccess | null, email: string): P
     if (/access denied|read_orders|scope|not approved|protected customer data/i.test(String((e as Error)?.message ?? e))) return "access";
     throw e;
   }
+}
+
+// ---------- emails written for the owner, waiting for their Send click ----------
+
+export interface EmailDraft {
+  subject: string;
+  body: string;
+  kind: "intro" | "followup";
+  /** "ai": a second AI checked it; "owner": no second AI was free, so the owner is the check. */
+  checked: "ai" | "owner";
+  at: string;
+}
+
+/** "Hi Dr. Hamer," for "Dr. Brown M. Hamer III, DC"; "Hi Ana," for "Ana Lopez"; "Hello," with no name. */
+export function greetingFor(name: string): string {
+  const clean = name.replace(/,.*$/, "").replace(/\([^)]*\)/g, " ").replace(/\b(Jr|Sr|II|III|IV|PhD|MD|DC)\.?$/i, "").trim();
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (!parts.length) return "Hello,";
+  if (/^dr\.?$/i.test(parts[0]) && parts.length > 1) {
+    const last = parts.filter((p) => !/^(Jr|Sr|II|III|IV)\.?$/i.test(p)).at(-1)!;
+    return `Hi Dr. ${last},`;
+  }
+  return `Hi ${parts[0]},`;
+}
+
+/** The city from an address written "street, city" or "street, city, state zip". */
+export function cityOf(address: string): string {
+  const parts = address.split(",").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return "";
+  const last = parts.at(-1)!;
+  // "TX 75201" or "TX" is a state; the city is the part before it.
+  return /^[A-Z]{2}(\s+\d{5})?$/.test(last) && parts.length > 2 ? parts.at(-2)! : /^(ste|suite|#|unit)/i.test(last) ? "" : last;
+}
+
+/** The whole email: greeting, the AI's checked opening, the owner's own offer word for word, the link and sign off. */
+export function composeDraft(p: { name: string; opening: string; offer: string; link: string; signoff: string; brand: string | null }): string {
+  return [
+    greetingFor(p.name),
+    "",
+    p.opening.trim(),
+    ...(p.offer.trim() ? ["", p.offer.trim()] : []),
+    ...(p.link ? ["", `More here: ${p.link}`] : []),
+    "",
+    "Thank you,",
+    p.signoff.trim() || p.brand || "",
+  ].join("\n").trim();
+}
+
+/**
+ * Writes one email for a contact (a first email, or a follow up when no reply came), checks it with the claim guard
+ * and a second AI from another provider, and keeps it on the contact for the owner to read and send. Nothing is sent.
+ */
+export async function draftEmail(accountId: string, contactId: string, kind: "intro" | "followup", lastSubject: string | null = null): Promise<string> {
+  await schema();
+  const [c] = await sql`SELECT * FROM insights_crm_contacts WHERE id = ${contactId} AND account_id = ${accountId} AND NOT archived`;
+  if (!c) throw new Error("That contact isn't here anymore.");
+  if (!c.email) throw new Error("This contact has no email.");
+  const settings = await readCrmSettings(accountId);
+  const profile = await readProfile(accountId);
+  const health = healthRulesApply(profile);
+  const offer = settings.offer || profile.about?.offer?.trim() || "";
+  if (!offer) throw new Error("Write what your first email offers under CRM Settings first.");
+  const offerProblem = claimProblem(offer, health);
+  if (offerProblem) throw new Error(`Your offer text needs a change first. ${offerProblem}`);
+  const base = aiProvider(await readPlatformSettings());
+  if (!base) throw new Error("An AI key is needed to write emails.");
+  const ai = { ...base, site: siteBrief(profile) };
+  const raw = await writeContactIntro(ai, {
+    company: c.company ?? "",
+    kind: c.kind ?? "",
+    city: cityOf(c.address ?? ""),
+    offer,
+    brand: profile.brandName,
+    site: profile.siteDomain ?? "this site",
+    health,
+    followUp: kind === "followup" ? lastSubject || "my last email" : null,
+  });
+  const keep = [profile.brandName, profile.siteDomain, c.company, cityOf(c.address ?? "")].filter((x): x is string => Boolean(x && x.trim()));
+  const opening = cleanPost(raw.opening, keep, 600, health);
+  const subject = noDashes(raw.subject.replace(/["\n]/g, " ").trim()).slice(0, 90);
+  if (opening.problem || !subject) throw new Error(`The email didn't pass the checks: ${opening.problem ?? "no subject."}`);
+  const body = composeDraft({ name: c.name ?? "", opening: opening.text, offer, link: settings.link, signoff: settings.signoff, brand: profile.brandName });
+  const verdict = await secondCheck(ai, {
+    what: kind === "intro" ? "a first email from a business owner to a business they want to work with" : "a polite follow up email from a business owner",
+    source: `About the recipient: ${[c.company, c.kind, cityOf(c.address ?? "")].filter(Boolean).join(", ")}\nWhat the owner offers (their own words): ${offer}`,
+    text: `${subject}\n\n${body}`,
+    health,
+  });
+  if (verdict && !verdict.ok) throw new Error(`The second AI turned it down: ${verdict.why || "no reason given."}`);
+  const draft: EmailDraft = { subject, body, kind, checked: verdict ? "ai" : "owner", at: new Date().toISOString() };
+  await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify(draft)}::jsonb, updated_at = now() WHERE id = ${contactId} AND account_id = ${accountId}`;
+  return subject;
+}
+
+/** Throws away a contact's waiting email. */
+export async function discardDraft(accountId: string, contactId: unknown): Promise<void> {
+  await schema();
+  const cid = await owned(accountId, contactId);
+  if (!cid) throw new Error("That contact isn't here anymore.");
+  await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE id = ${cid}`;
+}
+
+/**
+ * Writes the emails that are due, up to `max`: a first email for contacts with an email in the first stage who were
+ * never emailed, and a follow up for contacts with an open "no reply yet" task. Contacts without an email are skipped.
+ */
+export async function draftDueEmails(accountId: string, max = 5, deadline = Date.now() + 120_000): Promise<{ written: number; failed: string[] }> {
+  await schema();
+  const settings = await readCrmSettings(accountId);
+  const out = { written: 0, failed: [] as string[] };
+  if (!settings.autoDraft) return out;
+  const stages = await readStages(accountId);
+  const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> '' AND c.draft IS NULL
+      AND c.stage = ${stages[0]}
+      AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind IN ('email', 'reply', 'call', 'meeting'))
+    ORDER BY c.created_at LIMIT ${max}`;
+  const follows = await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t
+      JOIN insights_crm_contacts c ON c.id = t.contact_id AND NOT c.archived AND c.email <> '' AND c.draft IS NULL
+      JOIN insights_crm_activities e ON e.id = substring(t.auto_key from 9)::bigint
+    WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done AND t.auto_key LIKE 'noreply:%'
+    ORDER BY c.id, t.at DESC LIMIT ${max}`;
+  const jobs = [...follows.map((f) => ({ id: String(f.id), kind: "followup" as const, last: f.subject ?? null })), ...intros.map((r) => ({ id: String(r.id), kind: "intro" as const, last: null }))];
+  for (const j of jobs.slice(0, max)) {
+    if (Date.now() > deadline) break;
+    try {
+      await draftEmail(accountId, j.id, j.kind, j.last);
+      out.written++;
+    } catch (e) {
+      out.failed.push(String((e as Error)?.message ?? e).slice(0, 200));
+      // A setting or key problem would fail the same way for every contact: stop here.
+      if (/Settings|AI key|offer text/i.test(String((e as Error)?.message))) break;
+    }
+  }
+  return out;
+}
+
+/**
+ * After an email goes out: the waiting draft is used up, open "no reply yet" reminders are done (this was the follow
+ * up), and a contact still in the first stage moves to the second (Contacted), with the move on the timeline.
+ */
+async function afterEmail(accountId: string, cid: string): Promise<void> {
+  const stages = await readStages(accountId);
+  await sql`UPDATE insights_crm_activities SET done = true WHERE contact_id = ${cid} AND account_id = ${accountId} AND kind = 'task' AND auto_key LIKE 'noreply:%' AND NOT done`;
+  const [moved] = stages.length > 1
+    ? await sql`UPDATE insights_crm_contacts SET draft = NULL, last_contact_at = now(), updated_at = now(),
+          stage = ${stages[1]}, stage_changed_at = now()
+        WHERE id = ${cid} AND stage = ${stages[0]} RETURNING id`
+    : [];
+  if (moved) await log(accountId, cid, "stage", `Moved to ${stages[1]}`);
+  else await sql`UPDATE insights_crm_contacts SET draft = NULL, last_contact_at = now(), updated_at = now() WHERE id = ${cid}`;
 }

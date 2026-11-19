@@ -51,7 +51,7 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
-import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -1750,6 +1750,16 @@ export async function autopilotTick(): Promise<Response> {
       await forSite(accountId, async () => {
         const added = await addDueFollowUps(accountId).finally(() => markCrmUpkeep(accountId).catch(() => undefined));
         if (added) results.push(`account ${accountId} crm: ${added} follow up task(s) added`);
+        // Emails written and waiting for the owner's Send click: first emails for new contacts, and follow ups.
+        let draftFailed = false;
+        if (!late()) {
+          const drafts = await draftDueEmails(accountId, 5, Math.min(Date.now() + 90_000, started + budget));
+          if (drafts.written) results.push(`account ${accountId} crm: ${drafts.written} email(s) written for the owner`);
+          if (drafts.failed.length) {
+            draftFailed = true;
+            await report("crm", false, `Some CRM emails couldn't be written: ${drafts.failed[0]}`);
+          }
+        }
         const settings = await readCrmSettings(accountId);
         // Off when the owner turned emails off for the site, or turned the CRM's morning email off.
         if (settings.dailyEmail && (await readAccountAutopilot(accountId)).emailAlerts && new Date().getUTCHours() >= 13) {
@@ -1761,7 +1771,7 @@ export async function autopilotTick(): Promise<Response> {
             if (d.text && owner?.email) await sendEmail(owner.email, "Your CRM to do list today", d.text);
           }
         }
-        await report("crm", true);
+        if (!draftFailed) await report("crm", true);
       }).catch(async (e) => {
         console.error(`crm upkeep failed for ${accountId}: ${message(e)}`);
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
@@ -2316,6 +2326,18 @@ export const crmApi = (req: Request) =>
         case "count": await countStock(account.id, b.stockId, b.count); break;
         case "paid": await setCountPaid(account.id, b.countId, b.paid === true); break;
         case "closeStock": await closeStock(account.id, b.stockId); break;
+        case "draft": {
+          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+          if (typeof b.id !== "string") return json({ error: "Nothing to do." }, 400);
+          await draftEmail(account.id, b.id, b.kind === "followup" ? "followup" : "intro", typeof b.lastSubject === "string" ? b.lastSubject : null);
+          break;
+        }
+        case "discardDraft": await discardDraft(account.id, b.id); break;
+        case "draftAll": {
+          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+          const out = await draftDueEmails(account.id, 5, Date.now() + 50_000);
+          return json({ written: out.written, failed: out.failed });
+        }
         case "import": return json({ result: await importContacts(account.id, b.rows) });
         case "email": {
           const out = await emailContact(account.id, b.id, b.email);

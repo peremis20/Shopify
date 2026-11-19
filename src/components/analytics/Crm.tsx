@@ -143,6 +143,8 @@ function dueItems(data: CrmData) {
   const items: { key: string; date: string; contact: Contact | undefined; text: string; taskId?: string }[] = [];
   for (const t of data.tasks) items.push({ key: `t${t.id}`, date: t.due ?? "9999-12-31", contact: byId.get(t.contactId), text: t.subject || t.body, taskId: t.id });
   for (const c of data.contacts) if (c.followUp && !closedStage(c.stage)) items.push({ key: `f${c.id}`, date: c.followUp, contact: c, text: "Follow up" });
+  // Emails written for the owner come first: one click opens them ready to send.
+  for (const c of data.contacts) if (c.draft) items.push({ key: `d${c.id}`, date: "0000-00-00", contact: c, text: `Email ready to send: ${c.draft.subject}` });
   return items.filter((i) => i.contact).sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -280,7 +282,25 @@ function TodoList({ data, items, onOpen, onChanged, onError }: {
   onChanged: () => void;
   onError: (e: string | null) => void;
 }) {
-  if (!items.length) return <p className="text-sm text-dash-muted">Nothing to do. Add a task or a follow up date on a contact and it shows here.</p>;
+  const [writing, setWriting] = useState<string | null>(null);
+  const writeNow = async () => {
+    setWriting("Writing emails, this takes about a minute...");
+    try {
+      const out = await post<{ written: number; failed: string[] }>({ action: "draftAll" });
+      setWriting(out.written ? `${out.written} email${out.written > 1 ? "s" : ""} written. They are at the top of this list.` : out.failed[0] ?? "No emails are due: every new contact with an email already has one.");
+      onChanged();
+    } catch (e) {
+      setWriting(e instanceof Error ? e.message : "Couldn't write them.");
+    }
+  };
+  const writeBar = data.settings.autoDraft ? (
+    <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-dash-muted">
+      <span>Emails are written for new contacts and follow ups every hour, ready for you to send.</span>
+      <button className={quiet} disabled={writing === "Writing emails, this takes about a minute..."} onClick={writeNow}>Write them now</button>
+      {writing && <span className="text-dash-ink">{writing}</span>}
+    </div>
+  ) : null;
+  if (!items.length) return <div>{writeBar}<p className="text-sm text-dash-muted">Nothing to do. Add a task or a follow up date on a contact and it shows here.</p></div>;
   const done = async (taskId: string) => {
     try {
       await post({ action: "task", taskId, done: true });
@@ -290,6 +310,8 @@ function TodoList({ data, items, onOpen, onChanged, onError }: {
     }
   };
   return (
+    <div>
+    {writeBar}
     <ul className="space-y-2">
       {items.map((i) => {
         const late = i.date < today();
@@ -305,13 +327,14 @@ function TodoList({ data, items, onOpen, onChanged, onError }: {
               <p className="font-semibold text-dash-ink break-words [overflow-wrap:anywhere]">{i.text}</p>
               <p className="text-xs text-dash-muted">{i.contact ? label(i.contact) : ""}{i.contact?.company && i.contact.name ? `, ${i.contact.company}` : ""}</p>
             </button>
-            <span className={`text-xs font-semibold ${late ? "text-dash-down" : now ? "text-dash-green" : "text-dash-muted"}`}>
-              {i.date === "9999-12-31" ? "No date" : late ? `Late, ${shortDate(i.date)}` : now ? "Today" : shortDate(i.date)}
+            <span className={`text-xs font-semibold ${i.date === "0000-00-00" ? "text-dash-green" : late ? "text-dash-down" : now ? "text-dash-green" : "text-dash-muted"}`}>
+              {i.date === "0000-00-00" ? "Review and send" : i.date === "9999-12-31" ? "No date" : late ? `Late, ${shortDate(i.date)}` : now ? "Today" : shortDate(i.date)}
             </span>
           </li>
         );
       })}
     </ul>
+    </div>
   );
 }
 
@@ -503,6 +526,24 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
         {id !== "new" && !editing && <Orders orders={orders} />}
         {id !== "new" && !editing && <Consignment contactId={id} lines={stock} busy={busy} run={run} />}
 
+        {id !== "new" && !editing && !mail && c.draft && (
+          <div className="mt-4 rounded-xl border border-dash-green bg-dash-green/5 p-3 text-sm">
+            <p className="font-semibold text-dash-ink">{c.draft.kind === "followup" ? "A follow up is written and ready" : "An email is written and ready"}</p>
+            <p className="mt-1 text-dash-ink break-words">{c.draft.subject}</p>
+            <p className="mt-1 text-xs text-dash-muted">
+              {c.draft.checked === "ai" ? "Checked by a second AI. Read it before you send." : "No second AI was free to check it. Read it carefully before you send."}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button className={primary} onClick={() => setMail(true)}>Review and send</button>
+              <button className={quiet} disabled={busy} onClick={() => run({ action: "discardDraft", id })}>Throw it away</button>
+            </div>
+          </div>
+        )}
+        {id !== "new" && !editing && !mail && !c.draft && c.email && data.settings.autoDraft && (
+          <button className={`${quiet} mt-4`} disabled={busy} onClick={() => run({ action: "draft", id, kind: acts.some((a) => a.kind === "email") ? "followup" : "intro", lastSubject: acts.find((a) => a.kind === "email")?.subject ?? null })}>
+            {busy ? "Writing..." : "Write an email for me"}
+          </button>
+        )}
         {mail && <EmailComposer contact={c as Contact} data={data} onClose={() => setMail(false)} onSent={() => { setMail(false); onChanged(); loadOne(); }} />}
 
         {id !== "new" && (
@@ -548,8 +589,8 @@ function Input({ label: l, v, on, type = "text" }: { label: string; v: string | 
 
 function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; data: CrmData; onClose: () => void; onSent: () => void }) {
   const [to, setTo] = useState(contact.email);
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [subject, setSubject] = useState(contact.draft?.subject ?? "");
+  const [body, setBody] = useState(contact.draft?.body ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
@@ -739,11 +780,15 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
   const [list, setList] = useState(stages.join("\n"));
   const [days, setDays] = useState(String(settings.followUpDays));
   const [daily, setDaily] = useState(settings.dailyEmail);
+  const [auto, setAuto] = useState(settings.autoDraft);
+  const [offer, setOffer] = useState(settings.offer);
+  const [link, setLink] = useState(settings.link);
+  const [signoff, setSignoff] = useState(settings.signoff);
   const [err, setErr] = useState<string | null>(null);
   const save = async () => {
     if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
-      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily } });
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff } });
       await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
@@ -767,6 +812,23 @@ function StagesDialog({ stages, settings, onClose, onDone }: { stages: string[];
       <label className="mt-3 flex items-center gap-2 text-sm text-dash-ink">
         <input type="checkbox" checked={daily} onChange={(e) => setDaily(e.target.checked)} />
         Email me each morning with what is due today and late
+      </label>
+      <p className="mt-4 text-sm font-semibold text-dash-ink">Emails written for you</p>
+      <label className="mt-1 flex items-center gap-2 text-sm text-dash-ink">
+        <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
+        Write a first email for each new contact with an email, and a follow up when they don&apos;t reply. You read each one and click Send.
+      </label>
+      <label className="mt-2 block text-sm text-dash-ink">
+        What you offer, in your own words. It goes into every first email exactly as you write it.
+        <textarea className={`${field} mt-1 min-h-[110px]`} value={offer} onChange={(e) => setOffer(e.target.value)} />
+      </label>
+      <label className="mt-2 block text-sm text-dash-ink">
+        A page to point to (optional)
+        <input className={`${field} mt-1`} placeholder="https://" value={link} onChange={(e) => setLink(e.target.value)} />
+      </label>
+      <label className="mt-2 block text-sm text-dash-ink">
+        Sign off with
+        <input className={`${field} mt-1`} placeholder="Your name, your business" value={signoff} onChange={(e) => setSignoff(e.target.value)} />
       </label>
       {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
       <button className={`${primary} mt-3`} onClick={save}>Save settings</button>

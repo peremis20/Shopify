@@ -102,3 +102,19 @@ test("a city that is part of a street name is still added", async () => {
   assert.equal(mapRows([["Street", "City"], ["100 Dallas Pkwy", "Dallas"]], ["address", "city"])[0].address, "100 Dallas Pkwy, Dallas");
   assert.equal(mapRows([["Street", "City", "State"], ["5 Main St, Dallas, TX", "Dallas", "TX"]], ["address", "city", "state"])[0].address, "5 Main St, Dallas, TX");
 });
+
+test("emails written for the owner: greeting, city, and the owner's offer kept word for word", async () => {
+  const { greetingFor, cityOf, composeDraft } = await import("../src/lib/analytics/crm");
+  assert.equal(greetingFor("Dr. Brown M. Hamer III, DC"), "Hi Dr. Hamer,");
+  assert.equal(greetingFor("Dr. Jeffery (Jeff) Johnson"), "Hi Dr. Johnson,");
+  assert.equal(greetingFor("Dr. Mark Mathis Jr., DC"), "Hi Dr. Mathis,");
+  assert.equal(greetingFor("Ana Lopez"), "Hi Ana,");
+  assert.equal(greetingFor(""), "Hello,");
+  assert.equal(cityOf("2811 McKinney Ave #240, Dallas"), "Dallas");
+  assert.equal(cityOf("5 Main St, Plano, TX 75024"), "Plano");
+  assert.equal(cityOf("3600 Hulen St, Ste A4"), "");
+  assert.equal(cityOf("3825 Yucca Ave"), "");
+  const offer = "Clinics keep 30% of every sale. 12 bottles, nothing up front.";
+  const body = composeDraft({ name: "Dr. Tim Davis", opening: "I run Peremis.", offer, link: "https://peremis.com/pages/wholesale", signoff: "Jimmy, Peremis", brand: "Peremis" });
+  assert.match(body, /^Hi Dr\. Davis,\n\nI run Peremis\.\n\nClinics keep 30% of every sale\. 12 bottles, nothing up front\.\n\nMore here: https:\/\/peremis\.com\/pages\/wholesale\n\nThank you,\nJimmy, Peremis$/);
+});

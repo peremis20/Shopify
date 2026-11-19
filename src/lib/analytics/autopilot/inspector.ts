@@ -248,8 +248,13 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
     workaround: "Last week's speed results stay on the dashboard.",
   },
   crm: {
-    name: "The CRM's follow ups and morning email",
-    fix: () => "It tries again by itself within the hour. Your contacts and history are not affected.",
+    name: "The CRM's follow ups, written emails and morning email",
+    fix: (d) =>
+      /Settings/i.test(d ?? "")
+        ? "Open CRM, click Settings, and write what your first email offers. Then the emails are written by themselves."
+        : /AI key/i.test(d ?? "")
+          ? "Add an AI key in Platform keys, so emails can be written."
+          : "It tries again by itself within the hour. Your contacts and history are not affected.",
     workaround: "Follow up tasks and the morning email wait until the next run; everything you add by hand works as usual.",
   },
   leads: {
