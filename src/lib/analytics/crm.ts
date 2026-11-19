@@ -1037,7 +1037,8 @@ export async function discardDraft(accountId: string, contactId: unknown): Promi
   await schema();
   const cid = await owned(accountId, contactId);
   if (!cid) throw new Error("That contact isn't here anymore.");
-  await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE id = ${cid}`;
+  // Remembered as thrown away, so the hourly run doesn't write it again; "Write an email for me" still can.
+  await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ discarded: true, at: new Date().toISOString() })}::jsonb WHERE id = ${cid}`;
 }
 
 /**
@@ -1050,12 +1051,15 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
   const out = { written: 0, failed: [] as string[] };
   if (!settings.autoDraft) return out;
   const stages = await readStages(accountId);
-  const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> '' AND c.draft IS NULL
+  // Waiting to be written: no draft yet, or one that failed three days ago (a thrown away one is left alone).
+  const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> ''
+      AND (c.draft IS NULL OR (c.draft ? 'failed' AND (c.draft->>'at')::timestamptz < now() - interval '3 days'))
       AND c.stage = ${stages[0]}
       AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind IN ('email', 'reply', 'call', 'meeting'))
     ORDER BY c.created_at LIMIT ${max}`;
   const follows = await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t
-      JOIN insights_crm_contacts c ON c.id = t.contact_id AND NOT c.archived AND c.email <> '' AND c.draft IS NULL
+      JOIN insights_crm_contacts c ON c.id = t.contact_id AND NOT c.archived AND c.email <> ''
+        AND (c.draft IS NULL OR (c.draft ? 'failed' AND (c.draft->>'at')::timestamptz < now() - interval '3 days'))
       JOIN insights_crm_activities e ON e.id = substring(t.auto_key from 9)::bigint
     WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done AND t.auto_key LIKE 'noreply:%'
     ORDER BY c.id, t.at DESC LIMIT ${max}`;
@@ -1066,7 +1070,11 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
       await draftEmail(accountId, j.id, j.kind, j.last);
       out.written++;
     } catch (e) {
-      out.failed.push(String((e as Error)?.message ?? e).slice(0, 200));
+      const why = String((e as Error)?.message ?? e).slice(0, 200);
+      out.failed.push(why);
+      // Not written again for three days, so one that keeps failing doesn't use AI every hour.
+      await sql`UPDATE insights_crm_contacts SET draft = ${JSON.stringify({ failed: why, at: new Date().toISOString() })}::jsonb
+        WHERE id = ${j.id} AND account_id = ${accountId} AND draft IS NULL`.catch(() => undefined);
       // A setting or key problem would fail the same way for every contact: stop here.
       if (/Settings|AI key|offer text/i.test(String((e as Error)?.message))) break;
     }
