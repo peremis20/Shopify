@@ -96,3 +96,9 @@ test("any column layout: best names win, unknown columns can go to notes, the ad
   assert.equal(out[0].address, "11411 E Northwest Hwy, Dallas");
   assert.equal(out[0].notes, "Rating: 4.8");
 });
+
+test("a city that is part of a street name is still added", async () => {
+  const { mapRows } = await import("../src/lib/analytics/csv");
+  assert.equal(mapRows([["Street", "City"], ["100 Dallas Pkwy", "Dallas"]], ["address", "city"])[0].address, "100 Dallas Pkwy, Dallas");
+  assert.equal(mapRows([["Street", "City", "State"], ["5 Main St, Dallas, TX", "Dallas", "TX"]], ["address", "city", "state"])[0].address, "5 Main St, Dallas, TX");
+});

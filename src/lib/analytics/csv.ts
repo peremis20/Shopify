@@ -83,7 +83,8 @@ export function mapRows(rows: string[][], mapping: string[]): Record<string, str
     });
     const street = v.address ?? "";
     // City, state and zip join the street, unless the street already holds them.
-    const place = [v.city, [v.state, v.zip].filter(Boolean).join(" ")].filter((x) => x && !street.toLowerCase().includes(x.toLowerCase()));
+    const parts = street.toLowerCase().split(",").map((x) => x.trim());
+    const place = [v.city, [v.state, v.zip].filter(Boolean).join(" ")].filter((x) => x && !parts.slice(1).some((p) => p === x.toLowerCase() || p.startsWith(`${x.toLowerCase()} `)));
     return {
       name: v.name || [v.first, v.last].filter(Boolean).join(" "),
       email: v.email ?? "",
