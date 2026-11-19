@@ -285,7 +285,7 @@ export async function authCallback(req: Request): Promise<Response> {
   }
 
   try {
-    const { refreshToken, email, scope } = await exchangeAuthCode(code, redirectUri(req));
+    const { refreshToken, email, scope, verified } = await exchangeAuthCode(code, redirectUri(req));
     if (!refreshToken || !email) throw new Error("Google didn't return the needed access. Please try again.");
 
     const gmail = state.startsWith("gmail~");
@@ -318,9 +318,9 @@ export async function authCallback(req: Request): Promise<Response> {
     if (gmail && link) {
       // Only the owner's own Google account: the one this account signs in or connected Google with.
       // So a link someone else sends can't put a stranger's Gmail on their account.
-      const [owner, main] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null)]);
-      if (!sameOwner(email, [owner, main?.email])) {
-        throw new Error("Send from the Google account you use for the app, or another address at your own business domain.");
+      const [owner, main, profile] = await Promise.all([accountEmail(link.accountId), getConnection(link.accountId).catch(() => null), readProfile(link.accountId).catch(() => null)]);
+      if (!sameOwner(email, [owner, main?.email], profile?.siteDomain, verified)) {
+        throw new Error("Send from the Google account you use for the app, or another address at your own website domain.");
       }
       // Saved on its own: the Search Console and Analytics connection is left as it was.
       await saveGmail(link.accountId, { refreshToken, email });

@@ -163,14 +163,18 @@ export async function exchangeAuthCode(code: string, redirectUri: string) {
     client_secret: client.secret,
   });
   let email: string | undefined;
+  let verified = false;
   if (body.id_token) {
     try {
-      email = JSON.parse(Buffer.from(body.id_token.split(".")[1], "base64url").toString()).email;
+      // Straight from Google's token answer over TLS, so the claims are Google's own.
+      const claims = JSON.parse(Buffer.from(body.id_token.split(".")[1], "base64url").toString());
+      email = claims.email;
+      verified = claims.email_verified === true || claims.email_verified === "true";
     } catch {
       /* email is only used for display */
     }
   }
-  return { refreshToken: body.refresh_token, email, scope: body.scope ?? "" };
+  return { refreshToken: body.refresh_token, email, verified, scope: body.scope ?? "" };
 }
 
 export async function revokeToken(token: string): Promise<void> {

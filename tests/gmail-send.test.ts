@@ -43,9 +43,10 @@ test("gmail: only the owner's own Google account can be attached", () => {
   assert.equal(sameOwner("owner@shop.com", [null, "Owner@shop.com "]), true);
   assert.equal(sameOwner("stranger@gmail.com", ["owner@shop.com", "owner@gmail.com"]), false);
   assert.equal(sameOwner("a@b.com", [null, undefined]), false);
-  // Another address on the business's own domain is the business's too; on a free service only the exact address counts.
-  assert.equal(sameOwner("info@peremis.com", ["jimmy@peremis.com"]), true);
-  assert.equal(sameOwner("other@gmail.com", ["owner@gmail.com"]), false);
-  assert.equal(sameOwner("x@evilperemis.com", ["jimmy@peremis.com"]), false);
-  assert.equal(sameOwner("x@mail.peremis.com", ["jimmy@peremis.com"]), false);
+  // Another verified address at the site's own domain is the business's too; anything else must match exactly.
+  assert.equal(sameOwner("info@peremis.com", ["jimmy@peremis.com"], "www.peremis.com", true), true);
+  assert.equal(sameOwner("info@peremis.com", ["jimmy@peremis.com"], "peremis.com", false), false);
+  assert.equal(sameOwner("info@peremis.com", ["jimmy@peremis.com"], null, true), false);
+  assert.equal(sameOwner("x@evilperemis.com", ["jimmy@peremis.com"], "peremis.com", true), false);
+  assert.equal(sameOwner("x@mail.peremis.com", ["jimmy@peremis.com"], "peremis.com", true), false);
 });
