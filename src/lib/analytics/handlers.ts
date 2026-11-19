@@ -51,7 +51,7 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
-import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -2300,9 +2300,24 @@ export const crmApi = (req: Request) =>
           (async () => contactOrders((await siteFor(account.id).catch(() => null))?.store ?? null, t.contact.email))(),
           new Promise<null>((done) => setTimeout(() => done(null), 8000)),
         ]).catch((e) => (console.error(`contact orders not read: ${message(e)}`), "failed" as const));
-        return json({ ...t, stock: await stockFor(account.id, t.contact.id), orders });
+        return json({ ...t, stock: await stockFor(account.id, t.contact.id), files: await filesFor(account.id, t.contact.id), orders });
       }
       if (q.get("archived")) return json({ contacts: await archivedContacts(account.id) });
+      const fileId = q.get("file");
+      if (fileId) {
+        const f = await readCrmFile(account.id, fileId);
+        if (!f) return json({ error: "That file isn't here anymore." }, 404);
+        // Always a download, never shown inside the app's page, so no file can run anything there.
+        return new Response(new Uint8Array(f.bytes), {
+          headers: {
+            "Content-Type": f.mime,
+            "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "Cache-Control": "private, no-store",
+          },
+        });
+      }
       const gmail = await getGmail(account.id).catch(() => null);
       const [view, stock, settings] = await Promise.all([crmView(account.id), stockSummary(account.id), readCrmSettings(account.id)]);
       return json({ ...view, stock, settings, gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
@@ -2334,6 +2349,9 @@ export const crmApi = (req: Request) =>
           break;
         }
         case "discardDraft": await discardDraft(account.id, b.id); break;
+        case "fileLink": await addFileLink(account.id, b.id, b.file); break;
+        case "upload": await uploadFile(account.id, b.id, b.file); break;
+        case "deleteFile": await deleteCrmFile(account.id, b.fileId); break;
         case "draftAll": {
           if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
           const out = await draftDueEmails(account.id, 5, Date.now() + 50_000);

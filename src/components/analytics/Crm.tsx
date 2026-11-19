@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Activity, Contact, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
+import type { Activity, Contact, ContactFile, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
 import { addressName, plainCompany } from "@/lib/analytics/names";
 import { goToGoogle } from "./Onboarding";
@@ -46,6 +46,7 @@ const KIND_LABEL: Record<Activity["kind"], string> = {
   lead: "Website request",
   reply: "They replied",
   stock: "Consignment",
+  file: "File",
 };
 
 /** The owner's CRM: a pipeline board, a contact list, a to do list and email templates, all kept in DashPatrol. */
@@ -409,12 +410,14 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
   const [note, setNote] = useState<{ kind: "note" | "call" | "meeting" | "reply" | "task"; subject: string; body: string; due: string } | null>(null);
   const [stock, setStock] = useState<StockLine[]>([]);
   const [orders, setOrders] = useState<ContactOrders | "access" | "failed" | null>(null);
+  const [files, setFiles] = useState<ContactFile[]>([]);
   const [mail, setMail] = useState(false);
   // Tags are typed as one line and split on commas when saved, so typing never jumps or adds spaces.
   const [tagText, setTagText] = useState("");
   const loadOne = useCallback(async () => {
     if (id === "new") return;
-    const t = await apiFresh<{ contact: Contact; activities: Activity[]; stock: StockLine[]; orders: ContactOrders | "access" | "failed" | null }>(`/api/crm?contact=${id}`);
+    const t = await apiFresh<{ contact: Contact; activities: Activity[]; stock: StockLine[]; files: ContactFile[]; orders: ContactOrders | "access" | "failed" | null }>(`/api/crm?contact=${id}`);
+    setFiles(t.files ?? []);
     setContact(t.contact);
     setTagText(t.contact.tags.join(", "));
     setActs(t.activities);
@@ -526,6 +529,7 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
 
         {id !== "new" && !editing && <Orders orders={orders} />}
         {id !== "new" && !editing && <Consignment contactId={id} lines={stock} busy={busy} run={run} />}
+        {id !== "new" && !editing && <Files contactId={id} files={files} busy={busy} run={run} />}
 
         {id !== "new" && !editing && !mail && c.draft && (
           <div className="mt-4 rounded-xl border border-dash-green bg-dash-green/5 p-3 text-sm">
@@ -864,6 +868,82 @@ function Orders({ orders }: { orders: ContactOrders | "access" | "failed" | null
           </ul>
         </>
       )}
+    </div>
+  );
+}
+
+const FILE_KIND_LIST = ["Contract", "Tax form", "Invoice", "Folder", "Other"];
+const sizeText = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
+
+function Files({ contactId, files, busy, run }: {
+  contactId: string;
+  files: ContactFile[];
+  busy: boolean;
+  run: (body: Record<string, unknown>, after?: () => void) => Promise<void>;
+}) {
+  const [adding, setAdding] = useState<{ mode: "upload" | "link"; kind: string; name: string; url: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const upload = async (f: File) => {
+    setErr(null);
+    if (f.size > 3_000_000) return setErr("Files up to 3 MB can be kept here. For bigger files, put them in Google Drive and add the link.");
+    const data = await new Promise<string>((done, fail) => {
+      const r = new FileReader();
+      r.onload = () => done(String(r.result ?? ""));
+      r.onerror = () => fail(new Error("That file couldn't be read."));
+      r.readAsDataURL(f);
+    }).catch((e) => (setErr(e.message), ""));
+    if (data) await run({ action: "upload", id: contactId, file: { name: f.name, kind: adding?.kind ?? "Other", data } }, () => setAdding(null));
+  };
+  return (
+    <div className="mt-4 rounded-xl border border-dash-line p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-dash-ink">Files</p>
+        {!adding && (
+          <div className="flex gap-2">
+            <button className={quiet} onClick={() => setAdding({ mode: "upload", kind: "Contract", name: "", url: "" })}>Upload</button>
+            <button className={quiet} onClick={() => setAdding({ mode: "link", kind: "Folder", name: "", url: "" })}>Add a link</button>
+          </div>
+        )}
+      </div>
+      {!files.length && !adding && <p className="text-sm text-dash-muted">Contracts, tax forms, invoices, or a link to their Google Drive folder.</p>}
+      {adding && (
+        <div className="mt-2 space-y-2">
+          <select className={field} value={adding.kind} onChange={(e) => setAdding({ ...adding, kind: e.target.value })}>
+            {FILE_KIND_LIST.filter((k) => adding.mode === "link" || k !== "Folder").map((k) => <option key={k}>{k}</option>)}
+          </select>
+          {adding.mode === "upload" ? (
+            <>
+              <input type="file" className="text-sm" accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx,.csv,.txt" onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+              <p className="text-xs text-dash-muted">PDF, Word, Excel, CSV, text or image, up to 3 MB.</p>
+            </>
+          ) : (
+            <>
+              <input className={field} placeholder="https://drive.google.com/..." value={adding.url} onChange={(e) => setAdding({ ...adding, url: e.target.value })} />
+              <input className={field} placeholder="Name (optional), like Signed consignment agreement" value={adding.name} onChange={(e) => setAdding({ ...adding, name: e.target.value })} />
+              <button disabled={busy || !adding.url} className={primary} onClick={() => run({ action: "fileLink", id: contactId, file: { url: adding.url.trim(), kind: adding.kind, name: adding.name } }, () => setAdding(null))}>Save link</button>
+            </>
+          )}
+          <button className={quiet} onClick={() => { setAdding(null); setErr(null); }}>Cancel</button>
+        </div>
+      )}
+      {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
+      <ul className="mt-2 space-y-1 text-sm">
+        {files.map((f) => (
+          <li key={f.id} className="flex flex-wrap items-center gap-2">
+            <span className="rounded bg-black/5 px-1.5 py-0.5 text-xs text-dash-muted">{f.kind}</span>
+            <a
+              className="min-w-0 break-words font-semibold text-dash-green hover:underline [overflow-wrap:anywhere]"
+              href={f.url ?? `/api/crm?file=${f.id}`}
+              target={f.url ? "_blank" : undefined}
+              rel="noopener noreferrer"
+            >
+              {f.name}
+            </a>
+            <span className="text-xs text-dash-muted">{f.url ? "link" : sizeText(f.size)}, {shortDate(f.at)}</span>
+            <button className="text-xs text-dash-muted hover:text-dash-down" disabled={busy} onClick={() => window.confirm(`Remove ${f.name}?`) && run({ action: "deleteFile", fileId: f.id })}>Remove</button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

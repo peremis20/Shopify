@@ -45,7 +45,7 @@ export interface Contact {
   openTasks: number;
 }
 
-export type ActivityKind = "note" | "call" | "meeting" | "email" | "reply" | "task" | "stage" | "lead" | "stock";
+export type ActivityKind = "note" | "call" | "meeting" | "email" | "reply" | "task" | "stage" | "lead" | "stock" | "file";
 
 export interface Activity {
   id: string;
@@ -1097,4 +1097,130 @@ async function afterEmail(accountId: string, cid: string): Promise<void> {
     : [];
   if (moved) await log(accountId, cid, "stage", `Moved to ${stages[1]}`);
   else await sql`UPDATE insights_crm_contacts SET draft = NULL, last_contact_at = now(), updated_at = now() WHERE id = ${cid}`;
+}
+
+// ---------- files kept with a contact: contracts, tax forms, invoices, and links to them ----------
+
+export const FILE_KINDS = ["Contract", "Tax form", "Invoice", "Folder", "Other"] as const;
+export interface ContactFile {
+  id: string;
+  name: string;
+  kind: string;
+  /** A link (to Google Drive or anywhere) or null for a file kept in the app. */
+  url: string | null;
+  mime: string | null;
+  size: number;
+  at: string;
+}
+
+/** What may be uploaded: documents and images only, nothing a browser would run. */
+const UPLOAD_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  csv: "text/csv",
+  txt: "text/plain",
+};
+export const MAX_UPLOAD_BYTES = 3_000_000;
+
+/** The file's type from its name, or null when it isn't one that may be kept. */
+export function uploadType(name: string): string | null {
+  const ext = name.toLowerCase().split(".").at(-1) ?? "";
+  return UPLOAD_TYPES[ext] ?? null;
+}
+
+async function filesTable(): Promise<void> {
+  await schema();
+  await sql`CREATE TABLE IF NOT EXISTS insights_crm_files (
+    id bigserial PRIMARY KEY,
+    account_id bigint NOT NULL,
+    contact_id bigint NOT NULL REFERENCES insights_crm_contacts (id) ON DELETE CASCADE,
+    name text NOT NULL,
+    kind text NOT NULL DEFAULT 'Other',
+    url text,
+    mime text,
+    size integer NOT NULL DEFAULT 0,
+    data bytea,
+    created_at timestamptz NOT NULL DEFAULT now()
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS insights_crm_files_contact ON insights_crm_files (contact_id, created_at DESC)`;
+}
+
+const kindOf = (v: unknown) => FILE_KINDS.find((k) => k === v) ?? "Other";
+
+/** A contact's files and links, newest first (the file contents are fetched one at a time when opened). */
+export async function filesFor(accountId: string, contactId: string): Promise<ContactFile[]> {
+  await filesTable();
+  const rows = await sql`SELECT id, name, kind, url, mime, size, created_at FROM insights_crm_files
+    WHERE account_id = ${accountId} AND contact_id = ${contactId} ORDER BY created_at DESC LIMIT 200`;
+  return rows.map((r) => ({
+    id: String(r.id),
+    name: r.name ?? "",
+    kind: r.kind ?? "Other",
+    url: r.url ?? null,
+    mime: r.mime ?? null,
+    size: Number(r.size ?? 0),
+    at: new Date(String(r.created_at)).toISOString(),
+  }));
+}
+
+/** Keeps a link with a contact, like its Google Drive folder or a signed contract. */
+export async function addFileLink(accountId: string, contactId: unknown, input: unknown): Promise<void> {
+  await filesTable();
+  const cid = await owned(accountId, contactId);
+  if (!cid) throw new Error("That contact isn't here anymore.");
+  const b = (input ?? {}) as Record<string, unknown>;
+  const url = cut(b.url, 1000);
+  if (!/^https:\/\/[^\s"<>]+$/.test(url)) throw new Error("Paste a link that starts with https://");
+  const kind = kindOf(b.kind);
+  const name = cut(b.name, 160) || (kind === "Folder" ? "Google Drive folder" : "Link");
+  await sql`INSERT INTO insights_crm_files (account_id, contact_id, name, kind, url) VALUES (${accountId}, ${cid}, ${name}, ${kind}, ${url})`;
+  await log(accountId, cid, "file", `${kind}: ${name}`);
+  await sql`UPDATE insights_crm_contacts SET updated_at = now() WHERE id = ${cid}`;
+}
+
+/** Keeps an uploaded document with a contact (up to 3 MB, documents and images only). */
+export async function uploadFile(accountId: string, contactId: unknown, input: unknown): Promise<void> {
+  await filesTable();
+  const cid = await owned(accountId, contactId);
+  if (!cid) throw new Error("That contact isn't here anymore.");
+  const b = (input ?? {}) as Record<string, unknown>;
+  const name = cut(b.name, 160).replace(/[\\/"]/g, " ");
+  const mime = uploadType(name);
+  if (!name || !mime) throw new Error("Upload a PDF, Word, Excel, CSV, text or image file.");
+  const data = typeof b.data === "string" ? b.data.replace(/^data:[^,]*,/, "") : "";
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error("That file couldn't be read. Try again.");
+  const size = Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+  if (size > MAX_UPLOAD_BYTES) throw new Error("Files up to 3 MB can be kept here. For bigger files, put them in Google Drive and add the link.");
+  const [n] = await sql`SELECT coalesce(sum(size), 0)::bigint AS total FROM insights_crm_files WHERE account_id = ${accountId}`;
+  if (Number(n?.total ?? 0) + size > 300_000_000) throw new Error("Your files here are full (300 MB). Keep new ones in Google Drive and add the link.");
+  const kind = kindOf(b.kind);
+  await sql`INSERT INTO insights_crm_files (account_id, contact_id, name, kind, mime, size, data)
+    VALUES (${accountId}, ${cid}, ${name}, ${kind}, ${mime}, ${size}, decode(${data}, 'base64'))`;
+  await log(accountId, cid, "file", `${kind}: ${name}`);
+  await sql`UPDATE insights_crm_contacts SET updated_at = now() WHERE id = ${cid}`;
+}
+
+/** One kept file's contents, for download. */
+export async function readFile(accountId: string, fileId: string): Promise<{ name: string; mime: string; bytes: Buffer } | null> {
+  await filesTable();
+  if (!ID.test(fileId)) return null;
+  const [r] = await sql`SELECT name, mime, encode(data, 'base64') AS b64 FROM insights_crm_files
+    WHERE id = ${fileId} AND account_id = ${accountId} AND data IS NOT NULL`;
+  if (!r?.b64) return null;
+  return { name: r.name ?? "file", mime: r.mime ?? "application/octet-stream", bytes: Buffer.from(r.b64.replace(/\s/g, ""), "base64") };
+}
+
+export async function deleteFile(accountId: string, fileId: unknown): Promise<void> {
+  await filesTable();
+  if (typeof fileId !== "string" || !ID.test(fileId)) throw new Error("That file isn't here anymore.");
+  const [r] = await sql`DELETE FROM insights_crm_files WHERE id = ${fileId} AND account_id = ${accountId} RETURNING contact_id, name, kind`;
+  if (!r) throw new Error("That file isn't here anymore.");
+  await log(accountId, String(r.contact_id), "file", `Removed ${r.kind}: ${r.name}`);
 }

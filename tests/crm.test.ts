@@ -144,3 +144,13 @@ test("two word surnames and legal endings", async () => {
   assert.equal(fillTemplate("{company}", { name: "", company: "Expressions Chiropractic of Dallas PC" }), "Expressions Chiropractic of Dallas");
   assert.equal(fillTemplate("{company}", { name: "", company: "Atlas Chiropractic & Wellness" }), "Atlas Chiropractic & Wellness");
 });
+
+test("only documents and images can be uploaded", async () => {
+  const { uploadType } = await import("../src/lib/analytics/crm");
+  assert.equal(uploadType("Signed agreement.PDF"), "application/pdf");
+  assert.equal(uploadType("w9.docx"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  assert.equal(uploadType("page.html"), null);
+  assert.equal(uploadType("image.svg"), null);
+  assert.equal(uploadType("run.exe"), null);
+  assert.equal(uploadType("noextension"), null);
+});
