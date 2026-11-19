@@ -85,3 +85,14 @@ test("a clinic list with Contact Person, Clinic, City and Notes columns is read 
   assert.ok(cleanContact(list[1], DEFAULT_STAGES));
   assert.ok(cleanContact({ phone: "(817) 413-0080" }, DEFAULT_STAGES));
 });
+
+test("any column layout: best names win, unknown columns can go to notes, the address isn't repeated", async () => {
+  const { guessMapping, mapRows } = await import("../src/lib/analytics/csv");
+  assert.deepEqual(guessMapping(["Contact", "Contact Person", "Type", "Business Type", "Rating"]), ["", "name", "", "kind", ""]);
+  const rows = [["Practice", "Dr", "Full address", "City", "Rating"], ["Hanks Chiropractic", "Dr. Ricky Hanks", "11411 E Northwest Hwy, Dallas", "Dallas", "4.8"]];
+  const out = mapRows(rows, ["company", "name", "address", "city", "note"]);
+  assert.equal(out[0].company, "Hanks Chiropractic");
+  assert.equal(out[0].name, "Dr. Ricky Hanks");
+  assert.equal(out[0].address, "11411 E Northwest Hwy, Dallas");
+  assert.equal(out[0].notes, "Rating: 4.8");
+});

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Activity, Contact, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
-import { parseCsv, rowsToContacts } from "@/lib/analytics/csv";
+import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
 import { Card } from "./ui";
@@ -620,18 +620,25 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
 }
 
 function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const [rows, setRows] = useState<Record<string, string>[] | null>(null);
+  const [table, setTable] = useState<string[][] | null>(null);
+  const [mapping, setMapping] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const input = useRef<HTMLInputElement>(null);
   const read = async (f: File) => {
     setMsg(null);
-    const list = rowsToContacts(parseCsv(await f.text()));
-    if (!list.length) setMsg("That file has no rows to import. Save your spreadsheet as CSV with a header row first.");
-    setRows(list);
+    const t = parseCsv(await f.text());
+    if (t.length < 2) {
+      setTable(null);
+      return setMsg("That file has no rows to import. Save your spreadsheet as CSV with a header row first.");
+    }
+    setTable(t);
+    // A column the importer doesn't recognise goes to Notes, so nothing in the file is lost.
+    setMapping(guessMapping(t[0]).map((m) => m || "note"));
   };
+  const rows = table ? mapRows(table, mapping) : [];
+  const used = (key: string, i: number) => key && key !== "note" && mapping.some((m, j) => m === key && j !== i);
   const go = async () => {
-    if (!rows) return;
+    if (!rows.length) return;
     setBusy(true);
     const total = { added: 0, updated: 0, skipped: 0 };
     const list = rows.slice(0, 1000);
@@ -645,23 +652,49 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
         total.skipped += out.result.skipped;
       }
       setMsg(`Added ${total.added}, filled in ${total.updated} that were already here, skipped ${total.skipped} without a name, company, phone or valid email.`);
-      setRows(null);
+      setTable(null);
     } catch (e) {
       setMsg(`${e instanceof Error ? e.message : "The import stopped."} ${total.added} were added before it stopped.`);
     }
     onDone();
     setBusy(false);
   };
+  const first = rows[0];
   return (
     <Dialog title="Import contacts" onClose={onClose}>
       <p className="text-sm text-dash-muted">
-        Pick a CSV file, saved from Excel, Google Sheets or another CRM. Columns like Name, Contact person, Clinic or Company, Email, Phone, Address, City, Stage, Value, Tags and Notes are matched by their names. Notes go on each contact's history. A contact who is already here only gets their empty fields filled in.
+        Pick a CSV file, saved from Excel, Google Sheets or another CRM. Any layout works: you see each column and where it goes, and can change it. A contact who is already here only gets their empty fields filled in.
       </p>
-      <input ref={input} type="file" accept=".csv,text/csv" className="mt-3 text-sm" onChange={(e) => e.target.files?.[0] && read(e.target.files[0])} />
-      {rows && rows.length > 0 && (
+      <input type="file" accept=".csv,text/csv" className="mt-3 text-sm" onChange={(e) => e.target.files?.[0] && read(e.target.files[0])} />
+      {table && (
         <div className="mt-3">
-          <p className="text-sm text-dash-ink">{rows.length.toLocaleString()} rows found{rows.length > 1000 ? "; the first 1,000 are imported" : ""}. First one: {rows[0].name || rows[0].email || rows[0].company}.</p>
-          <button disabled={busy} className={`${primary} mt-2`} onClick={go}>{busy ? "Importing..." : "Import"}</button>
+          <p className="mb-2 text-sm font-semibold text-dash-ink">Where each column goes</p>
+          <ul className="space-y-1">
+            {table[0].map((h, i) => (
+              <li key={i} className="grid grid-cols-2 items-center gap-2 text-sm">
+                <span className="min-w-0 break-words text-dash-ink">
+                  {h.trim() || `Column ${i + 1}`}
+                  <span className="block truncate text-xs text-dash-muted">{table[1]?.[i] ?? ""}</span>
+                </span>
+                <select
+                  className={`${field} py-1`}
+                  value={mapping[i] ?? ""}
+                  onChange={(e) => setMapping(mapping.map((m, j) => (j === i ? e.target.value : m)))}
+                >
+                  <option value="">Skip this column</option>
+                  <option value="note">Add to notes</option>
+                  {IMPORT_FIELDS.map((f) => (
+                    <option key={f.key} value={f.key}>{f.label}{used(f.key, i) ? " (also used by another column)" : ""}</option>
+                  ))}
+                </select>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-3 text-sm text-dash-ink">
+            {rows.length.toLocaleString()} rows{rows.length > 1000 ? "; the first 1,000 are imported" : ""}.
+            {first ? ` First one: ${[first.name, first.company, first.email, first.phone].filter(Boolean).join(", ") || "nothing to add, check the columns above"}.` : ""}
+          </p>
+          <button disabled={busy || !rows.length} className={`${primary} mt-2`} onClick={go}>{busy ? "Importing..." : "Import"}</button>
         </div>
       )}
       {msg && <p className="mt-3 text-sm text-dash-ink">{msg}</p>}

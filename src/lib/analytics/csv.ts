@@ -26,44 +26,82 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-/** Turns spreadsheet rows into contacts by their column names (Name, First name, Last name, Email, Company and so on). */
-export function rowsToContacts(rows: string[][]): Record<string, string>[] {
+/** The contact fields a column can go into, with the column names each one is recognised by, best name first. */
+export const IMPORT_FIELDS: { key: string; label: string; names: string[] }[] = [
+  { key: "name", label: "Name", names: ["name", "fullname", "contactname", "contactperson", "contact", "person", "doctor", "primarycontact", "decisionmaker"] },
+  { key: "first", label: "First name", names: ["firstname", "first", "givenname"] },
+  { key: "last", label: "Last name", names: ["lastname", "last", "surname", "familyname"] },
+  { key: "company", label: "Company", names: ["company", "companyname", "business", "businessname", "clinic", "clinicname", "practice", "practicename", "organization", "organisation", "accountname", "account", "store", "storename", "shop"] },
+  { key: "email", label: "Email", names: ["email", "emailaddress", "workemail", "mail"] },
+  { key: "phone", label: "Phone", names: ["phone", "phonenumber", "officephone", "mainphone", "workphone", "mobile", "cell", "telephone", "tel"] },
+  { key: "title", label: "Job title", names: ["title", "jobtitle", "role", "position"] },
+  { key: "kind", label: "Type", names: ["businesstype", "type", "kind", "category", "industry"] },
+  { key: "stage", label: "Stage", names: ["stage", "dealstage", "status"] },
+  { key: "value", label: "Deal value", names: ["value", "dealvalue", "amount"] },
+  { key: "tags", label: "Tags", names: ["tags", "tag", "labels"] },
+  { key: "website", label: "Website", names: ["website", "websiteurl", "web", "url", "site", "domain"] },
+  { key: "address", label: "Street address", names: ["address", "streetaddress", "street", "address1", "addressline1"] },
+  { key: "city", label: "City", names: ["city", "town"] },
+  { key: "state", label: "State", names: ["state", "province"] },
+  { key: "zip", label: "Zip", names: ["zip", "zipcode", "postalcode", "postcode"] },
+  { key: "notes", label: "Notes", names: ["notes", "note", "comments", "comment", "description"] },
+];
+
+const norm = (h: string) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/**
+ * Guesses which field each column goes into: "" to skip it, "note" to add it to the contact's notes. Each field takes
+ * the column with its best name, so "Contact Person" wins over a plain "Contact" wherever it sits.
+ */
+export function guessMapping(header: string[]): string[] {
+  const head = header.map(norm);
+  const out = head.map(() => "");
+  for (const f of IMPORT_FIELDS) {
+    for (const n of f.names) {
+      const i = head.findIndex((h, j) => h === n && !out[j]);
+      if (i >= 0) {
+        out[i] = f.key;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Turns rows into contacts by the chosen mapping. Columns marked "note" are added to Notes with their column name. */
+export function mapRows(rows: string[][], mapping: string[]): Record<string, string>[] {
   if (rows.length < 2) return [];
-  const head = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
-  const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
-  const m = {
-    name: col("name", "fullname", "contact", "contactname", "contactperson", "person", "doctor", "owner", "primarycontact", "decisionmaker"),
-    first: col("firstname", "first", "givenname"),
-    last: col("lastname", "last", "surname", "familyname"),
-    email: col("email", "emailaddress", "mail", "workemail"),
-    phone: col("phone", "phonenumber", "mobile", "cell", "tel", "telephone", "officephone", "mainphone", "workphone"),
-    company: col("company", "companyname", "business", "businessname", "organization", "organisation", "account", "accountname", "clinic", "clinicname", "practice", "practicename", "store", "storename", "shop", "office"),
-    title: col("title", "jobtitle", "role", "position"),
-    kind: col("type", "kind", "businesstype", "category", "industry"),
-    stage: col("stage", "status", "dealstage"),
-    value: col("value", "dealvalue", "amount"),
-    tags: col("tags", "tag", "labels"),
-    website: col("website", "websiteurl", "web", "url", "site", "domain"),
-    address: col("address", "streetaddress", "street", "address1", "addressline1"),
-    city: col("city", "town"),
-    state: col("state", "province", "region"),
-    zip: col("zip", "zipcode", "postalcode", "postcode"),
-    notes: col("notes", "note", "comments", "comment", "description"),
-  };
-  const get = (r: string[], i: number) => (i >= 0 ? (r[i] ?? "").trim() : "");
-  return rows.slice(1).map((r) => ({
-    name: get(r, m.name) || [get(r, m.first), get(r, m.last)].filter(Boolean).join(" "),
-    email: get(r, m.email),
-    phone: get(r, m.phone),
-    company: get(r, m.company),
-    title: get(r, m.title),
-    kind: get(r, m.kind),
-    stage: get(r, m.stage),
-    value: get(r, m.value),
-    tags: get(r, m.tags),
-    website: get(r, m.website),
-    // Street, city, state and zip become one address line.
-    address: [get(r, m.address), get(r, m.city), [get(r, m.state), get(r, m.zip)].filter(Boolean).join(" ")].filter(Boolean).join(", "),
-    notes: get(r, m.notes),
-  }));
+  const header = rows[0];
+  return rows.slice(1).map((r) => {
+    const v: Record<string, string> = {};
+    const extra: string[] = [];
+    mapping.forEach((field, i) => {
+      const cell = (r[i] ?? "").trim();
+      if (!cell || !field) return;
+      if (field === "note") extra.push(`${header[i].trim() || "Column"}: ${cell}`);
+      else v[field] = v[field] ? `${v[field]} ${cell}` : cell;
+    });
+    const street = v.address ?? "";
+    // City, state and zip join the street, unless the street already holds them.
+    const place = [v.city, [v.state, v.zip].filter(Boolean).join(" ")].filter((x) => x && !street.toLowerCase().includes(x.toLowerCase()));
+    return {
+      name: v.name || [v.first, v.last].filter(Boolean).join(" "),
+      email: v.email ?? "",
+      phone: v.phone ?? "",
+      company: v.company ?? "",
+      title: v.title ?? "",
+      kind: v.kind ?? "",
+      stage: v.stage ?? "",
+      value: v.value ?? "",
+      tags: v.tags ?? "",
+      website: v.website ?? "",
+      address: [street, ...place].filter(Boolean).join(", "),
+      notes: [v.notes, ...extra].filter(Boolean).join("\n"),
+    };
+  });
+}
+
+/** Turns spreadsheet rows into contacts by their column names. */
+export function rowsToContacts(rows: string[][]): Record<string, string>[] {
+  return rows.length < 2 ? [] : mapRows(rows, guessMapping(rows[0]));
 }

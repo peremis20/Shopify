@@ -495,13 +495,15 @@ export async function importContacts(accountId: string, rows: unknown): Promise<
       skipped++;
       continue;
     }
-    // The same person: the same email, or without one, the same phone number or the same company name.
-    const digits = c.phone.replace(/\D/g, "");
+    // The same person: the same email, or without one, the same phone number (its last 10 digits, so a +1 doesn't
+    // matter), or the same company name when neither has a phone. Two clinics that only share a name stay apart.
+    const digits = c.phone.replace(/\D/g, "").slice(-10);
     const [dup] = c.email
       ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived`
-      : digits.length >= 7 || c.company
+      : digits.length >= 7 || (!digits && c.company)
         ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email = ''
-            AND ((${digits} <> '' AND regexp_replace(phone, '[^0-9]', '', 'g') = ${digits}) OR (${c.company} <> '' AND lower(company) = lower(${c.company})))
+            AND ((${digits} <> '' AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
+              OR (${digits} = '' AND phone = '' AND ${c.company} <> '' AND lower(company) = lower(${c.company})))
             ORDER BY id LIMIT 1`
         : [];
     const notes = cut((r as Record<string, unknown>)?.notes, 2000);
