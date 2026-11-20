@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Activity, Contact, ContactFile, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
 import { addressName, plainCompany } from "@/lib/analytics/names";
@@ -16,14 +16,21 @@ interface GmailState {
 }
 interface CrmData {
   stages: string[];
+  /** The segment the board and counts are for; "" for everyone. */
+  segment: string;
+  /** Each stage's newest cards, plus the contacts behind tasks and waiting emails. */
   contacts: Contact[];
+  stageCounts: Record<string, { n: number; value: number }>;
+  segmentCounts: Record<string, number>;
+  totals: { contacts: number; openValue: number; wonMonth: number };
   tasks: Activity[];
   templates: Template[];
   gmail: GmailState;
-  capped?: boolean;
   stock: { onShelf: number; owed: number; dueSoon: number; places: number };
   settings: CrmSettings;
 }
+/** Cards shown per stage; the rest are counted and found under Contacts. */
+const STAGE_CARDS = 30;
 type View = "pipeline" | "contacts" | "todo" | "templates";
 
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -58,7 +65,16 @@ export function Crm({ active = true }: { active?: boolean }) {
   const [showImport, setShowImport] = useState(false);
   const [showStages, setShowStages] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const load = useCallback(() => apiFresh<CrmData>("/api/crm").then((d) => (setData(d), setError(null))).catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")), []);
+  const [segment, setSegment] = useState("");
+  const [listStage, setListStage] = useState("");
+  const [segMsg, setSegMsg] = useState<string | null>(null);
+  const load = useCallback(
+    () =>
+      apiFresh<CrmData>(`/api/crm${segment ? `?segment=${encodeURIComponent(segment)}` : ""}`)
+        .then((d) => (setData(d), setError(null)))
+        .catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")),
+    [segment],
+  );
   // Fresh each time the page is opened again, so new website requests show without reloading the browser.
   useEffect(() => {
     if (active) load();
@@ -71,14 +87,12 @@ export function Crm({ active = true }: { active?: boolean }) {
 
   if (!data) return <Card className="mt-2"><p className="text-sm text-dash-muted">{error ?? "Loading your CRM..."}</p></Card>;
 
-  const open_deals = data.contacts.filter((c) => !closedStage(c.stage));
-  const wonMonth = data.contacts.filter((c) => /^won$/i.test(c.stage) && (c.stageChangedAt ?? "").slice(0, 7) === today().slice(0, 7));
   const due = dueItems(data);
   const tiles = [
-    { label: "Contacts", value: data.contacts.length.toLocaleString() },
-    { label: "Open deals", value: money(open_deals.reduce((s, c) => s + c.value, 0)) },
+    { label: segment ? `${segment}` : "Contacts", value: data.totals.contacts.toLocaleString() },
+    { label: "Open deals", value: money(data.totals.openValue) },
     { label: "To do today", value: String(due.filter((d) => d.date <= today()).length) },
-    { label: "Won this month", value: money(wonMonth.reduce((s, c) => s + c.value, 0)) },
+    { label: "Won this month", value: money(data.totals.wonMonth) },
     ...(data.stock.places || data.stock.owed > 0
       ? [
           { label: "Items on consignment", value: `${data.stock.onShelf.toLocaleString()} at ${data.stock.places} place${data.stock.places > 1 ? "s" : ""}` },
@@ -98,7 +112,7 @@ export function Crm({ active = true }: { active?: boolean }) {
           <div className="flex flex-wrap gap-2">
             <button className={primary} onClick={() => setOpen("new")}>Add contact</button>
             <button className={quiet} onClick={() => setShowImport(true)}>Import</button>
-            <button className={quiet} onClick={() => exportCsv(data.contacts)}>Export</button>
+            <button className={quiet} onClick={() => exportAll(segment).catch((e) => setError(e instanceof Error ? e.message : "Couldn't export."))}>Export</button>
             <button className={quiet} onClick={() => setShowStages(true)}>Settings</button>
             <button className={quiet} onClick={() => setShowArchived(true)}>Archived</button>
           </div>
@@ -111,6 +125,26 @@ export function Crm({ active = true }: { active?: boolean }) {
             </div>
           ))}
         </div>
+        <SegmentBar
+          data={data}
+          segment={segment}
+          onPick={(s) => (setSegment(s), setSegMsg(null))}
+          msg={segMsg}
+          onWrite={async () => {
+            setSegMsg(`Writing first emails for ${segment}...`);
+            try {
+              const out = await post<{ written: number; failed: string[]; left: number }>({ action: "draftSegment", segment });
+              setSegMsg(
+                out.written
+                  ? `${out.written} first email${out.written > 1 ? "s" : ""} written for ${segment}, waiting under To do for your Send click.${out.left ? " Click again for the next ones." : ""}`
+                  : out.failed[0] ?? `Every new ${segment} contact with an email already has a first email.`,
+              );
+              load();
+            } catch (e) {
+              setSegMsg(e instanceof Error ? e.message : "Couldn't write them.");
+            }
+          }}
+        />
         <div className="mt-4 flex flex-wrap gap-1 border-b border-dash-line">
           {(["pipeline", "contacts", "todo", "templates"] as View[]).map((v) => (
             <button
@@ -123,10 +157,9 @@ export function Crm({ active = true }: { active?: boolean }) {
           ))}
         </div>
         {error && <p className="mt-2 text-sm text-dash-down">{error}</p>}
-        {data.capped && <p className="mt-2 text-sm text-dash-muted">Showing your 2,000 most recently updated contacts. Use search to find older ones, or Export.</p>}
         <div className="mt-4">
-          {view === "pipeline" && <Pipeline data={data} onOpen={setOpen} onChanged={load} onError={setError} />}
-          {view === "contacts" && <ContactList data={data} onOpen={setOpen} />}
+          {view === "pipeline" && <Pipeline data={data} onOpen={setOpen} onChanged={load} onError={setError} onSeeAll={(s) => (setListStage(s), setView("contacts"))} />}
+          {view === "contacts" && <ContactList data={data} segment={segment} stage={listStage} onStage={setListStage} onOpen={setOpen} />}
           {view === "todo" && <TodoList data={data} items={due} onOpen={setOpen} onChanged={load} onError={setError} />}
           {view === "templates" && <Templates data={data} onChanged={load} onError={setError} />}
         </div>
@@ -154,7 +187,7 @@ async function post<T = { ok: true; id?: string }>(body: Record<string, unknown>
   return api<T>("/api/crm", body);
 }
 
-function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void }) {
+function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmData; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void; onSeeAll: (stage: string) => void }) {
   const [drag, setDrag] = useState<string | null>(null);
   const move = async (id: string, stage: string) => {
     onError(null);
@@ -168,7 +201,12 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
   return (
     <div className="flex gap-3 overflow-x-auto pb-2">
       {data.stages.map((s) => {
-        const list = data.contacts.filter((c) => c.stage === s);
+        // The stage's newest 30 in the chosen segment; the count and value cover everyone in it.
+        const list = data.contacts
+          .filter((c) => c.stage === s && (!data.segment || c.segment === data.segment))
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+          .slice(0, STAGE_CARDS);
+        const count = data.stageCounts[s] ?? { n: list.length, value: list.reduce((n, c) => n + c.value, 0) };
         return (
           <div
             key={s}
@@ -183,7 +221,7 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
           >
             <div className="mb-2 flex items-baseline justify-between px-1">
               <p className="text-sm font-semibold text-dash-ink">{s}</p>
-              <p className="text-xs text-dash-muted">{list.length} · {money(list.reduce((n, c) => n + c.value, 0))}</p>
+              <p className="text-xs text-dash-muted">{count.n.toLocaleString()} · {money(count.value)}</p>
             </div>
             <div className="space-y-2">
               {list.map((c) => (
@@ -214,6 +252,11 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
                 </div>
               ))}
               {!list.length && <p className="px-1 py-3 text-xs text-dash-muted">Nobody here yet.</p>}
+              {count.n > list.length && (
+                <button className="w-full rounded-lg border border-dashed border-dash-line px-2 py-2 text-xs font-semibold text-dash-ink hover:bg-white" onClick={() => onSeeAll(s)}>
+                  {(count.n - list.length).toLocaleString()} more. See all {count.n.toLocaleString()} in a list
+                </button>
+              )}
             </div>
           </div>
         );
@@ -222,55 +265,104 @@ function Pipeline({ data, onOpen, onChanged, onError }: { data: CrmData; onOpen:
   );
 }
 
-function ContactList({ data, onOpen }: { data: CrmData; onOpen: (id: string) => void }) {
+/** Segments as buttons with their counts, and for the chosen one, its first emails written in one click. */
+function SegmentBar({ data, segment, onPick, onWrite, msg }: { data: CrmData; segment: string; onPick: (s: string) => void; onWrite: () => void; msg: string | null }) {
+  const segs = data.settings.segments ?? [];
+  const all = Object.values(data.segmentCounts).reduce((a, n) => a + n, 0);
+  const none = data.segmentCounts[""] ?? 0;
+  const chip = (on: boolean) => `rounded-full border px-3 py-1 text-sm ${on ? "border-dash-green bg-dash-green text-white" : "border-dash-line text-dash-ink hover:bg-black/5"}`;
+  if (!segs.length) return <p className="mt-3 text-xs text-dash-muted">Group your contacts, like Chiropractors or Naturopaths: add segments under Settings.</p>;
+  return (
+    <div className="mt-4">
+      <div className="flex flex-wrap gap-2">
+        <button className={chip(!segment)} onClick={() => onPick("")}>Everyone ({all.toLocaleString()})</button>
+        {segs.map((x) => (
+          <button key={x} className={chip(segment === x)} onClick={() => onPick(x)}>{x} ({(data.segmentCounts[x] ?? 0).toLocaleString()})</button>
+        ))}
+        {none > 0 && <span className="self-center text-xs text-dash-muted">{none.toLocaleString()} without a segment</span>}
+      </div>
+      {segment && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+          <button className={quiet} onClick={onWrite}>Write first emails for {segment}</button>
+          <span className="text-xs text-dash-muted">
+            {data.templates.some((t) => t.segment === segment) ? `Uses your ${segment} template.` : `Add a template for ${segment} under Email templates to use your own words.`} Nothing is sent until you click Send.
+          </span>
+        </div>
+      )}
+      {msg && <p className="mt-2 text-sm text-dash-ink">{msg}</p>}
+    </div>
+  );
+}
+
+/** The contact list, searched and paged in the database, so it stays quick with any number of contacts. */
+function ContactList({ data, segment, stage, onStage, onOpen }: { data: CrmData; segment: string; stage: string; onStage: (s: string) => void; onOpen: (id: string) => void }) {
   const [q, setQ] = useState("");
-  const [stage, setStage] = useState("");
   const [tag, setTag] = useState("");
-  const tags = useMemo(() => [...new Set(data.contacts.flatMap((c) => c.tags))].sort(), [data.contacts]);
-  const list = data.contacts.filter((c) => {
-    const text = `${c.name} ${c.company} ${c.email} ${c.phone} ${c.tags.join(" ")} ${c.kind}`.toLowerCase();
-    return (!q || text.includes(q.toLowerCase())) && (!stage || c.stage === stage) && (!tag || c.tags.includes(tag));
-  });
+  const [reach, setReach] = useState("");
+  const [page, setPage] = useState(0);
+  const [res, setRes] = useState<{ contacts: Contact[]; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => setPage(0), [q, tag, reach, stage, segment]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const p = new URLSearchParams({ search: "1", q, stage, segment, tag, reach, page: String(page) });
+      apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${p}`)
+        .then((d) => (setRes(d), setErr(null)))
+        .catch((e) => setErr(e instanceof Error ? e.message : "Couldn't search."));
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, tag, reach, stage, segment, page, data]);
+  const from = page * 50;
   return (
     <div>
       <div className="mb-3 flex flex-wrap gap-2">
-        <input className={`${field} max-w-xs`} placeholder="Search name, company, email or tag" value={q} onChange={(e) => setQ(e.target.value)} />
-        <select className={`${field} w-auto`} value={stage} onChange={(e) => setStage(e.target.value)}>
+        <input className={`${field} max-w-xs`} placeholder="Search name, company, email, phone or type" value={q} onChange={(e) => setQ(e.target.value)} />
+        <select className={`${field} w-auto`} value={stage} onChange={(e) => onStage(e.target.value)}>
           <option value="">All stages</option>
           {data.stages.map((s) => <option key={s}>{s}</option>)}
         </select>
-        {tags.length > 0 && (
-          <select className={`${field} w-auto`} value={tag} onChange={(e) => setTag(e.target.value)}>
-            <option value="">All tags</option>
-            {tags.map((t) => <option key={t}>{t}</option>)}
-          </select>
-        )}
+        <select className={`${field} w-auto`} value={reach} onChange={(e) => setReach(e.target.value)}>
+          <option value="">Email or phone</option>
+          <option value="email">Has an email</option>
+          <option value="phone">Phone only</option>
+        </select>
+        <input className={`${field} w-40`} placeholder="Tag" value={tag} onChange={(e) => setTag(e.target.value)} />
       </div>
-      {!data.contacts.length ? (
+      {err && <p className="mb-2 text-sm text-dash-down">{err}</p>}
+      {!res ? (
+        <p className="text-sm text-dash-muted">Loading...</p>
+      ) : !res.total && !q && !stage && !tag && !reach && !segment ? (
         <p className="text-sm text-dash-muted">No contacts yet. Click Add contact, or Import a spreadsheet. Requests from your website forms are added here on their own.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead className="text-xs text-dash-muted">
-              <tr><th className="py-2">Name</th><th>Company</th><th>Stage</th><th>Value</th><th>Last contact</th><th>Follow up</th></tr>
+              <tr><th className="py-2">Name</th><th>Company</th><th>Segment</th><th>Stage</th><th>Last contact</th><th>Follow up</th></tr>
             </thead>
             <tbody>
-              {list.map((c) => (
+              {res.contacts.map((c) => (
                 <tr key={c.id} className="cursor-pointer border-t border-dash-line hover:bg-black/[0.03]" onClick={() => onOpen(c.id)}>
                   <td className="py-2 pr-2">
-                    <p className="font-semibold text-dash-ink">{c.name || c.email || "No name"}</p>
-                    <p className="text-xs text-dash-muted">{c.email}</p>
+                    <p className="font-semibold text-dash-ink">{c.name || c.email || c.company || "No name"}</p>
+                    <p className="text-xs text-dash-muted">{c.email || c.phone}</p>
                   </td>
                   <td className="pr-2 text-dash-ink">{c.company}</td>
+                  <td className="pr-2 text-dash-muted">{c.segment}</td>
                   <td className="pr-2 text-dash-ink">{c.stage}</td>
-                  <td className="pr-2 text-dash-ink">{c.value ? money(c.value) : ""}</td>
                   <td className="pr-2 text-dash-muted">{c.lastContactAt ? shortDate(c.lastContactAt) : "Never"}</td>
                   <td className={`pr-2 ${c.followUp && c.followUp <= today() ? "font-semibold text-dash-down" : "text-dash-muted"}`}>{c.followUp ? shortDate(c.followUp) : ""}</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!list.length && <p className="mt-2 text-sm text-dash-muted">No contact matches that search.</p>}
+          {!res.contacts.length && <p className="mt-2 text-sm text-dash-muted">No contact matches that search.</p>}
+          {res.total > 0 && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-dash-muted">
+              <span>{(from + 1).toLocaleString()} to {Math.min(from + 50, res.total).toLocaleString()} of {res.total.toLocaleString()}</span>
+              <button className={quiet} disabled={!page} onClick={() => setPage(page - 1)}>Previous</button>
+              <button className={quiet} disabled={from + 50 >= res.total} onClick={() => setPage(page + 1)}>Next</button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -362,6 +454,7 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
             <div className="min-w-0">
               <p className="font-semibold text-dash-ink">{t.name}</p>
               <p className="text-xs text-dash-muted break-words">{t.subject}</p>
+              {t.segment && <p className="text-xs font-semibold text-dash-green">First email for {t.segment}</p>}
             </div>
             <div className="flex gap-2">
               <button className={quiet} onClick={() => setEdit(t)}>Edit</button>
@@ -383,12 +476,20 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
           </li>
         ))}
       </ul>
-      {!edit && <button className={`${primary} mt-3`} onClick={() => setEdit({ name: "", subject: "", body: "" })}>New template</button>}
+      {!edit && <button className={`${primary} mt-3`} onClick={() => setEdit({ name: "", subject: "", body: "", segment: "" })}>New template</button>}
       {edit && (
         <div className="mt-3 space-y-2 rounded-xl border border-dash-line p-3">
           <input className={field} placeholder="Template name, like Clinic intro" value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} />
           <input className={field} placeholder="Subject" value={edit.subject ?? ""} onChange={(e) => setEdit({ ...edit, subject: e.target.value })} />
           <textarea className={`${field} min-h-[160px]`} placeholder="Hi {first_name}," value={edit.body ?? ""} onChange={(e) => setEdit({ ...edit, body: e.target.value })} />
+          {(data.settings.segments ?? []).length > 0 && (
+            <label className="block text-xs text-dash-muted">Use as the first email for
+              <select className={field} value={edit.segment ?? ""} onChange={(e) => setEdit({ ...edit, segment: e.target.value })}>
+                <option value="">No segment</option>
+                {data.settings.segments.map((x) => <option key={x}>{x}</option>)}
+              </select>
+            </label>
+          )}
           <div className="flex gap-2">
             <button className={primary} onClick={save}>Save template</button>
             <button className={quiet} onClick={() => setEdit(null)}>Cancel</button>
@@ -399,7 +500,7 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
   );
 }
 
-const EMPTY: Partial<Contact> = { name: "", email: "", phone: "", company: "", title: "", kind: "", stage: "", value: 0, tags: [], address: "", website: "", followUp: null };
+const EMPTY: Partial<Contact> = { name: "", email: "", phone: "", company: "", title: "", kind: "", segment: "", stage: "", value: 0, tags: [], address: "", website: "", followUp: null };
 
 function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; data: CrmData; onClose: () => void; onChanged: () => void; onOpenId: (id: string) => void }) {
   const [contact, setContact] = useState<Partial<Contact>>(id === "new" ? { ...EMPTY, stage: data.stages[0] } : {});
@@ -478,6 +579,12 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
             <Input label="Phone" v={c.phone} on={(v) => set("phone", v)} type="tel" />
             <Input label="Job title" v={c.title} on={(v) => set("title", v)} />
             <Input label="Type, like Clinic or Store" v={c.kind} on={(v) => set("kind", v)} />
+            <label className="text-xs text-dash-muted">Segment
+              <select className={field} value={c.segment ?? ""} onChange={(e) => set("segment", e.target.value)}>
+                <option value="">None</option>
+                {[...new Set([...(data.settings.segments ?? []), ...(c.segment ? [c.segment] : [])])].map((x) => <option key={x}>{x}</option>)}
+              </select>
+            </label>
             <label className="text-xs text-dash-muted">Stage
               <select className={field} value={c.stage} onChange={(e) => set("stage", e.target.value)}>{data.stages.map((s) => <option key={s}>{s}</option>)}</select>
             </label>
@@ -681,31 +788,37 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
     // A column the importer doesn't recognise goes to Notes, so nothing in the file is lost.
     setMapping(guessMapping(t[0]).map((m) => m || "note"));
   };
-  const rows = table ? mapRows(table, mapping) : [];
+  // Rows are mapped a batch at a time, so a file with millions of rows never has to be held twice.
+  const count = table ? table.length - 1 : 0;
+  const first = table ? mapRows([table[0], table[1] ?? []], mapping)[0] : undefined;
   const used = (key: string, i: number) => key && key !== "note" && mapping.some((m, j) => m === key && j !== i);
+  const stop = useRef(false);
+  useEffect(() => () => void (stop.current = true), []);
   const go = async () => {
-    if (!rows.length) return;
+    if (!table || !count) return;
     setBusy(true);
+    stop.current = false;
     const total = { added: 0, updated: 0, skipped: 0 };
-    const list = rows.slice(0, 1000);
+    const BATCH = 1000;
     try {
-      // In batches of 100, so a big file never runs into a time limit; a stop part way keeps what was already added.
-      for (let i = 0; i < list.length; i += 100) {
-        setMsg(`Importing ${Math.min(i + 100, list.length).toLocaleString()} of ${list.length.toLocaleString()}...`);
-        const out = await post<{ result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: list.slice(i, i + 100) });
+      // In batches of 1,000, each saved before the next, so a stop part way keeps everything already added.
+      for (let i = 1; i < table.length; i += BATCH) {
+        if (stop.current) break;
+        setMsg(`Importing ${Math.min(i - 1 + BATCH, count).toLocaleString()} of ${count.toLocaleString()}...`);
+        const batch = mapRows([table[0], ...table.slice(i, i + BATCH)], mapping);
+        const out = await post<{ result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: batch });
         total.added += out.result.added;
         total.updated += out.result.updated;
         total.skipped += out.result.skipped;
       }
-      setMsg(`Added ${total.added}, filled in ${total.updated} that were already here, skipped ${total.skipped} without a name, company, phone or valid email.`);
+      setMsg(`Added ${total.added.toLocaleString()}, filled in ${total.updated.toLocaleString()} that were already here, skipped ${total.skipped.toLocaleString()} without a name, company, phone or valid email.`);
       setTable(null);
     } catch (e) {
-      setMsg(`${e instanceof Error ? e.message : "The import stopped."} ${total.added} were added before it stopped.`);
+      setMsg(`${e instanceof Error ? e.message : "The import stopped."} ${total.added.toLocaleString()} were added before it stopped.`);
     }
     onDone();
     setBusy(false);
   };
-  const first = rows[0];
   return (
     <Dialog title="Import contacts" onClose={onClose}>
       <p className="text-sm text-dash-muted">
@@ -737,10 +850,10 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
             ))}
           </ul>
           <p className="mt-3 text-sm text-dash-ink">
-            {rows.length.toLocaleString()} rows{rows.length > 1000 ? "; the first 1,000 are imported" : ""}.
+            {count.toLocaleString()} rows{count > 5000 ? ". Big files import in batches of 1,000; keep this window open until it finishes" : ""}.
             {first ? ` First one: ${[first.name, first.company, first.email, first.phone].filter(Boolean).join(", ") || "nothing to add, check the columns above"}.` : ""}
           </p>
-          <button disabled={busy || !rows.length} className={`${primary} mt-2`} onClick={go}>{busy ? "Importing..." : "Import"}</button>
+          <button disabled={busy || !count} className={`${primary} mt-2`} onClick={go}>{busy ? "Importing..." : "Import"}</button>
         </div>
       )}
       {msg && <p className="mt-3 text-sm text-dash-ink">{msg}</p>}
@@ -789,6 +902,7 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
   const [offer, setOffer] = useState(settings.offer);
   const [link, setLink] = useState(settings.link);
   const [signoff, setSignoff] = useState(settings.signoff);
+  const [segs, setSegs] = useState((settings.segments ?? []).join("\n"));
   const [firstTemplate, setFirstTemplate] = useState(templates.some((t) => t.id === settings.firstTemplate) ? settings.firstTemplate : "");
   const [findOn, setFindOn] = useState(settings.finder?.on ?? false);
   const [kinds, setKinds] = useState((settings.finder?.kinds ?? []).join("\n"));
@@ -799,7 +913,7 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
     if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
       const finder = { on: findOn, kinds: kinds.split("\n"), places: places.split("\n"), perWeek: Number(perWeek) };
-      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder, firstTemplate } });
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder, firstTemplate, segments: segs.split("\n") } });
       await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
@@ -814,6 +928,9 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
         One stage per line, in order. Rename a stage in its place and its contacts stay with it. Contacts in a stage you take out move to the first stage. Stages named Won or Lost count as closed deals.
       </p>
       <textarea className={`${field} mt-2 min-h-[160px]`} value={list} onChange={(e) => setList(e.target.value)} />
+      <p className="mt-4 text-sm font-semibold text-dash-ink">Segments</p>
+      <p className="text-sm text-dash-muted">The groups you work contacts in, one per line, like Chiropractors or Naturopaths. New businesses and imports are put in the right one by their type when it is clear.</p>
+      <textarea className={`${field} mt-2 min-h-[110px]`} placeholder={"Chiropractors\nNaturopaths"} value={segs} onChange={(e) => setSegs(e.target.value)} />
       <p className="mt-4 text-sm font-semibold text-dash-ink">Follow ups</p>
       <label className="mt-1 block text-sm text-dash-ink">
         Add a follow up task when nothing is logged from a contact this many days after you email them (0 turns it off)
@@ -1100,14 +1217,21 @@ function Dialog({ title, onClose, children }: { title: string; onClose: () => vo
 }
 
 /** Downloads every contact as a CSV file the owner can open in Excel or Google Sheets. */
+/** Exports the contacts in the chosen segment (up to 5,000), read from the database. */
+async function exportAll(segment: string) {
+  const p = new URLSearchParams({ search: "1", export: "1", segment });
+  const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${p}`);
+  exportCsv(d.contacts);
+}
+
 function exportCsv(contacts: Contact[]) {
-  const head = ["Name", "Email", "Phone", "Company", "Title", "Type", "Stage", "Value", "Tags", "Follow up", "Last contact", "Website", "Address", "Came from", "Added"];
+  const head = ["Name", "Email", "Phone", "Company", "Title", "Type", "Segment", "Stage", "Value", "Tags", "Follow up", "Last contact", "Website", "Address", "Came from", "Added"];
   const esc = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   // A cell starting with = + @ or a minus sign would run as a formula in a spreadsheet; a leading apostrophe stops it.
   const safe = (v: string) => esc(/^[=+@\-\t\r]/.test(v) ? `'${v}` : v);
   const lines = [head.join(",")].concat(
     contacts.map((c) =>
-      [c.name, c.email, c.phone, c.company, c.title, c.kind, c.stage, c.value ? String(c.value) : "", c.tags.join("; "), c.followUp ?? "", c.lastContactAt?.slice(0, 10) ?? "", c.website, c.address, c.source, c.createdAt.slice(0, 10)]
+      [c.name, c.email, c.phone, c.company, c.title, c.kind, c.segment, c.stage, c.value ? String(c.value) : "", c.tags.join("; "), c.followUp ?? "", c.lastContactAt?.slice(0, 10) ?? "", c.website, c.address, c.source, c.createdAt.slice(0, 10)]
         .map(safe)
         .join(","),
     ),

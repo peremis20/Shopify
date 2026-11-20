@@ -51,7 +51,7 @@ import { deleteConnectionFor, saveConnectionFor } from "./autopilot/connections"
 import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
-import { addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { draftSegment, searchContacts, addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -2350,6 +2350,15 @@ export const crmApi = (req: Request) =>
         return json({ ...t, stock: await stockFor(account.id, t.contact.id), files: await filesFor(account.id, t.contact.id), orders });
       }
       if (q.get("archived")) return json({ contacts: await archivedContacts(account.id) });
+      // A page of contacts for a search, or up to 5,000 for an export, worked out in the database.
+      if (q.get("search")) {
+        const page = Number(q.get("page") ?? 0);
+        const reach = q.get("reach");
+        return json(await searchContacts(account.id, {
+          q: q.get("q") ?? "", stage: q.get("stage") ?? "", segment: q.get("segment") ?? "", tag: q.get("tag") ?? "",
+          reach: reach === "email" || reach === "phone" ? reach : "", page: Number.isInteger(page) && page >= 0 ? page : 0,
+        }, q.get("export") ? 5000 : undefined));
+      }
       const fileId = q.get("file");
       if (fileId) {
         const f = await readCrmFile(account.id, fileId);
@@ -2366,7 +2375,7 @@ export const crmApi = (req: Request) =>
         });
       }
       const gmail = await getGmail(account.id).catch(() => null);
-      const [view, stock, settings] = await Promise.all([crmView(account.id), stockSummary(account.id), readCrmSettings(account.id)]);
+      const [view, stock, settings] = await Promise.all([crmView(account.id, q.get("segment") ?? ""), stockSummary(account.id), readCrmSettings(account.id)]);
       return json({ ...view, stock, settings, gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
     }
     // Nothing bigger than a 3 MB file (about 4 MB as text) is read at all.
@@ -2407,6 +2416,10 @@ export const crmApi = (req: Request) =>
           return json({ written: out.written, failed: out.waiting ? [out.waiting] : out.failed });
         }
         case "import": return json({ result: await importContacts(account.id, b.rows) });
+        case "draftSegment": {
+          if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+          return json(await draftSegment(account.id, b.segment, Date.now() + 50_000));
+        }
         case "email": {
           const out = await emailContact(account.id, b.id, b.email);
           if (!out.ok) return json({ error: out.error }, out.status);

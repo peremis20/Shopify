@@ -28,6 +28,8 @@ export interface Contact {
   company: string;
   title: string;
   kind: string;
+  /** The group the owner works them in, like Chiropractors or Naturopaths (from CRM settings); "" for none. */
+  segment: string;
   stage: string;
   value: number;
   tags: string[];
@@ -64,6 +66,8 @@ export interface Template {
   name: string;
   subject: string;
   body: string;
+  /** The segment this template is the first email for; "" for none. */
+  segment: string;
 }
 
 const cut = (v: unknown, n: number) =>
@@ -101,6 +105,17 @@ function schema(): Promise<void> {
     // An email written for the owner, waiting for their Send click.
     await sql`ALTER TABLE insights_crm_contacts ADD COLUMN IF NOT EXISTS draft jsonb`;
     await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_account ON insights_crm_contacts (account_id, updated_at DESC)`;
+    // Segments, and the indexes that keep the CRM quick with millions of contacts: each stage's newest, each segment,
+    // and the ways a duplicate is found (email, the last 10 digits of a phone, the website's host, the company).
+    await sql`ALTER TABLE insights_crm_contacts ADD COLUMN IF NOT EXISTS segment text NOT NULL DEFAULT ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_stage ON insights_crm_contacts (account_id, stage, updated_at DESC) WHERE NOT archived`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_segment ON insights_crm_contacts (account_id, segment, stage, updated_at DESC) WHERE NOT archived`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_new ON insights_crm_contacts (account_id, stage, created_at) WHERE NOT archived AND draft IS NULL AND email <> ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_email ON insights_crm_contacts (account_id, email) WHERE email <> ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_phone ON insights_crm_contacts (account_id, (right(regexp_replace(phone, '[^0-9]', '', 'g'), 10))) WHERE phone <> ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_site ON insights_crm_contacts (account_id, (lower(regexp_replace(regexp_replace(website, '^https?://(www[.])?', ''), '[/?#].*$', '')))) WHERE website <> ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_company ON insights_crm_contacts (account_id, (lower(company))) WHERE company <> ''`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_contacts_draft ON insights_crm_contacts (account_id) WHERE draft ? 'subject' AND NOT archived`;
     await sql`CREATE TABLE IF NOT EXISTS insights_crm_activities (
       id bigserial PRIMARY KEY,
       account_id bigint NOT NULL,
@@ -114,6 +129,7 @@ function schema(): Promise<void> {
     )`;
     await sql`CREATE INDEX IF NOT EXISTS insights_crm_activities_contact ON insights_crm_activities (contact_id, at DESC)`;
     await sql`CREATE INDEX IF NOT EXISTS insights_crm_activities_tasks ON insights_crm_activities (account_id, done, due) WHERE kind = 'task'`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_crm_activities_kind ON insights_crm_activities (account_id, kind, at DESC)`;
     // Tasks the CRM adds by itself carry a key, so the same reminder is never added twice.
     await sql`ALTER TABLE insights_crm_activities ADD COLUMN IF NOT EXISTS auto_key text`;
     await sql`CREATE UNIQUE INDEX IF NOT EXISTS insights_crm_activities_auto ON insights_crm_activities (account_id, auto_key) WHERE auto_key IS NOT NULL`;
@@ -149,6 +165,8 @@ function schema(): Promise<void> {
       subject text NOT NULL,
       body text NOT NULL
     )`;
+    // A template can be the first email for one segment.
+    await sql`ALTER TABLE insights_crm_templates ADD COLUMN IF NOT EXISTS segment text NOT NULL DEFAULT ''`;
   })().catch((e) => {
     ready = null;
     throw e;
@@ -236,6 +254,7 @@ export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "i
     company,
     title: cut(b.title, 80),
     kind: cut(b.kind, 40),
+    segment: cut(b.segment, 40),
     stage,
     value: Number.isFinite(raw) && raw > 0 ? Math.min(Math.round(raw * 100) / 100, 1e9) : 0,
     tags: [...new Set(tags)].slice(0, 12),
@@ -255,6 +274,7 @@ const contactOf = (r: Row): Contact => ({
   company: r.company ?? "",
   title: r.title ?? "",
   kind: r.kind ?? "",
+  segment: r.segment ?? "",
   stage: r.stage ?? "",
   value: Number(r.value ?? 0),
   tags: (() => {
@@ -294,25 +314,124 @@ const activityOf = (r: Row): Activity => ({
   done: r.done === "t" || r.done === "true" || (r.done as unknown) === true,
 });
 
-/** Everything the CRM page shows: contacts, stages, open tasks and templates. */
-export async function crmView(accountId: string) {
+/** Cards shown per pipeline stage; the rest are counted and found under Contacts. */
+export const STAGE_CARDS = 30;
+
+/**
+ * Everything the CRM page shows, sized for any number of contacts: each stage's 30 most recently updated (in the
+ * chosen segment), the contacts behind open tasks and waiting emails, and counts and totals worked out in the database.
+ */
+export async function crmView(accountId: string, segment = "") {
   await schema();
-  const [contacts, tasks, templates, stages] = await Promise.all([
+  const stages = await readStages(accountId);
+  const seg = cut(segment, 40);
+  const [board, extra, tasks, templates, byStage, bySegment, won] = await Promise.all([
     sql`SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
-      FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived ORDER BY c.updated_at DESC LIMIT 2000`,
+      FROM unnest(string_to_array(${stages.join("\n")}, chr(10))) AS st(stage)
+      CROSS JOIN LATERAL (
+        SELECT * FROM insights_crm_contacts x WHERE x.account_id = ${accountId} AND NOT x.archived AND x.stage = st.stage
+          AND (${seg} = '' OR x.segment = ${seg})
+        ORDER BY x.updated_at DESC LIMIT ${STAGE_CARDS}) c`,
+    // Contacts the To do list needs: waiting emails, open tasks and follow up dates, however far down their stage they are.
+    sql`SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
+      FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND (
+        c.draft ? 'subject' OR c.follow_up IS NOT NULL
+        OR c.id IN (SELECT a.contact_id FROM insights_crm_activities a WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done))
+      ORDER BY c.updated_at DESC LIMIT 400`,
     sql`SELECT a.* FROM insights_crm_activities a JOIN insights_crm_contacts c ON c.id = a.contact_id
       WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done AND NOT c.archived ORDER BY a.due NULLS LAST, a.at LIMIT 300`,
     sql`SELECT * FROM insights_crm_templates WHERE account_id = ${accountId} ORDER BY name`,
-    readStages(accountId),
+    sql`SELECT stage, count(*) AS n, coalesce(sum(value), 0) AS value FROM insights_crm_contacts
+      WHERE account_id = ${accountId} AND NOT archived AND (${seg} = '' OR segment = ${seg}) GROUP BY stage`,
+    sql`SELECT segment, count(*) AS n FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived GROUP BY segment`,
+    sql`SELECT coalesce(sum(value), 0) AS value FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived
+      AND lower(stage) = 'won' AND stage_changed_at >= date_trunc('month', now()) AND (${seg} = '' OR segment = ${seg})`,
   ]);
+  const seen = new Set<string>();
+  const contacts = [...board, ...extra].map(contactOf).filter((c) => (seen.has(c.id) ? false : (seen.add(c.id), true)));
+  const stageCounts: Record<string, { n: number; value: number }> = {};
+  for (const r of byStage) stageCounts[String(r.stage)] = { n: Number(r.n), value: Number(r.value) };
+  const segmentCounts: Record<string, number> = {};
+  for (const r of bySegment) segmentCounts[String(r.segment ?? "")] = Number(r.n);
+  const total = Object.values(stageCounts).reduce((a, x) => a + x.n, 0);
+  const openValue = Object.entries(stageCounts).filter(([st]) => !/^(won|lost)$/i.test(st)).reduce((a, [, x]) => a + x.value, 0);
   return {
     stages,
-    /** True when there are more contacts than the page shows. */
-    capped: contacts.length >= 2000,
-    contacts: contacts.map(contactOf),
+    segment: seg,
+    contacts,
+    stageCounts,
+    segmentCounts,
+    totals: { contacts: total, openValue, wonMonth: Number(won[0]?.value ?? 0) },
     tasks: tasks.map(activityOf),
-    templates: templates.map((t) => ({ id: String(t.id), name: t.name ?? "", subject: t.subject ?? "", body: t.body ?? "" })),
+    templates: templates.map((t) => ({ id: String(t.id), name: t.name ?? "", subject: t.subject ?? "", body: t.body ?? "", segment: t.segment ?? "" })),
   };
+}
+
+export interface ContactQuery {
+  q?: string;
+  stage?: string;
+  segment?: string;
+  tag?: string;
+  /** Has an email, only a phone, or anything. */
+  reach?: "" | "email" | "phone";
+  page?: number;
+}
+
+export const PAGE_SIZE = 50;
+
+/** One page of contacts matching a search, worked out in the database, with how many match in all. */
+export async function searchContacts(accountId: string, f: ContactQuery, pageSize = PAGE_SIZE): Promise<{ contacts: Contact[]; total: number }> {
+  await schema();
+  const q = cut(f.q, 100).toLowerCase();
+  const like = q ? `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%` : "";
+  const stage = cut(f.stage, 30);
+  const segment = cut(f.segment, 40);
+  const tag = cut(f.tag, 30);
+  const reach = f.reach === "email" || f.reach === "phone" ? f.reach : "";
+  const page = Number.isInteger(f.page) && (f.page as number) > 0 ? (f.page as number) : 0;
+  const size = Math.min(Math.max(pageSize, 1), 5000);
+  const [rows, count] = await Promise.all([
+    sql`SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
+      FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
+        AND (${stage} = '' OR c.stage = ${stage}) AND (${segment} = '' OR c.segment = ${segment})
+        AND (${tag} = '' OR c.tags ? ${tag})
+        AND (${reach} = '' OR (${reach} = 'email' AND c.email <> '') OR (${reach} = 'phone' AND c.email = '' AND c.phone <> ''))
+        AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})
+      ORDER BY c.updated_at DESC LIMIT ${size} OFFSET ${page * size}`,
+    sql`SELECT count(*) AS n FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
+        AND (${stage} = '' OR c.stage = ${stage}) AND (${segment} = '' OR c.segment = ${segment})
+        AND (${tag} = '' OR c.tags ? ${tag})
+        AND (${reach} = '' OR (${reach} = 'email' AND c.email <> '') OR (${reach} = 'phone' AND c.email = '' AND c.phone <> ''))
+        AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})`,
+  ]);
+  return { contacts: rows.map(contactOf), total: Number(count[0]?.n ?? 0) };
+}
+
+/**
+ * First emails for a whole segment at once: up to 30 contacts in the first stage with an email and nothing sent yet,
+ * written from the segment's template (or the AI), each waiting for the owner's own Send click. Nothing is sent.
+ */
+export async function draftSegment(accountId: string, segment: unknown, deadline = Date.now() + 90_000): Promise<{ written: number; failed: string[]; left: number }> {
+  await schema();
+  const seg = cut(segment, 40);
+  if (!seg) throw new Error("Pick a segment first.");
+  const stages = await readStages(accountId);
+  const rows = await sql`SELECT c.id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.segment = ${seg}
+      AND c.email <> '' AND c.draft IS NULL AND c.stage = ${stages[0]}
+      AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind IN ('email', 'reply', 'call', 'meeting'))
+    ORDER BY c.created_at LIMIT ${STAGE_CARDS + 1}`;
+  const out = { written: 0, failed: [] as string[], left: Math.max(0, rows.length - STAGE_CARDS) };
+  for (const r of rows.slice(0, STAGE_CARDS)) {
+    if (Date.now() > deadline) break;
+    try {
+      await draftEmail(accountId, String(r.id), "intro");
+      out.written++;
+    } catch (e) {
+      out.failed.push(String((e as Error)?.message ?? e).slice(0, 200));
+      if (/Settings|AI key|offer text|template/i.test(String((e as Error)?.message))) break;
+    }
+  }
+  return out;
 }
 
 /** One contact and its whole timeline, newest first. */
@@ -348,7 +467,7 @@ export async function saveContact(accountId: string, input: unknown, id?: unknow
     if (!cid) throw new Error("That contact isn't here anymore.");
     const [before] = await sql`SELECT stage FROM insights_crm_contacts WHERE id = ${cid}`;
     await sql`UPDATE insights_crm_contacts SET name = ${c.name}, email = ${c.email}, phone = ${c.phone}, company = ${c.company}, title = ${c.title},
-      kind = ${c.kind}, stage = ${c.stage}, value = ${c.value}, tags = ${JSON.stringify(c.tags)}::jsonb, source = ${c.source}, address = ${c.address},
+      kind = ${c.kind}, segment = ${c.segment}, stage = ${c.stage}, value = ${c.value}, tags = ${JSON.stringify(c.tags)}::jsonb, source = ${c.source}, address = ${c.address},
       website = ${c.website}, follow_up = ${c.followUp}, updated_at = now(),
       stage_changed_at = CASE WHEN stage_changed_at IS NULL OR ${before?.stage ?? ""} <> ${c.stage} THEN now() ELSE stage_changed_at END WHERE id = ${cid}`;
     if (before?.stage !== c.stage) await log(accountId, cid, "stage", `Moved to ${c.stage}`);
@@ -358,8 +477,8 @@ export async function saveContact(accountId: string, input: unknown, id?: unknow
     const [dup] = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived`;
     if (dup) throw new Error("A contact with that email is already here. Search for it to open it.");
   }
-  const [row] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
-    VALUES (${accountId}, ${c.name}, ${c.email}, ${c.phone}, ${c.company}, ${c.title}, ${c.kind}, ${c.stage}, ${c.value}, ${JSON.stringify(c.tags)}::jsonb,
+  const [row] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, segment, stage, value, tags, source, address, website, follow_up, stage_changed_at)
+    VALUES (${accountId}, ${c.name}, ${c.email}, ${c.phone}, ${c.company}, ${c.title}, ${c.kind}, ${c.segment}, ${c.stage}, ${c.value}, ${JSON.stringify(c.tags)}::jsonb,
       ${c.source || "Added by hand"}, ${c.address}, ${c.website}, ${c.followUp}, now()) RETURNING id`;
   return String(row!.id);
 }
@@ -488,24 +607,35 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   const name = cut(b.name, 80);
   const subject = cut(b.subject, 300);
   const body = cut(b.body, 20_000);
+  const segment = cut(b.segment, 40);
   if (!name || !subject || !body) throw new Error("A template needs a name, a subject and a message.");
   if (typeof b.id === "string" && ID.test(b.id)) {
-    const [before] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${b.id} AND account_id = ${accountId}`;
-    const chosen = (await readCrmSettings(accountId)).firstTemplate === b.id;
+    const [before] = await sql`SELECT subject, body, segment FROM insights_crm_templates WHERE id = ${b.id} AND account_id = ${accountId}`;
+    if (!before) throw new Error("That template isn't here anymore.");
+    // Used for first emails (the main one, or a segment's): its words pass the claim guard first.
+    const chosen = (await readCrmSettings(accountId)).firstTemplate === b.id || Boolean(segment);
     if (chosen) {
       const problem = await templateProblem(accountId, subject, body);
       if (problem) throw new Error(problem);
     }
-    const [row] = await sql`UPDATE insights_crm_templates SET name = ${name}, subject = ${subject}, body = ${body} WHERE id = ${b.id} AND account_id = ${accountId} RETURNING id`;
+    if (segment) await sql`UPDATE insights_crm_templates SET segment = '' WHERE account_id = ${accountId} AND segment = ${segment} AND id <> ${b.id}`;
+    const [row] = await sql`UPDATE insights_crm_templates SET name = ${name}, subject = ${subject}, body = ${body}, segment = ${segment} WHERE id = ${b.id} AND account_id = ${accountId} RETURNING id`;
     if (!row) throw new Error("That template isn't here anymore.");
-    // The first email template's words changed: first emails still waiting are written again from the new words.
-    const changed = before?.subject !== subject || before?.body !== body;
-    if (changed && chosen) await redoIntroDrafts(accountId);
+    // A first email template's words or segment changed: first emails still waiting are written again from it.
+    const changed = before.subject !== subject || before.body !== body || (before.segment ?? "") !== segment;
+    if (changed && (chosen || before.segment)) await redoIntroDrafts(accountId);
     return;
+  }
+  if (segment) {
+    const problem = await templateProblem(accountId, subject, body);
+    if (problem) throw new Error(problem);
   }
   const [n] = await sql`SELECT count(*)::int AS n FROM insights_crm_templates WHERE account_id = ${accountId}`;
   if (Number(n?.n ?? 0) >= 50) throw new Error("You have 50 templates, the most allowed. Delete one first.");
-  await sql`INSERT INTO insights_crm_templates (account_id, name, subject, body) VALUES (${accountId}, ${name}, ${subject}, ${body})`;
+  // One first email template per segment: another one for the same segment gives it up.
+  if (segment) await sql`UPDATE insights_crm_templates SET segment = '' WHERE account_id = ${accountId} AND segment = ${segment}`;
+  await sql`INSERT INTO insights_crm_templates (account_id, name, subject, body, segment) VALUES (${accountId}, ${name}, ${subject}, ${body}, ${segment})`;
+  if (segment) await redoIntroDrafts(accountId);
 }
 
 /**
@@ -513,12 +643,18 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
  * AI needed), and ones that failed are let through on the next run. With none chosen, waiting emails stay as they are.
  */
 export async function redoIntroDrafts(accountId: string): Promise<void> {
-  if (!(await readCrmSettings(accountId)).firstTemplate) return;
+  const { firstTemplate } = await readCrmSettings(accountId);
+  const segs = (await sql`SELECT segment FROM insights_crm_templates WHERE account_id = ${accountId} AND segment <> ''`).map((r) => String(r.segment));
+  if (!firstTemplate && !segs.length) return;
+  const list = segs.join("\n");
   // Only first emails the old template stopped are let through again; other failures keep their wait.
   await sql`UPDATE insights_crm_contacts SET draft = NULL WHERE account_id = ${accountId} AND NOT archived AND draft ? 'failed'
     AND draft->>'failed' ILIKE '%template%'`;
+  // The contacts a template now writes for: everyone with a main first email template, else the segments that have one.
   const rows = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email <> ''
-    AND draft ? 'subject' AND draft->>'kind' = 'intro' ORDER BY id`;
+    AND draft ? 'subject' AND draft->>'kind' = 'intro'
+    AND (${firstTemplate} <> '' OR segment = ANY(string_to_array(${list}, chr(10))))
+    ORDER BY id`;
   // The first 40 now, so saving stays quick; the rest are cleared and the hourly run writes them from the template.
   for (const r of rows.slice(0, 40)) {
     await draftEmail(accountId, String(r.id), "intro").catch((e) => console.error(`first email not rewritten: ${(e as Error).message}`));
@@ -552,50 +688,97 @@ export async function importContacts(accountId: string, rows: unknown): Promise<
   if (!Array.isArray(rows)) throw new Error("Nothing to import.");
   if (rows.length > 1000) throw new Error("Import up to 1,000 rows at a time.");
   const stages = await readStages(accountId);
-  let added = 0;
-  let updated = 0;
+  const { segments } = await readCrmSettings(accountId);
+  type Row = NonNullable<ReturnType<typeof cleanContact>> & { notes: string; digits: string; id?: string };
+  const byKey = new Map<string, Row>();
   let skipped = 0;
-  for (const r of rows) {
-    const c = cleanContact({ ...(r as object), source: cut((r as Record<string, unknown>)?.source, 80) || "Imported" }, stages);
+  let merged = 0;
+  rows.forEach((r, i) => {
+    const raw = (r ?? {}) as Record<string, unknown>;
+    const c = cleanContact({ ...raw, source: cut(raw.source, 80) || "Imported" }, stages);
     if (!c) {
       skipped++;
-      continue;
+      return;
     }
+    // Only the owner's own segments: a spreadsheet's word for one is matched to it, else the type and name decide.
+    c.segment = segments.find((x) => x.toLowerCase() === c.segment.toLowerCase()) ?? (c.segment && guessSegment(c.segment, segments)) ?? "";
+    if (!c.segment) c.segment = guessSegment(`${c.kind} ${c.company}`, segments);
+    const digits = c.phone.replace(/[^0-9]/g, "").slice(-10);
+    const row: Row = { ...c, notes: cut(raw.notes, 2000), digits };
     // The same person: the same email, or without one, the same phone number (its last 10 digits, so a +1 doesn't
     // matter), or the same company name when neither has a phone. Two clinics that only share a name stay apart.
-    const digits = c.phone.replace(/\D/g, "").slice(-10);
-    const [dup] = c.email
-      ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${c.email} AND NOT archived`
-      : digits.length >= 7 || (!digits && c.company)
-        ? await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email = ''
-            AND ((${digits} <> '' AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
-              OR (${digits} = '' AND phone = '' AND ${c.company} <> '' AND lower(company) = lower(${c.company})))
-            ORDER BY id LIMIT 1`
-        : [];
-    const notes = cut((r as Record<string, unknown>)?.notes, 2000);
-    const keepNote = async (cid: string) => {
-      if (!notes) return;
-      const [same] = await sql`SELECT id FROM insights_crm_activities WHERE contact_id = ${cid} AND kind = 'note' AND body = ${notes}`;
-      if (!same) await log(accountId, cid, "note", "From the import", notes);
-    };
-    if (dup) {
-      await sql`UPDATE insights_crm_contacts SET
-        name = CASE WHEN name = '' THEN ${c.name} ELSE name END, phone = CASE WHEN phone = '' THEN ${c.phone} ELSE phone END,
-        company = CASE WHEN company = '' THEN ${c.company} ELSE company END, title = CASE WHEN title = '' THEN ${c.title} ELSE title END,
-        kind = CASE WHEN kind = '' THEN ${c.kind} ELSE kind END, address = CASE WHEN address = '' THEN ${c.address} ELSE address END,
-        website = CASE WHEN website = '' THEN ${c.website} ELSE website END, updated_at = now()
-        WHERE id = ${dup.id}`;
-      await keepNote(String(dup.id));
-      updated++;
-      continue;
+    const key = c.email ? `e:${c.email}` : digits.length >= 7 ? `p:${digits}` : !digits && c.company ? `c:${c.company.toLowerCase()}` : `u:${i}`;
+    const first = byKey.get(key);
+    if (!first) {
+      byKey.set(key, row);
+      return;
     }
-    const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
-      VALUES (${accountId}, ${c.name}, ${c.email}, ${c.phone}, ${c.company}, ${c.title}, ${c.kind}, ${c.stage}, ${c.value}, ${JSON.stringify(c.tags)}::jsonb,
-        ${c.source}, ${c.address}, ${c.website}, ${c.followUp}, now()) RETURNING id`;
-    await keepNote(String(made!.id));
-    added++;
+    // Twice in the same file: the first row keeps what it has and gains what only the later one has.
+    for (const f of ["name", "phone", "company", "title", "kind", "segment", "address", "website"] as const) if (!first[f]) first[f] = row[f];
+    if (row.notes && row.notes !== first.notes) first.notes = cut(`${first.notes}\n\n${row.notes}`, 2000);
+    merged++;
+  });
+  const list = [...byKey.values()];
+  const SEP = String.fromCharCode(31); // never in cleaned text, so a list can be split on it safely
+  const emails = list.filter((r) => r.email).map((r) => r.email);
+  const phones = list.filter((r) => !r.email && r.digits.length >= 7).map((r) => r.digits);
+  const companies = list.filter((r) => !r.email && !r.digits && r.company).map((r) => r.company.toLowerCase());
+  const [byEmail, byPhone, byCompany] = await Promise.all([
+    emails.length
+      ? sql`SELECT DISTINCT ON (email) id, email AS k FROM insights_crm_contacts WHERE account_id = ${accountId} AND NOT archived AND email <> ''
+          AND email = ANY(string_to_array(${emails.join(SEP)}, chr(31))) ORDER BY email, id`
+      : [],
+    phones.length
+      ? sql`SELECT DISTINCT ON (k) id, right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) AS k FROM insights_crm_contacts
+          WHERE account_id = ${accountId} AND NOT archived AND email = '' AND phone <> ''
+            AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ANY(string_to_array(${phones.join(SEP)}, chr(31))) ORDER BY k, id`
+      : [],
+    companies.length
+      ? sql`SELECT DISTINCT ON (k) id, lower(company) AS k FROM insights_crm_contacts
+          WHERE account_id = ${accountId} AND NOT archived AND email = '' AND phone = '' AND company <> ''
+            AND lower(company) = ANY(string_to_array(${companies.join(SEP)}, chr(31))) ORDER BY k, id`
+      : [],
+  ]);
+  const found = new Map<string, string>();
+  for (const r of byEmail) found.set(`e:${r.k}`, String(r.id));
+  for (const r of byPhone) found.set(`p:${r.k}`, String(r.id));
+  for (const r of byCompany) found.set(`c:${r.k}`, String(r.id));
+  const keyOf = (r: Row) => (r.email ? `e:${r.email}` : r.digits.length >= 7 ? `p:${r.digits}` : !r.digits && r.company ? `c:${r.company.toLowerCase()}` : "");
+  const existing: Row[] = [];
+  const fresh: Row[] = [];
+  for (const r of list) {
+    const id = found.get(keyOf(r));
+    if (id) existing.push({ ...r, id });
+    else fresh.push(r);
   }
-  return { added, updated, skipped };
+  // A contact already here keeps everything the owner wrote; only its empty fields are filled in.
+  if (existing.length) {
+    await sql`UPDATE insights_crm_contacts c SET
+        name = CASE WHEN c.name = '' THEN x.name ELSE c.name END, phone = CASE WHEN c.phone = '' THEN x.phone ELSE c.phone END,
+        company = CASE WHEN c.company = '' THEN x.company ELSE c.company END, title = CASE WHEN c.title = '' THEN x.title ELSE c.title END,
+        kind = CASE WHEN c.kind = '' THEN x.kind ELSE c.kind END, segment = CASE WHEN c.segment = '' THEN x.segment ELSE c.segment END,
+        address = CASE WHEN c.address = '' THEN x.address ELSE c.address END, website = CASE WHEN c.website = '' THEN x.website ELSE c.website END,
+        updated_at = now()
+      FROM jsonb_to_recordset(${JSON.stringify(existing.map((r) => ({ id: r.id, name: r.name, phone: r.phone, company: r.company, title: r.title, kind: r.kind, segment: r.segment, address: r.address, website: r.website })))}::jsonb)
+        AS x(id bigint, name text, phone text, company text, title text, kind text, segment text, address text, website text)
+      WHERE c.id = x.id AND c.account_id = ${accountId}`;
+  }
+  // New contacts in one statement, with their ids taken first so each one's note goes on the right timeline.
+  if (fresh.length) {
+    const ids = await sql`SELECT nextval(pg_get_serial_sequence('insights_crm_contacts', 'id')) AS id FROM generate_series(1, ${fresh.length}::int)`;
+    fresh.forEach((r, i) => (r.id = String(ids[i]!.id)));
+    await sql`INSERT INTO insights_crm_contacts (id, account_id, name, email, phone, company, title, kind, segment, stage, value, tags, source, address, website, follow_up, stage_changed_at)
+      SELECT x.id, ${accountId}, x.name, x.email, x.phone, x.company, x.title, x.kind, x.segment, x.stage, x.value, x.tags, x.source, x.address, x.website, x.follow_up, now()
+      FROM jsonb_to_recordset(${JSON.stringify(fresh.map((r) => ({ id: r.id, name: r.name, email: r.email, phone: r.phone, company: r.company, title: r.title, kind: r.kind, segment: r.segment, stage: r.stage, value: r.value, tags: r.tags, source: r.source, address: r.address, website: r.website, follow_up: r.followUp })))}::jsonb)
+        AS x(id bigint, name text, email text, phone text, company text, title text, kind text, segment text, stage text, value numeric, tags jsonb, source text, address text, website text, follow_up date)`;
+  }
+  const notes = [...existing, ...fresh].filter((r) => r.notes && r.id).map((r) => ({ id: r.id, notes: r.notes }));
+  if (notes.length) {
+    await sql`INSERT INTO insights_crm_activities (account_id, contact_id, kind, subject, body)
+      SELECT ${accountId}, x.id, 'note', 'From the import', x.notes FROM jsonb_to_recordset(${JSON.stringify(notes)}::jsonb) AS x(id bigint, notes text)
+      WHERE NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = x.id AND a.kind = 'note' AND a.body = x.notes)`;
+  }
+  return { added: fresh.length, updated: existing.length + merged, skipped };
 }
 
 /**
@@ -660,10 +843,12 @@ export async function addFoundContact(
   const stages = await readStages(accountId);
   // An address the site prints in an odd form is left out, and the business is added to call instead.
   const email = f.email && EMAIL.test(f.email.trim().toLowerCase()) ? f.email.trim() : "";
-  const c = cleanContact({ company: f.company, email, phone: f.phone, address: f.address, website: f.website, kind: f.kind, source: "Prospect finder", tags: ["Found by DashPatrol"] }, stages);
+  const { segments } = await readCrmSettings(accountId);
+  const segment = guessSegment(`${f.kind} ${f.company}`, segments);
+  const c = cleanContact({ segment, company: f.company, email, phone: f.phone, address: f.address, website: f.website, kind: f.kind, source: "Prospect finder", tags: ["Found by DashPatrol"] }, stages);
   if (!c || !c.company) return null;
-  const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, stage, value, tags, source, address, website, follow_up, stage_changed_at)
-    VALUES (${accountId}, '', ${c.email}, ${c.phone}, ${c.company}, '', ${c.kind}, ${stages[0]}, 0, ${JSON.stringify(c.tags)}::jsonb, ${c.source}, ${c.address}, ${c.website}, NULL, now())
+  const [made] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, title, kind, segment, stage, value, tags, source, address, website, follow_up, stage_changed_at)
+    VALUES (${accountId}, '', ${c.email}, ${c.phone}, ${c.company}, '', ${c.kind}, ${c.segment}, ${stages[0]}, 0, ${JSON.stringify(c.tags)}::jsonb, ${c.source}, ${c.address}, ${c.website}, NULL, now())
     RETURNING id`;
   const id = String(made!.id);
   await log(accountId, id, "note", "Found by the Prospect finder", cut(f.note, 2000));
@@ -743,6 +928,34 @@ export interface CrmSettings {
   finder: FinderSettings;
   /** A template the owner wrote for first emails, used word for word (names filled in); "" lets the AI write them. */
   firstTemplate: string;
+  /** The groups the owner works contacts in, like Chiropractors or Naturopaths. */
+  segments: string[];
+}
+
+/** Segment names from whatever was saved or sent: one per line, short, no repeats, at most 12. */
+export function cleanSegments(input: unknown): string[] {
+  const list = Array.isArray(input) ? input : String(input ?? "").split("\n");
+  const out: string[] = [];
+  for (const x of list) {
+    const v = cut(x, 40);
+    if (v && !out.some((o) => o.toLowerCase() === v.toLowerCase())) out.push(v);
+  }
+  return out.slice(0, 12);
+}
+
+/**
+ * The segment a business belongs in from what it is (its listing category, type or name): the segment whose words
+ * all appear in it, by their first six letters, so "Chiropractors" matches "Chiropractic clinic" and "Functional
+ * medicine" needs both words. Short and generic words ("only", "the", "and") are ignored. "" when none fits. Pure.
+ */
+export function guessSegment(text: string, segments: string[]): string {
+  const t = text.toLowerCase();
+  if (!t.trim()) return "";
+  for (const seg of segments) {
+    const words = seg.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4 && !["only", "with", "from", "that", "this", "your"].includes(w));
+    if (words.length && words.every((w) => t.includes(w.slice(0, 6)))) return seg;
+  }
+  return "";
 }
 
 export interface FinderSettings {
@@ -780,6 +993,7 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
     signoff: typeof v.signoff === "string" ? v.signoff.slice(0, 120) : "",
     finder: cleanFinder(v.finder),
     firstTemplate: typeof v.firstTemplate === "string" && ID.test(v.firstTemplate) ? v.firstTemplate : "",
+    segments: cleanSegments(v.segments),
   };
   if (!v.since) {
     await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
@@ -812,6 +1026,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     signoff: b.signoff === undefined ? cur.signoff : cut(b.signoff, 120),
     finder: b.finder === undefined ? cur.finder : cleanFinder(b.finder),
     firstTemplate: b.firstTemplate === undefined ? cur.firstTemplate : typeof b.firstTemplate === "string" && ID.test(b.firstTemplate) ? b.firstTemplate : "",
+    segments: b.segments === undefined ? cur.segments : cleanSegments(b.segments),
   };
   if (value.firstTemplate) {
     const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${value.firstTemplate} AND account_id = ${accountId}`;
@@ -869,10 +1084,15 @@ export async function addDueFollowUps(accountId: string): Promise<number> {
 /** Accounts whose CRM upkeep is due (about hourly), the longest waiting first. */
 export async function accountsDueForCrm(limit = 10): Promise<string[]> {
   await schema();
-  const rows = await sql`SELECT c.account_id FROM insights_crm_contacts c
-    LEFT JOIN insights_settings s ON s.key = 'crm_upkeep:' || c.account_id
-    WHERE s.updated_at IS NULL OR s.updated_at < now() - interval '50 minutes'
-    GROUP BY c.account_id, s.updated_at ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
+  // Each account with contacts, read by jumping through the account index (quick even with millions of contacts).
+  const rows = await sql`WITH RECURSIVE a AS (
+      SELECT min(account_id) AS id FROM insights_crm_contacts
+      UNION ALL
+      SELECT (SELECT min(account_id) FROM insights_crm_contacts WHERE account_id > a.id) FROM a WHERE a.id IS NOT NULL)
+    SELECT a.id AS account_id FROM a
+    LEFT JOIN insights_settings s ON s.key = 'crm_upkeep:' || a.id
+    WHERE a.id IS NOT NULL AND (s.updated_at IS NULL OR s.updated_at < now() - interval '50 minutes')
+    ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
 
@@ -1158,8 +1378,12 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
   const profile = await readProfile(accountId);
   const health = healthRulesApply(profile);
   // The owner's own first email template, word for word with the names filled in: the owner's words, read before Send.
-  if (kind === "intro" && settings.firstTemplate) {
-    const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
+  // A segment's own first email comes before the main one.
+  const [segT] = kind === "intro" && c.segment
+    ? await sql`SELECT subject, body FROM insights_crm_templates WHERE account_id = ${accountId} AND segment = ${c.segment} LIMIT 1`
+    : [];
+  if (kind === "intro" && (segT || settings.firstTemplate)) {
+    const [t] = segT ? [segT] : await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
     if (t) {
       const who = { name: String(c.name ?? ""), company: String(c.company ?? "") };
       const filled = { subject: fillTemplate(t.subject ?? "", who, profile.brandName ?? ""), body: fillTemplate(t.body ?? "", who, profile.brandName ?? "") };
@@ -1235,12 +1459,16 @@ export async function draftDueEmails(accountId: string, max = 5, deadline = Date
       : !hasSecondAi(base)
         ? "A second AI from another provider is needed to check each email before it is written for you."
         : null;
-  if (aiWaiting && !settings.firstTemplate) return { ...out, waiting: aiWaiting };
+  // Segments with their own first email template are written without AI too.
+  const segs = (await sql`SELECT segment FROM insights_crm_templates WHERE account_id = ${accountId} AND segment <> ''`).map((r) => String(r.segment));
+  if (aiWaiting && !settings.firstTemplate && !segs.length) return { ...out, waiting: aiWaiting };
+  const onlyTemplated = Boolean(aiWaiting && !settings.firstTemplate);
   const stages = await readStages(accountId);
   // Waiting to be written: no draft yet, or one that failed three days ago (a thrown away one is left alone).
   const intros = await sql`SELECT id FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> ''
       AND (c.draft IS NULL OR (c.draft ? 'failed' AND (c.draft->>'at')::timestamptz < now() - interval '3 days'))
       AND c.stage = ${stages[0]}
+      AND (${onlyTemplated ? "1" : "0"} = '0' OR c.segment = ANY(string_to_array(${segs.join("\n")}, chr(10))))
       AND NOT EXISTS (SELECT 1 FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind IN ('email', 'reply', 'call', 'meeting'))
     ORDER BY c.created_at LIMIT ${max}`;
   const follows = aiWaiting ? [] : await sql`SELECT DISTINCT ON (c.id) c.id, e.subject FROM insights_crm_activities t

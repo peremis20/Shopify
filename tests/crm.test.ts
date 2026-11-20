@@ -160,3 +160,20 @@ test("the owner's first email template fills Dr. and the last name, and a missin
   assert.equal(fillTemplate(body, { name: "Dr. Paul L. Fowler", company: "Expressions Chiropractic of Dallas PC" }).split("\n")[0], "Hi Dr. Fowler,");
   assert.equal(fillTemplate(body, { name: "", company: "Inwood Chiropractic" }).split("\n")[0], "Hi there,");
 });
+
+test("segments: the owner's list cleaned, and a business put in the segment its type or name fits", async () => {
+  const { cleanSegments, guessSegment } = await import("../src/lib/analytics/crm");
+  const segs = cleanSegments("Users\nChiropractors\nFunctional medicine\nNaturopaths\nWalk in only\nchiropractors\n");
+  assert.deepEqual(segs, ["Users", "Chiropractors", "Functional medicine", "Naturopaths", "Walk in only"]);
+  assert.equal(guessSegment("Chiropractor Uptown Chiropractic", segs), "Chiropractors");
+  assert.equal(guessSegment("Naturopathic practitioner", segs), "Naturopaths");
+  assert.equal(guessSegment("Functional medicine doctor", segs), "Functional medicine");
+  // One word of two is not enough, so a sports medicine clinic is not put in Functional medicine.
+  assert.equal(guessSegment("Highland Park Spine & Sports Medicine", segs), "");
+  assert.equal(guessSegment("", segs), "");
+});
+
+test("a Segment column is read from a spreadsheet", async () => {
+  const rows = rowsToContacts(parseCsv("Clinic,Email,Specialty\nInwood Chiropractic,a@b.co,Chiropractors\n"));
+  assert.equal(rows[0].segment, "Chiropractors");
+});
