@@ -315,7 +315,7 @@ const activityOf = (r: Row): Activity => ({
   done: r.done === "t" || r.done === "true" || (r.done as unknown) === true,
 });
 
-/** Cards shown per pipeline stage; the rest are counted and found under Contacts. */
+/** First emails written per click for a segment. */
 export const STAGE_CARDS = 30;
 
 /**
@@ -335,7 +335,7 @@ export async function crmView(accountId: string, segment = "", cards = 10) {
       CROSS JOIN LATERAL (
         SELECT * FROM insights_crm_contacts x WHERE x.account_id = ${accountId} AND NOT x.archived AND x.stage = st.stage
           AND (${seg} = '' OR x.segment = ${seg})
-        ORDER BY x.updated_at DESC LIMIT ${per}) c`,
+        ORDER BY x.updated_at DESC, x.id DESC LIMIT ${per}) c`,
     // Contacts the To do list needs, each group read on its own so none crowds out another: the contacts behind open
     // tasks, the soonest follow up dates on open deals, and the emails waiting for a Send click.
     sql`(SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
@@ -409,7 +409,7 @@ export async function searchContacts(accountId: string, f: ContactQuery, pageSiz
         AND (${tag} = '' OR c.tags ? ${tag})
         AND (${reach} = '' OR (${reach} = 'email' AND c.email <> '') OR (${reach} = 'phone' AND c.email = '' AND c.phone <> ''))
         AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})
-      ORDER BY c.updated_at DESC LIMIT ${size} OFFSET ${page * size}`,
+      ORDER BY c.updated_at DESC, c.id DESC LIMIT ${size} OFFSET ${page * size}`,
     // Counted up to 10,001, so a broad search over millions of contacts stays quick ("10,000 or more").
     sql`SELECT count(*) AS n FROM (SELECT 1 FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
         AND (${stage} = '' OR c.stage = ${stage}) AND (${segment} = '' OR c.segment = ${segment})
@@ -576,12 +576,13 @@ export async function deleteActivity(accountId: string, id: unknown): Promise<vo
 
 /** Fills {first_name}, {name}, {company} and {my_business} in a template for one contact. */
 export function fillTemplate(text: string, c: Pick<Contact, "name" | "company">, business = "", product = ""): string {
+  // Each value is put in as it is (a "$" in a name is not read as a replacement pattern).
   return text
-    .replace(/\{product\}/gi, product || "our products")
-    .replace(/\{first_name\}/gi, addressName(c.name) || "there")
-    .replace(/\{name\}/gi, c.name || "there")
-    .replace(/\{company\}/gi, plainCompany(c.company) || "your business")
-    .replace(/\{my_business\}/gi, business);
+    .replace(/\{product\}/gi, () => product || "our products")
+    .replace(/\{first_name\}/gi, () => addressName(c.name) || "there")
+    .replace(/\{name\}/gi, () => c.name || "there")
+    .replace(/\{company\}/gi, () => plainCompany(c.company) || "your business")
+    .replace(/\{my_business\}/gi, () => business);
 }
 
 /**

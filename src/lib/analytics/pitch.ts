@@ -14,7 +14,7 @@ export interface PitchProduct {
 
 export interface Pitch {
   name: string;
-  /** The words of the contact that matched. */
+  /** The owner's fit words that matched this contact. */
   why: string[];
 }
 
@@ -28,7 +28,7 @@ export function cleanProducts(input: unknown): PitchProduct[] {
     const r = (p ?? {}) as Record<string, unknown>;
     const name = clean(r.name, 80);
     if (!name || out.some((o) => o.name.toLowerCase() === name.toLowerCase())) continue;
-    const fits = [...new Set((Array.isArray(r.fits) ? r.fits : String(r.fits ?? "").split(",")).map((f) => clean(f, 40).toLowerCase()).filter((f) => f.length >= 3))].slice(0, 20);
+    const fits = [...new Set((Array.isArray(r.fits) ? r.fits : String(r.fits ?? "").split(",")).flatMap((f) => String(f ?? "").split(/\s+/)).map((f) => clean(f, 40).toLowerCase()).filter((f) => f.length >= 3))].slice(0, 20);
     out.push({ name, fits });
   }
   return out.slice(0, 40);
@@ -53,7 +53,7 @@ export const productsToLines = (list: PitchProduct[]) => list.map((p) => `${p.na
  * `text` is what the contact is: its type, segment, company name and the like.
  */
 export function matchProducts(text: string, products: PitchProduct[], max = 3): Pitch[] {
-  const words = text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+  const words = text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 3);
   if (!words.length) return [];
   const scored = products
     .map((p, order) => {

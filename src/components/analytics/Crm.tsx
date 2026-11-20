@@ -79,11 +79,12 @@ export function Crm({ active = true }: { active?: boolean }) {
   const [segment, setSegment] = useState("");
   const [listStage, setListStage] = useState("");
   const [segMsg, setSegMsg] = useState<string | null>(null);
-  const [cards, setCards] = useState(10);
+  // Null until the saved size is read, so the CRM loads once at the right size.
+  const [cards, setCards] = useState<number | null>(null);
   useEffect(() => setCards(readCards()), []);
   const load = useCallback(
-    () =>
-      apiFresh<CrmData>(`/api/crm?${new URLSearchParams({ segment, cards: String(cards) })}`)
+    async () =>
+      cards === null ? undefined : apiFresh<CrmData>(`/api/crm?${new URLSearchParams({ segment, cards: String(cards) })}`)
         .then((d) => (setData(d), setError(null)))
         .catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")),
     [segment, cards],
@@ -177,7 +178,7 @@ export function Crm({ active = true }: { active?: boolean }) {
                 <span>Show</span>
                 <select
                   className={`${field} w-auto py-1`}
-                  value={cards}
+                  value={cards ?? 10}
                   onChange={(e) => {
                     const n = Number(e.target.value);
                     setCards(n);
@@ -192,7 +193,7 @@ export function Crm({ active = true }: { active?: boolean }) {
                 </select>
                 <span>per stage</span>
               </div>
-              <Pipeline data={data} cards={cards} onOpen={setOpen} onChanged={load} onError={setError} />
+              <Pipeline key={`${cards}|${data.segment}`} data={data} cards={cards ?? 10} onOpen={setOpen} onChanged={load} onError={setError} />
             </>
           )}
           {view === "contacts" && <ContactList data={data} segment={segment} stage={listStage} onStage={setListStage} onOpen={setOpen} />}
@@ -224,19 +225,34 @@ async function post<T = { ok: true; id?: string }>(body: Record<string, unknown>
 }
 
 function Pipeline({ data, cards, onOpen, onChanged, onError }: { data: CrmData; cards: number; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void }) {
-  // Each stage pages on its own: page 0 comes with the board, later pages are read from the database.
+  // Each stage pages on its own: page 0 comes with the board, later pages are read from the database. A new size or
+  // segment starts over (the board is remounted); any other reload keeps each stage's page and reads it again.
   const [pages, setPages] = useState<Record<string, { page: number; list: Contact[] }>>({});
-  useEffect(() => setPages({}), [data, cards]);
-  const turn = async (stage: string, page: number) => {
-    if (page === 0) return setPages((p) => ({ ...p, [stage]: { page: 0, list: [] } }));
-    try {
-      const q = new URLSearchParams({ search: "1", stage, segment: data.segment, page: String(page), size: String(cards) });
-      const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${q}`);
-      setPages((p) => ({ ...p, [stage]: { page, list: d.contacts } }));
-    } catch (e) {
-      onError(e instanceof Error ? e.message : "Couldn't load that page.");
+  const asked = useRef<Record<string, number>>({});
+  const turn = useCallback(
+    async (stage: string, page: number) => {
+      const ticket = (asked.current[stage] = (asked.current[stage] ?? 0) + 1);
+      if (page === 0) return setPages((p) => ({ ...p, [stage]: { page: 0, list: [] } }));
+      try {
+        const q = new URLSearchParams({ search: "1", stage, segment: data.segment, page: String(page), size: String(cards) });
+        const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${q}`);
+        // Only the latest request for a stage counts; an older answer arriving late is ignored.
+        if (asked.current[stage] === ticket) setPages((p) => ({ ...p, [stage]: { page, list: d.contacts } }));
+      } catch (e) {
+        onError(e instanceof Error ? e.message : "Couldn't load that page.");
+      }
+    },
+    [data.segment, cards, onError],
+  );
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  useEffect(() => {
+    for (const [stage, v] of Object.entries(pagesRef.current)) {
+      if (!v.page) continue;
+      const n = data.stageCounts[stage]?.n ?? 0;
+      turn(stage, Math.min(v.page, Math.max(0, Math.ceil(n / cards) - 1)));
     }
-  };
+  }, [data, cards, turn]);
   const [drag, setDrag] = useState<string | null>(null);
   const move = async (id: string, stage: string) => {
     onError(null);
@@ -256,7 +272,7 @@ function Pipeline({ data, cards, onOpen, onChanged, onError }: { data: CrmData; 
           ? pages[s]!.list
           : data.contacts
               .filter((c) => c.stage === s && (!data.segment || c.segment === data.segment))
-              .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+              .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || Number(b.id) - Number(a.id))
               .slice(0, cards);
         const count = data.stageCounts[s] ?? { n: list.length, value: list.reduce((n, c) => n + c.value, 0) };
         return (
@@ -287,7 +303,10 @@ function Pipeline({ data, cards, onOpen, onChanged, onError }: { data: CrmData; 
                 >
                   <p className="font-semibold text-dash-ink break-words [overflow-wrap:anywhere]">{label(c)}</p>
                   {c.name && c.company && <p className="text-xs text-dash-muted break-words">{c.company}</p>}
-                  {pitchFor(data, c).length > 0 && <p className="mt-1 text-xs text-dash-green">Pitch: {pitchFor(data, c).map((x) => x.name).join(", ")}</p>}
+                  {(() => {
+                    const pitch = pitchFor(data, c);
+                    return pitch.length > 0 && <p className="mt-1 text-xs text-dash-green">Pitch: {pitch.map((x) => x.name).join(", ")}</p>;
+                  })()}
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-dash-muted">
                     {c.value > 0 && <span className="font-semibold text-dash-ink">{money(c.value)}</span>}
                     {c.followUp && <span className={c.followUp <= today() ? "font-semibold text-dash-down" : ""}>Follow up {shortDate(c.followUp)}</span>}
@@ -770,10 +789,10 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
   const [err, setErr] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
   const fill = (t: string) => t
-    .replace(/\{first_name\}/gi, addressName(contact.name) || "there")
-    .replace(/\{name\}/gi, contact.name || "there")
-    .replace(/\{company\}/gi, plainCompany(contact.company) || "your business")
-    .replace(/\{product\}/gi, pitchFor(data, contact, 1)[0]?.name || "our products");
+    .replace(/\{first_name\}/gi, () => addressName(contact.name) || "there")
+    .replace(/\{name\}/gi, () => contact.name || "there")
+    .replace(/\{company\}/gi, () => plainCompany(contact.company) || "your business")
+    .replace(/\{product\}/gi, () => pitchFor(data, contact, 1)[0]?.name || "our products");
   const pick = (tid: string) => {
     const t = data.templates.find((x) => x.id === tid);
     if (t) {
