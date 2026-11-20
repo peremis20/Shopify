@@ -112,7 +112,7 @@ export function Crm({ active = true }: { active?: boolean }) {
           <div className="flex flex-wrap gap-2">
             <button className={primary} onClick={() => setOpen("new")}>Add contact</button>
             <button className={quiet} onClick={() => setShowImport(true)}>Import</button>
-            <button className={quiet} onClick={() => exportAll(segment).catch((e) => setError(e instanceof Error ? e.message : "Couldn't export."))}>Export</button>
+            <button className={quiet} onClick={() => exportAll(segment).then((m) => setError(m), (e) => setError(e instanceof Error ? e.message : "Couldn't export."))}>Export</button>
             <button className={quiet} onClick={() => setShowStages(true)}>Settings</button>
             <button className={quiet} onClick={() => setShowArchived(true)}>Archived</button>
           </div>
@@ -267,7 +267,8 @@ function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmDat
 
 /** Segments as buttons with their counts, and for the chosen one, its first emails written in one click. */
 function SegmentBar({ data, segment, onPick, onWrite, msg }: { data: CrmData; segment: string; onPick: (s: string) => void; onWrite: () => void; msg: string | null }) {
-  const segs = data.settings.segments ?? [];
+  // Segments in settings, plus any a contact still carries (from an import or a removed segment), so nobody is hidden.
+  const segs = [...new Set([...(data.settings.segments ?? []), ...Object.keys(data.segmentCounts).filter((k) => k)])];
   const all = Object.values(data.segmentCounts).reduce((a, n) => a + n, 0);
   const none = data.segmentCounts[""] ?? 0;
   const chip = (on: boolean) => `rounded-full border px-3 py-1 text-sm ${on ? "border-dash-green bg-dash-green text-white" : "border-dash-line text-dash-ink hover:bg-black/5"}`;
@@ -304,13 +305,18 @@ function ContactList({ data, segment, stage, onStage, onOpen }: { data: CrmData;
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => setPage(0), [q, tag, reach, stage, segment]);
   useEffect(() => {
+    // Only the newest search's answer is shown; a slower earlier one is ignored.
+    let current = true;
     const t = setTimeout(() => {
       const p = new URLSearchParams({ search: "1", q, stage, segment, tag, reach, page: String(page) });
       apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${p}`)
-        .then((d) => (setRes(d), setErr(null)))
-        .catch((e) => setErr(e instanceof Error ? e.message : "Couldn't search."));
+        .then((d) => current && (setRes(d), setErr(null)))
+        .catch((e) => current && setErr(e instanceof Error ? e.message : "Couldn't search."));
     }, 250);
-    return () => clearTimeout(t);
+    return () => {
+      current = false;
+      clearTimeout(t);
+    };
   }, [q, tag, reach, stage, segment, page, data]);
   const from = page * 50;
   return (
@@ -358,7 +364,7 @@ function ContactList({ data, segment, stage, onStage, onOpen }: { data: CrmData;
           {!res.contacts.length && <p className="mt-2 text-sm text-dash-muted">No contact matches that search.</p>}
           {res.total > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-dash-muted">
-              <span>{(from + 1).toLocaleString()} to {Math.min(from + 50, res.total).toLocaleString()} of {res.total.toLocaleString()}</span>
+              <span>{(from + 1).toLocaleString()} to {Math.min(from + 50, res.total).toLocaleString()} of {res.total > 10000 ? "10,000 or more" : res.total.toLocaleString()}</span>
               <button className={quiet} disabled={!page} onClick={() => setPage(page - 1)}>Previous</button>
               <button className={quiet} disabled={from + 50 >= res.total} onClick={() => setPage(page + 1)}>Next</button>
             </div>
@@ -801,11 +807,21 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
     const total = { added: 0, updated: 0, skipped: 0 };
     const BATCH = 1000;
     try {
-      // In batches of 1,000, each saved before the next, so a stop part way keeps everything already added.
-      for (let i = 1; i < table.length; i += BATCH) {
+      // In batches of up to 1,000 rows and about 2 MB, each saved before the next, so a stop part way keeps everything
+      // already added and no batch is too big to send.
+      for (let i = 1; i < table.length; ) {
         if (stop.current) break;
-        setMsg(`Importing ${Math.min(i - 1 + BATCH, count).toLocaleString()} of ${count.toLocaleString()}...`);
-        const batch = mapRows([table[0], ...table.slice(i, i + BATCH)], mapping);
+        const batch: Record<string, string>[] = [];
+        let size = 0;
+        for (const r of mapRows([table[0], ...table.slice(i, i + BATCH)], mapping)) {
+          const row = { ...r, notes: r.notes.slice(0, 2000) };
+          const n = JSON.stringify(row).length;
+          if (batch.length && size + n > 2_000_000) break;
+          batch.push(row);
+          size += n;
+        }
+        i += batch.length || 1;
+        setMsg(`Importing ${Math.min(i - 1, count).toLocaleString()} of ${count.toLocaleString()}...`);
         const out = await post<{ result: { added: number; updated: number; skipped: number } }>({ action: "import", rows: batch });
         total.added += out.result.added;
         total.updated += out.result.updated;
@@ -1222,6 +1238,7 @@ async function exportAll(segment: string) {
   const p = new URLSearchParams({ search: "1", export: "1", segment });
   const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${p}`);
   exportCsv(d.contacts);
+  return d.total > d.contacts.length ? `Exported the first ${d.contacts.length.toLocaleString()} of ${d.total > 10000 ? "more than 10,000" : d.total.toLocaleString()}. Pick a segment to export the rest in parts.` : null;
 }
 
 function exportCsv(contacts: Contact[]) {

@@ -254,7 +254,7 @@ export function cleanContact(input: unknown, stages: string[]): Omit<Contact, "i
     company,
     title: cut(b.title, 80),
     kind: cut(b.kind, 40),
-    segment: cut(b.segment, 40),
+    segment: cut(String(b.segment ?? "").replace(/[\r\n]+/g, " "), 40),
     stage,
     value: Number.isFinite(raw) && raw > 0 ? Math.min(Math.round(raw * 100) / 100, 1e9) : 0,
     tags: [...new Set(tags)].slice(0, 12),
@@ -332,12 +332,19 @@ export async function crmView(accountId: string, segment = "") {
         SELECT * FROM insights_crm_contacts x WHERE x.account_id = ${accountId} AND NOT x.archived AND x.stage = st.stage
           AND (${seg} = '' OR x.segment = ${seg})
         ORDER BY x.updated_at DESC LIMIT ${STAGE_CARDS}) c`,
-    // Contacts the To do list needs: waiting emails, open tasks and follow up dates, however far down their stage they are.
-    sql`SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
-      FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND (
-        c.draft ? 'subject' OR c.follow_up IS NOT NULL
-        OR c.id IN (SELECT a.contact_id FROM insights_crm_activities a WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done))
-      ORDER BY c.updated_at DESC LIMIT 400`,
+    // Contacts the To do list needs, each group read on its own so none crowds out another: the contacts behind open
+    // tasks, the soonest follow up dates on open deals, and the emails waiting for a Send click.
+    sql`(SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
+        FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
+          AND c.id IN (SELECT t.contact_id FROM insights_crm_activities t WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done ORDER BY t.due NULLS LAST, t.at LIMIT 300))
+      UNION ALL
+      (SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
+        FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.follow_up IS NOT NULL AND lower(c.stage) NOT IN ('won', 'lost')
+        ORDER BY c.follow_up LIMIT 200)
+      UNION ALL
+      (SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
+        FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.draft ? 'subject'
+        ORDER BY c.updated_at DESC LIMIT 200)`,
     sql`SELECT a.* FROM insights_crm_activities a JOIN insights_crm_contacts c ON c.id = a.contact_id
       WHERE a.account_id = ${accountId} AND a.kind = 'task' AND NOT a.done AND NOT c.archived ORDER BY a.due NULLS LAST, a.at LIMIT 300`,
     sql`SELECT * FROM insights_crm_templates WHERE account_id = ${accountId} ORDER BY name`,
@@ -383,7 +390,7 @@ export const PAGE_SIZE = 50;
 export async function searchContacts(accountId: string, f: ContactQuery, pageSize = PAGE_SIZE): Promise<{ contacts: Contact[]; total: number }> {
   await schema();
   const q = cut(f.q, 100).toLowerCase();
-  const like = q ? `%${q.replace(/[%_]/g, (m) => `\\${m}`)}%` : "";
+  const like = q ? `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%` : "";
   const stage = cut(f.stage, 30);
   const segment = cut(f.segment, 40);
   const tag = cut(f.tag, 30);
@@ -398,11 +405,13 @@ export async function searchContacts(accountId: string, f: ContactQuery, pageSiz
         AND (${reach} = '' OR (${reach} = 'email' AND c.email <> '') OR (${reach} = 'phone' AND c.email = '' AND c.phone <> ''))
         AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})
       ORDER BY c.updated_at DESC LIMIT ${size} OFFSET ${page * size}`,
-    sql`SELECT count(*) AS n FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
+    // Counted up to 10,001, so a broad search over millions of contacts stays quick ("10,000 or more").
+    sql`SELECT count(*) AS n FROM (SELECT 1 FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
         AND (${stage} = '' OR c.stage = ${stage}) AND (${segment} = '' OR c.segment = ${segment})
         AND (${tag} = '' OR c.tags ? ${tag})
         AND (${reach} = '' OR (${reach} = 'email' AND c.email <> '') OR (${reach} = 'phone' AND c.email = '' AND c.phone <> ''))
-        AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})`,
+        AND (${like} = '' OR lower(c.name) LIKE ${like} OR lower(c.company) LIKE ${like} OR c.email LIKE ${like} OR c.phone LIKE ${like} OR lower(c.kind) LIKE ${like})
+      LIMIT 10001) m`,
   ]);
   return { contacts: rows.map(contactOf), total: Number(count[0]?.n ?? 0) };
 }
@@ -607,7 +616,7 @@ export async function saveTemplate(accountId: string, input: unknown): Promise<v
   const name = cut(b.name, 80);
   const subject = cut(b.subject, 300);
   const body = cut(b.body, 20_000);
-  const segment = cut(b.segment, 40);
+  const segment = cut(String(b.segment ?? "").replace(/[\r\n]+/g, " "), 40);
   if (!name || !subject || !body) throw new Error("A template needs a name, a subject and a message.");
   if (typeof b.id === "string" && ID.test(b.id)) {
     const [before] = await sql`SELECT subject, body, segment FROM insights_crm_templates WHERE id = ${b.id} AND account_id = ${accountId}`;
@@ -876,11 +885,18 @@ export async function knownContact(accountId: string, f: { phone: string; websit
     }
   })();
   const email = (f.email ?? "").trim().toLowerCase();
-  const [hit] = await sql`SELECT 1 FROM insights_crm_contacts WHERE account_id = ${accountId} AND (
-      (${email} <> '' AND lower(email) = ${email})
-      OR (${digits} <> '' AND length(${digits}) >= 7 AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits})
-      OR (${host} <> '' AND lower(regexp_replace(regexp_replace(website, '^https?://(www[.])?', ''), '[/?#].*$', '')) = ${host})
-      OR (${f.company} <> '' AND lower(company) = lower(${f.company}) AND lower(address) = lower(${f.address}) AND ${f.address} <> ''))
+  // Each way of matching on its own, so each uses its index.
+  const [hit] = await sql`
+    (SELECT 1 FROM insights_crm_contacts WHERE ${email} <> '' AND account_id = ${accountId} AND email <> '' AND email = ${email} LIMIT 1)
+    UNION ALL
+    (SELECT 1 FROM insights_crm_contacts WHERE length(${digits}) >= 7 AND account_id = ${accountId} AND phone <> ''
+      AND right(regexp_replace(phone, '[^0-9]', '', 'g'), 10) = ${digits} LIMIT 1)
+    UNION ALL
+    (SELECT 1 FROM insights_crm_contacts WHERE ${host} <> '' AND account_id = ${accountId} AND website <> ''
+      AND lower(regexp_replace(regexp_replace(website, '^https?://(www[.])?', ''), '[/?#].*$', '')) = ${host} LIMIT 1)
+    UNION ALL
+    (SELECT 1 FROM insights_crm_contacts WHERE ${f.company} <> '' AND ${f.address} <> '' AND account_id = ${accountId} AND company <> ''
+      AND lower(company) = lower(${f.company}) AND lower(address) = lower(${f.address}) LIMIT 1)
     LIMIT 1`;
   return Boolean(hit);
 }
@@ -937,7 +953,7 @@ export function cleanSegments(input: unknown): string[] {
   const list = Array.isArray(input) ? input : String(input ?? "").split("\n");
   const out: string[] = [];
   for (const x of list) {
-    const v = cut(x, 40);
+    const v = cut(String(x ?? "").replace(/[\r\n]+/g, " "), 40);
     if (v && !out.some((o) => o.toLowerCase() === v.toLowerCase())) out.push(v);
   }
   return out.slice(0, 12);
@@ -1043,6 +1059,18 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   // The finder turned off or given new kinds or places: what it asked of the owner no longer applies.
   const same = JSON.stringify([cur.finder.kinds, cur.finder.places]) === JSON.stringify([value.finder.kinds, value.finder.places]);
   if (!value.finder.on || !same) for (const ref of ["dry", "limit", "key"]) await closeNeed(accountId, "Prospect finder", ref);
+  // A segment renamed in its place takes its contacts and template along; a removed one frees its template.
+  if (cur.segments.length === value.segments.length) {
+    for (let i = 0; i < cur.segments.length; i++) {
+      const [from, to] = [cur.segments[i], value.segments[i]];
+      if (from !== to && !value.segments.includes(from)) {
+        await sql`UPDATE insights_crm_contacts SET segment = ${to} WHERE account_id = ${accountId} AND segment = ${from}`;
+        await sql`UPDATE insights_crm_templates SET segment = ${to} WHERE account_id = ${accountId} AND segment = ${from}`;
+      }
+    }
+  }
+  const gone = cur.segments.filter((x) => !value.segments.includes(x));
+  if (gone.length) await sql`UPDATE insights_crm_templates SET segment = '' WHERE account_id = ${accountId} AND segment = ANY(string_to_array(${gone.join(String.fromCharCode(31))}, chr(31)))`;
   if (redo) await redoIntroDrafts(accountId);
   return value;
 }
@@ -1380,7 +1408,7 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
   // The owner's own first email template, word for word with the names filled in: the owner's words, read before Send.
   // A segment's own first email comes before the main one.
   const [segT] = kind === "intro" && c.segment
-    ? await sql`SELECT subject, body FROM insights_crm_templates WHERE account_id = ${accountId} AND segment = ${c.segment} LIMIT 1`
+    ? await sql`SELECT subject, body FROM insights_crm_templates WHERE account_id = ${accountId} AND segment = ${c.segment} ORDER BY id DESC LIMIT 1`
     : [];
   if (kind === "intro" && (segT || settings.firstTemplate)) {
     const [t] = segT ? [segT] : await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
