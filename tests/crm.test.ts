@@ -177,3 +177,20 @@ test("a Segment column is read from a spreadsheet", async () => {
   const rows = rowsToContacts(parseCsv("Clinic,Email,Specialty\nInwood Chiropractic,a@b.co,Chiropractors\n"));
   assert.equal(rows[0].segment, "Chiropractors");
 });
+
+test("products to pitch: matched by the practice's type, segment and name, best match first, with the reason", async () => {
+  const { matchProducts, productsFromLines, productsToLines } = await import("../src/lib/analytics/pitch");
+  const products = productsFromLines("Magnesium Complex: chiropract, sports, sleep\nTurmeric w/BioPerine: chiropract, joint, sports, injury\nEye Health: optometr, vision\nNo words");
+  assert.equal(products.length, 4);
+  assert.equal(productsToLines(products).split("\n")[0], "Magnesium Complex: chiropract, sports, sleep");
+  const m = matchProducts("Chiropractor Chiropractors Premier Injury Clinics Auto Accident Chiropractic", products);
+  assert.deepEqual(m.map((x) => x.name), ["Turmeric w/BioPerine", "Magnesium Complex"]);
+  assert.deepEqual(m[0].why, ["chiropract", "injury"]);
+  assert.deepEqual(matchProducts("Family Optometry Center", products).map((x) => x.name), ["Eye Health"]);
+  assert.deepEqual(matchProducts("Bakery", products), []);
+});
+
+test("{product} is filled in a template, with a plain fallback", () => {
+  assert.equal(fillTemplate("Try {product}", { name: "", company: "" }, "", "Magnesium Complex"), "Try Magnesium Complex");
+  assert.equal(fillTemplate("Try {product}", { name: "", company: "" }), "Try our products");
+});

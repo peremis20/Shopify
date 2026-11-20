@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Activity, Contact, ContactFile, ContactOrders, CrmSettings, StockLine, Template } from "@/lib/analytics/crm";
 import { guessMapping, IMPORT_FIELDS, mapRows, parseCsv } from "@/lib/analytics/csv";
 import { addressName, plainCompany } from "@/lib/analytics/names";
+import { matchProducts, productsFromLines, productsToLines } from "@/lib/analytics/pitch";
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
 import { Card } from "./ui";
@@ -29,8 +30,18 @@ interface CrmData {
   stock: { onShelf: number; owed: number; dueSoon: number; places: number };
   settings: CrmSettings;
 }
-/** Cards shown per stage; the rest are counted and found under Contacts. */
-const STAGE_CARDS = 30;
+/** Cards per stage page, as the owner picks them (remembered on this browser). */
+const CARD_SIZES = [10, 30, 50, 100];
+const readCards = () => {
+  try {
+    const n = Number(localStorage.getItem("crm_cards"));
+    return CARD_SIZES.includes(n) ? n : 10;
+  } catch {
+    return 10;
+  }
+};
+/** The products that fit a contact, from the owner's product list. */
+const pitchFor = (data: CrmData, c: Contact, max = 2) => matchProducts(`${c.kind} ${c.segment} ${c.company}`, data.settings.products ?? [], max);
 type View = "pipeline" | "contacts" | "todo" | "templates";
 
 const money = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
@@ -68,12 +79,14 @@ export function Crm({ active = true }: { active?: boolean }) {
   const [segment, setSegment] = useState("");
   const [listStage, setListStage] = useState("");
   const [segMsg, setSegMsg] = useState<string | null>(null);
+  const [cards, setCards] = useState(10);
+  useEffect(() => setCards(readCards()), []);
   const load = useCallback(
     () =>
-      apiFresh<CrmData>(`/api/crm${segment ? `?segment=${encodeURIComponent(segment)}` : ""}`)
+      apiFresh<CrmData>(`/api/crm?${new URLSearchParams({ segment, cards: String(cards) })}`)
         .then((d) => (setData(d), setError(null)))
         .catch((e) => setError(e instanceof Error ? e.message : "The CRM couldn't load.")),
-    [segment],
+    [segment, cards],
   );
   // Fresh each time the page is opened again, so new website requests show without reloading the browser.
   useEffect(() => {
@@ -158,7 +171,30 @@ export function Crm({ active = true }: { active?: boolean }) {
         </div>
         {error && <p className="mt-2 text-sm text-dash-down">{error}</p>}
         <div className="mt-4">
-          {view === "pipeline" && <Pipeline data={data} onOpen={setOpen} onChanged={load} onError={setError} onSeeAll={(s) => (setListStage(s), setView("contacts"))} />}
+          {view === "pipeline" && (
+            <>
+              <div className="mb-2 flex items-center gap-2 text-sm text-dash-muted">
+                <span>Show</span>
+                <select
+                  className={`${field} w-auto py-1`}
+                  value={cards}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setCards(n);
+                    try {
+                      localStorage.setItem("crm_cards", String(n));
+                    } catch {
+                      /* remembered for this visit only */
+                    }
+                  }}
+                >
+                  {CARD_SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+                <span>per stage</span>
+              </div>
+              <Pipeline data={data} cards={cards} onOpen={setOpen} onChanged={load} onError={setError} />
+            </>
+          )}
           {view === "contacts" && <ContactList data={data} segment={segment} stage={listStage} onStage={setListStage} onOpen={setOpen} />}
           {view === "todo" && <TodoList data={data} items={due} onOpen={setOpen} onChanged={load} onError={setError} />}
           {view === "templates" && <Templates data={data} onChanged={load} onError={setError} />}
@@ -187,7 +223,20 @@ async function post<T = { ok: true; id?: string }>(body: Record<string, unknown>
   return api<T>("/api/crm", body);
 }
 
-function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmData; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void; onSeeAll: (stage: string) => void }) {
+function Pipeline({ data, cards, onOpen, onChanged, onError }: { data: CrmData; cards: number; onOpen: (id: string) => void; onChanged: () => void; onError: (e: string | null) => void }) {
+  // Each stage pages on its own: page 0 comes with the board, later pages are read from the database.
+  const [pages, setPages] = useState<Record<string, { page: number; list: Contact[] }>>({});
+  useEffect(() => setPages({}), [data, cards]);
+  const turn = async (stage: string, page: number) => {
+    if (page === 0) return setPages((p) => ({ ...p, [stage]: { page: 0, list: [] } }));
+    try {
+      const q = new URLSearchParams({ search: "1", stage, segment: data.segment, page: String(page), size: String(cards) });
+      const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${q}`);
+      setPages((p) => ({ ...p, [stage]: { page, list: d.contacts } }));
+    } catch (e) {
+      onError(e instanceof Error ? e.message : "Couldn't load that page.");
+    }
+  };
   const [drag, setDrag] = useState<string | null>(null);
   const move = async (id: string, stage: string) => {
     onError(null);
@@ -201,11 +250,14 @@ function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmDat
   return (
     <div className="flex gap-3 overflow-x-auto pb-2">
       {data.stages.map((s) => {
-        // The stage's newest 30 in the chosen segment; the count and value cover everyone in it.
-        const list = data.contacts
-          .filter((c) => c.stage === s && (!data.segment || c.segment === data.segment))
-          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-          .slice(0, STAGE_CARDS);
+        // A page of the stage's contacts in the chosen segment, newest first; the count and value cover everyone in it.
+        const pg = pages[s]?.page ?? 0;
+        const list = pg
+          ? pages[s]!.list
+          : data.contacts
+              .filter((c) => c.stage === s && (!data.segment || c.segment === data.segment))
+              .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+              .slice(0, cards);
         const count = data.stageCounts[s] ?? { n: list.length, value: list.reduce((n, c) => n + c.value, 0) };
         return (
           <div
@@ -235,6 +287,7 @@ function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmDat
                 >
                   <p className="font-semibold text-dash-ink break-words [overflow-wrap:anywhere]">{label(c)}</p>
                   {c.name && c.company && <p className="text-xs text-dash-muted break-words">{c.company}</p>}
+                  {pitchFor(data, c).length > 0 && <p className="mt-1 text-xs text-dash-green">Pitch: {pitchFor(data, c).map((x) => x.name).join(", ")}</p>}
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-dash-muted">
                     {c.value > 0 && <span className="font-semibold text-dash-ink">{money(c.value)}</span>}
                     {c.followUp && <span className={c.followUp <= today() ? "font-semibold text-dash-down" : ""}>Follow up {shortDate(c.followUp)}</span>}
@@ -252,10 +305,12 @@ function Pipeline({ data, onOpen, onChanged, onError, onSeeAll }: { data: CrmDat
                 </div>
               ))}
               {!list.length && <p className="px-1 py-3 text-xs text-dash-muted">Nobody here yet.</p>}
-              {count.n > list.length && (
-                <button className="w-full rounded-lg border border-dashed border-dash-line px-2 py-2 text-xs font-semibold text-dash-ink hover:bg-white" onClick={() => onSeeAll(s)}>
-                  {(count.n - list.length).toLocaleString()} more. See all {count.n.toLocaleString()} in a list
-                </button>
+              {count.n > cards && (
+                <div className="flex items-center justify-between gap-1 px-1 text-xs text-dash-muted">
+                  <button className={`${quiet} px-2 py-1 text-xs`} disabled={!pg} onClick={() => turn(s, pg - 1)}>Previous</button>
+                  <span>{(pg * cards + 1).toLocaleString()} to {Math.min((pg + 1) * cards, count.n).toLocaleString()} of {count.n.toLocaleString()}</span>
+                  <button className={`${quiet} px-2 py-1 text-xs`} disabled={(pg + 1) * cards >= count.n} onClick={() => turn(s, pg + 1)}>Next</button>
+                </div>
               )}
             </div>
           </div>
@@ -452,7 +507,7 @@ function Templates({ data, onChanged, onError }: { data: CrmData; onChanged: () 
   return (
     <div>
       <p className="mb-3 text-sm text-dash-muted">
-        Write an email once and reuse it. In the subject or message, {"{first_name}"} (like Ana, or Dr. Hamer for a doctor), {"{name}"} and {"{company}"} are filled in for each contact.
+        Write an email once and reuse it. In the subject or message, {"{first_name}"} (like Ana, or Dr. Hamer for a doctor), {"{name}"}, {"{company}"} and {"{product}"} (the product that fits that practice best) are filled in for each contact.
       </p>
       <ul className="space-y-2">
         {data.templates.map((t) => (
@@ -616,6 +671,8 @@ function ContactPanel({ id, data, onClose, onChanged, onOpenId }: { id: string; 
               ["Phone", c.phone],
               ["Job title", c.title],
               ["Type", c.kind],
+              ["Segment", c.segment],
+              ["Products to pitch", pitchFor(data, c as Contact, 3).map((x) => `${x.name} (fits: ${x.why.join(", ")})`).join("; ")],
               ["Follow up", c.followUp ? shortDate(c.followUp) : ""],
               ["Tags", (c.tags ?? []).join(", ")],
               ["Website", c.website],
@@ -715,7 +772,8 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
   const fill = (t: string) => t
     .replace(/\{first_name\}/gi, addressName(contact.name) || "there")
     .replace(/\{name\}/gi, contact.name || "there")
-    .replace(/\{company\}/gi, plainCompany(contact.company) || "your business");
+    .replace(/\{company\}/gi, plainCompany(contact.company) || "your business")
+    .replace(/\{product\}/gi, pitchFor(data, contact, 1)[0]?.name || "our products");
   const pick = (tid: string) => {
     const t = data.templates.find((x) => x.id === tid);
     if (t) {
@@ -919,6 +977,7 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
   const [link, setLink] = useState(settings.link);
   const [signoff, setSignoff] = useState(settings.signoff);
   const [segs, setSegs] = useState((settings.segments ?? []).join("\n"));
+  const [products, setProducts] = useState(productsToLines(settings.products ?? []));
   const [firstTemplate, setFirstTemplate] = useState(templates.some((t) => t.id === settings.firstTemplate) ? settings.firstTemplate : "");
   const [findOn, setFindOn] = useState(settings.finder?.on ?? false);
   const [kinds, setKinds] = useState((settings.finder?.kinds ?? []).join("\n"));
@@ -929,7 +988,7 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
     if (!/^\d+$/.test(days.trim())) return setErr("Put a number of days for follow ups, 0 to turn them off.");
     try {
       const finder = { on: findOn, kinds: kinds.split("\n"), places: places.split("\n"), perWeek: Number(perWeek) };
-      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder, firstTemplate, segments: segs.split("\n") } });
+      await post({ action: "settings", settings: { followUpDays: Number(days), dailyEmail: daily, autoDraft: auto, offer, link, signoff, finder, firstTemplate, segments: segs.split("\n"), products: productsFromLines(products) } });
       await post({ action: "stages", stages: list.split("\n") });
       onDone();
       onClose();
@@ -947,6 +1006,11 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
       <p className="mt-4 text-sm font-semibold text-dash-ink">Segments</p>
       <p className="text-sm text-dash-muted">The groups you work contacts in, one per line, like Chiropractors or Naturopaths. New businesses and imports are put in the right one by their type when it is clear.</p>
       <textarea className={`${field} mt-2 min-h-[110px]`} placeholder={"Chiropractors\nNaturopaths"} value={segs} onChange={(e) => setSegs(e.target.value)} />
+      <p className="mt-4 text-sm font-semibold text-dash-ink">Your products and who they fit</p>
+      <p className="text-sm text-dash-muted">
+        One product per line: its name, a colon, then single words for the practices or interests it fits. Each contact is matched by its type, segment and name, and shows the products to pitch.
+      </p>
+      <textarea className={`${field} mt-2 min-h-[160px]`} placeholder={"Magnesium Complex: chiropract, sports, sleep, muscle"} value={products} onChange={(e) => setProducts(e.target.value)} />
       <p className="mt-4 text-sm font-semibold text-dash-ink">Follow ups</p>
       <label className="mt-1 block text-sm text-dash-ink">
         Add a follow up task when nothing is logged from a contact this many days after you email them (0 turns it off)

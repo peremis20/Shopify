@@ -8,6 +8,7 @@ import { hasSecondAi, secondCheck, writeContactIntro } from "./autopilot/writer"
 import { healthRulesApply, readProfile, siteBrief } from "./profile";
 import { claimProblem, cleanPost, noDashes } from "./social-agent";
 import { closeNeed, postNote } from "./autopilot/team";
+import { cleanProducts, matchProducts, type PitchProduct } from "./pitch";
 
 /**
  * The owner's own CRM: contacts, a sales pipeline, and everything done with each contact (notes, calls, meetings,
@@ -321,8 +322,11 @@ export const STAGE_CARDS = 30;
  * Everything the CRM page shows, sized for any number of contacts: each stage's 30 most recently updated (in the
  * chosen segment), the contacts behind open tasks and waiting emails, and counts and totals worked out in the database.
  */
-export async function crmView(accountId: string, segment = "") {
+export const CARD_SIZES = [10, 30, 50, 100];
+
+export async function crmView(accountId: string, segment = "", cards = 10) {
   await schema();
+  const per = CARD_SIZES.includes(cards) ? cards : 10;
   const stages = await readStages(accountId);
   const seg = cut(segment, 40);
   const [board, extra, tasks, templates, byStage, bySegment, won] = await Promise.all([
@@ -331,7 +335,7 @@ export async function crmView(accountId: string, segment = "") {
       CROSS JOIN LATERAL (
         SELECT * FROM insights_crm_contacts x WHERE x.account_id = ${accountId} AND NOT x.archived AND x.stage = st.stage
           AND (${seg} = '' OR x.segment = ${seg})
-        ORDER BY x.updated_at DESC LIMIT ${STAGE_CARDS}) c`,
+        ORDER BY x.updated_at DESC LIMIT ${per}) c`,
     // Contacts the To do list needs, each group read on its own so none crowds out another: the contacts behind open
     // tasks, the soonest follow up dates on open deals, and the emails waiting for a Send click.
     sql`(SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
@@ -571,8 +575,9 @@ export async function deleteActivity(accountId: string, id: unknown): Promise<vo
 }
 
 /** Fills {first_name}, {name}, {company} and {my_business} in a template for one contact. */
-export function fillTemplate(text: string, c: Pick<Contact, "name" | "company">, business = ""): string {
+export function fillTemplate(text: string, c: Pick<Contact, "name" | "company">, business = "", product = ""): string {
   return text
+    .replace(/\{product\}/gi, product || "our products")
     .replace(/\{first_name\}/gi, addressName(c.name) || "there")
     .replace(/\{name\}/gi, c.name || "there")
     .replace(/\{company\}/gi, plainCompany(c.company) || "your business")
@@ -948,7 +953,12 @@ export interface CrmSettings {
   firstTemplate: string;
   /** The groups the owner works contacts in, like Chiropractors or Naturopaths. */
   segments: string[];
+  /** The owner's products and the kinds of business each fits, for the product to pitch to each contact. */
+  products: PitchProduct[];
 }
+
+/** What a contact is, for matching products to it. */
+export const pitchText = (c: Pick<Contact, "kind" | "segment" | "company">) => `${c.kind} ${c.segment} ${c.company}`;
 
 /** Segment names from whatever was saved or sent: one per line, short, no repeats, at most 12. */
 export function cleanSegments(input: unknown): string[] {
@@ -1012,6 +1022,7 @@ export async function readCrmSettings(accountId: string): Promise<CrmSettings> {
     finder: cleanFinder(v.finder),
     firstTemplate: typeof v.firstTemplate === "string" && ID.test(v.firstTemplate) ? v.firstTemplate : "",
     segments: cleanSegments(v.segments),
+    products: cleanProducts(v.products),
   };
   if (!v.since) {
     await sql`INSERT INTO insights_settings (key, value) VALUES (${settingsKey(accountId)}, ${JSON.stringify(out)})
@@ -1045,6 +1056,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
     finder: b.finder === undefined ? cur.finder : cleanFinder(b.finder),
     firstTemplate: b.firstTemplate === undefined ? cur.firstTemplate : typeof b.firstTemplate === "string" && ID.test(b.firstTemplate) ? b.firstTemplate : "",
     segments: b.segments === undefined ? cur.segments : cleanSegments(b.segments),
+    products: b.products === undefined ? cur.products : cleanProducts(b.products),
   };
   if (value.firstTemplate) {
     const [t] = await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${value.firstTemplate} AND account_id = ${accountId}`;
@@ -1416,7 +1428,9 @@ export async function draftEmail(accountId: string, contactId: string, kind: "in
     const [t] = segT ? [segT] : await sql`SELECT subject, body FROM insights_crm_templates WHERE id = ${settings.firstTemplate} AND account_id = ${accountId}`;
     if (t) {
       const who = { name: String(c.name ?? ""), company: String(c.company ?? "") };
-      const filled = { subject: fillTemplate(t.subject ?? "", who, profile.brandName ?? ""), body: fillTemplate(t.body ?? "", who, profile.brandName ?? "") };
+      // {product} is the product that fits this practice best, from the owner's product list.
+      const product = matchProducts(pitchText({ kind: String(c.kind ?? ""), segment: String(c.segment ?? ""), company: who.company }), settings.products, 1)[0]?.name ?? "";
+      const filled = { subject: fillTemplate(t.subject ?? "", who, profile.brandName ?? "", product), body: fillTemplate(t.body ?? "", who, profile.brandName ?? "", product) };
       const problem = claimProblem(`${filled.subject}\n${filled.body}`, health);
       if (problem) throw new Error(`Your first email template needs a change first. ${problem}`);
       if (!filled.subject.trim() || !filled.body.trim()) throw new Error("Your first email template needs a subject and a message.");

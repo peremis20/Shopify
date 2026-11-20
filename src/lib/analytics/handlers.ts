@@ -2357,7 +2357,7 @@ export const crmApi = (req: Request) =>
         return json(await searchContacts(account.id, {
           q: q.get("q") ?? "", stage: q.get("stage") ?? "", segment: q.get("segment") ?? "", tag: q.get("tag") ?? "",
           reach: reach === "email" || reach === "phone" ? reach : "", page: Number.isInteger(page) && page >= 0 ? page : 0,
-        }, q.get("export") ? 5000 : undefined));
+        }, q.get("export") ? 5000 : [10, 30, 50, 100].includes(Number(q.get("size"))) ? Number(q.get("size")) : undefined));
       }
       const fileId = q.get("file");
       if (fileId) {
@@ -2375,7 +2375,7 @@ export const crmApi = (req: Request) =>
         });
       }
       const gmail = await getGmail(account.id).catch(() => null);
-      const [view, stock, settings] = await Promise.all([crmView(account.id, q.get("segment") ?? ""), stockSummary(account.id), readCrmSettings(account.id)]);
+      const [view, stock, settings] = await Promise.all([crmView(account.id, q.get("segment") ?? "", Number(q.get("cards") ?? 10)), stockSummary(account.id), readCrmSettings(account.id)]);
       return json({ ...view, stock, settings, gmail: { connected: Boolean(gmail), email: gmail?.email ?? null, sentToday: gmail ? await sentToday(account.id).catch(() => 0) : 0, cap: DAILY_SEND_CAP } });
     }
     // Nothing bigger than a 3 MB file (about 4 MB as text) is read at all.
