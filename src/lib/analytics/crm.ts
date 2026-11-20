@@ -336,7 +336,8 @@ export async function crmView(accountId: string, segment = "") {
     // tasks, the soonest follow up dates on open deals, and the emails waiting for a Send click.
     sql`(SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
         FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived
-          AND c.id IN (SELECT t.contact_id FROM insights_crm_activities t WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done ORDER BY t.due NULLS LAST, t.at LIMIT 300))
+          AND c.id IN (SELECT t.contact_id FROM insights_crm_activities t JOIN insights_crm_contacts k ON k.id = t.contact_id AND NOT k.archived
+            WHERE t.account_id = ${accountId} AND t.kind = 'task' AND NOT t.done ORDER BY t.due NULLS LAST, t.at LIMIT 300))
       UNION ALL
       (SELECT c.*, (SELECT count(*) FROM insights_crm_activities a WHERE a.contact_id = c.id AND a.kind = 'task' AND NOT a.done) AS open_tasks
         FROM insights_crm_contacts c WHERE c.account_id = ${accountId} AND NOT c.archived AND c.follow_up IS NOT NULL AND lower(c.stage) NOT IN ('won', 'lost')
@@ -800,11 +801,12 @@ export async function contactFromLead(
 ): Promise<void> {
   await schema();
   const stages = await readStages(accountId);
-  const [dup] = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${lead.email} AND NOT archived`;
+  const email = lead.email.trim().toLowerCase();
+  const [dup] = await sql`SELECT id FROM insights_crm_contacts WHERE account_id = ${accountId} AND email = ${email} AND NOT archived`;
   let cid = dup ? String(dup.id) : null;
   if (!cid) {
     const [row] = await sql`INSERT INTO insights_crm_contacts (account_id, name, email, phone, company, kind, stage, tags, source)
-      VALUES (${accountId}, ${lead.name}, ${lead.email}, ${lead.phone}, ${lead.business}, ${lead.type}, ${stages[0]},
+      VALUES (${accountId}, ${lead.name}, ${email}, ${lead.phone}, ${lead.business}, ${lead.type}, ${stages[0]},
         ${JSON.stringify(lead.interest ? [lead.interest.slice(0, 30)] : [])}::jsonb, ${lead.source || "Website form"}) RETURNING id`;
     cid = String(row!.id);
   }
@@ -1063,7 +1065,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   if (cur.segments.length === value.segments.length) {
     for (let i = 0; i < cur.segments.length; i++) {
       const [from, to] = [cur.segments[i], value.segments[i]];
-      if (from !== to && !value.segments.includes(from)) {
+      if (from !== to && !value.segments.includes(from) && !cur.segments.includes(to)) {
         await sql`UPDATE insights_crm_contacts SET segment = ${to} WHERE account_id = ${accountId} AND segment = ${from}`;
         await sql`UPDATE insights_crm_templates SET segment = ${to} WHERE account_id = ${accountId} AND segment = ${from}`;
       }
@@ -1071,7 +1073,7 @@ export async function saveCrmSettings(accountId: string, input: unknown): Promis
   }
   const gone = cur.segments.filter((x) => !value.segments.includes(x));
   if (gone.length) await sql`UPDATE insights_crm_templates SET segment = '' WHERE account_id = ${accountId} AND segment = ANY(string_to_array(${gone.join(String.fromCharCode(31))}, chr(31)))`;
-  if (redo) await redoIntroDrafts(accountId);
+  if (redo || gone.length) await redoIntroDrafts(accountId);
   return value;
 }
 

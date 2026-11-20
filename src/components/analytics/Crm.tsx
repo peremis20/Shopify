@@ -366,7 +366,7 @@ function ContactList({ data, segment, stage, onStage, onOpen }: { data: CrmData;
             <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-dash-muted">
               <span>{(from + 1).toLocaleString()} to {Math.min(from + 50, res.total).toLocaleString()} of {res.total > 10000 ? "10,000 or more" : res.total.toLocaleString()}</span>
               <button className={quiet} disabled={!page} onClick={() => setPage(page - 1)}>Previous</button>
-              <button className={quiet} disabled={from + 50 >= res.total} onClick={() => setPage(page + 1)}>Next</button>
+              <button className={quiet} disabled={res.contacts.length < 50 || (res.total <= 10000 && from + 50 >= res.total)} onClick={() => setPage(page + 1)}>Next</button>
             </div>
           )}
         </div>
@@ -815,7 +815,7 @@ function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: () => 
         let size = 0;
         for (const r of mapRows([table[0], ...table.slice(i, i + BATCH)], mapping)) {
           const row = { ...r, notes: r.notes.slice(0, 2000) };
-          const n = JSON.stringify(row).length;
+          const n = new TextEncoder().encode(JSON.stringify(row)).length;
           if (batch.length && size + n > 2_000_000) break;
           batch.push(row);
           size += n;
@@ -1238,7 +1238,7 @@ async function exportAll(segment: string) {
   const p = new URLSearchParams({ search: "1", export: "1", segment });
   const d = await apiFresh<{ contacts: Contact[]; total: number }>(`/api/crm?${p}`);
   exportCsv(d.contacts);
-  return d.total > d.contacts.length ? `Exported the first ${d.contacts.length.toLocaleString()} of ${d.total > 10000 ? "more than 10,000" : d.total.toLocaleString()}. Pick a segment to export the rest in parts.` : null;
+  return d.total > d.contacts.length ? `Exported the first ${d.contacts.length.toLocaleString()} of ${d.total > 10000 ? "more than 10,000" : d.total.toLocaleString()}. ${segment ? "Use the Contacts tab to narrow it further." : "Pick a segment to export the rest in parts."}` : null;
 }
 
 function exportCsv(contacts: Contact[]) {
