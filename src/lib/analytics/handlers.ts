@@ -1618,7 +1618,7 @@ export async function autopilotTick(): Promise<Response> {
     // Sites run side by side, each within its own time limit, before the Inspector so what they find is read this hour.
     const watched: string[] = [];
     if (!late()) {
-      const due = await accountsDueForSiteWatch(8).catch(async (e) => {
+      const due = await accountsDueForSiteWatch(16).catch(async (e) => {
         console.error(`site watch list failed: ${message(e)}`);
         await report("site-watch", false, `The list of sites due for Site watch couldn't be read (${message(e)})`);
         return null;

@@ -63,6 +63,9 @@ test("a bot check, rate limit or login is not a site that is down", () => {
 test("live titles and registered domains", () => {
   assert.equal(pageTitle("<title>\n  Magnesium &amp; Sleep | Peremis </title>"), "Magnesium & Sleep | Peremis");
   assert.equal(pageTitle("<p>none</p>"), null);
+  // WordPress writes curly quotes and dashes as numeric entities.
+  assert.equal(titleIsLive(pageTitle("<title>Don&#8217;t Skip Sleep &#8211; Peremis</title>"), "Don't Skip Sleep - Peremis"), true);
+  assert.equal(pageTitle("<title>A &#x26; B</title>"), "A & B");
   assert.equal(titleIsLive("Magnesium & Sleep | Peremis", "Magnesium & sleep"), true);
   assert.equal(titleIsLive("Old title | Peremis", "Magnesium & Sleep"), false);
   assert.equal(titleIsLive(null, "x"), false);

@@ -4,6 +4,7 @@ import { resolveRange } from "../dates";
 import { ensureSchema, sql } from "../db";
 import { googleRequest, hasScope, type GoogleAuth } from "../google-auth";
 import { publicFetch } from "../profile";
+import { isSabbath } from "./sabbath";
 import { readCapped } from "./broken-links";
 import type { Problem } from "./inspector";
 
@@ -131,12 +132,16 @@ export function pageTitle(html: string): string | null {
   const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   if (!m) return null;
   return m[1]
-    .replace(/&amp;/g, "&").replace(/&#0?39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&apos;|&rsquo;|&lsquo;/g, "'").replace(/&quot;|&ldquo;|&rdquo;/g, '"').replace(/&ndash;|&mdash;/g, "-").replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
     .replace(/\s+/g, " ").trim();
 }
 
 /** Whether the live title carries the title an agent set (themes may add the store name around it). */
-export const titleIsLive = (live: string | null, set: string) => Boolean(live && set.trim() && live.toLowerCase().includes(set.replace(/\s+/g, " ").trim().toLowerCase()));
+const plainText = (t: string) => t.replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
+export const titleIsLive = (live: string | null, set: string) => Boolean(live && set.trim() && plainText(live).includes(plainText(set)));
 
 /** The registered domain, for its registration record: the last two labels (a country domain like .co.uk keeps three). */
 export function registeredDomain(host: string): string {
@@ -296,9 +301,12 @@ export async function siteWatchProblems(accountId: string): Promise<Problem[]> {
   if (!st.at) return [];
   const age = Date.now() - Date.parse(st.at);
   const out: Problem[] = [];
-  if (age < 3 * HOUR) out.push(...st.hourly);
+  if (age < 6 * HOUR) out.push(...st.hourly);
   if (st.dailyAt && Date.now() - Date.parse(st.dailyAt) < 48 * HOUR) out.push(...st.daily);
-  if (age > 6 * HOUR) out.push({ id: "site:watch-late", text: "Site watch hasn't checked this site in over 6 hours.", fix: "The code repair run looks at why.", who: "watching", platform: true });
+  // Nothing runs on the Sabbath, so a watch that waited through it isn't late.
+  if (age > 6 * HOUR && !isSabbath() && !isSabbath(new Date(Date.now() - 6 * HOUR))) {
+    out.push({ id: "site:watch-late", text: "Site watch hasn't checked this site in over 6 hours.", fix: "The code repair run looks at why.", who: "watching", platform: true });
+  }
   if (st.error) out.push({ id: "site:watch-error", text: `Site watch couldn't finish its last check: ${st.error}`, fix: "It tries again within the hour.", who: "watching", platform: true });
   return out;
 }
@@ -340,91 +348,122 @@ export async function runSiteWatch(accountId: string, domain: string, conn: Conn
 }
 
 async function watch(accountId: string, domain: string, conn: Connection | null, st: WatchState, notes: string[]): Promise<void> {
-  // Hourly: the home page answers. A bot check, rate limit or login says nothing; two real failures in a row are an alarm.
+  // Hourly: the home page answers. A bot check, rate limit or login says nothing; two real failures in a row
+  // (within a few hours of each other) are an alarm.
+  if (st.at && Date.now() - Date.parse(st.at) > 3 * HOUR) st.downRuns = 0;
   const page = await fetchText(`https://${domain}/`);
   const state = page ? downAnswer(page.status, page.server, page.mitigated) : "down";
   st.downRuns = state === "down" ? st.downRuns + 1 : state === "up" ? 0 : st.downRuns;
+  const before = st.hourly;
   st.hourly = [];
-  if (state === "down" && st.downRuns >= 2) {
+  // No answer may be a certificate browsers refuse rather than a site that's down: say which.
+  const badCert = !page ? await certificate(domain) : null;
+  if (!page && badCert?.refused) {
+    st.hourly.push({ id: "site:certificate", text: `Browsers refuse the site's security certificate (${badCert.refused}), so visitors see a warning instead of the site.`, fix: "Renew or fix the certificate at the hosting company.", who: "owner" });
+  } else if (state === "down" && st.downRuns >= 2) {
     st.hourly.push({
       id: "site:down",
       text: page ? `The home page answers with error ${page.status} (two checks in a row).` : "The home page does not answer at all (two checks in a row).",
       fix: "Check the hosting and the domain. Visitors and Google can't reach the site until it answers.",
       who: "owner",
     });
+  } else if (state === "blocked") {
+    // Couldn't tell this hour: what was found before stands.
+    st.hourly = before;
   } else if (page && state === "up" && page.ms > 8000) {
     st.hourly.push({ id: "site:slow", text: `The home page took ${Math.round(page.ms / 1000)} seconds to load.`, fix: "Check the hosting; the speed agent's page fixes help too.", who: "watching" });
   }
   notes.push(page ? `home page ${page.status} in ${page.ms} ms` : "home page no answer");
   const up = page && state === "up" ? page : null;
+  // A page read in full (not a redirect the reader stopped at), for anything judged from its HTML.
+  const read = up && up.status < 300 ? up : null;
   // The host the site is really served on (after redirects), for its certificate and its other www form.
   const live = up ? new URL(up.finalUrl).hostname.toLowerCase() : domain;
 
   if (st.dailyAt && Date.now() - Date.parse(st.dailyAt) < 20 * HOUR) return;
   const daily: Problem[] = [];
+  // A check that couldn't run this time keeps what it found last time, so a lasting problem isn't dropped and then
+  // reported again as new.
+  const kept = (...ids: string[]) => daily.push(...st.daily.filter((p) => ids.includes(p.id)));
 
-  const cert = up ? await certificate(live) : null;
-  if (cert?.refused) {
+  const [cert, robots, reg, plain, other] = await Promise.all([
+    up ? certificate(live) : Promise.resolve(null),
+    up ? fetchText(`https://${live}/robots.txt`, 10_000) : Promise.resolve(null),
+    fetchText(`https://rdap.org/domain/${registeredDomain(live)}`, 10_000),
+    up ? fetchText(`http://${live}/`, 10_000) : Promise.resolve(null),
+    up ? fetchText(`https://${live.startsWith("www.") ? live.slice(4) : `www.${live}`}/`, 10_000) : Promise.resolve(null),
+  ]);
+
+  if (!cert) kept("site:certificate");
+  else if (cert.refused) {
     daily.push({ id: "site:certificate", text: `Browsers refuse the site's security certificate (${cert.refused}).`, fix: "Renew or fix the certificate at the hosting company.", who: "owner" });
-  } else if (cert?.days !== null && cert?.days !== undefined && cert.days < 14) {
+  } else if (cert.days !== null && cert.days < 14) {
     daily.push({ id: "site:certificate", text: `The site's security certificate expires in ${cert.days} days.`, fix: "Renew it at the hosting company (most renew by themselves when auto renew is on).", who: "owner" });
   }
 
-  const robots = up ? await fetchText(`https://${live}/robots.txt`, 10_000) : null;
-  if (robots && robots.status < 400 && robotsBlocksAll(robots.text)) {
+  const robotsRead = robots && robots.status < 300 ? robots : null;
+  if (!up || (robots && robots.status >= 300 && robots.status < 400) || (!robots && up)) kept("site:robots");
+  else if (robotsRead && robotsBlocksAll(robotsRead.text)) {
     daily.push({ id: "site:robots", text: "robots.txt tells Google to stay out of the whole site.", fix: "Remove the line Disallow: / (for Googlebot or for every crawler) in robots.txt.", who: "owner" });
   }
-  if (up && pageNoindex(up.text, up.robots)) {
+  if (!read) kept("site:noindex");
+  else if (pageNoindex(read.text, read.robots)) {
     daily.push({ id: "site:noindex", text: "The home page tells Google not to index it (noindex).", fix: "Remove the noindex setting from the home page.", who: "owner" });
   }
 
-  // The domain's registration: an expired domain takes the whole site and its email down.
-  const reg = await fetchText(`https://rdap.org/domain/${registeredDomain(live)}`, 10_000);
-  if (reg && reg.status < 400) {
+  // The domain's registration: an expired domain takes the whole site and its email down. Registrars often renew
+  // in the last weeks, so only the final week (or an expired domain) is urgent.
+  const name = registeredDomain(live);
+  let regRead = false;
+  if (reg && reg.status < 300) {
     try {
       const events = (JSON.parse(reg.text) as { events?: { eventAction?: string; eventDate?: string }[] }).events ?? [];
       const exp = events.find((e) => e.eventAction === "expiration")?.eventDate;
       const left = exp ? Math.floor((Date.parse(exp) - Date.now()) / 86_400_000) : null;
-      if (left !== null && !Number.isNaN(left) && left < 30) {
+      regRead = true;
+      if (left !== null && !Number.isNaN(left) && left <= 7) {
         daily.push({
           id: "site:domain",
-          text: left < 0 ? `The domain ${registeredDomain(live)} has expired.` : `The domain ${registeredDomain(live)} expires in ${left} days.`,
+          text: left < 0 ? `The domain ${name} has expired.` : `The domain ${name} expires in ${left} ${left === 1 ? "day" : "days"}.`,
           fix: "Renew it with the company it was bought from, and turn on auto renew.",
           who: "owner",
         });
+      } else if (left !== null && !Number.isNaN(left) && left <= 30) {
+        daily.push({ id: "site:domain-soon", text: `The domain ${name} expires in ${left} days.`, fix: "Most domains renew by themselves in the last weeks; if auto renew is off, renew it with the company it was bought from.", who: "watching" });
       }
     } catch {
       /* no readable registration record: nothing is claimed */
     }
   }
+  if (!regRead) kept("site:domain", "site:domain-soon");
 
   // One address: plain http moves to https, and the other www form reaches the same site rather than a second copy.
-  if (up) {
-    const plain = await fetchText(`http://${live}/`, 10_000);
-    if (plain && plain.status < 400 && new URL(plain.finalUrl).protocol === "http:") {
-      daily.push({ id: "site:https", text: "The site opens without the secure https address when typed with http.", fix: "Turn on the hosting's setting that sends http visitors to https.", who: "owner" });
-    }
-    const alt = live.startsWith("www.") ? live.slice(4) : `www.${live}`;
-    const other = await fetchText(`https://${alt}/`, 10_000);
-    if (other && other.status < 400 && new URL(other.finalUrl).hostname.toLowerCase() === alt) {
-      daily.push({ id: "site:duplicate", text: `Both ${live} and ${alt} show the site, so Google can see two copies.`, fix: `Send ${alt} to ${live} with a permanent redirect in the hosting or domain settings.`, who: "owner" });
-    }
+  if (!plain || plain.status >= 300) kept("site:https");
+  else if (new URL(plain.finalUrl).protocol === "http:") {
+    daily.push({ id: "site:https", text: "The site opens without the secure https address when typed with http.", fix: "Turn on the hosting's setting that sends http visitors to https.", who: "owner" });
+  }
+  const alt = live.startsWith("www.") ? live.slice(4) : `www.${live}`;
+  if (!other || !read) kept("site:duplicate");
+  else if (other.status < 300 && new URL(other.finalUrl).hostname.toLowerCase() === alt && pageTitle(other.text) && pageTitle(other.text) === pageTitle(read.text)) {
+    // The same title on both: the site itself, not a host's default or parking page.
+    daily.push({ id: "site:duplicate", text: `Both ${live} and ${alt} show the site, so Google can see two copies.`, fix: `Send ${alt} to ${live} with a permanent redirect in the hosting or domain settings.`, who: "owner" });
   }
 
   if (conn?.gscSiteUrl) {
     const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
     const site = encodeURIComponent(conn.gscSiteUrl);
     const maps = await googleRequest<{ sitemap?: { path?: string; errors?: string }[] }>(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps`).catch(() => null);
-    if (maps) {
+    if (!maps) kept("site:sitemap");
+    else {
       const list = maps.sitemap ?? [];
       const errors = list.reduce((a, m) => a + Number(m.errors ?? 0), 0);
       if (!list.length) {
         // Added when the site has one and the app may manage Search Console; otherwise the owner is told.
         const may = await hasScope(auth, "https://www.googleapis.com/auth/webmasters").catch(() => false);
         let added: string | null = null;
-        for (const href of may ? sitemapCandidates(robots && robots.status < 400 ? robots.text : null, conn.gscSiteUrl, live) : []) {
+        for (const href of may ? sitemapCandidates(robotsRead?.text ?? null, conn.gscSiteUrl, live).slice(0, 3) : []) {
           const xml = await fetchText(href, 10_000);
-          if (!xml || xml.status >= 400 || !/<(urlset|sitemapindex)/i.test(xml.text)) continue;
+          if (!xml || xml.status >= 300 || !/<(urlset|sitemapindex)/i.test(xml.text)) continue;
           const ok = await googleRequest(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps/${encodeURIComponent(href)}`, undefined, {}, "PUT").then(
             () => true,
             (e) => (console.error(`sitemap not submitted for ${accountId}: ${(e as Error).message}`), false),
@@ -449,15 +488,16 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
       const streams = await gaStreams(conn).catch(() => null);
       const host = streams?.hosts[0] ?? live;
       const [clicks, ga] = await Promise.all([gscClicksForHost(conn, host).catch(() => null), gaSessions(conn).catch(() => null)]);
-      if (ga && ga.last3 === 0 && ga.all28 >= 140) {
+      if (!ga || clicks === null) kept("measure:stopped", "measure:gap");
+      else if (ga.last3 === 0 && ga.all28 >= 140) {
         daily.push({
           id: "measure:stopped",
           text: `Google Analytics recorded no visits on the 3 days before yesterday, after ${ga.all28} visits in the 28 days from ${ga.from}.`,
           fix: "Check that the Analytics tag is still on the site and sends to the connected property.",
           who: "owner",
         });
-      } else if (ga && clicks !== null && trackingGap(clicks, ga.google28)) {
-        const why = up ? tagDiagnosis(tagIds(up.text), streams?.ids ?? null) : null;
+      } else if (trackingGap(clicks, ga.google28)) {
+        const why = read ? tagDiagnosis(tagIds(read.text), streams?.ids ?? null) : null;
         daily.push({
           id: "measure:gap",
           text: `Google Analytics counted ${ga.google28} visits from Google search in the 28 days from ${ga.from}, while Search Console counted ${clicks} clicks to ${host}. ${why?.cause ?? "The home page shows no reason; the tag may be missing on some pages, or blocked for some visitors."}`,
@@ -476,11 +516,8 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     WHERE r.account_id = ${accountId} AND c.field = 'meta_title' AND c.status IN ('applied', 'kept') AND c.resource_type <> 'snippet'
       AND c.created_at < now() - interval '2 hours' AND c.created_at > now() - interval '30 days' AND coalesce(c.after_value, '') <> ''
     ORDER BY c.page_url, c.created_at DESC LIMIT 3`;
-  const missing: string[] = [];
-  for (const c of changed) {
-    const p = await fetchText(String(c.page_url), 10_000);
-    if (p && p.status < 400 && !titleIsLive(pageTitle(p.text), String(c.after_value))) missing.push(String(c.page_url));
-  }
+  const pages = await Promise.all(changed.map((c) => fetchText(String(c.page_url), 10_000)));
+  const missing = changed.filter((c, i) => pages[i] && pages[i]!.status < 300 && !titleIsLive(pageTitle(pages[i]!.text), String(c.after_value))).map((c) => String(c.page_url));
   if (missing.length) {
     daily.push({
       id: "site:changes-not-live",
@@ -491,10 +528,12 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     });
   }
 
-  // The weekly report reached the owner.
-  const [wr] = await sql`SELECT s.value, coalesce(a.email_alerts, true) AS alerts FROM insights_account_autopilot a
-    LEFT JOIN insights_settings s ON s.key = 'weekly_report:' || a.account_id WHERE a.account_id = ${accountId} AND a.enabled`;
-  if (wr?.value && !["false", "f"].includes(String(wr.alerts))) {
+  // The weekly report reached the owner (when there is an owner address to send it to).
+  const [wr] = await sql`SELECT s.value, coalesce(a.email_alerts, true) AS alerts, u.email FROM insights_account_autopilot a
+    LEFT JOIN insights_settings s ON s.key = 'weekly_report:' || a.account_id
+    LEFT JOIN insights_accounts u ON u.id = a.account_id
+    WHERE a.account_id = ${accountId} AND a.enabled`;
+  if (wr?.value && wr.email && !["false", "f"].includes(String(wr.alerts))) {
     const last = (() => {
       try {
         return JSON.parse(String(wr.value)) as { at?: string; sent?: boolean };
