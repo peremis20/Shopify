@@ -84,6 +84,7 @@ import { expireReviews, markReviewed, readReviewer, reviewList, saveReviewer } f
 import { readScorecard } from "./autopilot/scorecard";
 import { postNote, pruneBoard, readBoard, syncNeeds } from "./autopilot/team";
 import { accountsDueForFinder, isoWeek, runFinder } from "./autopilot/prospect-finder";
+import { accountsDueForSiteWatch, runSiteWatch } from "./autopilot/site-watch";
 import { checkAiKey, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
@@ -1795,6 +1796,21 @@ export async function autopilotTick(): Promise<Response> {
         console.error(`crm upkeep failed for ${accountId}: ${message(e)}`);
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
       });
+    }
+    // Site watch: every site is checked each hour (does it answer) and each day (certificate, robots, sitemap,
+    // Analytics counting what Search Console sees), whether or not anyone asked.
+    for (const { accountId, domain } of late() ? [] : await accountsDueForSiteWatch(5).catch(async (e) => {
+      console.error(`site watch list failed: ${message(e)}`);
+      await report("site-watch", false, `The list of sites due for Site watch couldn't be read (${message(e)})`);
+      return [] as { accountId: string; domain: string }[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, async () => runSiteWatch(accountId, domain, await getConnection(accountId).catch(() => null))).catch(async (e) => {
+        console.error(`site watch failed for ${accountId}: ${message(e)}`);
+        await report("site-watch", false, `Site watch couldn't finish (${message(e)})`);
+        return null;
+      });
+      if (note) results.push(`account ${accountId} site watch: ${note}`);
     }
     // The Prospect finder: new businesses the owner sells to, found on Google Maps and added to the CRM (one site an hour).
     for (const accountId of late() ? [] : await accountsDueForFinder(1).catch(async (e) => {

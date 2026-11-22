@@ -7,6 +7,7 @@ import { readStatus, type Part } from "./status";
 import { trackRanks } from "./tracking";
 import { isSabbath } from "./sabbath";
 import { hasScope } from "../google-auth";
+import { siteWatchProblems } from "./site-watch";
 import { rankingTurbulence } from "./google-updates";
 import { trafficCheck } from "./guards";
 import { usageThisMonth } from "./usage";
@@ -256,6 +257,11 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           ? "Add an AI key in Platform keys, so emails can be written."
           : "It tries again by itself within the hour. Your contacts and history are not affected.",
     workaround: "Follow up tasks and the morning email wait until the next run; everything you add by hand works as usual.",
+  },
+  "site-watch": {
+    name: "Site watch (the site answers, is open to Google and is measured)",
+    fix: () => "It tries again by itself within the hour.",
+    workaround: "The other agents keep working; only these checks wait.",
   },
   "prospect-finder": {
     name: "The Prospect finder (new businesses for your CRM)",
@@ -550,6 +556,8 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   // 7. Beyond every agent's own job: the App checker looks at the account the way its owner sees it.
   // The hourly tick runs it; the Inspector page and the Strategist read what it last found, so nothing is erased.
   problems.push(...(await appCheck(accountId, conn, { readOnly: !opts.repair })));
+  // 8. The site itself: it answers, is open to Google, has a sitemap and is measured (Site watch, run each hour).
+  problems.push(...(await siteWatchProblems(accountId).catch(() => [])));
 
   await sql`
     INSERT INTO insights_settings (key, value) VALUES (${`inspect:${accountId}`}, ${JSON.stringify({ at: new Date().toISOString(), problems })})
