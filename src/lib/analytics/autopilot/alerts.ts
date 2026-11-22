@@ -56,7 +56,7 @@ export async function sendEmail(to: string, subject: string, text: string, html?
 }
 
 /** Problems worth an email: the site is losing traffic or the agents are stuck. Not nags the dashboard covers. */
-export const EMAIL_WORTHY = /^(traffic:drop|autopilot:failed|autopilot:stalled|ranks:stale)$/;
+export const EMAIL_WORTHY = /^(traffic:drop|autopilot:failed|autopilot:stalled|ranks:stale|site:down|site:certificate|site:domain|site:robots|site:noindex)$/;
 
 /**
  * Urgent: an email-worthy problem only the owner can fix, sent once when it appears. It is sent again only if it

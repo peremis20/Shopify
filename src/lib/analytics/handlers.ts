@@ -1613,8 +1613,34 @@ export async function autopilotTick(): Promise<Response> {
       await sql`UPDATE insights_account_autopilot SET run_tried_at = now(), run_note = ${String(r.message ?? "").slice(0, 300)} WHERE account_id = ${accountId}`;
       results.push(`account ${accountId}: ${r.message}`);
     }
+    // Site watch: every site is checked each hour (does it answer) and each day (certificate, domain, robots, sitemap,
+    // Analytics counting what Search Console sees, the agents' changes being live), whether or not anyone asked.
+    // Sites run side by side, each within its own time limit, before the Inspector so what they find is read this hour.
+    const watched: string[] = [];
+    if (!late()) {
+      const due = await accountsDueForSiteWatch(8).catch(async (e) => {
+        console.error(`site watch list failed: ${message(e)}`);
+        await report("site-watch", false, `The list of sites due for Site watch couldn't be read (${message(e)})`);
+        return null;
+      });
+      const outcomes = await Promise.all((due ?? []).map(({ accountId, domain }) =>
+        Promise.race([
+          forSite(accountId, async () => runSiteWatch(accountId, domain, await getConnection(accountId).catch(() => null))),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("took over 100 seconds")), 100_000).unref?.()),
+        ]).then(
+          (r) => {
+            results.push(`account ${accountId} site watch: ${r.note}`);
+            if (r.urgent) watched.push(accountId);
+            return null;
+          },
+          (e) => (console.error(`site watch failed for ${accountId}: ${message(e)}`), `${domain}: ${message(e)}`),
+        ),
+      ));
+      const failed = outcomes.filter(Boolean);
+      if (due) await report("site-watch", !failed.length, failed.length ? `Site watch couldn't finish for ${failed.join("; ")}` : null);
+    }
     // The Inspector checks on every agent's work for the accounts touched this hour, and repairs what it can.
-    const toInspect = [...new Set([...upkeep, ...(await accountsDueForInspection(3))])];
+    const toInspect = [...new Set([...watched, ...upkeep, ...(await accountsDueForInspection(3))])];
     for (const accountId of toInspect) {
       if (late()) break;
       await sql`UPDATE insights_account_autopilot SET inspected_at = now() WHERE account_id = ${accountId}`;
@@ -1796,21 +1822,6 @@ export async function autopilotTick(): Promise<Response> {
         console.error(`crm upkeep failed for ${accountId}: ${message(e)}`);
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
       });
-    }
-    // Site watch: every site is checked each hour (does it answer) and each day (certificate, robots, sitemap,
-    // Analytics counting what Search Console sees), whether or not anyone asked.
-    for (const { accountId, domain } of late() ? [] : await accountsDueForSiteWatch(5).catch(async (e) => {
-      console.error(`site watch list failed: ${message(e)}`);
-      await report("site-watch", false, `The list of sites due for Site watch couldn't be read (${message(e)})`);
-      return [] as { accountId: string; domain: string }[];
-    })) {
-      if (late()) break;
-      const note = await forSite(accountId, async () => runSiteWatch(accountId, domain, await getConnection(accountId).catch(() => null))).catch(async (e) => {
-        console.error(`site watch failed for ${accountId}: ${message(e)}`);
-        await report("site-watch", false, `Site watch couldn't finish (${message(e)})`);
-        return null;
-      });
-      if (note) results.push(`account ${accountId} site watch: ${note}`);
     }
     // The Prospect finder: new businesses the owner sells to, found on Google Maps and added to the CRM (one site an hour).
     for (const accountId of late() ? [] : await accountsDueForFinder(1).catch(async (e) => {
