@@ -1629,7 +1629,9 @@ export async function autopilotTick(): Promise<Response> {
       let skipped = 0;
       const watchOne = async ({ accountId, domain }: { accountId: string; domain: string }) => {
         const stop = new AbortController();
-        const timer = setTimeout(() => stop.abort(new Error("took over 100 seconds")), 100_000);
+        // 100 seconds, or less when the tick's own time is nearly up.
+        const limit = Math.max(5_000, Math.min(100_000, started + budget - Date.now()));
+        const timer = setTimeout(() => stop.abort(new Error(`took over ${Math.round(limit / 1000)} seconds`)), limit);
         try {
           const r = await Promise.race([
             forSite(accountId, () => runSiteWatch(accountId, domain, () => getConnection(accountId), stop.signal)),

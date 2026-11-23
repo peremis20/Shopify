@@ -180,6 +180,8 @@ interface Fetched {
   robots: string | null;
   server: string | null;
   mitigated: string | null;
+  /** The body couldn't be read in full (cut off by the time limit or a broken connection): nothing is judged from it. */
+  partial: boolean;
   /** Where the redirects ended. */
   finalUrl: string;
 }
@@ -190,7 +192,8 @@ async function fetchText(url: string, timeout = 15_000, stop?: AbortSignal): Pro
   // Only a public website (publicFetch checks the address and every redirect), read like a browser would.
   const res = await publicFetch(url, { headers: { "User-Agent": BROWSER, Accept: "text/html,*/*" }, signal }).catch(() => null);
   if (!res) return null;
-  const text = await readCapped(res, 2_000_000).catch(() => "");
+  let partial = false;
+  const text = await readCapped(res, 2_000_000).catch(() => ((partial = true), ""));
   return {
     status: res.status,
     ms: Date.now() - t0,
@@ -198,6 +201,7 @@ async function fetchText(url: string, timeout = 15_000, stop?: AbortSignal): Pro
     robots: res.headers.get("x-robots-tag"),
     server: res.headers.get("server"),
     mitigated: res.headers.get("cf-mitigated"),
+    partial,
     finalUrl: res.url || url,
   };
 }
@@ -379,7 +383,8 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
   const page = await fetchText(`https://${domain}/`, 15_000, stop);
   check();
   const state = page ? downAnswer(page.status, page.server, page.mitigated) : "down";
-  st.downRuns = state === "down" ? st.downRuns + 1 : state === "up" ? 0 : st.downRuns;
+  // An answer of any kind (even a blocked one) breaks a run of failures, so "two checks in a row" stays true.
+  st.downRuns = state === "down" ? st.downRuns + 1 : 0;
   const before = st.hourly;
   st.hourly = [];
   // No answer may be a certificate browsers refuse rather than a site that's down: say which.
@@ -396,14 +401,15 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     });
   } else if (state === "blocked") {
     // Couldn't tell this hour: what was found before stands, except that the site is down (it answered, if only to say no).
-    st.hourly = before.filter((p) => p.id !== "site:down");
+    // A blocked answer also means the certificate was accepted (fetch checks it).
+    st.hourly = before.filter((p) => p.id !== "site:down" && p.id !== "site:certificate");
   } else if (page && state === "up" && page.ms > 8000) {
     st.hourly.push({ id: "site:slow", text: `The home page took ${Math.round(page.ms / 1000)} seconds to load.`, fix: "Check the hosting; the speed agent's page fixes help too.", who: "watching" });
   }
   notes.push(page ? `home page ${page.status} in ${page.ms} ms` : "home page no answer");
   const up = page && state === "up" ? page : null;
   // A page read in full (not a redirect the reader stopped at), for anything judged from its HTML.
-  const read = up && up.status < 300 ? up : null;
+  const read = up && up.status < 300 && !up.partial ? up : null;
   // The host the site is really served on (after redirects), for its certificate and its other www form.
   const live = up ? new URL(up.finalUrl).hostname.toLowerCase() : domain;
 
@@ -439,10 +445,10 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     daily.push({ id: "site:certificate", text: `The site's security certificate expires ${daysLeft(cert.days)}.`, fix: "Renew it at the hosting company (most renew by themselves when auto renew is on).", who: "owner" });
   }
 
-  const robotsRead = robots && robots.status < 300 ? robots : null;
+  const robotsRead = robots && robots.status < 300 && !robots.partial ? robots : null;
   // No robots.txt (404 or 410) means nothing is shut out; any other failure (a redirect, a bot check, a server error)
   // couldn't be read, so what was found before stands.
-  if (!up || !robots || (robots.status >= 300 && robots.status !== 404 && robots.status !== 410)) kept("site:robots");
+  if (!up || !robots || robots.partial || (robots.status >= 300 && robots.status !== 404 && robots.status !== 410)) kept("site:robots");
   else if (robotsRead && robotsBlocksAll(robotsRead.text)) {
     daily.push({ id: "site:robots", text: "robots.txt tells Google to stay out of the whole site.", fix: "Remove the line Disallow: / (for Googlebot or for every crawler) in robots.txt.", who: "owner" });
   }
@@ -479,13 +485,13 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
 
   // One address: plain http moves to https, and the other www form reaches the same site rather than a second copy.
   // No answer on http at all means there is no http copy to send on.
-  if (plain && plain.status >= 300) kept("site:https");
+  if (!up || (plain && plain.status >= 300)) kept("site:https");
   else if (plain && new URL(plain.finalUrl).protocol === "http:") {
     daily.push({ id: "site:https", text: "The site opens without the secure https address when typed with http.", fix: "Turn on the hosting's setting that sends http visitors to https.", who: "owner" });
   }
   const alt = live.startsWith("www.") ? live.slice(4) : `www.${live}`;
   // The other form not answering (no DNS record, no connection) means there is no second copy.
-  if (!read || (other && other.status >= 400)) kept("site:duplicate");
+  if (!read || (other && (other.status >= 400 || other.partial))) kept("site:duplicate");
   else if (other && other.status < 300 && new URL(other.finalUrl).hostname.toLowerCase() === alt && pageTitle(other.text) && pageTitle(other.text) === pageTitle(read.text)) {
     // The same title on both: the site itself, not a host's default or parking page.
     daily.push({ id: "site:duplicate", text: `Both ${live} and ${alt} show the site, so Google can see two copies.`, fix: `Send ${alt} to ${live} with a permanent redirect in the hosting or domain settings.`, who: "owner" });
@@ -506,7 +512,7 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
         let added: string | null = null;
         for (const href of may ? sitemapCandidates(robotsRead?.text ?? null, conn.gscSiteUrl, live).slice(0, 3) : []) {
           const xml = await fetchText(href, 10_000, stop);
-          if (!xml || xml.status >= 300 || !/<(urlset|sitemapindex)/i.test(xml.text)) continue;
+          if (!xml || xml.status >= 300 || xml.partial || !/<(urlset|sitemapindex)/i.test(xml.text)) continue;
           const ok = await googleRequest(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps/${encodeURIComponent(href)}`, undefined, {}, "PUT", stop).then(
             () => true,
             (e) => (console.error(`sitemap not submitted for ${accountId}: ${(e as Error).message}`), false),
@@ -562,7 +568,7 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     ORDER BY c.page_url, c.created_at DESC LIMIT 3`;
   const pages = await Promise.all(changed.map((c) => fetchText(String(c.page_url), 10_000, stop)));
   check();
-  const missing = changed.filter((c, i) => pages[i] && pages[i]!.status < 300 && !titleIsLive(pageTitle(pages[i]!.text), String(c.after_value))).map((c) => String(c.page_url));
+  const missing = changed.filter((c, i) => pages[i] && pages[i]!.status < 300 && !pages[i]!.partial && !titleIsLive(pageTitle(pages[i]!.text), String(c.after_value))).map((c) => String(c.page_url));
   if (missing.length) {
     daily.push({
       id: "site:changes-not-live",
