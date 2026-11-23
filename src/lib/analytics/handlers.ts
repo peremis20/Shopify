@@ -1590,7 +1590,7 @@ export async function autopilotTick(): Promise<Response> {
   const beat = await heartbeatStart(false);
   // A time budget: no new step starts once it is used, so a slow hour ends cleanly instead of being cut off.
   const started = Date.now();
-  const budget = Number(process.env.TICK_BUDGET_MS ?? 8 * 60_000);
+  const budget = Number(process.env.TICK_BUDGET_MS) || 8 * 60_000;
   const late = () => Date.now() - started > budget;
   try {
     // Threads tokens are renewed every 30 days for every connected site, so none runs out unnoticed.
