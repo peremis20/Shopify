@@ -200,10 +200,13 @@ export async function googleRequest<T>(
   payload?: unknown,
   headers: Record<string, string> = {},
   /** Defaults to POST with a body, GET without. */
-  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  /** Stops the request (a caller's time limit). */
+  signal?: AbortSignal
 ): Promise<T> {
   const { token } = await getToken(auth);
   const res = await fetch(url, {
+    signal,
     method: method ?? (payload === undefined ? "GET" : "POST"),
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...headers },
     body: payload === undefined ? undefined : JSON.stringify(payload),

@@ -36,7 +36,14 @@ interface WatchState {
   daily: Problem[];
   /** The last run's own failure, if it had one. */
   error: string | null;
+  /** When each daily finding was last confirmed by a check that ran, so one that can't be rechecked doesn't stay forever. */
+  seen: Record<string, string>;
 }
+
+/** How long a daily finding is kept while its check can't run. */
+const KEEP_FOR = 72 * HOUR;
+/** Days left, in words: "today", "in 1 day", "in 5 days". */
+export const daysLeft = (n: number) => (n <= 0 ? "today" : `in ${n} ${n === 1 ? "day" : "days"}`);
 
 // ---------- pure checks, tested ----------
 
@@ -177,10 +184,11 @@ interface Fetched {
   finalUrl: string;
 }
 
-async function fetchText(url: string, timeout = 15_000): Promise<Fetched | null> {
+async function fetchText(url: string, timeout = 15_000, stop?: AbortSignal): Promise<Fetched | null> {
   const t0 = Date.now();
+  const signal = stop ? AbortSignal.any([AbortSignal.timeout(timeout), stop]) : AbortSignal.timeout(timeout);
   // Only a public website (publicFetch checks the address and every redirect), read like a browser would.
-  const res = await publicFetch(url, { headers: { "User-Agent": BROWSER, Accept: "text/html,*/*" }, signal: AbortSignal.timeout(timeout) }).catch(() => null);
+  const res = await publicFetch(url, { headers: { "User-Agent": BROWSER, Accept: "text/html,*/*" }, signal }).catch(() => null);
   if (!res) return null;
   const text = await readCapped(res, 2_000_000).catch(() => "");
   return {
@@ -212,7 +220,7 @@ type Rows = { rows?: { metricValues: { value: string }[] }[] };
 const firstNumber = (r: Rows) => Number(r.rows?.[0]?.metricValues?.[0]?.value ?? 0);
 
 /** Analytics sessions: from Google search over the 28 days Search Console is read for, all sessions in those 28 days, and in the last 3 days. */
-async function gaSessions(conn: Connection): Promise<{ google28: number; all28: number; last3: number; from: string } | null> {
+async function gaSessions(conn: Connection, signal?: AbortSignal): Promise<{ google28: number; all28: number; last3: number; from: string } | null> {
   if (!conn.gaPropertyId) return null;
   const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
   const { current } = resolveRange("28d", 3);
@@ -225,16 +233,16 @@ async function gaSessions(conn: Connection): Promise<{ google28: number; all28: 
         { filter: { fieldName: "sessionSource", stringFilter: { value: "google" } } },
         { filter: { fieldName: "sessionMedium", stringFilter: { value: "organic" } } },
       ] } },
-    }),
-    googleRequest<Rows>(auth, url, { dateRanges: [{ startDate: current.start, endDate: current.end }], metrics: [{ name: "sessions" }] }),
+    }, {}, undefined, signal),
+    googleRequest<Rows>(auth, url, { dateRanges: [{ startDate: current.start, endDate: current.end }], metrics: [{ name: "sessions" }] }, {}, undefined, signal),
     // The 3 full days before yesterday, so a day Google is still processing isn't read as empty.
-    googleRequest<Rows>(auth, url, { dateRanges: [{ startDate: "4daysAgo", endDate: "2daysAgo" }], metrics: [{ name: "sessions" }] }),
+    googleRequest<Rows>(auth, url, { dateRanges: [{ startDate: "4daysAgo", endDate: "2daysAgo" }], metrics: [{ name: "sessions" }] }, {}, undefined, signal),
   ]);
   return { google28: firstNumber(google), all28: firstNumber(all), last3: firstNumber(recent), from: current.start };
 }
 
 /** Search Console clicks over the same 28 days, for the pages on one host only (so a blog or shop subdomain isn't counted). */
-async function gscClicksForHost(conn: Connection, host: string): Promise<number | null> {
+async function gscClicksForHost(conn: Connection, host: string, signal?: AbortSignal): Promise<number | null> {
   if (!conn.gscSiteUrl) return null;
   const { current } = resolveRange("28d", 3);
   const body = await googleRequest<{ rows?: { clicks: number }[] }>(
@@ -246,15 +254,22 @@ async function gscClicksForHost(conn: Connection, host: string): Promise<number 
       dimensionFilterGroups: [{ filters: [{ dimension: "page", operator: "contains", expression: `//${host}/` }] }],
       rowLimit: 1,
     },
+    {},
+    undefined,
+    signal,
   );
   return (body.rows ?? []).reduce((a, r) => a + r.clicks, 0);
 }
 
-async function gaStreams(conn: Connection): Promise<{ ids: string[]; hosts: string[] } | null> {
+async function gaStreams(conn: Connection, signal?: AbortSignal): Promise<{ ids: string[]; hosts: string[] } | null> {
   if (!conn.gaPropertyId) return null;
   const body = await googleRequest<{ dataStreams?: { webStreamData?: { measurementId?: string; defaultUri?: string } }[] }>(
     { kind: "oauth", refreshToken: conn.refreshToken },
     `https://analyticsadmin.googleapis.com/v1beta/properties/${conn.gaPropertyId}/dataStreams`,
+    undefined,
+    {},
+    undefined,
+    signal,
   ).catch(() => null);
   if (!body) return null;
   const web = (body.dataStreams ?? []).map((d) => d.webStreamData).filter(Boolean);
@@ -284,9 +299,9 @@ async function readState(accountId: string): Promise<WatchState> {
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${key(accountId)}`;
   try {
     const v = row?.value ? (JSON.parse(row.value) as Partial<WatchState>) : {};
-    return { at: v.at ?? "", dailyAt: v.dailyAt ?? null, downRuns: Number(v.downRuns) || 0, hourly: v.hourly ?? [], daily: v.daily ?? [], error: v.error ?? null };
+    return { at: v.at ?? "", dailyAt: v.dailyAt ?? null, downRuns: Number(v.downRuns) || 0, hourly: v.hourly ?? [], daily: v.daily ?? [], error: v.error ?? null, seen: v.seen ?? {} };
   } catch {
-    return { at: "", dailyAt: null, downRuns: 0, hourly: [], daily: [], error: null };
+    return { at: "", dailyAt: null, downRuns: 0, hourly: [], daily: [], error: null, seen: {} };
   }
 }
 
@@ -302,7 +317,8 @@ export async function siteWatchProblems(accountId: string): Promise<Problem[]> {
   const age = Date.now() - Date.parse(st.at);
   const out: Problem[] = [];
   if (age < 6 * HOUR) out.push(...st.hourly);
-  if (st.dailyAt && Date.now() - Date.parse(st.dailyAt) < 48 * HOUR) out.push(...st.daily);
+  // A finding the hourly check made wins over a daily one with the same id (a refused certificate).
+  if (st.dailyAt && Date.now() - Date.parse(st.dailyAt) < 48 * HOUR) out.push(...st.daily.filter((d) => !out.some((h) => h.id === d.id)));
   // Nothing runs on the Sabbath, so a watch that waited through it isn't late.
   if (age > 6 * HOUR && !isSabbath() && !isSabbath(new Date(Date.now() - 6 * HOUR))) {
     out.push({ id: "site:watch-late", text: "Site watch hasn't checked this site in over 6 hours.", fix: "The code repair run looks at why.", who: "watching", platform: true });
@@ -329,17 +345,24 @@ export async function accountsDueForSiteWatch(limit: number): Promise<{ accountI
 }
 
 /** One site's watch. Saved however it ends; a failure part way is kept in the site's state and thrown for the status board. */
-export async function runSiteWatch(accountId: string, domain: string, conn: Connection | null): Promise<{ note: string; urgent: boolean }> {
+export async function runSiteWatch(
+  accountId: string,
+  domain: string,
+  /** Read inside the run, so a failed read is this site's failure rather than "not connected". */
+  connection: () => Promise<Connection | null>,
+  /** Stops the run when the tick's time limit for it is up. */
+  stop?: AbortSignal,
+): Promise<{ note: string; urgent: boolean }> {
   const st = await readState(accountId);
   const notes: string[] = [];
   const dailyBefore = st.dailyAt;
   try {
-    await watch(accountId, domain, conn, st, notes);
+    await watch(accountId, domain, await connection(), st, notes, stop);
     st.error = null;
     // Something only the owner can fix sends the site to the Inspector this hour, so the alert goes out now.
     return { note: notes.join("; "), urgent: [...st.hourly, ...(st.dailyAt !== dailyBefore ? st.daily : [])].some((p) => p.who === "owner") };
   } catch (e) {
-    st.error = String((e as Error)?.message ?? e).slice(0, 300);
+    st.error = stop?.aborted ? "it took too long and was stopped" : String((e as Error)?.message ?? e).slice(0, 300);
     throw e;
   } finally {
     st.at = new Date().toISOString();
@@ -347,17 +370,21 @@ export async function runSiteWatch(accountId: string, domain: string, conn: Conn
   }
 }
 
-async function watch(accountId: string, domain: string, conn: Connection | null, st: WatchState, notes: string[]): Promise<void> {
+async function watch(accountId: string, domain: string, conn: Connection | null, st: WatchState, notes: string[], stop?: AbortSignal): Promise<void> {
+  // A run stopped for time says nothing: an aborted read is not an answer from the site.
+  const check = () => stop?.throwIfAborted();
   // Hourly: the home page answers. A bot check, rate limit or login says nothing; two real failures in a row
   // (within a few hours of each other) are an alarm.
   if (st.at && Date.now() - Date.parse(st.at) > 3 * HOUR) st.downRuns = 0;
-  const page = await fetchText(`https://${domain}/`);
+  const page = await fetchText(`https://${domain}/`, 15_000, stop);
+  check();
   const state = page ? downAnswer(page.status, page.server, page.mitigated) : "down";
   st.downRuns = state === "down" ? st.downRuns + 1 : state === "up" ? 0 : st.downRuns;
   const before = st.hourly;
   st.hourly = [];
   // No answer may be a certificate browsers refuse rather than a site that's down: say which.
   const badCert = !page ? await certificate(domain) : null;
+  check();
   if (!page && badCert?.refused) {
     st.hourly.push({ id: "site:certificate", text: `Browsers refuse the site's security certificate (${badCert.refused}), so visitors see a warning instead of the site.`, fix: "Renew or fix the certificate at the hosting company.", who: "owner" });
   } else if (state === "down" && st.downRuns >= 2) {
@@ -368,8 +395,8 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
       who: "owner",
     });
   } else if (state === "blocked") {
-    // Couldn't tell this hour: what was found before stands.
-    st.hourly = before;
+    // Couldn't tell this hour: what was found before stands, except that the site is down (it answered, if only to say no).
+    st.hourly = before.filter((p) => p.id !== "site:down");
   } else if (page && state === "up" && page.ms > 8000) {
     st.hourly.push({ id: "site:slow", text: `The home page took ${Math.round(page.ms / 1000)} seconds to load.`, fix: "Check the hosting; the speed agent's page fixes help too.", who: "watching" });
   }
@@ -383,26 +410,39 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
   if (st.dailyAt && Date.now() - Date.parse(st.dailyAt) < 20 * HOUR) return;
   const daily: Problem[] = [];
   // A check that couldn't run this time keeps what it found last time, so a lasting problem isn't dropped and then
-  // reported again as new.
-  const kept = (...ids: string[]) => daily.push(...st.daily.filter((p) => ids.includes(p.id)));
+  // reported again as new; but only for a few days from when it was last confirmed, so a finding that can't be
+  // rechecked (or was fixed in a way the check can't see) doesn't stay forever.
+  const keptIds = new Set<string>();
+  const kept = (...ids: string[]) => {
+    for (const p of st.daily) {
+      const confirmed = Date.parse(st.seen[p.id] ?? st.dailyAt ?? "");
+      if (ids.includes(p.id) && Date.now() - confirmed < KEEP_FOR) {
+        daily.push(p);
+        keptIds.add(p.id);
+      }
+    }
+  };
 
   const [cert, robots, reg, plain, other] = await Promise.all([
     up ? certificate(live) : Promise.resolve(null),
-    up ? fetchText(`https://${live}/robots.txt`, 10_000) : Promise.resolve(null),
-    fetchText(`https://rdap.org/domain/${registeredDomain(live)}`, 10_000),
-    up ? fetchText(`http://${live}/`, 10_000) : Promise.resolve(null),
-    up ? fetchText(`https://${live.startsWith("www.") ? live.slice(4) : `www.${live}`}/`, 10_000) : Promise.resolve(null),
+    up ? fetchText(`https://${live}/robots.txt`, 10_000, stop) : Promise.resolve(null),
+    fetchText(`https://rdap.org/domain/${registeredDomain(live)}`, 10_000, stop),
+    up ? fetchText(`http://${live}/`, 10_000, stop) : Promise.resolve(null),
+    up ? fetchText(`https://${live.startsWith("www.") ? live.slice(4) : `www.${live}`}/`, 10_000, stop) : Promise.resolve(null),
   ]);
+  check();
 
   if (!cert) kept("site:certificate");
   else if (cert.refused) {
     daily.push({ id: "site:certificate", text: `Browsers refuse the site's security certificate (${cert.refused}).`, fix: "Renew or fix the certificate at the hosting company.", who: "owner" });
   } else if (cert.days !== null && cert.days < 14) {
-    daily.push({ id: "site:certificate", text: `The site's security certificate expires in ${cert.days} days.`, fix: "Renew it at the hosting company (most renew by themselves when auto renew is on).", who: "owner" });
+    daily.push({ id: "site:certificate", text: `The site's security certificate expires ${daysLeft(cert.days)}.`, fix: "Renew it at the hosting company (most renew by themselves when auto renew is on).", who: "owner" });
   }
 
   const robotsRead = robots && robots.status < 300 ? robots : null;
-  if (!up || (robots && robots.status >= 300 && robots.status < 400) || (!robots && up)) kept("site:robots");
+  // No robots.txt (404 or 410) means nothing is shut out; any other failure (a redirect, a bot check, a server error)
+  // couldn't be read, so what was found before stands.
+  if (!up || !robots || (robots.status >= 300 && robots.status !== 404 && robots.status !== 410)) kept("site:robots");
   else if (robotsRead && robotsBlocksAll(robotsRead.text)) {
     daily.push({ id: "site:robots", text: "robots.txt tells Google to stay out of the whole site.", fix: "Remove the line Disallow: / (for Googlebot or for every crawler) in robots.txt.", who: "owner" });
   }
@@ -424,12 +464,12 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
       if (left !== null && !Number.isNaN(left) && left <= 7) {
         daily.push({
           id: "site:domain",
-          text: left < 0 ? `The domain ${name} has expired.` : `The domain ${name} expires in ${left} ${left === 1 ? "day" : "days"}.`,
+          text: left < 0 ? `The domain ${name} has expired.` : `The domain ${name} expires ${daysLeft(left)}.`,
           fix: "Renew it with the company it was bought from, and turn on auto renew.",
           who: "owner",
         });
       } else if (left !== null && !Number.isNaN(left) && left <= 30) {
-        daily.push({ id: "site:domain-soon", text: `The domain ${name} expires in ${left} days.`, fix: "Most domains renew by themselves in the last weeks; if auto renew is off, renew it with the company it was bought from.", who: "watching" });
+        daily.push({ id: "site:domain-soon", text: `The domain ${name} expires ${daysLeft(left)}.`, fix: "Most domains renew by themselves in the last weeks; if auto renew is off, renew it with the company it was bought from.", who: "watching" });
       }
     } catch {
       /* no readable registration record: nothing is claimed */
@@ -438,13 +478,15 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
   if (!regRead) kept("site:domain", "site:domain-soon");
 
   // One address: plain http moves to https, and the other www form reaches the same site rather than a second copy.
-  if (!plain || plain.status >= 300) kept("site:https");
-  else if (new URL(plain.finalUrl).protocol === "http:") {
+  // No answer on http at all means there is no http copy to send on.
+  if (plain && plain.status >= 300) kept("site:https");
+  else if (plain && new URL(plain.finalUrl).protocol === "http:") {
     daily.push({ id: "site:https", text: "The site opens without the secure https address when typed with http.", fix: "Turn on the hosting's setting that sends http visitors to https.", who: "owner" });
   }
   const alt = live.startsWith("www.") ? live.slice(4) : `www.${live}`;
-  if (!other || !read) kept("site:duplicate");
-  else if (other.status < 300 && new URL(other.finalUrl).hostname.toLowerCase() === alt && pageTitle(other.text) && pageTitle(other.text) === pageTitle(read.text)) {
+  // The other form not answering (no DNS record, no connection) means there is no second copy.
+  if (!read || (other && other.status >= 400)) kept("site:duplicate");
+  else if (other && other.status < 300 && new URL(other.finalUrl).hostname.toLowerCase() === alt && pageTitle(other.text) && pageTitle(other.text) === pageTitle(read.text)) {
     // The same title on both: the site itself, not a host's default or parking page.
     daily.push({ id: "site:duplicate", text: `Both ${live} and ${alt} show the site, so Google can see two copies.`, fix: `Send ${alt} to ${live} with a permanent redirect in the hosting or domain settings.`, who: "owner" });
   }
@@ -452,7 +494,8 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
   if (conn?.gscSiteUrl) {
     const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
     const site = encodeURIComponent(conn.gscSiteUrl);
-    const maps = await googleRequest<{ sitemap?: { path?: string; errors?: string }[] }>(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps`).catch(() => null);
+    const maps = await googleRequest<{ sitemap?: { path?: string; errors?: string }[] }>(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps`, undefined, {}, undefined, stop).catch(() => null);
+    check();
     if (!maps) kept("site:sitemap");
     else {
       const list = maps.sitemap ?? [];
@@ -462,9 +505,9 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
         const may = await hasScope(auth, "https://www.googleapis.com/auth/webmasters").catch(() => false);
         let added: string | null = null;
         for (const href of may ? sitemapCandidates(robotsRead?.text ?? null, conn.gscSiteUrl, live).slice(0, 3) : []) {
-          const xml = await fetchText(href, 10_000);
+          const xml = await fetchText(href, 10_000, stop);
           if (!xml || xml.status >= 300 || !/<(urlset|sitemapindex)/i.test(xml.text)) continue;
-          const ok = await googleRequest(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps/${encodeURIComponent(href)}`, undefined, {}, "PUT").then(
+          const ok = await googleRequest(auth, `https://www.googleapis.com/webmasters/v3/sites/${site}/sitemaps/${encodeURIComponent(href)}`, undefined, {}, "PUT", stop).then(
             () => true,
             (e) => (console.error(`sitemap not submitted for ${accountId}: ${(e as Error).message}`), false),
           );
@@ -485,9 +528,10 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
 
     // Measurement: Analytics should count about the Google visits Search Console reports for the same host.
     if (conn.gaPropertyId) {
-      const streams = await gaStreams(conn).catch(() => null);
+      const streams = await gaStreams(conn, stop).catch(() => null);
       const host = streams?.hosts[0] ?? live;
-      const [clicks, ga] = await Promise.all([gscClicksForHost(conn, host).catch(() => null), gaSessions(conn).catch(() => null)]);
+      const [clicks, ga] = await Promise.all([gscClicksForHost(conn, host, stop).catch(() => null), gaSessions(conn, stop).catch(() => null)]);
+      check();
       if (!ga || clicks === null) kept("measure:stopped", "measure:gap");
       else if (ga.last3 === 0 && ga.all28 >= 140) {
         daily.push({
@@ -516,7 +560,8 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     WHERE r.account_id = ${accountId} AND c.field = 'meta_title' AND c.status IN ('applied', 'kept') AND c.resource_type <> 'snippet'
       AND c.created_at < now() - interval '2 hours' AND c.created_at > now() - interval '30 days' AND coalesce(c.after_value, '') <> ''
     ORDER BY c.page_url, c.created_at DESC LIMIT 3`;
-  const pages = await Promise.all(changed.map((c) => fetchText(String(c.page_url), 10_000)));
+  const pages = await Promise.all(changed.map((c) => fetchText(String(c.page_url), 10_000, stop)));
+  check();
   const missing = changed.filter((c, i) => pages[i] && pages[i]!.status < 300 && !titleIsLive(pageTitle(pages[i]!.text), String(c.after_value))).map((c) => String(c.page_url));
   if (missing.length) {
     daily.push({
@@ -548,7 +593,10 @@ async function watch(accountId: string, domain: string, conn: Connection | null,
     }
   }
 
+  check();
+  const now = new Date().toISOString();
+  st.seen = Object.fromEntries(daily.map((p) => [p.id, keptIds.has(p.id) ? (st.seen[p.id] ?? st.dailyAt ?? now) : now]));
   st.daily = daily;
-  st.dailyAt = new Date().toISOString();
+  st.dailyAt = now;
   notes.push(`daily checks: ${daily.length ? daily.map((d) => d.id).join(", ") : "all clear"}`);
 }

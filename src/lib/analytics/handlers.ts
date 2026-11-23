@@ -1615,28 +1615,47 @@ export async function autopilotTick(): Promise<Response> {
     }
     // Site watch: every site is checked each hour (does it answer) and each day (certificate, domain, robots, sitemap,
     // Analytics counting what Search Console sees, the agents' changes being live), whether or not anyone asked.
-    // Sites run side by side, each within its own time limit, before the Inspector so what they find is read this hour.
+    // Every due site is checked, up to 16 side by side, each within its own time limit (a site over it is stopped, not
+    // left running), before the Inspector so what they find is read this hour.
     const watched: string[] = [];
     if (!late()) {
-      const due = await accountsDueForSiteWatch(16).catch(async (e) => {
+      const due = await accountsDueForSiteWatch(500).catch(async (e) => {
         console.error(`site watch list failed: ${message(e)}`);
         await report("site-watch", false, `The list of sites due for Site watch couldn't be read (${message(e)})`);
         return null;
       });
-      const outcomes = await Promise.all((due ?? []).map(({ accountId, domain }) =>
-        Promise.race([
-          forSite(accountId, async () => runSiteWatch(accountId, domain, await getConnection(accountId).catch(() => null))),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("took over 100 seconds")), 100_000).unref?.()),
-        ]).then(
-          (r) => {
-            results.push(`account ${accountId} site watch: ${r.note}`);
-            if (r.urgent) watched.push(accountId);
-            return null;
-          },
-          (e) => (console.error(`site watch failed for ${accountId}: ${message(e)}`), `${domain}: ${message(e)}`),
-        ),
-      ));
-      const failed = outcomes.filter(Boolean);
+      const queue = [...(due ?? [])];
+      const failed: string[] = [];
+      let skipped = 0;
+      const watchOne = async ({ accountId, domain }: { accountId: string; domain: string }) => {
+        const stop = new AbortController();
+        const timer = setTimeout(() => stop.abort(new Error("took over 100 seconds")), 100_000);
+        try {
+          const r = await Promise.race([
+            forSite(accountId, () => runSiteWatch(accountId, domain, () => getConnection(accountId), stop.signal)),
+            new Promise<never>((_, reject) => stop.signal.addEventListener("abort", () => reject(stop.signal.reason), { once: true })),
+          ]);
+          results.push(`account ${accountId} site watch: ${r.note}`);
+          if (r.urgent) watched.push(accountId);
+        } catch (e) {
+          console.error(`site watch failed for ${accountId}: ${message(e)}`);
+          failed.push(`${domain}: ${message(e)}`);
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(16, queue.length) }, async () => {
+        for (let next = queue.shift(); next; next = queue.shift()) {
+          // Sites not reached this hour stay due and go first next hour.
+          if (late()) {
+            skipped += 1 + queue.length;
+            queue.length = 0;
+            break;
+          }
+          await watchOne(next);
+        }
+      }));
+      if (skipped) results.push(`site watch: ${skipped} sites wait for the next hour`);
       if (due) await report("site-watch", !failed.length, failed.length ? `Site watch couldn't finish for ${failed.join("; ")}` : null);
     }
     // The Inspector checks on every agent's work for the accounts touched this hour, and repairs what it can.

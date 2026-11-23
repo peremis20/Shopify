@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { downAnswer, pageNoindex, pageTitle, registeredDomain, robotsBlocksAll, tagDiagnosis, tagIds, titleIsLive, trackingGap } from "../src/lib/analytics/autopilot/site-watch";
+import { daysLeft, downAnswer, pageNoindex, pageTitle, registeredDomain, robotsBlocksAll, tagDiagnosis, tagIds, titleIsLive, trackingGap } from "../src/lib/analytics/autopilot/site-watch";
 
 test("robots.txt: Google's own group wins, and only Disallow / with no Allow closes the site", () => {
   assert.equal(robotsBlocksAll("User-agent: *\nDisallow: /"), true);
@@ -72,4 +72,11 @@ test("live titles and registered domains", () => {
   assert.equal(registeredDomain("www.peremis.com"), "peremis.com");
   assert.equal(registeredDomain("shop.example.co.uk"), "example.co.uk");
   assert.equal(registeredDomain("centralhealthmag.com"), "centralhealthmag.com");
+});
+
+test("days left read naturally, never 0 days", () => {
+  assert.equal(daysLeft(0), "today");
+  assert.equal(daysLeft(-1), "today");
+  assert.equal(daysLeft(1), "in 1 day");
+  assert.equal(daysLeft(6), "in 6 days");
 });
