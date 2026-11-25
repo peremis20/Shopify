@@ -28,7 +28,10 @@ test("plan notes: dropped ideas are grouped by reason in plain words", () => {
 
 test("plan notes: ideas left for next week are not called turned down", () => {
   const s = droppedSummary([{ kept: false, challenge: "Left for next week: five moves are already planned." }])!;
-  assert.equal(s, "1 more backed idea waits for next week because five moves are already planned.");
+  assert.equal(s, "1 backed idea waits for next week because five moves are already planned.");
+  const both = droppedSummary([{ kept: false, challenge: DATA }, { kept: false, challenge: "Left for next week: five moves are already planned." }])!;
+  assert.match(both, /1 more backed idea waits/);
+  assert.match(droppedSummary([{ kept: false, challenge: "Left for next week: x" }], { label: "From the Authority Coach's plan, " })!, /^From the Authority Coach's plan, 1 backed idea waits/);
   const one = droppedSummary([{ kept: false, challenge: DATA }], { label: "From the Authority Coach's plan, ", closing: false })!;
   assert.equal(one, "From the Authority Coach's plan, 1 idea was turned down: it wasn't backed by this week's data.");
 });

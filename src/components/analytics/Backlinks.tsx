@@ -1,6 +1,6 @@
 "use client";
 
-import { droppedSummary, dropReason } from "@/lib/analytics/autopilot/plan-notes";
+import { droppedSummary, dropReason, isDeferred } from "@/lib/analytics/autopilot/plan-notes";
 import { useEffect, useState } from "react";
 import type { Prospect, ProspectList, ProspectStatus } from "@/lib/analytics/autopilot/backlinks";
 import type { AuthorityPlan } from "@/lib/analytics/autopilot/authority-coach";
@@ -350,7 +350,7 @@ function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
             <ul className="mt-1 space-y-1">
               {dropped.map((m, i) => (
                 <li key={i} className="text-xs text-dash-muted">
-                  <span className="line-through">{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
+                  <span className={isDeferred(m) ? "" : "line-through"}>{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
                 </li>
               ))}
             </ul>

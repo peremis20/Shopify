@@ -116,7 +116,8 @@ const plural = (n: unknown, word: string) => `${Number(n)} ${word}${Number(n) ==
 export async function weeklyReportText(accountId: string): Promise<string> {
   const strategy = await readStrategy(accountId).catch(() => null);
   const scores = await readScorecard(accountId).catch(() => []);
-  const authorityKept = plannedMoves(null, await readAuthorityPlan(accountId).catch(() => null)).authority;
+  const authorityPlan = await readAuthorityPlan(accountId).catch(() => null);
+  const authorityKept = plannedMoves(null, authorityPlan).authority;
   const [week] = await sql`
     SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
       -- Every suggestion still waiting for the owner, whenever it was made: the fix list as it stands, the same count
@@ -145,6 +146,10 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   }
   if (authorityKept.length) {
     lines.push("", "The Authority Coach's plan for links this week:", ...authorityKept.map((m, i) => `${i + 1}. ${planLine(m)}`));
+  }
+  if (authorityPlan && Date.now() - Date.parse(authorityPlan.at) < 8 * 864e5 && authorityPlan.checked !== false) {
+    const why = droppedSummary(authorityPlan.moves, { label: "From the Authority Coach's plan, ", closing: false });
+    if (why) lines.push(why);
   }
   // Read once for both sections: the site's own Google Analytics, never another site's.
   const conn = await getConnection(accountId).catch(() => null);

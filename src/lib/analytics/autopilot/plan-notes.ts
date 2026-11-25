@@ -33,7 +33,10 @@ export function droppedSummary(
     out.push(n === 1 ? `${head}: it ${parts[0].replace(/^1 /, "")}.` : `${head}: ${parts.join(", ")}.`);
     if (opts.closing !== false) out.push("Only moves your own numbers back are acted on.");
   }
-  if (deferred) out.push(`${deferred} more backed ${deferred === 1 ? "idea waits" : "ideas wait"} for next week because five moves are already planned.`);
+  if (deferred) {
+    const more = dropped.length ? `${deferred} more backed` : `${opts.label ?? ""}${deferred} backed`;
+    out.push(`${more} ${deferred === 1 ? "idea waits" : "ideas wait"} for next week because five moves are already planned.`);
+  }
   return out.length ? out.join(" ") : null;
 }
 

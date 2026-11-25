@@ -1,6 +1,6 @@
 "use client";
 
-import { droppedSummary, dropReason } from "@/lib/analytics/autopilot/plan-notes";
+import { droppedSummary, dropReason, isDeferred } from "@/lib/analytics/autopilot/plan-notes";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ProspectList } from "@/lib/analytics/autopilot/backlinks";
 import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
@@ -609,7 +609,7 @@ function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo
                 <ul className="mt-2 space-y-1.5">
                   {dropped.map((m, i) => (
                     <li key={i} className="text-xs text-dash-muted">
-                      <span className="line-through">{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
+                      <span className={isDeferred(m) ? "" : "line-through"}>{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
                     </li>
                   ))}
                 </ul>
