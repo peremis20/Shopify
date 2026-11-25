@@ -22,12 +22,17 @@ export function unattributedNote(n: number): string | null {
 }
 
 /**
- * Why Google Analytics sales and Shopify sales differ, said once and plainly, as possible causes and without amounts:
- * the two can be in different currencies and their 7 days are counted a little differently (Analytics by whole days to
- * yesterday, Shopify the last 168 hours), so only a clear gap is explained. Null when there is nothing to explain.
+ * Why Google Analytics sales and Shopify sales differ, said once and plainly, as possible causes and without amounts.
+ * `shopRevenue` must cover the same days as Analytics (7 whole days to yesterday, shop time); the two must be in the
+ * same currency, so a known mismatch says nothing. Only a clear gap is explained. Null when there is nothing to explain.
  */
-export function salesGapNote(gaRevenue: number, shopRevenue: number | null | undefined): string | null {
+export function salesGapNote(
+  gaRevenue: number,
+  shopRevenue: number | null | undefined,
+  currencies: { ga?: string | null; shop?: string | null } = {},
+): string | null {
   if (shopRevenue == null || shopRevenue <= 0 || gaRevenue <= 0) return null;
+  if (currencies.ga && currencies.shop && currencies.ga.toUpperCase() !== currencies.shop.toUpperCase()) return null;
   const gap = Math.abs(shopRevenue - gaRevenue);
   if (gap <= 1 || gap / Math.max(shopRevenue, gaRevenue) <= 0.05) return null;
   return shopRevenue > gaRevenue

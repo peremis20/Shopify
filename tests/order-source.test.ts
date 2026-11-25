@@ -1,6 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orderSource } from "../src/lib/analytics/autopilot/shopify-sales";
+import { inAnalyticsWeek, orderSource } from "../src/lib/analytics/autopilot/shopify-sales";
+
+test("analytics week: seven whole days ending yesterday, in the shop's time zone", () => {
+  const now = Date.parse("2026-11-25T23:00:00Z"); // 5 PM on Nov 25 in Chicago
+  const tz = "America/Chicago";
+  assert.equal(inAnalyticsWeek("2026-11-25T15:00:00Z", now, tz), false); // today
+  assert.equal(inAnalyticsWeek("2026-11-25T03:00:00Z", now, tz), true); // Nov 24 evening in Chicago
+  assert.equal(inAnalyticsWeek("2026-11-18T07:00:00Z", now, tz), true); // Nov 18, first day
+  assert.equal(inAnalyticsWeek("2026-11-18T04:00:00Z", now, tz), false); // Nov 17 in Chicago
+  assert.equal(inAnalyticsWeek("2026-11-24T12:00:00Z", now, null), true);
+  assert.equal(inAnalyticsWeek("2026-11-24T12:00:00Z", now, "Not/AZone"), true);
+});
 
 const visit = (source: string | null, referrerUrl: string | null = null, medium: string | null = null) => ({ source, referrerUrl, landingPage: "https://x.com/", utmParameters: medium ? { medium } : null });
 

@@ -168,7 +168,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
         : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + "."
     );
     const gaSales = results ? results.channels.reduce((t, c) => t + c.now.revenue, 0) : 0;
-    const gap = salesGapNote(gaSales, w.revenue);
+    const gap = salesGapNote(gaSales, shop.analyticsWeekRevenue, { ga: results?.currency, shop: shop.currency });
     if (gap) lines.push(gap);
     if (shop.sources?.length) lines.push(`Where orders came from, last ${shop.days ?? 28} days (all orders, samples included${shop.capped ? ", the latest 1,000 only" : ""}): ${shop.sources.slice(0, 6).map((x) => `${x.name} ${x.orders}`).join(", ")}.`);
   }
@@ -260,12 +260,14 @@ export interface WeeklyReportData {
   totalsBefore?: { visits: number; leads: number; revenue: number } | null;
   /** Key events Google Analytics couldn't tie to a visit (Unassigned), last 7 days; kept out of leads. */
   unattributed?: number;
+  /** Google Analytics' reporting currency for revenue, when it says. */
+  gaCurrency?: string | null;
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** The team board: what waits on the owner and what the agents did and found this week. */
   team?: { needs: string[]; did: string[] };
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
-  shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[]; sources?: { name: string; orders: number }[] } | "access" | "error" | null;
+  shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[]; sources?: { name: string; orders: number }[]; analyticsWeekRevenue?: number } | "access" | "error" | null;
 }
 
 /**
@@ -383,6 +385,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
     totalsBefore: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.before.sessions, leads: t.leads + (isUnattributed(c.name) ? 0 : c.before.keyEvents), revenue: t.revenue + c.before.revenue }), { visits: 0, leads: 0, revenue: 0 })
       : null,
+    gaCurrency: results ? results.currency ?? null : null,
     unattributed: results ? splitLeads(results.channels.map((c) => ({ name: c.name, keyEvents: c.now.keyEvents }))).unattributed : 0,
     backlinks: list === "error" ? "error" : prospects?.prospects.length
       ? {

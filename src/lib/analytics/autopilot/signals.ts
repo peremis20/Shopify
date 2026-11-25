@@ -138,6 +138,8 @@ export interface WeekResults {
   channels: { name: string; now: ChannelResult; before: ChannelResult }[];
   /** Visits from each referring site, last 7 full days. */
   sources: Map<string, ChannelResult>;
+  /** The property's reporting currency for revenue, when Analytics says. */
+  currency?: string | null;
 }
 
 const emptyResult = (): ChannelResult => ({ sessions: 0, keyEvents: 0, purchases: 0, revenue: 0 });
@@ -146,7 +148,7 @@ const emptyResult = (): ChannelResult => ({ sessions: 0, keyEvents: 0, purchases
 export async function weekResults(conn: Connection): Promise<WeekResults | null> {
   if (!conn.gaPropertyId) return null;
   const auth: GoogleAuth = { kind: "oauth", refreshToken: conn.refreshToken };
-  type Rows = { rows?: { dimensionValues: { value: string }[]; metricValues: { value: string }[] }[] };
+  type Rows = { rows?: { dimensionValues: { value: string }[]; metricValues: { value: string }[] }[]; metadata?: { currencyCode?: string } };
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${conn.gaPropertyId}:runReport`;
   const metrics = [{ name: "sessions" }, { name: "keyEvents" }, { name: "ecommercePurchases" }, { name: "purchaseRevenue" }];
   // Channels and referring sites are asked separately, so a long list of sites never cuts the channel totals short.
@@ -192,5 +194,6 @@ export async function weekResults(conn: Connection): Promise<WeekResults | null>
   return {
     channels: [...channels.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.now.sessions - a.now.sessions),
     sources,
+    currency: byChannel.metadata?.currencyCode ?? null,
   };
 }

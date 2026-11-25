@@ -67,7 +67,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
       : data.shopify === "error"
         ? "Shopify couldn't be read. Left out, not guessed."
         : "Connect a Shopify store to count orders.";
-  const gapNote = salesGapNote(sales, shop?.week?.revenue);
+  const gapNote = salesGapNote(sales, shop?.analyticsWeekRevenue, { ga: data.gaCurrency, shop: shop?.currency });
   const goal = Number(data.visitors?.goal) > 0 ? Number(data.visitors?.goal) : GOAL;
   const bl = data.backlinks && typeof data.backlinks === "object" ? data.backlinks : null;
 

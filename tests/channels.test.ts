@@ -35,4 +35,6 @@ test("sales gap: explains why Shopify and Analytics differ, only when both have 
   assert.match(up, /^Google Analytics shows less in sales than Shopify this week\./);
   assert.match(salesGapNote(100, 80)!, /shows more in sales/);
   assert.doesNotMatch(up + salesGapNote(100, 80), /[-–—]/);
+  assert.equal(salesGapNote(45.98, 277.25, { ga: "USD", shop: "CAD" }), null);
+  assert.notEqual(salesGapNote(45.98, 277.25, { ga: "usd", shop: "USD" }), null);
 });

@@ -23,6 +23,8 @@ export interface ShopifySales {
   /** Orders of the last 7 days and the 7 before, from Shopify; free orders (samples) counted apart. */
   week?: { orders: number; revenue: number; free: number };
   weekBefore?: { orders: number; revenue: number; free: number };
+  /** Sales over the same days Google Analytics reports (7 whole days to yesterday, shop time), to compare the two. */
+  analyticsWeekRevenue?: number;
   /** The pages Google search buyers landed on, most orders first. */
   pages: { path: string; orders: number; revenue: number }[];
   /** Where every order came from (Shopify's customer journey, else the sales channel), most orders first. */
@@ -95,16 +97,37 @@ export function orderSource(sourceName: string | null, j: { firstVisit: Visit | 
   return CHANNELS[ch] ?? clean(ch).replace(/^./, (c) => c.toUpperCase());
 }
 
+/** A day as YYYY-MM-DD in the given time zone (UTC when unknown or invalid). */
+function localDay(ms: number, tz: string | null): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: tz || "UTC", year: "numeric", month: "2-digit", day: "2-digit" }).format(ms);
+  } catch {
+    return new Date(ms).toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * True when an order falls in the same days Google Analytics calls the last 7: seven whole days ending yesterday, in
+ * the shop's time zone. So the two sales numbers can be compared like with like. Pure.
+ */
+export function inAnalyticsWeek(createdAt: string, now: number, tz: string | null): boolean {
+  const day = localDay(Date.parse(createdAt), tz);
+  const today = localDay(now, tz);
+  const first = new Date(Date.parse(`${today}T00:00:00Z`) - 7 * 864e5).toISOString().slice(0, 10);
+  return day >= first && day < today;
+}
+
 /** Orders of the last `days` days (up to 250), with the Google search share and its landing pages. */
 export async function shopifySales(store: StoreAccess, days = 28): Promise<ShopifySales> {
   const since = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-  const out: ShopifySales = { days, orders: 0, revenue: 0, free: 0, paidOnline: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
+  const out: ShopifySales = { days, orders: 0, revenue: 0, free: 0, paidOnline: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, analyticsWeekRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
   const now = Date.now();
   const pages = new Map<string, { orders: number; revenue: number }>();
   const sources = new Map<string, { orders: number; revenue: number }>();
   let after: string | null = null;
   for (let page = 0; page < 20; page++) {
     const d: {
+      shop?: { ianaTimezone: string | null } | null;
       orders: {
         pageInfo: { hasNextPage: boolean; endCursor: string | null };
         nodes: {
@@ -120,7 +143,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       };
     } = await shopifyGql(
       store,
-      `query($q: String!, $after: String) { orders(first: 50, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor } nodes {
+      `query($q: String!, $after: String) { shop { ianaTimezone } orders(first: 50, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor } nodes {
         test createdAt sourceName cancelledAt displayFinancialStatus currentTotalPriceSet { shopMoney { amount currencyCode } } totalPriceSet { shopMoney { amount } }
         customerJourneySummary {
           firstVisit { source referrerUrl landingPage utmParameters { medium } }
@@ -138,6 +161,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       if ((Number(o.totalPriceSet.shopMoney.amount) || 0) === 0) out.free = (out.free ?? 0) + 1;
       else if (o.sourceName === "web" && /^(?:PAID|PARTIALLY_PAID|PARTIALLY_REFUNDED)$/.test(o.displayFinancialStatus ?? ""))
         out.paidOnline = (out.paidOnline ?? 0) + 1;
+      if (inAnalyticsWeek(o.createdAt, now, d.shop?.ianaTimezone ?? null)) out.analyticsWeekRevenue = (out.analyticsWeekRevenue ?? 0) + amount;
       const age = now - Date.parse(o.createdAt);
       const bucket = age < 7 * 864e5 ? out.week : age < 14 * 864e5 ? out.weekBefore : null;
       if (bucket) {
@@ -199,7 +223,7 @@ export async function salesFor(accountId: string): Promise<ShopifySales | "acces
   if (hit?.data) {
     const cached = (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
     // A row from before orders were grouped by source is read again, so the owner sees the new list now.
-    if (cached.sources !== undefined) return cached;
+    if (cached.sources !== undefined && cached.analyticsWeekRevenue !== undefined) return cached;
   }
   const site = await siteFor(accountId).catch(() => null);
   if (!site?.store) return null;

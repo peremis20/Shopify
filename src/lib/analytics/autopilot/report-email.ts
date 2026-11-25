@@ -227,7 +227,7 @@ ${salesTile(d, t.revenue, salesBefore)}
     const unNote = unattributedNote(d.unattributed ?? 0);
     if (unNote) parts.push(`<tr><td style="padding:0 16px 6px"><div style="font-size:13px;color:${MUTED}">${esc(unNote)}</div></td></tr>`);
     const shopWeek = d.shopify && typeof d.shopify === "object" ? d.shopify : null;
-    const gap = salesGapNote(t.revenue, shopWeek?.week?.revenue);
+    const gap = salesGapNote(t.revenue, shopWeek?.analyticsWeekRevenue, { ga: d.gaCurrency, shop: shopWeek?.currency });
     if (gap) parts.push(`<tr><td style="padding:0 16px 6px"><div style="font-size:13px;color:${MUTED}">${esc(gap)}</div></td></tr>`);
     // Where visits came from: a donut with a legend that names every slice (identity is never color alone).
     const shown = d.traffic.filter((c) => c.now.sessions > 0);
