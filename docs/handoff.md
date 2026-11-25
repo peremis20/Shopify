@@ -26,3 +26,6 @@ Google Analytics key events on the Unassigned or (not set) channel are no longer
 
 ## Nov 25: Google recrawl permission (released)
 The Inspector's "google:recrawl" fix text names DashPatrol's Home screen, the "Open Google to allow" button and the connected Google email. Home shows a clear button that reports a failed or blocked opening. Follow up idea: the OAuth callback could refuse a different Google account when the purpose is recrawl.
+
+## Nov 25: Idea finder "connect Search Console" with it connected (released)
+A site with no topics yet saves `noTopics: true` and is tried again after 6 hours instead of a week; the note says Search Console only when it isn't connected. Follow Us menu in Shopify now links Facebook, Instagram, LinkedIn (YouTube left as "#" until the owner confirms youtube.com/@peremis).

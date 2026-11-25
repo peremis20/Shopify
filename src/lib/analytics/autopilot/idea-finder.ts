@@ -1,3 +1,4 @@
+import { getConnection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { keywordIdeas, keywordVolumes } from "../keywords";
 import { otherClient } from "./clients";
@@ -33,6 +34,8 @@ export interface IdeaReport {
   /** Questions people ask that have too few searches for a page of their own: good FAQ material. */
   questions: string[];
   note: string;
+  /** True when the site had no topics to start from yet: tried again every few hours instead of waiting a week. */
+  noTopics?: boolean;
 }
 
 const TARGETING = { geo: "2840", language: "1000" };
@@ -63,7 +66,9 @@ export async function accountsDueForIdeas(limit: number): Promise<string[]> {
     SELECT a.account_id FROM insights_account_autopilot a
     LEFT JOIN insights_settings s ON s.key = 'ideas:' || a.account_id
     LEFT JOIN insights_settings f ON f.key = 'ideas_tried:' || a.account_id
-    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days')
+    WHERE a.enabled AND (s.updated_at IS NULL OR s.updated_at < now() - interval '7 days'
+      -- A site with no topics yet gets its first searches from the agents soon after; it is tried again then, not a week later.
+      OR (s.value LIKE '%"noTopics":true%' AND s.updated_at < now() - interval '6 hours'))
       -- A failed try waits (6 hours, or a week when it was the site's monthly limit), so one site can't hold up the rest.
       AND (f.updated_at IS NULL OR f.updated_at < now() - CASE WHEN f.value LIKE 'limit:%' THEN interval '7 days' ELSE interval '6 hours' END)
     ORDER BY s.updated_at NULLS FIRST LIMIT ${limit}`;
@@ -98,7 +103,7 @@ export const asSearch = (s: string) =>
 
 export async function runIdeaFinder(accountId: string, ourDomain: string): Promise<IdeaReport> {
   const platform = await readPlatformSettings();
-  const nothing = (note: string) => save(accountId, { at: new Date().toISOString(), ideas: [], questions: [], note });
+  const nothing = (note: string, noTopics = false) => save(accountId, { at: new Date().toISOString(), ideas: [], questions: [], note, ...(noTopics ? { noTopics } : {}) });
   if (!platform.serperKey) return nothing("No search results key, so Google page one can't be read.");
 
   const [targets, kws, faith] = await Promise.all([
@@ -115,7 +120,15 @@ export async function runIdeaFinder(accountId: string, ourDomain: string): Promi
     .map((s) => s.k)
     .filter((k, i, all) => all.indexOf(k) === i)
     .slice(0, SEEDS);
-  if (!seeds.length) return nothing("No topics yet: add searches with Rank for this, or connect Search Console.");
+  if (!seeds.length) {
+    const conn = await getConnection(accountId).catch(() => null);
+    return nothing(
+      conn?.gscSiteUrl
+        ? "No topics yet. Ideas follow soon after the agents choose this site's first searches, or add a search with Rank for this."
+        : "No topics yet. Connect Search Console so the agents can find this site's searches, or add a search with Rank for this.",
+      true,
+    );
+  }
 
   const known = new Set([...targets.map((t) => t.keyword), ...kws.map((k) => k.keyword)].map(asSearch));
   const siteWords = new Set(seeds.flatMap((s) => [...topicWords(s)]));
