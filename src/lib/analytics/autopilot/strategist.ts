@@ -321,7 +321,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
     if (second?.ok) {
       // The same move twice: same kind and search or page, or (with neither) the same action.
-      const id = (x: (typeof screened)[number]) => `${x.m.kind}|${x.k ?? x.m.page ?? x.m.action}`.toLowerCase();
+      const id = (x: (typeof screened)[number]) => `${x.m.kind}|${x.k || x.m.page || x.m.action}`.toLowerCase();
       const keptFirst = screened.filter((x) => x.kept);
       const keptNew = second.screened.filter((x) => x.kept && !keptFirst.some((y) => id(y) === id(x)));
       const both = [...keptFirst, ...keptNew];

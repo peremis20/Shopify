@@ -219,7 +219,7 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
     // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
     if (second?.ok) {
       // The same move twice: same kind and site or topic, or (with neither) the same action.
-      const id = (m: (typeof screened)[number]) => `${m.kind}|${m.keyword ?? m.action}`.toLowerCase();
+      const id = (m: (typeof screened)[number]) => `${m.kind}|${m.keyword || m.action}`.toLowerCase();
       const keptFirst = screened.filter((m) => m.kept);
       const keptNew = second.screened.filter((m) => m.kept && !keptFirst.some((y) => id(y) === id(m)));
       const both = [...keptFirst, ...keptNew];
