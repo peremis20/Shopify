@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { WeeklyReportData } from "@/lib/analytics/autopilot/alerts";
+import { isUnattributed, unattributedNote } from "@/lib/analytics/autopilot/channels";
 import { DonutChart } from "./DonutChart";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
 import { api, apiFresh } from "./seo-ui";
@@ -54,7 +55,8 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
   const leads = data.totals?.leads ?? 0;
   const sales = data.totals?.revenue ?? 0;
   const shownVisits = traffic.reduce((a, c) => a + c.now.sessions, 0);
-  const withLeads = traffic.filter((c) => c.now.keyEvents > 0);
+  const withLeads = traffic.filter((c) => c.now.keyEvents > 0 && !isUnattributed(c.name));
+  const unNote = unattributedNote(data.unattributed ?? 0);
   const maxLeads = Math.max(0, ...withLeads.map((c) => c.now.keyEvents));
   const google = traffic.find((c) => c.name === "Organic Search");
   const shop = data.shopify && typeof data.shopify === "object" ? data.shopify : null;
@@ -155,7 +157,8 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
                   ))}
                 </div>
               )}
-              {leads === 0 && <p className="mt-3 text-xs text-dash-muted">No leads recorded. Mark sign ups and orders as key events in Google Analytics.</p>}
+              {unNote && <p className="mt-3 text-xs text-dash-muted">{unNote}</p>}
+              {leads === 0 && !unNote && <p className="mt-3 text-xs text-dash-muted">No leads recorded. Mark sign ups and orders as key events in Google Analytics.</p>}
             </>
           )}
         </Card>

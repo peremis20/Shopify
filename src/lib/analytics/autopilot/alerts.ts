@@ -1,4 +1,5 @@
 import { ensureSchema, sql } from "../db";
+import { isUnattributed, splitLeads, unattributedNote } from "./channels";
 import type { Problem } from "./inspector";
 import { readScorecard } from "./scorecard";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
@@ -185,12 +186,16 @@ function resultsLines(r: WeekResults | null | undefined): string[] {
   if (!r) return ["", "Visits, leads and sales: Google Analytics couldn't be read this week, so they are left out rather than guessed."];
   const shown = r.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 5);
   if (!shown.length) return ["", "Visits, leads and sales, last 7 days: no visits recorded in Google Analytics."];
-  const total = r.channels.reduce((n, c) => n + c.now.keyEvents, 0);
+  const { leads: total, unattributed } = splitLeads(r.channels.map((c) => ({ name: c.name, keyEvents: c.now.keyEvents })));
+  const note = unattributedNote(unattributed);
   return [
     "",
     "Visits, leads and sales, last 7 days (Google Analytics):",
-    ...shown.map((c) => `${c.name.replace(/\s*[-–—]\s*/g, " ")}: ${resultText(c.now)}${change(c.now.sessions, c.before.sessions)}.`),
-    ...(total === 0 ? ["No leads or sales were recorded. If your site takes sign ups or orders, mark them as key events in Google Analytics so they count here."] : []),
+    ...shown.map((c) => isUnattributed(c.name)
+      ? `${c.name}: ${c.now.sessions} visits${c.now.revenue > 0 ? `, ${money(c.now.revenue)} in sales` : ""}${change(c.now.sessions, c.before.sessions)}.`
+      : `${c.name.replace(/\s*[-–—]\s*/g, " ")}: ${resultText(c.now)}${change(c.now.sessions, c.before.sessions)}.`),
+    ...(note ? [note] : []),
+    ...(total === 0 && unattributed === 0 ? ["No leads or sales were recorded. If your site takes sign ups or orders, mark them as key events in Google Analytics so they count here."] : []),
     "A rise after a change is a good sign, not proof the change caused it.",
   ];
 }
@@ -239,6 +244,8 @@ export interface WeeklyReportData {
   totals: { visits: number; leads: number; revenue: number } | null;
   /** The week before, every channel added up, so a change compares like with like. */
   totalsBefore?: { visits: number; leads: number; revenue: number } | null;
+  /** Key events Google Analytics couldn't tie to a visit (Unassigned), last 7 days; kept out of leads. */
+  unattributed?: number;
   backlinks: { found: number; ready: number; emailed: number; wonWeek: number; wonAll: number; fromLinks: { domain: string; visits: number; keyEvents: number }[] } | "error" | null;
   agents: { agent: string; did: string; result: string | null }[];
   /** The team board: what waits on the owner and what the agents did and found this week. */
@@ -353,11 +360,12 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
           : null,
     traffic: results === null ? "none" : !results ? "error" : results.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 6).map((c) => ({ ...c, name: c.name.replace(/\s*[-–—]\s*/g, " ") })),
     totals: results
-      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + c.now.keyEvents, revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })
+      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + (isUnattributed(c.name) ? 0 : c.now.keyEvents), revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })
       : null,
     totalsBefore: results
-      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.before.sessions, leads: t.leads + c.before.keyEvents, revenue: t.revenue + c.before.revenue }), { visits: 0, leads: 0, revenue: 0 })
+      ? results.channels.reduce((t, c) => ({ visits: t.visits + c.before.sessions, leads: t.leads + (isUnattributed(c.name) ? 0 : c.before.keyEvents), revenue: t.revenue + c.before.revenue }), { visits: 0, leads: 0, revenue: 0 })
       : null,
+    unattributed: results ? splitLeads(results.channels.map((c) => ({ name: c.name, keyEvents: c.now.keyEvents }))).unattributed : 0,
     backlinks: list === "error" ? "error" : prospects?.prospects.length
       ? {
           found: prospects.prospects.length,

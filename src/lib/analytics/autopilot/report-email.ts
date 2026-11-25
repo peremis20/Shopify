@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import zlib from "zlib";
 import type { WeeklyReportData } from "./alerts";
+import { isUnattributed, unattributedNote } from "./channels";
 
 /**
  * The weekly report as an email people can read at a glance: number tiles, a donut of where visits came from, bars
@@ -214,15 +215,17 @@ export function weeklyReportHtml(d: WeeklyReportData, x: ReportExtras): string {
     const t = d.totals ?? { visits: 0, leads: 0, revenue: 0 };
     const b = d.totalsBefore ?? {
       visits: d.traffic.reduce((n, c) => n + c.before.sessions, 0),
-      leads: d.traffic.reduce((n, c) => n + c.before.keyEvents, 0),
+      leads: d.traffic.reduce((n, c) => n + (isUnattributed(c.name) ? 0 : c.before.keyEvents), 0),
       revenue: d.traffic.reduce((n, c) => n + c.before.revenue, 0),
     };
     const [visitsBefore, leadsBefore, salesBefore] = [b.visits, b.leads, b.revenue];
     parts.push(`<tr><td style="padding:6px 10px"><table role="presentation" cellpadding="0" cellspacing="0" width="100%"><tr>
 ${tile("Visits, last 7 days", num(t.visits), pct(t.visits, visitsBefore), visitsBefore === 0 && t.visits > 0 ? "None the week before" : undefined)}
-${tile("Leads and sign ups", num(t.leads), pct(t.leads, leadsBefore), t.leads === 0 ? "None recorded yet" : undefined)}
+${tile("Leads and sign ups", num(t.leads), pct(t.leads, leadsBefore), t.leads === 0 ? ((d.unattributed ?? 0) > 0 ? "None tied to a channel yet" : "None recorded yet") : undefined)}
 ${salesTile(d, t.revenue, salesBefore)}
 </tr></table></td></tr>`);
+    const unNote = unattributedNote(d.unattributed ?? 0);
+    if (unNote) parts.push(`<tr><td style="padding:0 16px 6px"><div style="font-size:13px;color:${MUTED}">${esc(unNote)}</div></td></tr>`);
     // Where visits came from: a donut with a legend that names every slice (identity is never color alone).
     const shown = d.traffic.filter((c) => c.now.sessions > 0);
     if (shown.length) {
