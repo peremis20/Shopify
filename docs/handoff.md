@@ -14,3 +14,6 @@ Neon: project billowing-pine-62805985, branch br-weathered-mouse-b5ymo8mn. Hourl
 
 ## Nov 25: Unassigned key events (released 1a30f40)
 Google Analytics key events on the Unassigned or (not set) channel are no longer counted as leads in the weekly email, the HTML email or the dashboard. They show on a plain note instead (`autopilot/channels.ts`), revenue still counts, and the customer view check (VIEW_FACTS in writer.ts) knows why the totals differ.
+
+## Nov 25: why plan ideas were turned down (released 1be4b44)
+`autopilot/plan-notes.ts` groups turned down Strategist and Authority Coach ideas by reason (data checks, the second AI's verdict, no verdict) on the Home plan card, the authority plan card, the weekly report and the email. Ideas cut only by the five move cap read as "waits for next week", not turned down.
