@@ -25,6 +25,9 @@ export interface ShopifySales {
   weekBefore?: { orders: number; revenue: number; free: number };
   /** Sales over the same days Google Analytics reports (7 whole days to yesterday, shop time), to compare the two. */
   analyticsWeekRevenue?: number;
+  /** The last day `analyticsWeekRevenue` covers, and the shop's time zone it was counted in. */
+  analyticsWeekTo?: string;
+  timezone?: string | null;
   /** The pages Google search buyers landed on, most orders first. */
   pages: { path: string; orders: number; revenue: number }[];
   /** Where every order came from (Shopify's customer journey, else the sales channel), most orders first. */
@@ -110,6 +113,12 @@ function localDay(ms: number, tz: string | null): string {
  * True when an order falls in the same days Google Analytics calls the last 7: seven whole days ending yesterday, in
  * the shop's time zone. So the two sales numbers can be compared like with like. Pure.
  */
+/** The last day of the Analytics week (yesterday in the shop's time zone), so a cached number knows which days it covers. */
+export function analyticsWeekEnd(now: number, tz: string | null): string {
+  const today = localDay(now, tz);
+  return new Date(Date.parse(`${today}T00:00:00Z`) - 864e5).toISOString().slice(0, 10);
+}
+
 export function inAnalyticsWeek(createdAt: string, now: number, tz: string | null): boolean {
   const day = localDay(Date.parse(createdAt), tz);
   const today = localDay(now, tz);
@@ -151,6 +160,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
         } } } }`,
       { q: `created_at:>=${since}`, after },
     );
+    if (out.timezone === undefined) out.timezone = d.shop?.ianaTimezone ?? null;
     for (const o of d.orders.nodes) {
       if (o.test || o.cancelledAt || o.displayFinancialStatus === "REFUNDED") continue;
       // After refunds and edits: what the store really kept.
@@ -161,7 +171,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       if ((Number(o.totalPriceSet.shopMoney.amount) || 0) === 0) out.free = (out.free ?? 0) + 1;
       else if (o.sourceName === "web" && /^(?:PAID|PARTIALLY_PAID|PARTIALLY_REFUNDED)$/.test(o.displayFinancialStatus ?? ""))
         out.paidOnline = (out.paidOnline ?? 0) + 1;
-      if (inAnalyticsWeek(o.createdAt, now, d.shop?.ianaTimezone ?? null)) out.analyticsWeekRevenue = (out.analyticsWeekRevenue ?? 0) + amount;
+      if (inAnalyticsWeek(o.createdAt, now, out.timezone)) out.analyticsWeekRevenue = (out.analyticsWeekRevenue ?? 0) + amount;
       const age = now - Date.parse(o.createdAt);
       const bucket = age < 7 * 864e5 ? out.week : age < 14 * 864e5 ? out.weekBefore : null;
       if (bucket) {
@@ -196,6 +206,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
     if (page === 19) out.capped = true;
     after = d.orders.pageInfo.endCursor;
   }
+  out.analyticsWeekTo = analyticsWeekEnd(now, out.timezone ?? null);
   out.pages = [...pages.entries()].map(([path, v]) => ({ path, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 10);
   // The top 8 by name, the rest as one "Other" row, so the list stays short and still adds up to every order.
   const all = [...sources.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue);
@@ -223,7 +234,8 @@ export async function salesFor(accountId: string): Promise<ShopifySales | "acces
   if (hit?.data) {
     const cached = (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
     // A row from before orders were grouped by source is read again, so the owner sees the new list now.
-    if (cached.sources !== undefined && cached.analyticsWeekRevenue !== undefined) return cached;
+    // A row counted before the shop's midnight covers other days than Analytics now does, so it is read again.
+    if (cached.sources !== undefined && cached.analyticsWeekTo === analyticsWeekEnd(Date.now(), cached.timezone ?? null)) return cached;
   }
   const site = await siteFor(accountId).catch(() => null);
   if (!site?.store) return null;

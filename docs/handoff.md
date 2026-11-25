@@ -32,3 +32,6 @@ A site with no topics yet saves `noTopics: true` and is tried again after 6 hour
 
 ## Nov 25: "autopilot did nothing" with a full fix list (released)
 The weekly report's Work done stat now says how many changes wait on the fix list; VIEW_FACTS explains report.week vs report.week.suggested to the customer view check.
+
+## Nov 25: Analytics vs Shopify sales gap (released)
+Weekly report, text and HTML email explain a clear gap between Google Analytics and Shopify sales (salesGapNote in channels.ts), comparing Shopify sales over the same whole days as Analytics (analyticsWeekRevenue, shop time zone) and only in the same currency. Leads and sales tile shows Shopify 7 day sales.
