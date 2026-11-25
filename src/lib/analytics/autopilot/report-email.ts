@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import zlib from "zlib";
 import type { WeeklyReportData } from "./alerts";
-import { isUnattributed, unattributedNote } from "./channels";
+import { isUnattributed, salesGapNote, unattributedNote } from "./channels";
 
 /**
  * The weekly report as an email people can read at a glance: number tiles, a donut of where visits came from, bars
@@ -226,6 +226,9 @@ ${salesTile(d, t.revenue, salesBefore)}
 </tr></table></td></tr>`);
     const unNote = unattributedNote(d.unattributed ?? 0);
     if (unNote) parts.push(`<tr><td style="padding:0 16px 6px"><div style="font-size:13px;color:${MUTED}">${esc(unNote)}</div></td></tr>`);
+    const shopWeek = d.shopify && typeof d.shopify === "object" ? d.shopify : null;
+    const gap = salesGapNote(t.revenue, shopWeek?.week?.revenue);
+    if (gap) parts.push(`<tr><td style="padding:0 16px 6px"><div style="font-size:13px;color:${MUTED}">${esc(gap)}</div></td></tr>`);
     // Where visits came from: a donut with a legend that names every slice (identity is never color alone).
     const shown = d.traffic.filter((c) => c.now.sessions > 0);
     if (shown.length) {

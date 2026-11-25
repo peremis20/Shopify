@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { WeeklyReportData } from "@/lib/analytics/autopilot/alerts";
 import { goalNote, goalWhy } from "@/lib/analytics/autopilot/goal";
-import { isUnattributed, unattributedNote } from "@/lib/analytics/autopilot/channels";
+import { isUnattributed, salesGapNote, unattributedNote } from "@/lib/analytics/autopilot/channels";
 import { DonutChart } from "./DonutChart";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
 import { api, apiFresh } from "./seo-ui";
@@ -67,6 +67,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
       : data.shopify === "error"
         ? "Shopify couldn't be read. Left out, not guessed."
         : "Connect a Shopify store to count orders.";
+  const gapNote = salesGapNote(sales, shop?.week?.revenue);
   const goal = Number(data.visitors?.goal) > 0 ? Number(data.visitors?.goal) : GOAL;
   const bl = data.backlinks && typeof data.backlinks === "object" ? data.backlinks : null;
 
@@ -82,7 +83,9 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
         <Stat label="Visits this week" value={traffic.length ? n(visits) : "None"} sub="all channels" />
         <Stat label="From Google this week" value={google ? n(google.now.sessions) : "None"} change={google ? [google.now.sessions, google.before.sessions] : undefined} />
         <Stat label="Leads and sales" value={data.totals ? n(leads) : "None"} sub={
-            sales > 0
+            shop?.week && shop.week.revenue > 0
+              ? `${n(shop.week.revenue)}${shop.currency ? ` ${shop.currency}` : ""} in store sales this week (Shopify)`
+              : sales > 0
               ? `${n(sales)} in sales`
               : shop && shop.revenue > 0
                 ? `${shop.capped ? "over " : ""}${n(shop.revenue)}${shop.currency ? ` ${shop.currency}` : ""} store sales in ${shop.days ?? 28} days`
@@ -95,6 +98,8 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
           data.week.suggested ? `. ${n(data.week.suggested)} ${data.week.suggested === 1 ? "change is" : "changes are"} waiting on your fix list` : ""
         }`} />
       </div>
+
+      {gapNote && <p className="-mt-2 text-xs text-dash-muted">{gapNote}</p>}
 
       {/* Sales straight from Shopify */}
       {/* Every account sees the same sections; a missing source shows what to connect, never a made up number. */}

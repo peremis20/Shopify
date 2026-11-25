@@ -1,6 +1,6 @@
 import { ensureSchema, sql } from "../db";
 import { droppedSummary } from "./plan-notes";
-import { isUnattributed, splitLeads, unattributedNote } from "./channels";
+import { isUnattributed, salesGapNote, splitLeads, unattributedNote } from "./channels";
 import type { Problem } from "./inspector";
 import { readScorecard } from "./scorecard";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
@@ -167,6 +167,9 @@ export async function weeklyReportText(accountId: string): Promise<string> {
         ? "Sales from Shopify, last 7 days: no orders."
         : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + "."
     );
+    const gaSales = results ? results.channels.reduce((t, c) => t + c.now.revenue, 0) : 0;
+    const gap = salesGapNote(gaSales, w.revenue);
+    if (gap) lines.push(gap);
     if (shop.sources?.length) lines.push(`Where orders came from, last ${shop.days ?? 28} days (all orders, samples included${shop.capped ? ", the latest 1,000 only" : ""}): ${shop.sources.slice(0, 6).map((x) => `${x.name} ${x.orders}`).join(", ")}.`);
   }
   lines.push(...(await backlinkLines(accountId, results ?? null)));
