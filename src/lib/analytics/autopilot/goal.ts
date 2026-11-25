@@ -13,7 +13,7 @@ const COUNTS = "It counts clicks from Google search only (Search Console), so it
 
 /** What the number counts and what comes next, so a small or zero number isn't read as broken. */
 export function goalNote(visitors: number | null, goal: number, opts: { estimate?: boolean } = {}): string {
-  if (visitors === null) return `Not measured yet. ${COUNTS}`;
+  if (visitors === null) return COUNTS;
   if (visitors >= goal) return `${opts.estimate ? "On pace for the goal." : "Goal reached."} ${COUNTS}`;
   const next = nextMilestone(visitors, goal).toLocaleString("en-US");
   return visitors === 0

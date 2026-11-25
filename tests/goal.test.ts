@@ -12,7 +12,7 @@ test("goal: the next step is close to where the site is", () => {
 
 test("goal: zero, small, unknown and reached are explained, without dashes", () => {
   for (const v of [null, 0, 54, 25000]) assert.doesNotMatch(goalNote(v, 20000), /[-–—]/);
-  assert.match(goalNote(null, 20000), /^Not measured yet\./);
+  assert.match(goalNote(null, 20000), /^It counts clicks from Google search only/);
   assert.match(goalNote(0, 20000), /^No clicks from Google search in this period\. First step: 100 a month\./);
   assert.match(goalNote(54, 20000), /^Next step: 100 a month\./);
   assert.match(goalNote(25000, 20000), /^Goal reached/);
