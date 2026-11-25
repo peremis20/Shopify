@@ -25,6 +25,8 @@ export interface ShopifySales {
   weekBefore?: { orders: number; revenue: number; free: number };
   /** The pages Google search buyers landed on, most orders first. */
   pages: { path: string; orders: number; revenue: number }[];
+  /** Where every order came from (Shopify's customer journey, else the sales channel), most orders first. */
+  sources?: { name: string; orders: number; revenue: number }[];
 }
 
 interface Visit {
@@ -34,12 +36,56 @@ interface Visit {
   utmParameters: { medium: string | null } | null;
 }
 
-const fromGoogleSearch = (v: Visit | null) => {
-  if (!v) return false;
-  const paid = /cpc|ppc|paid/i.test(v.utmParameters?.medium ?? "");
-  const google = /google/i.test(v.source ?? "") || /^https?:\/\/(www\.)?google\./i.test(v.referrerUrl ?? "");
-  return google && !paid;
+/** The host of a URL or bare domain, without "www."; null when it isn't one. */
+const hostOf = (x: string | null | undefined): string | null => {
+  if (!x || !/[.]/.test(x) || /\s/.test(x.trim())) return null;
+  try {
+    return new URL(/^https?:/i.test(x) ? x : `https://${x}`).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return null;
+  }
 };
+const isPaid = (v: Visit) => /cpc|ppc|paid/i.test(v.utmParameters?.medium ?? "");
+/** Google itself (search or ads), never another Google product such as Gemini or Gmail. */
+const isGoogle = (v: Visit) => /^google$/i.test((v.source ?? "").trim()) || /^google\.[a-z.]+$/.test(hostOf(v.referrerUrl) ?? "") || /^google\.[a-z.]+$/.test(hostOf(v.source) ?? "");
+
+const fromGoogleSearch = (v: Visit | null) => Boolean(v && isGoogle(v) && !isPaid(v));
+
+/** Known places, matched on the visit's source name and the referring host only, never a page path. */
+const KNOWN: [RegExp, string][] = [
+  [/(^|\.)tiktok\.com$|^tiktok$/i, "TikTok"],
+  [/(^|\.)(chatgpt|openai)\.com$|^chatgpt$/i, "ChatGPT"],
+  [/(^|\.)perplexity\.ai$|^perplexity$/i, "Perplexity"],
+  [/^gemini\.google\.com$|^bard\.google\.com$|^gemini$/i, "Gemini"],
+  [/^mail\.google\.com$|^gmail$/i, "Gmail"],
+  [/(^|\.)copilot\.microsoft\.com$|^copilot$/i, "Copilot"],
+  [/(^|\.)instagram\.com$|^instagram$/i, "Instagram"],
+  [/(^|\.)(facebook\.com|fb\.com|fb\.me)$|^facebook$/i, "Facebook"],
+  [/(^|\.)pinterest\.[a-z.]+$|^pinterest$/i, "Pinterest"],
+  [/(^|\.)(youtube\.com|youtu\.be)$|^youtube$/i, "YouTube"],
+  [/(^|\.)bing\.com$|^bing$/i, "Bing"],
+  [/(^|\.)klaviyo\.com$|^(klaviyo|shopify_email|email|newsletter)$/i, "Email"],
+];
+const CHANNELS: Record<string, string> = { tiktok: "TikTok Shop", pos: "In person", shopify_draft_order: "Draft orders", web: "Direct or unknown", iphone: "Shop app", android: "Shop app" };
+/** Plain text for a name we don't know: no dashes, no underscores. */
+const clean = (x: string) => x.replace(/[_]+/g, " ").replace(/\s*[-–—]+\s*/g, " ").replace(/\s+/g, " ").trim();
+
+/** One plain name for where an order came from. Google search matches how `fromGoogle` is counted. Pure. */
+export function orderSource(sourceName: string | null, j: { firstVisit: Visit | null; lastVisit: Visit | null } | null): string {
+  if (fromGoogleSearch(j?.lastVisit ?? null) || fromGoogleSearch(j?.firstVisit ?? null)) return "Google search";
+  const v = j?.lastVisit ?? j?.firstVisit ?? null;
+  if (v) {
+    if (isGoogle(v)) return "Google ads";
+    const keys = [(v.source ?? "").trim(), hostOf(v.source), hostOf(v.referrerUrl)].filter((k): k is string => Boolean(k));
+    for (const [re, name] of KNOWN) if (keys.some((k) => re.test(k))) return name;
+    if (!v.source || /^direct$/i.test(v.source.trim())) return hostOf(v.referrerUrl) ?? "Direct or unknown";
+    return hostOf(v.source) ?? (clean(v.source) || "Direct or unknown");
+  }
+  const ch = (sourceName ?? "").trim().toLowerCase();
+  if (!ch) return "Direct or unknown";
+  if (/^\d+$/.test(ch)) return "Other app";
+  return CHANNELS[ch] ?? clean(ch).replace(/^./, (c) => c.toUpperCase());
+}
 
 /** Orders of the last `days` days (up to 250), with the Google search share and its landing pages. */
 export async function shopifySales(store: StoreAccess, days = 28): Promise<ShopifySales> {
@@ -47,6 +93,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
   const out: ShopifySales = { days, orders: 0, revenue: 0, free: 0, paidOnline: 0, currency: null, fromGoogle: 0, fromGoogleRevenue: 0, pages: [], week: { orders: 0, revenue: 0, free: 0 }, weekBefore: { orders: 0, revenue: 0, free: 0 } };
   const now = Date.now();
   const pages = new Map<string, { orders: number; revenue: number }>();
+  const sources = new Map<string, { orders: number; revenue: number }>();
   let after: string | null = null;
   for (let page = 0; page < 20; page++) {
     const d: {
@@ -92,6 +139,11 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
         if ((Number(o.totalPriceSet.shopMoney.amount) || 0) === 0) bucket.free++;
       }
       const j = o.customerJourneySummary;
+      const srcName = orderSource(o.sourceName, j);
+      const src = sources.get(srcName) ?? { orders: 0, revenue: 0 };
+      src.orders++;
+      src.revenue += amount;
+      sources.set(srcName, src);
       // Credited to Google search when the visit that led to the order (or the first one) came from it.
       const v = fromGoogleSearch(j?.lastVisit ?? null) ? j!.lastVisit : fromGoogleSearch(j?.firstVisit ?? null) ? j!.firstVisit : null;
       if (!v) continue;
@@ -113,6 +165,12 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
     after = d.orders.pageInfo.endCursor;
   }
   out.pages = [...pages.entries()].map(([path, v]) => ({ path, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 10);
+  // The top 8 by name, the rest as one "Other" row, so the list stays short and still adds up to every order.
+  const all = [...sources.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue);
+  const rest = all.slice(8);
+  out.sources = rest.length
+    ? [...all.slice(0, 8), { name: "Other", orders: rest.reduce((n, x) => n + x.orders, 0), revenue: rest.reduce((n, x) => n + x.revenue, 0) }]
+    : all;
   return out;
 }
 
@@ -128,7 +186,11 @@ export async function salesFor(accountId: string): Promise<ShopifySales | "acces
   const { siteFor } = await import("./site-source");
   const key = `shopsales:${accountId}`;
   const [hit] = await sql`SELECT data FROM insights_report_cache WHERE cache_key = ${key} AND fetched_at > now() - interval '6 hours'`.catch(() => [] as { data: unknown }[]);
-  if (hit?.data) return (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
+  if (hit?.data) {
+    const cached = (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
+    // A row from before orders were grouped by source is read again, so the owner sees the new list now.
+    if (cached.sources !== undefined) return cached;
+  }
   const site = await siteFor(accountId).catch(() => null);
   if (!site?.store) return null;
   try {

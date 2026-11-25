@@ -167,6 +167,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
         ? "Sales from Shopify, last 7 days: no orders."
         : `Sales from Shopify, last 7 days: ${value} from ${plural(paid, "paid order")}` + (w.free ? `, plus ${plural(w.free, "free sample")}` : "") + "."
     );
+    if (shop.sources?.length) lines.push(`Where orders came from, last ${shop.days ?? 28} days (all orders, samples included${shop.capped ? ", the latest 1,000 only" : ""}): ${shop.sources.slice(0, 6).map((x) => `${x.name} ${x.orders}`).join(", ")}.`);
   }
   lines.push(...(await backlinkLines(accountId, results ?? null)));
   if (scores.length) lines.push("", "What each agent did:", ...scores.map((s) => `${s.agent}: ${s.did}.${s.result ? ` ${s.result}` : ""}`));
@@ -261,7 +262,7 @@ export interface WeeklyReportData {
   /** The team board: what waits on the owner and what the agents did and found this week. */
   team?: { needs: string[]; did: string[] };
   /** Sales straight from Shopify (last 28 days), or "access" when the app may not read orders yet. */
-  shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[] } | "access" | "error" | null;
+  shopify: { days?: number; week?: { orders: number; revenue: number; free: number }; weekBefore?: { orders: number; revenue: number; free: number }; orders: number; revenue: number; currency: string | null; fromGoogle: number; fromGoogleRevenue: number; capped?: boolean; pages: { path: string; orders: number }[]; sources?: { name: string; orders: number }[] } | "access" | "error" | null;
 }
 
 /**

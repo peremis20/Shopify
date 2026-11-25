@@ -108,7 +108,15 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
               ))}
             </div>
           ) : (
-            <Empty text={shop ? "No orders from Google yet." : shopNote} />
+            <Empty text={shop ? `No orders from Google search in the last ${shop.days ?? 28} days.` : shopNote} />
+          )}
+          {shop && shop.sources && shop.sources.length > 0 && (
+            <div className="mt-4 space-y-2">
+              <p className="text-sm text-dash-muted">Where orders came from, last {shop.days ?? 28} days{shop.capped ? " (the latest 1,000 only)" : ""}</p>
+              {shop.sources.slice(0, 5).map((x) => (
+                <Funnel key={x.name} label={x.name} value={x.orders} max={shop.sources![0].orders} />
+              ))}
+            </div>
           )}
         </Card>
       </div>
