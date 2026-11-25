@@ -191,6 +191,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
               </li>
           ))}
         </ol>
+        {data.planDropped && <p className="mt-2 text-xs text-dash-muted">{data.planDropped}</p>}
       </Card>
 
       {/* Agents */}

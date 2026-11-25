@@ -1,5 +1,6 @@
 "use client";
 
+import { droppedSummary, dropReason } from "@/lib/analytics/autopilot/plan-notes";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ProspectList } from "@/lib/analytics/autopilot/backlinks";
 import type { RankWatchRow } from "@/lib/analytics/autopilot/tracking";
@@ -515,6 +516,7 @@ function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo
   const pct = now !== null ? Math.min(100, (now / goal) * 100) : 0;
   const kept = strategy?.moves.filter((m) => m.kept) ?? [];
   const dropped = strategy?.moves.filter((m) => !m.kept) ?? [];
+  const droppedNote = strategy && strategy.checked !== false ? droppedSummary(strategy.moves) : null;
   // The first sentence stands out; the rest is the detail.
   const [lead, ...rest] = (strategy?.assessment ?? "").split(/(?<=\.)\s+/);
   return (
@@ -599,14 +601,15 @@ function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo
           )}
           {dropped.length > 0 && (
             <div className="mt-3">
+              {droppedNote && <p className="mb-1 text-xs text-dash-muted">{droppedNote}</p>}
               <button onClick={() => setShowDropped((v) => !v)} className="text-xs font-semibold text-dash-muted hover:underline">
-                {showDropped ? "Hide" : "Show"} {dropped.length} {dropped.length === 1 ? "idea" : "ideas"} the reviewer turned down
+                {showDropped ? "Hide" : "Show"} {dropped.length === 1 ? "it" : `all ${dropped.length}`} with {dropped.length === 1 ? "the reason" : "their reasons"}
               </button>
               {showDropped && (
                 <ul className="mt-2 space-y-1.5">
                   {dropped.map((m, i) => (
                     <li key={i} className="text-xs text-dash-muted">
-                      <span className="line-through">{m.action}</span> <span className="text-dash-ink">{m.challenge}</span>
+                      <span className="line-through">{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
                     </li>
                   ))}
                 </ul>

@@ -1,4 +1,5 @@
 import { ensureSchema, sql } from "../db";
+import { droppedSummary } from "./plan-notes";
 import { isUnattributed, splitLeads, unattributedNote } from "./channels";
 import type { Problem } from "./inspector";
 import { readScorecard } from "./scorecard";
@@ -139,6 +140,8 @@ export async function weeklyReportText(accountId: string): Promise<string> {
     const kept = fresh.checked === false ? [] : fresh.moves.filter((m) => m.kept);
     if (kept.length) lines.push("", `The plan made on ${made}:`, ...kept.map((m, i) => `${i + 1}. ${planLine(m)}`));
     else if (fresh.checked !== false && !authorityKept.length) lines.push("", weeklyFocus(fresh)!);
+    const why = fresh.checked === false ? null : droppedSummary(fresh.moves, { label: "From the Strategist's plan, " });
+    if (why) lines.push(why);
   }
   if (authorityKept.length) {
     lines.push("", "The Authority Coach's plan for links this week:", ...authorityKept.map((m, i) => `${i + 1}. ${planLine(m)}`));
@@ -238,6 +241,8 @@ export interface WeeklyReportData {
   plan: string[];
   /** Why the plan is empty when one was written, in plain words. */
   planNote?: string | null;
+  /** Why this week's ideas were turned down, grouped by reason; null when none were. */
+  planDropped?: string | null;
   /** "none": Google Analytics isn't connected; "error": it couldn't be read (left out, never guessed). */
   traffic: "none" | "error" | { name: string; now: ChannelResult; before: ChannelResult }[];
   /** Every channel added up (the chart shows the top six). */
@@ -356,8 +361,12 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
       : fresh && fresh.checked === false
         ? "This week's plan is written but still waiting for its second AI check, so it shows here once confirmed."
         : fresh && !fresh.moves.some((m) => m.kept)
-          ? "The second AI check found no move this week backed by the data, so none are planned."
+          ? "No move this week passed the checks against your data, so none are planned."
           : null,
+    planDropped: [
+      fresh && fresh.checked !== false ? droppedSummary(fresh.moves, { label: "From the Strategist's plan, " }) : null,
+      authority && Date.now() - Date.parse(authority.at) < 8 * 864e5 && authority.checked !== false ? droppedSummary(authority.moves, { label: "From the Authority Coach's plan, ", closing: false }) : null,
+    ].filter(Boolean).join(" ") || null,
     traffic: results === null ? "none" : !results ? "error" : results.channels.filter((c) => c.now.sessions > 0 || c.before.sessions > 0).slice(0, 6).map((c) => ({ ...c, name: c.name.replace(/\s*[-–—]\s*/g, " ") })),
     totals: results
       ? results.channels.reduce((t, c) => ({ visits: t.visits + c.now.sessions, leads: t.leads + (isUnattributed(c.name) ? 0 : c.now.keyEvents), revenue: t.revenue + c.now.revenue }), { visits: 0, leads: 0, revenue: 0 })

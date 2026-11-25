@@ -1,5 +1,6 @@
 "use client";
 
+import { droppedSummary, dropReason } from "@/lib/analytics/autopilot/plan-notes";
 import { useEffect, useState } from "react";
 import type { Prospect, ProspectList, ProspectStatus } from "@/lib/analytics/autopilot/backlinks";
 import type { AuthorityPlan } from "@/lib/analytics/autopilot/authority-coach";
@@ -315,6 +316,9 @@ function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: 
 /** The Authority Coach's weekly plan: where authority stands and the moves that survived the second AI's review. */
 function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
   const kept = plan.moves.filter((m) => m.kept);
+  const dropped = plan.checked === false ? [] : plan.moves.filter((m) => !m.kept);
+  const droppedNote = dropped.length ? droppedSummary(plan.moves, { closing: false }) : null;
+  const [showDropped, setShowDropped] = useState(false);
   return (
     <div className="mb-4 rounded-xl border border-dash-line bg-[#FBF8F2] px-4 py-3">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
@@ -335,6 +339,23 @@ function AuthorityPlanCard({ plan }: { plan: AuthorityPlan }) {
             </li>
           ))}
         </ol>
+      )}
+      {droppedNote && (
+        <div className="mt-2">
+          <p className="text-xs text-dash-muted">{droppedNote}</p>
+          <button onClick={() => setShowDropped((v) => !v)} className="text-xs font-semibold text-dash-muted hover:underline">
+            {showDropped ? "Hide" : "Show"} {dropped.length === 1 ? "it" : `all ${dropped.length}`} with {dropped.length === 1 ? "the reason" : "their reasons"}
+          </button>
+          {showDropped && (
+            <ul className="mt-1 space-y-1">
+              {dropped.map((m, i) => (
+                <li key={i} className="text-xs text-dash-muted">
+                  <span className="line-through">{m.action}</span> <span className="text-dash-ink">{dropReason(m.challenge)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
       {plan.studied.length > 0 && (
         <p className="mt-2 text-xs text-dash-muted">
