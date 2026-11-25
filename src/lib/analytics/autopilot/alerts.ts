@@ -305,7 +305,9 @@ export function plannedMoves(
 function planLine(m: { action: string; keyword: string | null; page?: string | null }): string {
   const text = polish(m.action);
   const named = m.keyword ?? (m.page ? (() => { try { return new URL(m.page).pathname; } catch { return m.page; } })() : null);
-  if (!named || text.toLowerCase().includes(named.toLowerCase())) return text;
+  // Plan text is cleaned of hyphens when read, so a hyphenated search or path is matched either way.
+  const flat = (s: string) => s.toLowerCase().replace(/-/g, " ");
+  if (!named || flat(text).includes(flat(named))) return text;
   return `${text} (${m.keyword ? `for "${named}"` : `on ${named}`})`;
 }
 

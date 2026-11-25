@@ -175,6 +175,29 @@ export function polish(text: string): string {
     .trim();
 }
 
+/**
+ * What must stay word for word in owner text: web addresses, page paths, domains, quoted searches or names, and
+ * dates. A hyphen inside them is part of the name, not punctuation.
+ */
+const KEEP_AS_IS = /https?:\/\/\S+|(?<![\w.])\/[\w\-./%]+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|co|ai|us|uk|ca|au|de|fr|info|health|shop|store|blog)\b(?:\/[\w\-./%]*)?|"[^"\n]*"|“[^”\n]*”|\b\d{4}-\d{2}-\d{2}\b/gi;
+
+/**
+ * Text the owner reads in the app (plans, notes): polished, and without hyphens between words, since the rule for what
+ * owners read is no hyphens or dashes. "4-20" reads "4 to 20"; "benefit-focused" reads "benefit focused"; "30-day"
+ * reads "30 day". Names with a letter then a number keep theirs ("omega-3", "B-12", "COVID-19"), and addresses, paths,
+ * domains, quoted text and dates are left exactly as written.
+ */
+export function ownerText(text: string): string {
+  const kept: string[] = [];
+  const masked = polish(text).replace(KEEP_AS_IS, (m) => `\u0000${kept.push(m) - 1}\u0000`);
+  return masked
+    .replace(/(?<![\d-])(\d{1,3})\s*-\s*(\d{1,3})(?![\d-])/g, "$1 to $2")
+    .replace(/(\d)-(?=\p{L}{2,})/gu, "$1 ")
+    .replace(/(\p{L})-(?=\p{L})/gu, "$1 ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
+
 /** Units a spelled out number is read with ("two weeks", "fifty percent"), so it counts as a number too. */
 const UNITS =
   "percent|per cent|mg|milligrams?|grams?|g|kg|kilos?|mcg|micrograms?|iu|ml|milliliters?|millilitres?|liters?|litres?|ounces?|oz|pounds?|lbs?|calories|kcal|hours?|minutes?|seconds?|days?|weeks?|months?|years?|times|servings?|capsules?|tablets?|pills?|softgels?|gummies|scoops?|cups?|glasses|doses?|drops?|teaspoons?|tablespoons?|inches|cm|miles|km|steps|dollars|people|customers|users";
@@ -1905,7 +1928,7 @@ const PLAN_RULES = `Rules that every move must follow (moves that break them are
 3. Within the site's reach: prefer searches where it already shows on Google, then small specific searches. Never a broad search far bigger than the site's current visitors.
 4. Name exactly what to work on: the search copied from the facts, and the page or site from the facts when there is one.
 5. A title or description rewrite only for a search at positions 4 to 12 with real impressions; lower than 12, a new title won't earn clicks.
-6. On health, money or other sensitive topics, only what the site's own page states, in careful words (supports, may help), never claims to treat or cure.
+6. On health, money or other sensitive topics, only what the site's own page states, in careful words (supports, may help), never claims to treat or cure. A title or description move for a search that names a condition (sleep, inflammation, stress, blood sugar) is still welcome: name the search and the page and say what searchers want to find there, but never say which benefit to promise or highlight; the page improver writes the words under the health rules.
 7. No moves that only pause or watch something, unless measured results in the facts show that kind of change failing, and no moves about another agent being broken: the Inspector handles that.`;
 
 export async function planStrategy(ai: AiProvider, facts: string, feedback = ""): Promise<StrategyPlan> {

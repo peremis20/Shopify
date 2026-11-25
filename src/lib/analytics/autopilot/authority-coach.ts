@@ -9,7 +9,7 @@ import { fetchSerp } from "./serp";
 import { domainTraffic, keReady, rivalBacklinks } from "./keywords-everywhere";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
-import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, retryNote, type AuthorityMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, ownerText, planAuthority, retryNote, type AuthorityMove } from "./writer";
 
 /**
  * The Authority Coach. Once a week per site it:
@@ -45,7 +45,14 @@ const RIVALS_MAX_DAYS = 30;
 export async function readAuthorityPlan(accountId: string): Promise<AuthorityPlan | null> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
-  return row?.value ? (JSON.parse(row.value) as AuthorityPlan) : null;
+  if (!row?.value) return null;
+  // Saved word for word; what the owner reads is cleaned here, so older plans read right too.
+  const r = JSON.parse(row.value) as AuthorityPlan;
+  return {
+    ...r,
+    assessment: ownerText(r.assessment ?? ""),
+    moves: (r.moves ?? []).map((m) => ({ ...m, action: ownerText(m.action ?? ""), why: ownerText(m.why ?? ""), challenge: m.challenge ? ownerText(m.challenge) : m.challenge })),
+  };
 }
 
 /** Accounts with the autopilot on whose weekly authority plan is due (a failed run also waits a week). */

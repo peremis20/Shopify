@@ -1,7 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { withinReach } from "../src/lib/analytics/autopilot/strategist";
-import { retryNote } from "../src/lib/analytics/autopilot/writer";
+import { ownerText, retryNote } from "../src/lib/analytics/autopilot/writer";
+
+test("plan text: no hyphens or dashes between words reach the owner", () => {
+  assert.equal(ownerText("Lift pages in positions 4‑20 with a benefit‑focused headline"), "Lift pages in positions 4 to 20 with a benefit focused headline");
+  assert.equal(ownerText("Third-party tested — and clean"), "Third party tested, and clean");
+  assert.equal(ownerText("A 30-day supply, 5-star"), "A 30 day supply, 5 star");
+});
+
+test("plan text: addresses, paths, quotes, dates and names keep their hyphens", () => {
+  const s = 'Rewrite /products/magnesium-glycinate for "vitamin-d gummies", pitch well-being-mag.com and https://a-b.com/x-y since 2026-11-20 (omega-3, B-12, COVID-19)';
+  assert.equal(ownerText(s), s);
+});
 
 test("reach: easy searches first, bigger ones as the site grows", () => {
   // A site with 18 visitors a month: a 368,000 search waits, a 900 one doesn't.

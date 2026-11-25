@@ -21,7 +21,7 @@ import { boardFacts, postNote, readBoard } from "./team";
 import { crmFacts } from "../crm";
 import { pagesForQuery } from "./guards";
 import { rescuable } from "./engine";
-import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, retryNote, type StrategyMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, ownerText, planStrategy, retryNote, type StrategyMove } from "./writer";
 
 /**
  * The Strategist: once a week it reads everything the other agents learned
@@ -74,7 +74,15 @@ export function withinReach(monthlySearches: number | null | undefined, difficul
 export async function readStrategy(accountId: string): Promise<StrategyReport | null> {
   await ensureSchema();
   const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${KEY(accountId)}`;
-  return row?.value ? (JSON.parse(row.value) as StrategyReport) : null;
+  if (!row?.value) return null;
+  // Saved word for word; what the owner reads is cleaned here, so older plans read right too. Evidence stays as
+  // written, since it must match the facts.
+  const r = JSON.parse(row.value) as StrategyReport;
+  return {
+    ...r,
+    assessment: ownerText(r.assessment ?? ""),
+    moves: (r.moves ?? []).map((m) => ({ ...m, action: ownerText(m.action ?? ""), why: ownerText(m.why ?? ""), challenge: m.challenge ? ownerText(m.challenge) : m.challenge })),
+  };
 }
 
 /**
@@ -418,7 +426,7 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
     accountId,
     "Strategist",
     "did",
-    `Planned the week: ${keptMoves.length} of ${out.length} moves kept${checked ? " after the second AI's challenge" : ""}${keptMoves.length ? `: ${keptMoves.slice(0, 3).map((m) => m.action).join("; ")}` : ""}.`,
+    `Planned the week: ${keptMoves.length} of ${out.length} moves kept${checked ? " after the second AI's challenge" : ""}${keptMoves.length ? `: ${keptMoves.slice(0, 3).map((m) => ownerText(m.action)).join("; ")}` : ""}.`,
     { ref: `plan:${report.at.slice(0, 10)}` },
   );
   await sql`
