@@ -1887,7 +1887,28 @@ const MOVE_SCHEMA = {
   required: ["kind", "keyword", "action", "why", "evidence", "page"],
 };
 
-export async function planStrategy(ai: AiProvider, facts: string): Promise<StrategyPlan> {
+/**
+ * What the reviewing AI and the data checks said about moves that were turned down, for a second try at the plan.
+ * Pure, so it can be tested.
+ */
+export function retryNote(dropped: { kind: string; keyword: string | null; page?: string | null; action: string; challenge: string }[]): string {
+  if (!dropped.length) return "";
+  return `\n\nA first try at this plan was checked, and these moves were turned down. Do not propose them again, and avoid the same mistakes:\n${dropped
+    .map((m) => `[${m.kind}] ${m.action}${m.keyword ? ` (${m.keyword})` : m.page ? ` (${m.page})` : ""}: ${m.challenge}`)
+    .join("\n")}`;
+}
+
+/** Rules both planners follow, so their moves survive the checks: small, on topic, doable this week, backed by data. */
+const PLAN_RULES = `Rules that every move must follow (moves that break them are turned down):
+1. Small and doable this week with what exists now. Never a move that depends on a page, guide or article that isn't made yet (no outreach offering a guide that doesn't exist).
+2. On the site's own topic: the searches it already shows for on Google, its targets and its keyword ideas show what the site is about. Never a search on another subject, however big.
+3. Within the site's reach: prefer searches where it already shows on Google, then small specific searches. Never a broad search far bigger than the site's current visitors.
+4. Name exactly what to work on: the search copied from the facts, and the page or site from the facts when there is one.
+5. A title or description rewrite only for a search at positions 4 to 12 with real impressions; lower than 12, a new title won't earn clicks.
+6. On health, money or other sensitive topics, only what the site's own page states, in careful words (supports, may help), never claims to treat or cure.
+7. No moves that only pause or watch something, unless measured results in the facts show that kind of change failing, and no moves about another agent being broken: the Inspector handles that.`;
+
+export async function planStrategy(ai: AiProvider, facts: string, feedback = ""): Promise<StrategyPlan> {
   return askJson<StrategyPlan>(
     { ...ai, site: undefined },
     `You are the SEO strategist for this website. The goal: reach 20,000 visitors a month from Google search and turn them into revenue. Judge success by sales from Google as much as by visitors: prefer moves on pages and searches that sell. Other agents do the work every day (improving pages, writing articles, tracking ranks, finding backlinks); your job is to point them at what will move the numbers most, and to say plainly what isn't working.
@@ -1897,9 +1918,11 @@ ${facts}
 
 Think like a seasoned SEO: refreshing pages already at positions 4 to 20 is the fastest win, faster than new pages; Easy searches (difficulty under 35) come before Hard ones while the site is weak; topical depth (several articles around one subject, linked together) beats scattered single articles; anything that keeps failing should be stopped or fixed, not repeated; backlinks come easier to a page worth linking to, so you may suggest one "asset" move: a resource other sites would cite (a clear guide, checklist or comparison), built only from what the site can honestly say, never invented data or surveys.
 
-You direct these agents, and each move goes to one of them: "target" (the autopilot aims at a search: rewrites the page for it, or writes a new article when none exists), "cluster" (articles around one topic, then a pillar page), "fix" (the autopilot reworks the page that already shows on Google for a search), "rescue" (the Index rescue adds a substantial section to a page Google left out; put the page address from the facts in "page"), "outreach" (the Outreach Drafter writes the email to this backlink site first; put its domain from the facts in "page"), "hold" (stop something), "asset" (an idea for the owner).
+You direct these agents, and each move goes to one of them: "target" (the autopilot aims at a search: rewrites the page for it, or writes a new article when none exists), "cluster" (articles around one topic, then a pillar page; only when the facts show several related searches with real demand), "fix" (the autopilot reworks the page that already shows on Google for a search), "rescue" (the Index rescue adds a substantial section to a page Google left out; put the page address from the facts in "page"; only an article or product page with a topic, never a list or index page), "outreach" (the Outreach Drafter writes the email to this backlink site first; put its domain from the facts in "page"; only a site on the same topic as one of the site's existing pages), "hold" (stop a kind of change that measured results show moving down), "asset" (an idea for the owner).
 
-Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of the kinds of change that moved up, and stop the kinds that moved down. Never invent searches, numbers or results. No hyphens or dashes in the text.`,
+${PLAN_RULES}
+
+Return JSON: "assessment" (3 short plain sentences: where the site stands against the goal, the biggest opportunity, the biggest problem) and "moves" (at most 5, best first). Each move: kind, keyword (an exact search copied from the facts for target or cluster, else null), action (one sentence an agent can act on), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Measured results of this site's own changes outrank any rule of thumb: do more of the kinds of change that moved up, and stop the kinds that moved down. Fewer good moves beat five weak ones. Never invent searches, numbers or results. No hyphens or dashes in the text.${feedback}`,
     { type: "object", properties: { assessment: { type: "string" }, moves: { type: "array", items: MOVE_SCHEMA } }, required: ["assessment", "moves"] }
   );
 }
@@ -1970,7 +1993,7 @@ export interface AuthorityMove {
   evidence: string;
 }
 
-export async function planAuthority(ai: AiProvider, facts: string): Promise<{ assessment: string; moves: AuthorityMove[] }> {
+export async function planAuthority(ai: AiProvider, facts: string, feedback = ""): Promise<{ assessment: string; moves: AuthorityMove[] }> {
   return askJson<{ assessment: string; moves: AuthorityMove[] }>(
     { ...ai, site: undefined },
     `You are the link building lead for this website. Domain authority only rises when other real websites link to it, so your job is to get the site earned links, the honest way that works for successful sites: pages people want to cite, helpful outreach (broken link replacements, resource pages, podcasts, expert roundups, mentions without a link), and the sites that already link to competitors. Never paid links, link exchanges, private blog networks or anything that breaks Google's rules: a penalty would undo everything.
@@ -1978,7 +2001,11 @@ export async function planAuthority(ai: AiProvider, facts: string): Promise<{ as
 Facts from this week (real data from the other agents, nothing else is known):
 ${facts}
 
-Return JSON: "assessment" (3 short plain sentences: where the site's authority stands, the best opportunity, the biggest gap) and "moves" (at most 5, best first). Each move: kind (outreach, asset, fix or stop), keyword (a site, page or topic copied from the facts, else null), action (one sentence the owner or an agent can act on this week), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Never invent sites, numbers or results. No hyphens or dashes in the text.`,
+For outreach, pick sites whose page (see "page found on Google") is a list, resource page, roundup or article on the same topic as one of the site's existing pages, and offer that existing page. Skip platforms and databases that don't add links on request (app stores, podcast platforms, company directories, government registers), whatever their strength.
+
+${PLAN_RULES}
+
+Return JSON: "assessment" (3 short plain sentences: where the site's authority stands, the best opportunity, the biggest gap) and "moves" (at most 5, best first; fewer good moves beat five weak ones). Each move: kind (outreach, asset, fix or stop), keyword (a site, page or topic copied from the facts, else null), action (one sentence the owner or an agent can act on this week), why (one sentence citing the numbers), evidence (the fact the move rests on, copied word for word from the facts above: a move whose evidence isn't found in the facts is thrown out). Never invent sites, numbers or results. No hyphens or dashes in the text.${feedback}`,
     {
       type: "object",
       properties: {

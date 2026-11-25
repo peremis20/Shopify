@@ -9,7 +9,7 @@ import { fetchSerp } from "./serp";
 import { domainTraffic, keReady, rivalBacklinks } from "./keywords-everywhere";
 import { aiProvider, readPlatformSettings } from "./settings";
 import { isBig } from "./site-keywords";
-import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, type AuthorityMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, planAuthority, retryNote, type AuthorityMove } from "./writer";
 
 /**
  * The Authority Coach. Once a week per site it:
@@ -74,6 +74,9 @@ async function latestRivals(accountId: string): Promise<Rival[]> {
     WHERE cache_key = ${`rivals:${accountId}`} AND fetched_at > now() - make_interval(days => ${RIVALS_MAX_DAYS})`.catch(() => [] as { data: string | null }[]);
   return row?.data ? (JSON.parse(row.data) as Rival[]) : [];
 }
+
+/** Below this many kept moves, the plan is tried once more with the reasons the first moves were turned down. */
+const MIN_KEPT = 2;
 
 export async function runAuthorityCoach(accountId: string, conn: Connection | null, ourDomain: string): Promise<AuthorityPlan | null> {
   const platform = await readPlatformSettings();
@@ -186,26 +189,46 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
 
   // 3. Plan, then a second AI challenges each move.
   const shown = about.length ? `${facts}\n${about.join("\n")}` : facts;
-  const plan = await planAuthority(ai, shown);
-  const moves = plan.moves.slice(0, 5);
-  let checked = true;
-  const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch((e) => {
-    // One AI service: each move is checked against this week's real data below; the owner sends any outreach.
-    if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you send any outreach.") };
-    checked = false;
-    console.error(`authority coach review failed: ${(e as Error).message}`);
-    const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";
-    return { keep: moves.map(() => true), notes: moves.map(() => `Not challenged: ${why}. Treat these as unchecked ideas.`) };
-  });
-  const report: AuthorityPlan = {
-    at: new Date().toISOString(),
-    assessment: plan.assessment,
+  /** One try at the plan: written, challenged by the second AI, then checked against the data. */
+  const attempt = async (feedback: string) => {
+    let ok = true;
+    const plan = await planAuthority(ai, shown, feedback);
+    const moves = plan.moves.slice(0, 5);
+    const verdict = await challengeStrategy(ai, shown, { moves }, "link building lead's weekly plan to raise the site's domain authority with earned links").catch((e) => {
+      // One AI service: each move is checked against this week's real data below; the owner sends any outreach.
+      if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you send any outreach.") };
+      ok = false;
+      console.error(`authority coach review failed: ${(e as Error).message}`);
+      return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable. Treat these as unchecked ideas.") };
+    });
     // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
-    moves: moves.map((m, i) =>
+    const screened = moves.map((m, i) =>
       verdict.keep[i] && !backedByFacts(m.evidence, facts)
         ? { ...m, kept: false, challenge: "Dropped: what it rests on isn't in this week's data." }
         : { ...m, kept: verdict.keep[i], challenge: verdict.notes[i] }
-    ),
+    );
+    return { plan, screened, ok };
+  };
+  const first = await attempt("");
+  let { plan, screened } = first;
+  const checked = first.ok;
+  // Too little survived: one more try, told what was turned down and why, and checked the same way.
+  if (checked && screened.filter((m) => m.kept).length < MIN_KEPT) {
+    const second = await attempt(retryNote(screened.filter((m) => !m.kept))).catch((e) => (console.error(`authority coach second try failed: ${(e as Error).message}`), null));
+    // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
+    if (second?.ok) {
+      const same = (a: (typeof screened)[number], b: (typeof screened)[number]) => a.kind === b.kind && (a.keyword ?? "").toLowerCase() === (b.keyword ?? "").toLowerCase();
+      const keptFirst = screened.filter((m) => m.kept);
+      const keptNew = second.screened.filter((m) => m.kept && !keptFirst.some((y) => same(m, y)));
+      const kept = [...keptFirst, ...keptNew].slice(0, 5);
+      screened = [...kept, ...screened.filter((m) => !m.kept), ...second.screened.filter((m) => !kept.includes(m) && !m.kept)];
+      if (keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
+    }
+  }
+  const report: AuthorityPlan = {
+    at: new Date().toISOString(),
+    assessment: plan.assessment,
+    moves: screened,
     studied,
     checked,
     facts: shown,

@@ -21,7 +21,7 @@ import { boardFacts, postNote, readBoard } from "./team";
 import { crmFacts } from "../crm";
 import { pagesForQuery } from "./guards";
 import { rescuable } from "./engine";
-import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, type StrategyMove } from "./writer";
+import { backedByFacts, challengeStrategy, NO_SECOND_AI, planStrategy, retryNote, type StrategyMove } from "./writer";
 
 /**
  * The Strategist: once a week it reads everything the other agents learned
@@ -54,6 +54,20 @@ const WEEK = 7 * 24 * 3600 * 1000;
 const KEY = (accountId: string) => `strategy:${accountId}`;
 /** New targets the Strategist may add in one week. */
 const MAX_NEW_TARGETS = 3;
+/** Below this many kept moves, the plan is tried once more with the reasons the first moves were turned down. */
+const MIN_KEPT = 2;
+
+/**
+ * Whether a new search is within the site's reach now: easy searches first, harder ones as the site grows. A search
+ * far bigger than the site's own monthly Google visitors, or a hard one (difficulty over 35) while the site is small,
+ * waits. Pure, so it can be tested.
+ */
+export function withinReach(monthlySearches: number | null | undefined, difficulty: number | null | undefined, visitors: number | null): boolean {
+  const v = visitors ?? 0;
+  if (monthlySearches != null && monthlySearches > Math.max(1000, v * 20)) return false;
+  if (difficulty != null && difficulty > 35 && v < 1000) return false;
+  return true;
+}
 
 export async function readStrategy(accountId: string): Promise<StrategyReport | null> {
   await ensureSchema();
@@ -118,8 +132,19 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   const near = conn?.gscSiteUrl ? await findOpportunities(conn, "28d").catch(() => []) : [];
   if (conn?.gscSiteUrl) visitors = await gscClicks28d(conn).catch(() => null);
   const top = [...near].sort((a, b) => b.impressions - a.impressions).slice(0, 15);
+  const pathOf = (u: string) => {
+    try {
+      return new URL(u).pathname || "/";
+    } catch {
+      return u;
+    }
+  };
   if (top.length) {
-    lines.push("Searches where the site is on Google positions 4 to 20 (last 28 days): " + top.map((o) => `"${o.query}" #${o.position.toFixed(0)} (${o.impressions} impressions, ${o.clicks} clicks)`).join("; "));
+    // The page Google shows for each search, so a move can name exactly what to work on.
+    lines.push(
+      "Searches where the site is on Google positions 4 to 20 (last 28 days): " +
+        top.map((o) => `"${o.query}" #${o.position.toFixed(0)} on ${pathOf(o.page)} (${o.impressions} impressions, ${o.clicks} clicks)`).join("; "),
+    );
     top.forEach((o) => known.add(o.query.toLowerCase()));
   }
 
@@ -137,7 +162,13 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   }
   // New searches from the Idea finder (Google related searches, People also ask, competitor pages), with real volumes.
   const found = await readIdeas(accountId).catch(() => null);
-  const fresh = (found?.ideas ?? []).filter((i) => i.monthlySearches !== null && !known.has(i.keyword) && !targets.some((t) => t.keyword === i.keyword)).slice(0, 15);
+  // Easy searches first, harder ones as the site grows: searches out of reach now aren't offered to the plan at all.
+  let waiting = 0;
+  const reach = (monthly: number | null | undefined, difficulty: number | null | undefined) => withinReach(monthly, difficulty, visitors) || (waiting++, false);
+  const fresh = (found?.ideas ?? [])
+    .filter((i) => i.monthlySearches !== null && !known.has(i.keyword) && !targets.some((t) => t.keyword === i.keyword))
+    .filter((i) => reach(i.monthlySearches, null))
+    .slice(0, 15);
   if (fresh.length) {
     const label = { related: "related search", question: "people also ask", competitor: "a competitor page ranks for it" } as const;
     lines.push(
@@ -147,11 +178,12 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
     fresh.forEach((i) => known.add(i.keyword));
   }
   if (found?.questions.length) lines.push(`Questions people ask on Google about these topics: ${found.questions.slice(0, 8).join(" | ")}`);
-  const ideas = kws.filter((k) => k.role !== "support" && !targets.some((t) => t.keyword === k.keyword)).slice(0, 15);
+  const ideas = kws.filter((k) => k.role !== "support" && !targets.some((t) => t.keyword === k.keyword) && reach(k.monthlySearches, k.difficulty)).slice(0, 15);
   if (ideas.length) {
     lines.push("Keyword ideas not targeted yet: " + ideas.map((k) => `"${k.keyword}" (${k.monthlySearches}/mo${k.difficulty !== undefined ? `, difficulty ${k.difficulty}` : ""}${k.winnable === false ? ", page 1 crowded" : ""})`).join("; "));
     ideas.forEach((k) => known.add(k.keyword));
   }
+  if (waiting) lines.push(`${waiting} bigger or harder search ideas wait until the site has more Google visitors.`);
 
   const changes = await sql`
     SELECT field, status, baseline_position, result_position FROM insights_autopilot_changes
@@ -238,42 +270,66 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   const ai: AiProvider | null = aiProvider(platform);
   if (!ai) return null;
   const { facts, known, visitors, revenue } = await gatherFacts(accountId, conn, ourDomain);
-  const plan = await planStrategy(ai, facts);
-  const moves = plan.moves.slice(0, 5);
-  // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
-  let checked = true;
-  const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch((e) => {
-    // One AI service: each move is checked against this week's real data below, and everything it leads to waits for
-    // the owner's approval before it goes live, so the plan is acted on.
-    if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you approve what it leads to.") };
-    checked = false;
-    console.error(`strategist review failed: ${(e as Error).message}`);
-    const why = (e as Error).message === NO_SECOND_AI ? "a second AI service isn't set up yet" : "the reviewing AI was unavailable";
-    return { keep: moves.map(() => true), notes: moves.map(() => `Not challenged: ${why}, so nothing was acted on.`) };
-  });
-
   const faith = await faithAllowed(accountId);
+  /** One try at the plan: written, challenged by the second AI, then checked against the data. */
+  const attempt = async (feedback: string) => {
+    // Unchallenged moves are shown, but nothing is acted on until a second AI has checked it.
+    let ok = true;
+    const plan = await planStrategy(ai, facts, feedback);
+    const moves = plan.moves.slice(0, 5);
+    const verdict = await challengeStrategy(ai, facts, { ...plan, moves }).catch((e) => {
+      // One AI service: each move is checked against this week's real data below, and everything it leads to waits for
+      // the owner's approval before it goes live, so the plan is acted on.
+      if ((e as Error).message === NO_SECOND_AI) return { keep: moves.map(() => true), notes: moves.map(() => "Checked against your own data; you approve what it leads to.") };
+      ok = false;
+      console.error(`strategist review failed: ${(e as Error).message}`);
+      return { keep: moves.map(() => true), notes: moves.map(() => "Not challenged: the reviewing AI was unavailable, so nothing was acted on.") };
+    });
+    const screened = moves.map((m, i) => {
+      const k = m.keyword?.trim().toLowerCase() ?? null;
+      let kept = verdict.keep[i];
+      let challenge = verdict.notes[i];
+      // A step no agent can act on: a fix is carried out through the search it names, so one without a search is dropped.
+      if (kept && m.kind === "fix" && !m.keyword?.trim()) {
+        kept = false;
+        challenge = "Dropped: it names no search to work on.";
+      }
+      // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
+      if (kept && !backedByFacts(m.evidence, facts)) {
+        kept = false;
+        challenge = "Dropped: what it rests on isn't in this week's data.";
+      }
+      // The agents only act on searches that really appear in the data, never invented ones.
+      if (kept && k && (m.kind === "target" || m.kind === "cluster") && (!known.has(k) || isJunkKeyword(k, { faith }))) {
+        kept = false;
+        challenge = `Dropped: "${k}" isn't in the site's data or isn't on topic.`;
+      }
+      return { m, k, kept, challenge };
+    });
+    return { plan, screened, ok };
+  };
+  const first = await attempt("");
+  let { plan, screened } = first;
+  const checked = first.ok;
+  // Too little survived: one more try, told what was turned down and why, and checked the same way.
+  if (checked && screened.filter((x) => x.kept).length < MIN_KEPT) {
+    const note = retryNote(screened.filter((x) => !x.kept).map((x) => ({ ...x.m, challenge: x.challenge })));
+    const second = await attempt(note).catch((e) => (console.error(`strategist second try failed: ${(e as Error).message}`), null));
+    // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
+    if (second?.ok) {
+      const same = (a: (typeof screened)[number], b: (typeof screened)[number]) => a.m.kind === b.m.kind && (a.k ?? a.m.page ?? "") === (b.k ?? b.m.page ?? "");
+      const keptFirst = screened.filter((x) => x.kept);
+      const keptNew = second.screened.filter((x) => x.kept && !keptFirst.some((y) => same(x, y)));
+      const kept = [...keptFirst, ...keptNew].slice(0, 5);
+      // Every move from both tries is kept on record, so the owner sees what was turned down and why.
+      screened = [...kept, ...screened.filter((x) => !x.kept), ...second.screened.filter((x) => !kept.includes(x) && !x.kept)];
+      if (keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
+    }
+  }
+
   let added = 0;
   const out: StrategyReport["moves"] = [];
-  for (const [i, m] of moves.entries()) {
-    const k = m.keyword?.trim().toLowerCase() ?? null;
-    let kept = verdict.keep[i];
-    let challenge = verdict.notes[i];
-    // A step no agent can act on: a fix is carried out through the search it names, so one without a search is dropped.
-    if (kept && m.kind === "fix" && !m.keyword?.trim()) {
-      kept = false;
-      challenge = "Dropped: it names no search to work on.";
-    }
-    // Data, not opinion: a move whose evidence isn't in this week's facts is dropped, whatever the critic said.
-    if (kept && !backedByFacts(m.evidence, facts)) {
-      kept = false;
-      challenge = "Dropped: what it rests on isn't in this week's data.";
-    }
-    // The agents only act on searches that really appear in the data, never invented ones.
-    if (kept && k && (m.kind === "target" || m.kind === "cluster") && (!known.has(k) || isJunkKeyword(k, { faith }))) {
-      kept = false;
-      challenge = `Dropped: "${k}" isn't in the site's data or isn't on topic.`;
-    }
+  for (const { m, k, kept, challenge } of screened) {
     let done: string | null = null;
     if (checked && kept && k && (m.kind === "target" || m.kind === "cluster") && added < MAX_NEW_TARGETS && platform.serperKey) {
       const already = (await readTargets(accountId).catch(() => [])).some((t) => t.keyword === k);
