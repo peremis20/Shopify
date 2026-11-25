@@ -7,8 +7,8 @@ test("reach: easy searches first, bigger ones as the site grows", () => {
   // A site with 18 visitors a month: a 368,000 search waits, a 900 one doesn't.
   assert.equal(withinReach(368000, null, 18), false);
   assert.equal(withinReach(900, null, 18), true);
-  // Unknown visitors count as a new site.
-  assert.equal(withinReach(5000, null, null), false);
+  // Site size unknown: nothing is held back on a guess.
+  assert.equal(withinReach(5000, 62, null), true);
   // Hard searches wait while the site is small, and open up once it has real visitors.
   assert.equal(withinReach(500, 62, 15), false);
   assert.equal(withinReach(500, 62, 3000), true);

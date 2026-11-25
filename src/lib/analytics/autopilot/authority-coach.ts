@@ -213,16 +213,20 @@ export async function runAuthorityCoach(accountId: string, conn: Connection | nu
   let { plan, screened } = first;
   const checked = first.ok;
   // Too little survived: one more try, told what was turned down and why, and checked the same way.
-  if (checked && screened.filter((m) => m.kept).length < MIN_KEPT) {
+  // Only when something was turned down: with no reasons to give, a second try would just repeat the first.
+  if (checked && screened.filter((m) => m.kept).length < MIN_KEPT && screened.some((m) => !m.kept)) {
     const second = await attempt(retryNote(screened.filter((m) => !m.kept))).catch((e) => (console.error(`authority coach second try failed: ${(e as Error).message}`), null));
     // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
     if (second?.ok) {
-      const same = (a: (typeof screened)[number], b: (typeof screened)[number]) => a.kind === b.kind && (a.keyword ?? "").toLowerCase() === (b.keyword ?? "").toLowerCase();
+      // The same move twice: same kind and site or topic, or (with neither) the same action.
+      const id = (m: (typeof screened)[number]) => `${m.kind}|${m.keyword ?? m.action}`.toLowerCase();
       const keptFirst = screened.filter((m) => m.kept);
-      const keptNew = second.screened.filter((m) => m.kept && !keptFirst.some((y) => same(m, y)));
-      const kept = [...keptFirst, ...keptNew].slice(0, 5);
-      screened = [...kept, ...screened.filter((m) => !m.kept), ...second.screened.filter((m) => !kept.includes(m) && !m.kept)];
-      if (keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
+      const keptNew = second.screened.filter((m) => m.kept && !keptFirst.some((y) => id(y) === id(m)));
+      const both = [...keptFirst, ...keptNew];
+      const kept = both.slice(0, 5);
+      const later = both.slice(5).map((m) => ({ ...m, kept: false, challenge: "Left for next week: five moves are already planned." }));
+      screened = [...kept, ...later, ...screened.filter((m) => !m.kept), ...second.screened.filter((m) => !m.kept)];
+      if (!keptFirst.length && keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
     }
   }
   const report: AuthorityPlan = {

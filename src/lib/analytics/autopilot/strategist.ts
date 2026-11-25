@@ -63,7 +63,9 @@ const MIN_KEPT = 2;
  * waits. Pure, so it can be tested.
  */
 export function withinReach(monthlySearches: number | null | undefined, difficulty: number | null | undefined, visitors: number | null): boolean {
-  const v = visitors ?? 0;
+  // Site size unknown (no Search Console, or it couldn't be read): nothing is held back on a guess.
+  if (visitors === null) return true;
+  const v = visitors;
   if (monthlySearches != null && monthlySearches > Math.max(1000, v * 20)) return false;
   if (difficulty != null && difficulty > 35 && v < 1000) return false;
   return true;
@@ -130,7 +132,7 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   let visitors: number | null = null;
 
   const near = conn?.gscSiteUrl ? await findOpportunities(conn, "28d").catch(() => []) : [];
-  if (conn?.gscSiteUrl) visitors = await gscClicks28d(conn).catch(() => null);
+  if (conn?.gscSiteUrl) visitors = await gscClicks28d(conn).catch((e) => (console.error(`strategist: Google visitors not read: ${(e as Error).message}`), null));
   const top = [...near].sort((a, b) => b.impressions - a.impressions).slice(0, 15);
   const pathOf = (u: string) => {
     try {
@@ -163,11 +165,11 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
   // New searches from the Idea finder (Google related searches, People also ask, competitor pages), with real volumes.
   const found = await readIdeas(accountId).catch(() => null);
   // Easy searches first, harder ones as the site grows: searches out of reach now aren't offered to the plan at all.
-  let waiting = 0;
-  const reach = (monthly: number | null | undefined, difficulty: number | null | undefined) => withinReach(monthly, difficulty, visitors) || (waiting++, false);
+  const waiting = new Set<string>();
+  const reach = (keyword: string, monthly: number | null | undefined, difficulty: number | null | undefined) => withinReach(monthly, difficulty, visitors) || (waiting.add(keyword), false);
   const fresh = (found?.ideas ?? [])
     .filter((i) => i.monthlySearches !== null && !known.has(i.keyword) && !targets.some((t) => t.keyword === i.keyword))
-    .filter((i) => reach(i.monthlySearches, null))
+    .filter((i) => reach(i.keyword, i.monthlySearches, null))
     .slice(0, 15);
   if (fresh.length) {
     const label = { related: "related search", question: "people also ask", competitor: "a competitor page ranks for it" } as const;
@@ -178,12 +180,12 @@ async function gatherFacts(accountId: string, conn: Connection | null, ourDomain
     fresh.forEach((i) => known.add(i.keyword));
   }
   if (found?.questions.length) lines.push(`Questions people ask on Google about these topics: ${found.questions.slice(0, 8).join(" | ")}`);
-  const ideas = kws.filter((k) => k.role !== "support" && !targets.some((t) => t.keyword === k.keyword) && reach(k.monthlySearches, k.difficulty)).slice(0, 15);
+  const ideas = kws.filter((k) => k.role !== "support" && !targets.some((t) => t.keyword === k.keyword) && reach(k.keyword, k.monthlySearches, k.difficulty)).slice(0, 15);
   if (ideas.length) {
     lines.push("Keyword ideas not targeted yet: " + ideas.map((k) => `"${k.keyword}" (${k.monthlySearches}/mo${k.difficulty !== undefined ? `, difficulty ${k.difficulty}` : ""}${k.winnable === false ? ", page 1 crowded" : ""})`).join("; "));
     ideas.forEach((k) => known.add(k.keyword));
   }
-  if (waiting) lines.push(`${waiting} bigger or harder search ideas wait until the site has more Google visitors.`);
+  if (waiting.size) lines.push(`${waiting.size} bigger or harder search ${waiting.size === 1 ? "idea waits" : "ideas wait"} until the site has more Google visitors.`);
 
   const changes = await sql`
     SELECT field, status, baseline_position, result_position FROM insights_autopilot_changes
@@ -312,18 +314,22 @@ export async function runStrategist(accountId: string, conn: Connection | null, 
   let { plan, screened } = first;
   const checked = first.ok;
   // Too little survived: one more try, told what was turned down and why, and checked the same way.
-  if (checked && screened.filter((x) => x.kept).length < MIN_KEPT) {
+  // Only when something was turned down: with no reasons to give, a second try would just repeat the first.
+  if (checked && screened.filter((x) => x.kept).length < MIN_KEPT && screened.some((x) => !x.kept)) {
     const note = retryNote(screened.filter((x) => !x.kept).map((x) => ({ ...x.m, challenge: x.challenge })));
     const second = await attempt(note).catch((e) => (console.error(`strategist second try failed: ${(e as Error).message}`), null));
     // A second try the reviewing AI couldn't check is left out; the first try's checked moves still stand.
     if (second?.ok) {
-      const same = (a: (typeof screened)[number], b: (typeof screened)[number]) => a.m.kind === b.m.kind && (a.k ?? a.m.page ?? "") === (b.k ?? b.m.page ?? "");
+      // The same move twice: same kind and search or page, or (with neither) the same action.
+      const id = (x: (typeof screened)[number]) => `${x.m.kind}|${x.k ?? x.m.page ?? x.m.action}`.toLowerCase();
       const keptFirst = screened.filter((x) => x.kept);
-      const keptNew = second.screened.filter((x) => x.kept && !keptFirst.some((y) => same(x, y)));
-      const kept = [...keptFirst, ...keptNew].slice(0, 5);
+      const keptNew = second.screened.filter((x) => x.kept && !keptFirst.some((y) => id(y) === id(x)));
+      const both = [...keptFirst, ...keptNew];
+      const kept = both.slice(0, 5);
       // Every move from both tries is kept on record, so the owner sees what was turned down and why.
-      screened = [...kept, ...screened.filter((x) => !x.kept), ...second.screened.filter((x) => !kept.includes(x) && !x.kept)];
-      if (keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
+      const later = both.slice(5).map((x) => ({ ...x, kept: false, challenge: "Left for next week: five moves are already planned." }));
+      screened = [...kept, ...later, ...screened.filter((x) => !x.kept), ...second.screened.filter((x) => !x.kept)];
+      if (!keptFirst.length && keptNew.length) plan = { ...plan, assessment: second.plan.assessment };
     }
   }
 
