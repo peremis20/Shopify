@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import type { WeeklyReportData } from "@/lib/analytics/autopilot/alerts";
+import { goalNote, goalWhy } from "@/lib/analytics/autopilot/goal";
 import { isUnattributed, unattributedNote } from "@/lib/analytics/autopilot/channels";
 import { DonutChart } from "./DonutChart";
 import { ArrowDownIcon, ArrowUpIcon } from "./Icons";
@@ -121,7 +122,7 @@ export function WeeklyReport({ auto = false }: { auto?: boolean }) {
               : "Not measured yet"}</span>
         </div>
         <Bar value={data.visitors?.value ?? 0} max={goal} />
-        <p className="mt-1 text-xs text-dash-muted">The long term goal every site works toward. The agents start with the easiest searches and aim higher as the site grows stronger.</p>
+        <p className="mt-1 text-xs text-dash-muted">{goalNote(data.visitors ? Number(data.visitors.value) : null, goal)} {goalWhy(goal)}</p>
         <p className="mt-3 text-sm text-dash-ink">{data.focus || "The Strategist sets the focus with the next weekly plan."}</p>
       </Card>
 

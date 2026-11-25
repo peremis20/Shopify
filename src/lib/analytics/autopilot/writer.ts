@@ -2382,6 +2382,7 @@ const VIEW_FACTS = [
   "report.visitors is the Strategist's estimate of Google visitors a month at its last plan; report.totals.visits is every channel's visits this week from Google Analytics. They measure different things and differ.",
   "report.totals.revenue is revenue Google Analytics tracked, which is 0 when the store doesn't send sales to Google Analytics; report.shopify is the store's own orders. Shopify sales with Analytics revenue at 0 is that setup, not a broken total.",
   "Backlink outreach emails are sent by the owner, never by the app, so 0 emailed with sites found is normal. report.backlinks.fromLinks is visits from sites already linking, not the list of sites found.",
+  "The visitors goal is the long term goal for every site, on purpose, and is far above a small site's number; the page shows the next milestone and explains it. Google visitors count only clicks from Google search (Search Console), so they are usually lower than all visits, and 0 is a real reading for a new site, not a fault.",
   "report.totals.leads leaves out key events on the Unassigned or (not set) channel, which Google Analytics couldn't tie to a visit; they are counted in report.unattributed. So the channels' key events add up to leads plus unattributed, on purpose.",
   "Moves the Strategist or the Authority Coach drop after their critic's check were rightly dropped as unsupported.",
 ].map((f) => `- ${f}`).join("\n");

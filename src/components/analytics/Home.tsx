@@ -1,5 +1,6 @@
 "use client";
 
+import { goalNote } from "@/lib/analytics/autopilot/goal";
 import { droppedSummary, dropReason, isDeferred } from "@/lib/analytics/autopilot/plan-notes";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ProspectList } from "@/lib/analytics/autopilot/backlinks";
@@ -83,13 +84,13 @@ export function Home({ data, loading, onGo }: {
   const admin = data?.account?.admin ?? false;
   // The goal is a month of visitors, so compare it with 28 days, not whatever range is picked.
   const days = data?.gsc?.range ? Math.round((Date.parse(data.gsc.range.end) - Date.parse(data.gsc.range.start)) / 86_400_000) + 1 : null;
-  const monthly: { value: number; note: string } | null =
+  const monthly: { value: number; note: string; estimate?: boolean } | null =
     gsc && days === 28
       ? { value: gsc.totals.clicks.value, note: "in the last 28 days" }
       : strategy?.visitors != null
         ? { value: strategy.visitors, note: "in the last 28 days" }
         : gsc && days && days > 0
-          ? { value: Math.round((gsc.totals.clicks.value * 28) / days), note: `a month at the pace of the last ${days} days` }
+          ? { value: gsc.totals.clicks.value > 0 ? Math.max(1, Math.round((gsc.totals.clicks.value * 28) / days)) : 0, note: `a month at the pace of the last ${days} days`, estimate: true }
           : null;
   const pageOne = ranks?.filter((r) => r.position !== null && r.position <= 10) ?? [];
   const quoted = ranks?.filter((r) => r.quoted).length ?? 0;
@@ -502,7 +503,7 @@ const MOVE_PAGE: Record<string, { page: SimplePage; label: string }> = {
 function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo }: {
   strategy: StrategyReport | null;
   /** Visitors from Google over 28 days (or scaled to 28 days, and labeled so). */
-  monthly: { value: number; note: string } | null;
+  monthly: { value: number; note: string; estimate?: boolean } | null;
   currency: string | null;
   planning: boolean;
   error: string | null;
@@ -555,6 +556,7 @@ function Plan({ strategy, monthly, currency, planning, error, note, onPlan, onGo
       >
         <div className="h-full rounded-full bg-[#2FA84F]" style={{ width: `${Math.max(pct, now ? 1.5 : 0)}%` }} />
       </div>
+      <p className="-mt-2 mb-3 text-xs text-dash-muted">{goalNote(now, goal, { estimate: monthly?.estimate })}</p>
       {!strategy ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="min-w-0 flex-1 text-sm text-dash-muted">The Strategist plans each week from your real numbers. The first plan comes within a day.</p>
