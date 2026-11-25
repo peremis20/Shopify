@@ -9,9 +9,14 @@ test("plan text: no hyphens or dashes between words reach the owner", () => {
   assert.equal(ownerText("A 30-day supply, 5-star"), "A 30 day supply, 5 star");
 });
 
-test("plan text: addresses, paths, quotes, dates and names keep their hyphens", () => {
-  const s = 'Rewrite /products/magnesium-glycinate for "vitamin-d gummies", pitch well-being-mag.com and https://a-b.com/x-y since 2026-11-20 (omega-3, B-12, COVID-19)';
-  assert.equal(ownerText(s), s);
+test("plan text: addresses, paths, the move's own search, dates and names keep their hyphens", () => {
+  const s = 'Rewrite /products/magnesium-glycinate for "vitamin-d gummies", pitch well-being-mag.com and https://a-b.com/x-y since 2026-11-20 (omega-3, B-12, COVID-19, 3-in-1)';
+  assert.equal(ownerText(s, ["vitamin-d gummies"]), s);
+});
+
+test("plan text: a quoted title the AI suggests is cleaned like the rest", () => {
+  assert.equal(ownerText('Rewrite the title to "Magnesium Glycinate – Calm‑Sleep Support"'), 'Rewrite the title to "Magnesium Glycinate, Calm Sleep Support"');
+  assert.equal(ownerText('A 6" wide-mouth jar'), 'A 6" wide mouth jar');
 });
 
 test("reach: easy searches first, bigger ones as the site grows", () => {

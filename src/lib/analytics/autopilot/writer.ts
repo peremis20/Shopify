@@ -179,23 +179,42 @@ export function polish(text: string): string {
  * What must stay word for word in owner text: web addresses, page paths, domains, quoted searches or names, and
  * dates. A hyphen inside them is part of the name, not punctuation.
  */
-const KEEP_AS_IS = /https?:\/\/\S+|(?<![\w.])\/[\w\-./%]+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|co|ai|us|uk|ca|au|de|fr|info|health|shop|store|blog)\b(?:\/[\w\-./%]*)?|"[^"\n]*"|“[^”\n]*”|\b\d{4}-\d{2}-\d{2}\b/gi;
+const KEEP_AS_IS = /https?:\/\/\S+|(?<![\w.])\/[\w\-./%]+|\b[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|co|ai|us|uk|ca|au|de|fr|info|health|shop|store|blog)\b(?:\/[\w\-./%]*)?|\b\d{4}-\d{2}-\d{2}\b/gi;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * Text the owner reads in the app (plans, notes): polished, and without hyphens between words, since the rule for what
  * owners read is no hyphens or dashes. "4-20" reads "4 to 20"; "benefit-focused" reads "benefit focused"; "30-day"
  * reads "30 day". Names with a letter then a number keep theirs ("omega-3", "B-12", "COVID-19"), and addresses, paths,
- * domains, quoted text and dates are left exactly as written.
+ * domains, dates and the `keep` strings (the move's own search and page) are left exactly as written.
  */
-export function ownerText(text: string): string {
+export function ownerText(text: string, keep: (string | null | undefined)[] = []): string {
   const kept: string[] = [];
-  const masked = polish(text).replace(KEEP_AS_IS, (m) => `\u0000${kept.push(m) - 1}\u0000`);
+  const mask = (m: string) => `\u0000${kept.push(m) - 1}\u0000`;
+  let masked = polish(text);
+  for (const k of keep) if (k && k.includes("-")) masked = masked.replace(new RegExp(escapeRe(k), "gi"), mask);
+  masked = masked.replace(KEEP_AS_IS, mask);
   return masked
     .replace(/(?<![\d-])(\d{1,3})\s*-\s*(\d{1,3})(?![\d-])/g, "$1 to $2")
-    .replace(/(\d)-(?=\p{L}{2,})/gu, "$1 ")
+    .replace(/(\d)-(?=\p{L}{3,})/gu, "$1 ")
     .replace(/(\p{L})-(?=\p{L})/gu, "$1 ")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
+}
+
+type PlanText = { assessment?: string; moves?: { action?: string; why?: string; challenge?: string | null; keyword?: string | null; page?: string | null }[] };
+
+/** A saved plan as the owner reads it: assessment and each move cleaned with ownerText; evidence stays as written. */
+export function cleanPlan<T extends PlanText>(r: T): T {
+  const keys = (r.moves ?? []).flatMap((m) => [m.keyword, m.page]);
+  return {
+    ...r,
+    assessment: ownerText(r.assessment ?? "", keys),
+    moves: (r.moves ?? []).map((m) => {
+      const keep = [m.keyword, m.page];
+      return { ...m, action: ownerText(m.action ?? "", keep), why: ownerText(m.why ?? "", keep), challenge: m.challenge ? ownerText(m.challenge, keep) : m.challenge };
+    }),
+  };
 }
 
 /** Units a spelled out number is read with ("two weeks", "fifty percent"), so it counts as a number too. */

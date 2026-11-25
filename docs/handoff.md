@@ -35,3 +35,6 @@ The weekly report's Work done stat now says how many changes wait on the fix lis
 
 ## Nov 25: Analytics vs Shopify sales gap (released)
 Weekly report, text and HTML email explain a clear gap between Google Analytics and Shopify sales (salesGapNote in channels.ts), comparing Shopify sales over the same whole days as Analytics (analyticsWeekRevenue, shop time zone) and only in the same currency. Leads and sales tile shows Shopify 7 day sales.
+
+## Nov 25: plan text for owners (released)
+Saved plans stay word for word; readStrategy, readAuthorityPlan, Plan now and the Inspector show them through cleanPlan/ownerText (writer.ts): no hyphens between words, while addresses, paths, domains, dates and the move's own search and page keep theirs. PLAN_RULES rule 6: title moves for condition searches never say which benefit to promise.

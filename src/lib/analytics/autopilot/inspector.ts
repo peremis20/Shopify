@@ -1,4 +1,5 @@
 import { readProspects } from "./backlinks";
+import { cleanPlan } from "./writer";
 import { clientListKnown, otherClient } from "./clients";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
@@ -475,7 +476,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   const [plan] = await sql`SELECT value FROM insights_settings WHERE key = ${`strategy:${accountId}`}`.catch(() => [] as { value: string | null }[]);
   if (plan?.value) {
     try {
-      const r = JSON.parse(plan.value) as { at: string; checked?: boolean; moves: { kind: string; kept: boolean; done: string | null; action: string }[] };
+      const r = cleanPlan(JSON.parse(plan.value) as { at: string; checked?: boolean; moves: { kind: string; kept: boolean; done: string | null; action: string; keyword?: string | null }[] });
       const idle = r.checked !== false && Date.now() - Date.parse(r.at) > 24 * HOUR ? r.moves.filter((m) => m.kept && !m.done && m.kind !== "hold") : [];
       if (idle.length) {
         problems.push({

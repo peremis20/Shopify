@@ -85,7 +85,7 @@ import { readScorecard } from "./autopilot/scorecard";
 import { postNote, pruneBoard, readBoard, syncNeeds } from "./autopilot/team";
 import { accountsDueForFinder, isoWeek, runFinder } from "./autopilot/prospect-finder";
 import { accountsDueForSiteWatch, runSiteWatch } from "./autopilot/site-watch";
-import { checkAiKey, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
+import { checkAiKey, cleanPlan, endRest, ownerApproves, writeOutreach } from "./autopilot/writer";
 import { deleteConnection, getConnection, saveConnection, signInAvailable, STATE_COOKIE, type Connection } from "./connection";
 import { ensureSchema, sql } from "./db";
 import { isRangeKey } from "./dates";
@@ -1076,7 +1076,7 @@ export const strategyReport = (req: Request) =>
         // Not a 200, so the page shows the reason next to Plan now.
         return json({ report, error: why }, 409);
       }
-      report = made;
+      report = cleanPlan(made);
     }
     // Shown with what the agents have done since it was written, not the note from the day it was planned.
     if (report) report = liveStatus(report, await readTargets(account.id).catch(() => []));
