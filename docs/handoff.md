@@ -29,3 +29,6 @@ The Inspector's "google:recrawl" fix text names DashPatrol's Home screen, the "O
 
 ## Nov 25: Idea finder "connect Search Console" with it connected (released)
 A site with no topics yet saves `noTopics: true` and is tried again after 6 hours instead of a week; the note says Search Console only when it isn't connected. Follow Us menu in Shopify now links Facebook, Instagram, LinkedIn (YouTube left as "#" until the owner confirms youtube.com/@peremis).
+
+## Nov 25: "autopilot did nothing" with a full fix list (released)
+The weekly report's Work done stat now says how many changes wait on the fix list; VIEW_FACTS explains report.week vs report.week.suggested to the customer view check.
