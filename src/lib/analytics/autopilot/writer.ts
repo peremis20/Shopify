@@ -2384,6 +2384,7 @@ const VIEW_FACTS = [
   "Backlink outreach emails are sent by the owner, never by the app, so 0 emailed with sites found is normal. report.backlinks.fromLinks is visits from sites already linking, not the list of sites found.",
   "The visitors goal is the long term goal for every site, on purpose, and is far above a small site's number; the page shows the next milestone and explains it. Google visitors count only clicks from Google search (Search Console), so they are usually lower than all visits, and 0 is a real reading for a new site, not a fault.",
   "report.shopify.sources is every order of the last report.shopify.days days (28) by where it came from, free samples included, so it differs from the 7 day sales tile; it adds up to report.shopify.orders, its Google search entry equals fromGoogle, and Direct or unknown is often the largest because Shopify can't trace every visit.",
+  "The Inspector problem about asking Google to look at changed pages sooner has its own button on the Home page, Open Google to allow, which opens Google's permission screen; the page view the check reads doesn't show buttons.",
   "report.totals.leads leaves out key events on the Unassigned or (not set) channel, which Google Analytics couldn't tie to a visit; they are counted in report.unattributed. So the channels' key events add up to leads plus unattributed, on purpose.",
   "Moves the Strategist or the Authority Coach drop after their critic's check were rightly dropped as unsupported.",
 ].map((f) => `- ${f}`).join("\n");

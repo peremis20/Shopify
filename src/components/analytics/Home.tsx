@@ -34,6 +34,8 @@ export function Home({ data, loading, onGo }: {
   const [settings, setSettings] = useState<AutopilotSettingsView | null>(null);
   const [ranks, setRanks] = useState<RankWatchRow[] | null>(null);
   const [health, setHealth] = useState<PageHealth[]>([]);
+  const [allowErr, setAllowErr] = useState<string | null>(null);
+  const [allowBusy, setAllowBusy] = useState(false);
   const [problems, setProblems] = useState<Problem[]>([]);
   const [strategy, setStrategy] = useState<StrategyReport | null>(null);
   const [planning, setPlanning] = useState(false);
@@ -183,12 +185,28 @@ export function Home({ data, loading, onGo }: {
                 }`}
               >
                 {app ? <BotIcon className="h-5 w-5 shrink-0 text-[#D9822B]" /> : <AlertIcon className="h-5 w-5 shrink-0 text-dash-down" />}
-                <span className="min-w-0 flex-1 text-dash-ink">
+                <span className="min-w-0 basis-full flex-1 text-dash-ink sm:basis-0">
                   {(i === 0 || app) && <span className={`font-semibold ${app ? "text-[#C2661B]" : "text-dash-down"}`}>{app ? "App notice: " : "Needs your attention: "}</span>}
                   {w.text}
                 </span>
                 {w.allowGoogle ? (
-                  <button onClick={() => void goToGoogle("recrawl").catch(() => undefined)} className={`text-sm font-semibold hover:underline ${app ? "text-[#C2661B]" : "text-dash-down"}`}>Allow &rarr;</button>
+                  <span className="flex shrink-0 flex-col items-start sm:items-end">
+                    <button
+                      disabled={allowBusy}
+                      onClick={() => {
+                        setAllowErr(null);
+                        setAllowBusy(true);
+                        void goToGoogle("recrawl")
+                          .catch((e) => setAllowErr(e instanceof Error && e.message ? e.message : "Google's permission screen didn't open. Please try again."))
+                          .finally(() => setAllowBusy(false));
+                      }}
+                      title="Opens Google's permission screen in this window"
+                      className="whitespace-nowrap rounded-lg bg-dash-down px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+                    >
+                      Open Google to allow &rarr;
+                    </button>
+                    {allowErr && <span role="alert" className="mt-1 max-w-xs text-xs text-dash-down sm:text-right">{allowErr}</span>}
+                  </span>
                 ) : (
                   <button onClick={() => onGo(w.page)} className={`text-sm font-semibold hover:underline ${app ? "text-[#C2661B]" : "text-dash-down"}`}>Take a look &rarr;</button>
                 )}

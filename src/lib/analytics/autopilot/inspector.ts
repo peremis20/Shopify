@@ -522,7 +522,7 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
       problems.push({
         id: "google:recrawl",
         text: "The app can't ask Google to look at your changed pages sooner.",
-        fix: "Click Allow and accept on Google's screen, so each change reaches Google faster.",
+        fix: `Open DashPatrol's Home screen and press the "Open Google to allow" button. Google's permission screen opens; choose ${conn.email ?? "the Google account you connected"} and click Allow. It is a one time step, and each change then reaches Google faster.`,
         who: "owner",
       });
     }

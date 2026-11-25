@@ -23,3 +23,6 @@ Google Analytics key events on the Unassigned or (not set) channel are no longer
 
 ## Nov 25: where Shopify orders came from (released, see next commit)
 `shopify-sales.ts` orderSource() names each order's source from the source name and referring host only (TikTok, TikTok Shop, Google search, Google ads, ChatGPT, Gemini, Gmail, Direct or unknown, other hosts), top 8 plus Other, shown on the weekly report and in the email. isGoogle is shared with fromGoogle: source Google or Google Shopping, the Google app, or a google.* host. Old cache rows without sources are read again.
+
+## Nov 25: Google recrawl permission (released)
+The Inspector's "google:recrawl" fix text names DashPatrol's Home screen, the "Open Google to allow" button and the connected Google email. Home shows a clear button that reports a failed or blocked opening. Follow up idea: the OAuth callback could refuse a different Google account when the purpose is recrawl.

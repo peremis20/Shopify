@@ -559,7 +559,9 @@ const PENDING_SETUP = "insights.pendingSetup";
 /** Leaves the page for Google (at the top level when inside Shopify admin). */
 export async function goToGoogle(purpose: "setup" | "recrawl" | "gmail") {
   const { url } = await api<{ url: string }>(`/api/auth/google/link?purpose=${purpose}`);
-  if (isEmbedded()) window.open(url, "_top");
+  if (isEmbedded()) {
+    if (!window.open(url, "_top")) throw new Error("Your browser blocked Google's screen. Please allow it and press again.");
+  }
   else window.location.href = url;
 }
 
