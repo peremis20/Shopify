@@ -47,7 +47,13 @@ const hostOf = (x: string | null | undefined): string | null => {
 };
 const isPaid = (v: Visit) => /cpc|ppc|paid/i.test(v.utmParameters?.medium ?? "");
 /** Google itself (search or ads), never another Google product such as Gemini or Gmail. */
-const isGoogle = (v: Visit) => /^google$/i.test((v.source ?? "").trim()) || /^google\.[a-z.]+$/.test(hostOf(v.referrerUrl) ?? "") || /^google\.[a-z.]+$/.test(hostOf(v.source) ?? "");
+const GOOGLE_HOST = /^google\.(com|[a-z]{2,3}(\.[a-z]{2})?)$/;
+const isGoogle = (v: Visit) => {
+  const src = (v.source ?? "").trim();
+  return /^google( shopping)?$/i.test(src) || /googlequicksearchbox/i.test(src) || /googlequicksearchbox/i.test(v.referrerUrl ?? "") ||
+    GOOGLE_HOST.test(hostOf(v.referrerUrl) ?? "") || GOOGLE_HOST.test(hostOf(src) ?? "");
+};
+const GOOGLE_ADS_SOURCE = /^(google|google[ _]?ads|adwords)$/i;
 
 const fromGoogleSearch = (v: Visit | null) => Boolean(v && isGoogle(v) && !isPaid(v));
 
@@ -75,10 +81,12 @@ export function orderSource(sourceName: string | null, j: { firstVisit: Visit | 
   if (fromGoogleSearch(j?.lastVisit ?? null) || fromGoogleSearch(j?.firstVisit ?? null)) return "Google search";
   const v = j?.lastVisit ?? j?.firstVisit ?? null;
   if (v) {
-    if (isGoogle(v)) return "Google ads";
+    if (isGoogle(v) || (isPaid(v) && GOOGLE_ADS_SOURCE.test((v.source ?? "").trim()))) return "Google ads";
     const keys = [(v.source ?? "").trim(), hostOf(v.source), hostOf(v.referrerUrl)].filter((k): k is string => Boolean(k));
     for (const [re, name] of KNOWN) if (keys.some((k) => re.test(k))) return name;
-    if (!v.source || /^direct$/i.test(v.source.trim())) return hostOf(v.referrerUrl) ?? "Direct or unknown";
+    // Shopify names the source from the referrer, so a direct visit's referrer is the store itself: not a source.
+    if (!v.source || /^(direct|unknown|\(direct\)|\(none\))$/i.test(v.source.trim())) return "Direct or unknown";
+    if (/^other$/i.test(v.source.trim())) return "Other";
     return hostOf(v.source) ?? (clean(v.source) || "Direct or unknown");
   }
   const ch = (sourceName ?? "").trim().toLowerCase();
@@ -167,9 +175,11 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
   out.pages = [...pages.entries()].map(([path, v]) => ({ path, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 10);
   // The top 8 by name, the rest as one "Other" row, so the list stays short and still adds up to every order.
   const all = [...sources.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue);
-  const rest = all.slice(8);
+  // An "Other" row of its own joins the folded rest, so there is never a second one.
+  const top = all.filter((x) => x.name !== "Other").slice(0, 8);
+  const rest = all.filter((x) => !top.includes(x));
   out.sources = rest.length
-    ? [...all.slice(0, 8), { name: "Other", orders: rest.reduce((n, x) => n + x.orders, 0), revenue: rest.reduce((n, x) => n + x.revenue, 0) }]
+    ? [...top, { name: "Other", orders: rest.reduce((n, x) => n + x.orders, 0), revenue: rest.reduce((n, x) => n + x.revenue, 0) }]
     : all;
   return out;
 }

@@ -20,3 +20,6 @@ Google Analytics key events on the Unassigned or (not set) channel are no longer
 
 ## Nov 25: goal card (released 1ee2e33)
 `autopilot/goal.ts` shows the next milestone (100, 500, 1,000 ... up to the goal) and says the number counts Google search clicks only, usually lower than all visits. The pace estimate never rounds real clicks to 0. VIEW_FACTS explains it to the customer view check.
+
+## Nov 25: where Shopify orders came from (released, see next commit)
+`shopify-sales.ts` orderSource() names each order's source from the source name and referring host only (TikTok, TikTok Shop, Google search, Google ads, ChatGPT, Gemini, Gmail, Direct or unknown, other hosts), top 8 plus Other, shown on the weekly report and in the email. isGoogle is shared with fromGoogle: source Google or Google Shopping, the Google app, or a google.* host. Old cache rows without sources are read again.

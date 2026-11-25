@@ -26,3 +26,13 @@ test("order source: other Google products, page paths and odd names are not misr
   assert.equal(orderSource("iphone", null), "Shop app");
   assert.equal(orderSource("web", { firstVisit: visit("Google", "https://www.google.co.uk/"), lastVisit: null }), "Google search");
 });
+
+test("order source: Google app, Shopping, ads names, unknown and the store's own pages", () => {
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("android-app://com.google.android.googlequicksearchbox") }), "Google search");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("Google Shopping") }), "Google search");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("google_ads", null, "cpc") }), "Google ads");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("unknown") }), "Direct or unknown");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("direct", "https://peremis.com/") }), "Direct or unknown");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("Other") }), "Other");
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("google.evil.com") }), "google.evil.com");
+});
