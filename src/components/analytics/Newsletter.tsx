@@ -278,7 +278,9 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
   };
   const draft = c.status === "draft" || c.status === "stopped";
   const editable = (draft || c.status === "failed") && c.sent === 0 && c.unsure === 0;
-  const subs = data.counts.subscribed;
+  // A paused email carries on with the people still waiting for it; a new one goes to everyone subscribed now.
+  const resume = c.status === "stopped" && Boolean(c.approvedAt);
+  const subs = resume ? c.waiting : data.counts.subscribed;
   return (
     <li className="py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -290,9 +292,12 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
             {c.waiting ? `, ${n(c.waiting)} waiting` : ""}
             {c.unsure ? `, ${n(c.unsure)} not sure (never sent twice)` : ""}
             {c.finishedAt ? `, finished ${when(c.finishedAt)}` : ""}
-            {c.checked === "ai" ? ". Checked by a second AI" : c.sourceUrl ? ". No second AI was free, so read it carefully" : ""}
+            {c.checked === "ai" ? ". Checked by a second AI" : ""}
             {c.tested && draft ? ". Test sent" : ""}
           </p>
+          {c.checked !== "ai" && c.sourceUrl && draft && (
+            <p className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">No second AI was free to check this draft. Read every line before you approve.</p>
+          )}
           {c.lastError && <p className="mt-1 text-xs text-red-700">{c.lastError}</p>}
         </div>
         <div className="flex flex-wrap gap-2">
@@ -306,7 +311,7 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
             <ConfirmButton
               className={primary}
               disabled={busy || !c.tested || data.missing.length > 0 || subs === 0}
-              label={`Send to ${n(subs)} subscribers`}
+              label={resume ? `Carry on: send to the ${n(subs)} still waiting` : `Send to ${n(subs)} subscribers`}
               confirmLabel={`Click again to send to ${n(subs)}`}
               onConfirm={() => act({ action: "approve", count: subs }, (o) => `Approved. It goes out to ${n(Number(o.count))} subscribers over the next hours, up to ${n(data.settings.dailyCap)} a day.`)}
             />

@@ -2581,7 +2581,8 @@ export async function newsletterWebhook(req: Request): Promise<Response> {
   const body = await readCapped(req, 200_000).catch(() => null);
   if (body === null) return json({ error: "too large" }, 413);
   const secret = await webhookSecretFor(accountId).catch(() => null);
-  if (!secret) return json({ error: "not set up" }, 404);
+  // The same answer whether or not a secret is saved, so nobody can tell which sites set one up.
+  if (!secret) return json({ error: "bad signature" }, 401);
   const ok = verifySvix(secret, { id: req.headers.get("svix-id"), timestamp: req.headers.get("svix-timestamp"), signature: req.headers.get("svix-signature") }, body);
   if (!ok) return json({ error: "bad signature" }, 401);
   try {

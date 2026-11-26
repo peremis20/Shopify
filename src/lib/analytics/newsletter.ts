@@ -311,9 +311,12 @@ export function retryAfterMs(header: string | null | undefined, now = Date.now()
  * The idempotency key for one batch. A fresh claim gets a fresh nonce, so a batch whose claims were dropped and made
  * again never reuses a key (Resend would answer 409); only the safe resend of an unanswered batch reuses its key.
  */
-export function batchKey(campaignId: string, subscriberIds: string[], nonce = crypto.randomBytes(6).toString("base64url")): string {
-  return `newsletter-${campaignId}-${nonce}-${subscriberIds[0] ?? 0}-${subscriberIds[subscriberIds.length - 1] ?? 0}-${subscriberIds.length}`;
+export function batchKey(campaignId: string, nonce = crypto.randomBytes(9).toString("base64url")): string {
+  return `newsletter-${campaignId}-${nonce}`;
 }
+/** The key for one email of a batch sent one at a time. */
+export const singleKey = (key: string, subscriberId: string) => `${key}-one-${subscriberId}`;
+export const isSingleKey = (key: string) => /-one-\d+$/.test(key);
 
 /** Resend keeps idempotency keys for 24 hours: an unanswered batch is sent again with its key until then, never after. */
 export const RESEND_WINDOW_MS = 23 * 3_600_000;
@@ -573,7 +576,7 @@ export interface Campaign {
   updatedAt: string;
   finishedAt: string | null;
   sent: number;
-  /** Claimed but with no clear answer from Resend; never sent again. */
+  /** No clear answer from Resend within 24 hours; never sent again. */
   unsure: number;
   /** Subscribed when approved and still waiting. */
   waiting: number;
@@ -622,7 +625,7 @@ export async function newsletterView(accountId: string, query = "") {
       : sql`SELECT id, email, name, status, source, consent, created_at FROM insights_newsletter_subscribers WHERE account_id = ${accountId} ORDER BY id DESC LIMIT 50`,
     sql`SELECT c.*, (c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at) AS tested,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent,
-        (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND (x.status = 'unknown' OR (x.status = 'pending' AND x.sent_at < now() - interval '15 minutes'))) AS unsure,
+        (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'unknown') AS unsure,
         CASE WHEN c.status IN ('approved', 'sending', 'stopped') AND c.approved_at IS NOT NULL THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
           AND s.status = 'subscribed' AND s.created_at <= c.approved_at
           AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)) ELSE 0 END AS waiting
@@ -1025,123 +1028,287 @@ export async function retryCampaign(accountId: string, id: unknown): Promise<voi
   await sql`UPDATE insights_newsletter_campaigns SET status = 'sending', last_error = NULL WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'failed'`;
 }
 
+
 // ---------- sending (the hourly run) ----------
 
-/** Sites with an approved email still going out, the longest waiting first. */
+/**
+ * Sites with an approved email still going out and room left in today's cap, the one whose turn came longest ago
+ * first, so a site at its daily cap never takes the turns of the others.
+ */
 export async function accountsDueForNewsletter(limit = 5): Promise<string[]> {
   await schema();
-  const rows = await sql`SELECT account_id, min(approved_at) AS at FROM insights_newsletter_campaigns
-    WHERE status IN ('approved', 'sending') GROUP BY account_id ORDER BY at LIMIT ${limit}`;
+  const rows = await sql`SELECT c.account_id, max(c.last_run_at) AS at FROM insights_newsletter_campaigns c
+    LEFT JOIN insights_newsletter_settings st ON st.account_id = c.account_id
+    WHERE c.status IN ('approved', 'sending')
+      AND (SELECT count(*) FROM insights_newsletter_sends x WHERE x.account_id = c.account_id AND x.status IN ('pending', 'sent', 'unknown')
+        AND x.sent_at >= ((now() AT TIME ZONE 'UTC')::date::timestamp AT TIME ZONE 'UTC')) < coalesce(st.daily_cap, ${DEFAULT_DAILY_CAP})
+    GROUP BY c.account_id ORDER BY max(c.last_run_at) NULLS FIRST LIMIT ${limit}`;
   return rows.map((r) => String(r.account_id));
 }
 
-type BatchSender = (key: string, payload: unknown[], idempotencyKey: string) => Promise<{ ok: boolean; status: number | null; body: unknown; text: string }>;
-const resendBatch: BatchSender = (key, payload, idem) => resendPost(key, "/emails/batch", payload, idem);
+export type ResendSender = (key: string, path: "/emails" | "/emails/batch", payload: unknown, idempotencyKey: string) => Promise<ResendAnswer>;
+const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+/**
+ * One run at a time per site. The database is reached over HTTP (a new connection each query), so a Postgres advisory
+ * lock would not hold between queries; a lease row does, and frees itself after 15 minutes if a run dies.
+ */
+async function takeLease(accountId: string): Promise<boolean> {
+  const [row] = await sql`INSERT INTO insights_settings (key, value) VALUES (${`newsletter_lock:${accountId}`}, ${new Date().toISOString()})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+    WHERE insights_settings.updated_at < now() - interval '15 minutes' RETURNING key`;
+  return Boolean(row);
+}
+const dropLease = (accountId: string) => sql`DELETE FROM insights_settings WHERE key = ${`newsletter_lock:${accountId}`}`;
 
 /**
  * Sends the site's oldest approved email to the next people on its list, in batches of up to 100, within the daily
- * cap. Each person is claimed before the call, so nobody gets it twice; a failure stops the run and goes on the
- * status board for the Inspector.
+ * cap. Each person is claimed (with the batch's idempotency key) before the call, so nobody gets it twice; a batch
+ * with no clear answer is sent again with the same key, which Resend never delivers twice. A failure stops the run and
+ * goes on the status board for the Inspector.
  */
-export async function runNewsletter(accountId: string, deadline = Date.now() + 60_000, send: BatchSender = resendBatch): Promise<string | null> {
+export async function runNewsletter(accountId: string, deadline = Date.now() + 60_000, send: ResendSender = resendPost, wait: (ms: number) => Promise<void> = sleep): Promise<string | null> {
   await schema();
   if (isSabbath()) return null;
+  if (!(await takeLease(accountId))) return "another run is sending for this site";
+  try {
+    return await sendFor(accountId, deadline, send, wait);
+  } finally {
+    await dropLease(accountId).catch(() => undefined);
+  }
+}
+
+interface Person {
+  id: string;
+  email: string;
+  token: string;
+}
+
+async function sendFor(accountId: string, deadline: number, send: ResendSender, wait: (ms: number) => Promise<void>): Promise<string | null> {
   const [c] = await sql`SELECT * FROM insights_newsletter_campaigns WHERE account_id = ${accountId} AND status IN ('approved', 'sending')
     ORDER BY approved_at LIMIT 1`;
   if (!c) return null;
+  const cid = String(c.id);
+  await sql`UPDATE insights_newsletter_campaigns SET last_run_at = now() WHERE account_id = ${accountId} AND status IN ('approved', 'sending')`;
   const s = await readSettings(accountId);
   const missing = missingSetup(s);
   const fail = async (why: string, final: boolean) => {
-    await sql`UPDATE insights_newsletter_campaigns SET last_error = ${why.slice(0, 500)}, status = CASE WHEN ${final ? "1" : "0"}::text = '1' THEN 'failed' ELSE status END
-      WHERE id = ${c.id} AND account_id = ${accountId}`.catch(() => undefined);
+    await sql`UPDATE insights_newsletter_campaigns SET last_error = ${why.slice(0, 500)}, status = CASE WHEN ${final ? "1" : "0"}::text = '1' AND status = 'sending' THEN 'failed' ELSE status END
+      WHERE id = ${cid} AND account_id = ${accountId}`.catch(() => undefined);
     await report("newsletter", false, `Newsletter for account ${accountId}: ${why}`);
   };
   if (missing.length) {
+    await sql`UPDATE insights_newsletter_campaigns SET status = 'sending' WHERE id = ${cid} AND account_id = ${accountId} AND status = 'approved'`;
     await fail(`Sending waits: add ${missing.join(", ")} in Newsletter settings.`, true);
     return `waiting for setup (${missing.join(", ")})`;
   }
   if (!c.origin) {
+    await sql`UPDATE insights_newsletter_campaigns SET status = 'sending' WHERE id = ${cid} AND account_id = ${accountId} AND status = 'approved'`;
     await fail("The unsubscribe address is missing. Approve the email again.", true);
     return "no unsubscribe address";
   }
-  let left = allowance(s.dailyCap, await sentToday(accountId));
-  if (!left) return "daily limit reached, the rest goes tomorrow";
-  if (c.status === "approved") await sql`UPDATE insights_newsletter_campaigns SET status = 'sending' WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'approved'`;
+  if (c.status === "approved") await sql`UPDATE insights_newsletter_campaigns SET status = 'sending' WHERE id = ${cid} AND account_id = ${accountId} AND status = 'approved'`;
   const brand = await brandOf(accountId, s);
   const from = fromHeader(s.fromName, s.fromAddress);
+  const domain = s.fromAddress.split("@")[1];
+  const emailFor = (p: Person) =>
+    buildEmail({
+      from,
+      replyTo: s.replyTo || null,
+      to: p.email,
+      subject: c.subject ?? "",
+      preview: c.preview ?? "",
+      body: c.body ?? "",
+      brand,
+      postalAddress: s.postalAddress,
+      unsubscribe: unsubscribeUrl(c.origin!, p.token),
+    });
+  const stillSending = async () => {
+    const [x] = await sql`SELECT status FROM insights_newsletter_campaigns WHERE id = ${cid} AND account_id = ${accountId}`;
+    return x?.status === "sending";
+  };
+  const inIds = (ids: string[]) => ids.join(",");
+  const drop = (ids: string[]) =>
+    ids.length ? sql`DELETE FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'pending' AND subscriber_id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[])` : Promise.resolve([]);
+  const mark = (ids: string[], status: "unknown" | "failed", note: string | null = null) =>
+    ids.length
+      ? sql`UPDATE insights_newsletter_sends SET status = ${status}, note = ${note} WHERE campaign_id = ${cid} AND status = 'pending' AND subscriber_id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[])`
+      : Promise.resolve([]);
   let sentNow = 0;
   let runLeft = PER_RUN;
-  while (left > 0 && runLeft > 0 && Date.now() < deadline && !isSabbath()) {
+  const markSent = async (pairs: { id: string; rid: string | null }[]) => {
+    await sql`UPDATE insights_newsletter_sends x SET status = 'sent', resend_id = y.rid, sent_at = now()
+      FROM jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) AS y(id bigint, rid text)
+      WHERE x.campaign_id = ${cid} AND x.subscriber_id = y.id AND x.status = 'pending'`;
+    sentNow += pairs.length;
+    runLeft -= pairs.length;
+  };
+  let calls = 0;
+  // Paced, and a rate limit's Retry-After is waited out within the run's time.
+  const call = async (path: "/emails" | "/emails/batch", payload: unknown, key: string): Promise<ResendAnswer> => {
+    for (let tries = 0; ; tries++) {
+      if (calls++ > 0) await wait(BATCH_PAUSE_MS);
+      const r = await send(s.resendKey!, path, payload, key);
+      const ra = r.status === 429 ? retryAfterMs(r.retryAfter) ?? 1_000 : null;
+      if (ra === null || tries >= 2 || Date.now() + ra + 5_000 > deadline) return r;
+      await wait(ra);
+    }
+  };
+  const refusedWhy = (why: string) => `Resend refused the emails (${why}). Check your Resend key and that ${domain} is verified in Resend, then click Try again.`;
+  const idsFromBatch = (r: ResendAnswer) => ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((x) => x?.id ?? null);
+  const idFromOne = (r: ResendAnswer) => (r.body as { id?: string } | null)?.id ?? null;
+
+  // 1. Batches with no clear answer from an earlier run: exactly those rows again, with the same key, within 24 hours.
+  const unanswered = await sql`SELECT batch_key, min(sent_at) AS at, string_agg(subscriber_id::text, ',' ORDER BY subscriber_id) AS ids
+    FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'pending' GROUP BY batch_key ORDER BY min(sent_at) LIMIT 100`;
+  for (const g of unanswered) {
+    const ids = String(g.ids ?? "").split(",").filter(Boolean);
+    const key = g.batch_key;
+    const at = Date.parse(iso(g.at) ?? "");
+    if (!key || Number.isNaN(at) || pendingAction(at) === "unknown") {
+      // Past the 24 hours Resend remembers a key (or no key at all): they may have got it, so they never get it again.
+      await mark(ids, "unknown", "No clear answer from Resend within 24 hours");
+      continue;
+    }
+    if (Date.now() > deadline || isSabbath()) return `${sentNow} sent; the rest goes next hour`;
+    if (!(await stillSending())) return `${sentNow} sent, then paused`;
+    const rows = await sql`SELECT id, email, token, status FROM insights_newsletter_subscribers WHERE account_id = ${accountId}
+      AND id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[]) ORDER BY id`;
+    // Someone who unsubscribed meanwhile is never emailed again; the first try may have reached them already.
+    const people: Person[] = rows.filter((r) => r.status === "subscribed").map((r) => ({ id: String(r.id), email: r.email ?? "", token: r.token ?? "" }));
+    await mark(ids.filter((id) => !people.some((p) => p.id === id)), "unknown", "Unsubscribed before Resend answered");
+    if (!people.length) continue;
+    const single = isSingleKey(key);
+    const r = await call(single ? "/emails" : "/emails/batch", single ? emailFor(people[0]) : people.map(emailFor), key);
+    if (r.ok) {
+      const got = single ? [idFromOne(r)] : idsFromBatch(r);
+      await markSent(people.map((p, i) => ({ id: p.id, rid: got[i] ?? null })));
+      continue;
+    }
+    const why = resendWhy(r);
+    const kind = failureKind(r.status);
+    const pids = people.map((p) => p.id);
+    if (r.status === 409 && !/concurrent/i.test(why)) {
+      // The same key with a different request (the list changed, or the settings): it can't be known whether the first
+      // try went out, so these people are never sent it again.
+      await mark(pids, "unknown", `Resend: ${why}`);
+      continue;
+    }
+    if (kind === "invalid") {
+      // A validation refusal means Resend never took the first try either: the claims go, and they are sent fresh below.
+      await drop(pids);
+      continue;
+    }
+    if (kind === "fatal") await fail(refusedWhy(why), true);
+    else await fail(`Resend gave no clear answer or asked to wait (${why}). The same emails are sent again next hour; nobody gets one twice.`, false);
+    return `${sentNow} sent, then stopped: ${why}`;
+  }
+
+  // 2. The next people on the list, claimed with a fresh key, a batch at a time.
+  while (runLeft > 0 && Date.now() < deadline && !isSabbath()) {
+    // Counted again before every batch, so the cap holds whatever else was sent today.
+    const left = allowance(s.dailyCap, await sentToday(accountId));
+    if (!left) return `${sentNow} sent, daily limit reached; the rest goes tomorrow`;
     const size = batchSizes(Number.MAX_SAFE_INTEGER, left, runLeft)[0] ?? 0;
     if (!size) break;
-    // Claim the next people first (atomically), so an overlapping run or a retry can never pick them again.
+    const key = batchKey(cid);
+    // Claimed only while the email is still sending, so Pause stops the next batch at once.
     const claimed = await sql`WITH pick AS (
         SELECT s.id FROM insights_newsletter_subscribers s
         WHERE s.account_id = ${accountId} AND s.status = 'subscribed' AND s.created_at <= ${c.approved_at}::timestamptz
-          AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${c.id} AND x.subscriber_id = s.id)
+          AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ${cid} AND k.account_id = ${accountId} AND k.status = 'sending')
+          AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)
         ORDER BY s.id LIMIT ${size})
-      INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status)
-      SELECT ${c.id}, id, ${accountId}, 'pending' FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`;
+      INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key)
+      SELECT ${cid}, id, ${accountId}, 'pending', ${key} FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`;
     if (!claimed.length) {
-      // A recheck before calling it done: someone may still be waiting behind a claim another run made.
+      if (!(await stillSending())) return `${sentNow} sent, then paused`;
+      // Nobody left to claim. Done once no batch is still waiting for a clear answer from Resend.
+      const [open] = await sql`SELECT 1 AS x FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'pending' LIMIT 1`;
+      if (open) break;
       await sql`UPDATE insights_newsletter_campaigns SET status = 'sent', finished_at = now(), last_error = NULL
-        WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'sending'`;
+        WHERE id = ${cid} AND account_id = ${accountId} AND status = 'sending'`;
       await report("newsletter", true);
       return `${sentNow} sent, the email is done`;
     }
     const ids = claimed.map((r) => String(r.subscriber_id));
-    const people = await sql`SELECT id, email, token FROM insights_newsletter_subscribers
-      WHERE account_id = ${accountId} AND status = 'subscribed' AND id = ANY(string_to_array(${ids.join(",")}, ',')::bigint[]) ORDER BY id`;
-    const gone = ids.filter((id) => !people.some((p) => String(p.id) === id));
+    const rows = await sql`SELECT id, email, token FROM insights_newsletter_subscribers
+      WHERE account_id = ${accountId} AND status = 'subscribed' AND id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[]) ORDER BY id`;
+    const people: Person[] = rows.map((r) => ({ id: String(r.id), email: r.email ?? "", token: r.token ?? "" }));
     // Unsubscribed in the moment between the claim and now: they are never emailed, and their claim is dropped.
-    if (gone.length) await sql`DELETE FROM insights_newsletter_sends WHERE campaign_id = ${c.id} AND status = 'pending' AND subscriber_id = ANY(string_to_array(${gone.join(",")}, ',')::bigint[])`;
+    await drop(ids.filter((id) => !people.some((p) => p.id === id)));
     if (!people.length) continue;
-    const payload = people.map((p) =>
-      buildEmail({
-        from,
-        replyTo: s.replyTo || null,
-        to: p.email ?? "",
-        subject: c.subject ?? "",
-        preview: c.preview ?? "",
-        body: c.body ?? "",
-        brand,
-        postalAddress: s.postalAddress,
-        unsubscribe: unsubscribeUrl(c.origin!, p.token ?? ""),
-        campaignId: String(c.id),
-      }),
-    );
-    const sentIds = people.map((p) => String(p.id));
-    const r = await send(s.resendKey!, payload, `newsletter-${c.id}-${sentIds[0]}-${sentIds[sentIds.length - 1]}-${sentIds.length}`);
-    if (!r.ok) {
-      const kind = failureKind(r.status);
-      const why = resendWhy(r);
-      if (kind === "unknown") {
-        // No clear answer: these emails may have gone out, so they are never sent again.
-        await sql`UPDATE insights_newsletter_sends SET status = 'unknown' WHERE campaign_id = ${c.id} AND status = 'pending'
-          AND subscriber_id = ANY(string_to_array(${sentIds.join(",")}, ',')::bigint[])`;
-        await fail(`Resend gave no clear answer (${why}). Sending tries again next hour; nobody gets the email twice.`, false);
-      } else {
-        // Resend refused the whole batch, so nothing went out: the claims are dropped and these people get it later.
-        await sql`DELETE FROM insights_newsletter_sends WHERE campaign_id = ${c.id} AND status = 'pending'
-          AND subscriber_id = ANY(string_to_array(${sentIds.join(",")}, ',')::bigint[])`;
-        await fail(
-          kind === "retry"
-            ? `Resend asked to slow down (${why}). Sending carries on next hour.`
-            : `Resend refused the emails (${why}). Check your Resend key and that ${s.fromAddress.split("@")[1]} is verified in Resend, then click Try again.`,
-          kind === "fatal",
-        );
-      }
+    const pids = people.map((p) => p.id);
+    const r = await call("/emails/batch", people.map(emailFor), key);
+    if (r.ok) {
+      const got = idsFromBatch(r);
+      await markSent(people.map((p, i) => ({ id: p.id, rid: got[i] ?? null })));
+      continue;
+    }
+    const why = resendWhy(r);
+    const kind = failureKind(r.status);
+    if (kind === "unknown") {
+      // No clear answer: the rows stay claimed with this key and are sent again with it next hour (Resend never
+      // delivers the same key twice), or never, once 24 hours have passed.
+      await fail(`Resend gave no clear answer (${why}). The same emails are sent again next hour; nobody gets one twice.`, false);
       return `${sentNow} sent, then stopped: ${why}`;
     }
-    const got = ((r.body as { data?: { id?: string }[] } | null)?.data ?? []).map((x) => x?.id ?? null);
-    await sql`UPDATE insights_newsletter_sends x SET status = 'sent', resend_id = y.rid, sent_at = now()
-      FROM jsonb_to_recordset(${JSON.stringify(sentIds.map((id, i) => ({ id, rid: got[i] ?? null })))}::jsonb) AS y(id bigint, rid text)
-      WHERE x.campaign_id = ${c.id} AND x.subscriber_id = y.id`;
-    sentNow += people.length;
-    left -= people.length;
-    runLeft -= people.length;
+    if (kind === "retry" || kind === "fatal") {
+      // Refused or asked to wait: nothing went out, so the claims go and these people get it later with a new key.
+      await drop(pids);
+      await fail(kind === "retry" ? `Resend asked to wait (${why}). Sending carries on next hour.` : refusedWhy(why), kind === "fatal");
+      return `${sentNow} sent, then stopped: ${why}`;
+    }
+    // 422: one email of the batch may be the problem (one bad address). They are sent one at a time; a person whose
+    // address Resend refuses is skipped, the rest go out.
+    const stop = await oneByOne(people, key);
+    if (stop) return stop;
   }
-  await sql`UPDATE insights_newsletter_campaigns SET last_error = NULL WHERE id = ${c.id} AND account_id = ${accountId}`;
+  await sql`UPDATE insights_newsletter_campaigns SET last_error = NULL WHERE id = ${cid} AND account_id = ${accountId} AND status = 'sending'`;
   await report("newsletter", true);
-  return `${sentNow} sent${left ? "" : ", daily limit reached"}; the rest goes next hour`;
+  return `${sentNow} sent; the rest goes next hour`;
+
+  /** A refused batch, one email at a time. Returns why the run stops, or null to carry on. */
+  async function oneByOne(people: Person[], key: string): Promise<string | null> {
+    for (let i = 0; i < people.length; i++) {
+      const p = people[i];
+      const rest = people.slice(i).map((x) => x.id);
+      if (Date.now() > deadline || isSabbath()) {
+        await drop(rest);
+        return `${sentNow} sent; the rest goes next hour`;
+      }
+      if (!(await stillSending())) {
+        await drop(rest);
+        return `${sentNow} sent, then paused`;
+      }
+      const one = singleKey(key, p.id);
+      await sql`UPDATE insights_newsletter_sends SET batch_key = ${one} WHERE campaign_id = ${cid} AND subscriber_id = ${p.id} AND status = 'pending'`;
+      const r = await call("/emails", emailFor(p), one);
+      if (r.ok) {
+        await markSent([{ id: p.id, rid: idFromOne(r) }]);
+        continue;
+      }
+      const why = resendWhy(r);
+      const kind = failureKind(r.status);
+      if (kind === "invalid" && addressProblem(r.body, r.text)) {
+        await mark([p.id], "failed", `Resend: ${why}`);
+        // An address Resend calls invalid can never get email: it is marked bounced, so it isn't tried again.
+        if (/invalid/i.test(why)) {
+          await sql`UPDATE insights_newsletter_subscribers SET status = 'bounced', updated_at = now()
+            WHERE id = ${p.id} AND account_id = ${accountId} AND status = 'subscribed'`;
+        }
+        continue;
+      }
+      if (kind === "unknown") {
+        // This one stays claimed with its own key and is sent again next hour; the ones not tried yet are freed.
+        await drop(rest.slice(1));
+        await fail(`Resend gave no clear answer (${why}). The same email is sent again next hour; nobody gets one twice.`, false);
+        return `${sentNow} sent, then stopped: ${why}`;
+      }
+      await drop(rest);
+      await fail(kind === "retry" ? `Resend asked to wait (${why}). Sending carries on next hour.` : refusedWhy(why), kind !== "retry");
+      return `${sentNow} sent, then stopped: ${why}`;
+    }
+    return null;
+  }
 }

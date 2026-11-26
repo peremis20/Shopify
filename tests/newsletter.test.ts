@@ -2,8 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import {
+  addressProblem,
   allowance,
+  batchKey,
   batchSizes,
+  BATCH_PAUSE_MS,
+  isSingleKey,
+  pendingAction,
+  RESEND_WINDOW_MS,
+  retryAfterMs,
+  semicolonsToCommas,
+  singleKey,
   buildEmail,
   chunk,
   failureKind,
@@ -104,7 +113,6 @@ test("every email has the one click unsubscribe headers and a footer with the li
     brand: "Shop",
     postalAddress: "1 Main St\nTown, TX 76009",
     unsubscribe: unsub,
-    campaignId: "12",
   });
   assert.equal(e.from, '"Shop Best x" <news@news.shop.com>');
   assert.deepEqual(e.to, ["ana@x.com"]);
@@ -115,6 +123,7 @@ test("every email has the one click unsubscribe headers and a footer with the li
   assert.ok(String(e.text).includes("1 Main St\nTown, TX 76009"));
   assert.ok(String(e.html).includes("1 Main St<br>Town, TX 76009"));
   assert.ok(String(e.html).includes("A short note"));
+  assert.equal("tags" in e, false, "no tags in batch emails");
   const f = footer({ brand: "Shop", postalAddress: "PO Box 9", unsubscribe: unsub });
   assert.ok(!/[‐-―]|\s-\s/.test(f.text), "no dashes in the footer wording");
 });
@@ -137,8 +146,10 @@ test("daily cap and batches of 100", () => {
 
 test("a Resend failure: refused stops, a rate limit waits, no answer is never resent", () => {
   assert.equal(failureKind(401), "fatal");
-  assert.equal(failureKind(422), "fatal");
+  assert.equal(failureKind(403), "fatal");
+  assert.equal(failureKind(422), "invalid");
   assert.equal(failureKind(429), "retry");
+  assert.equal(failureKind(409), "retry");
   assert.equal(failureKind(500), "unknown");
   assert.equal(failureKind(null), "unknown");
 });
@@ -167,4 +178,41 @@ test("Resend webhook signatures (Svix) are checked, with a time limit", () => {
 test("database timestamps become ISO for the browser", () => {
   assert.equal(iso("2026-11-26 10:00:00.5+00"), "2026-11-26T10:00:00.500Z");
   assert.equal(iso(null), null);
+});
+
+test("a semicolon inside a quoted name stays; the others split the list", () => {
+  assert.equal(semicolonsToCommas('a@x.com; "Lopez; Ana" <ana@x.com>'), 'a@x.com, "Lopez; Ana" <ana@x.com>');
+  const r = parseSubscriberList('"Lopez; Ana" <ana@x.com>; ben@x.com');
+  assert.deepEqual(r.rows, [{ email: "ana@x.com", name: "Lopez; Ana" }, { email: "ben@x.com", name: "" }]);
+});
+
+test("a 422 for one email: an address problem skips that person, anything else stops the email", () => {
+  assert.equal(addressProblem({ name: "validation_error", message: "Invalid `to` field. The email address needs to follow the email@example.com format." }), true);
+  assert.equal(addressProblem({ name: "invalid_to_address", message: "x" }), true);
+  assert.equal(addressProblem({ name: "validation_error", message: "The news.shop.com domain is not verified." }), false);
+  assert.equal(addressProblem(null, ""), false);
+});
+
+test("Retry-After in seconds or as a date", () => {
+  const now = Date.parse("2026-11-26T10:00:00Z");
+  assert.equal(retryAfterMs("2", now), 2000);
+  assert.equal(retryAfterMs("Thu, 26 Nov 2026 10:00:05 GMT", now), 5000);
+  assert.equal(retryAfterMs(null, now), null);
+  assert.equal(retryAfterMs("soon", now), null);
+  assert.ok(BATCH_PAUSE_MS >= 500);
+});
+
+test("idempotency keys: a fresh claim gets a fresh key; only an unanswered batch is resent with its key, within 24 hours", () => {
+  const a = batchKey("7");
+  const b = batchKey("7");
+  assert.notEqual(a, b);
+  assert.ok(a.startsWith("newsletter-7-"));
+  assert.ok(a.length <= 256);
+  assert.equal(isSingleKey(a), false);
+  assert.equal(isSingleKey(singleKey(a, "42")), true);
+  assert.equal(singleKey(a, "42"), `${a}-one-42`);
+  const now = Date.now();
+  assert.equal(pendingAction(now - 3_600_000, now), "resend");
+  assert.equal(pendingAction(now - RESEND_WINDOW_MS - 1, now), "unknown");
+  assert.ok(RESEND_WINDOW_MS < 24 * 3_600_000);
 });

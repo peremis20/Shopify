@@ -8,7 +8,10 @@ import { requirePassword } from "@/lib/analytics/basic-auth";
  * links (a random token) and Resend's signed webhook.
  */
 export function middleware(req: NextRequest) {
-  const open = ["/api/shopify/", "/api/auth/google/callback", "/api/newsletter/unsubscribe", "/api/newsletter/webhook"].some((p) => req.nextUrl.pathname.startsWith(p));
+  const path = req.nextUrl.pathname;
+  const open =
+    ["/api/shopify/", "/api/auth/google/callback"].some((p) => path.startsWith(p)) ||
+    ["/api/newsletter/unsubscribe", "/api/newsletter/webhook"].some((p) => path === p || path === `${p}/`);
   return open ? NextResponse.next() : requirePassword(req) ?? NextResponse.next();
 }
 
