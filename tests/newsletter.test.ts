@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import crypto from "crypto";
 import {
   addressProblem,
+  ADDRESS_REFUSAL_LIMIT,
   allowance,
+  resendFits,
+  todayStartUtc,
   batchKey,
   batchSizes,
   BATCH_PAUSE_MS,
@@ -215,4 +218,27 @@ test("idempotency keys: a fresh claim gets a fresh key; only an unanswered batch
   assert.equal(pendingAction(now - 3_600_000, now), "resend");
   assert.equal(pendingAction(now - RESEND_WINDOW_MS - 1, now), "unknown");
   assert.ok(RESEND_WINDOW_MS < 24 * 3_600_000);
+});
+
+test("only a refusal naming the to field counts as one subscriber's address, never the sender's", () => {
+  assert.equal(addressProblem({ name: "validation_error", message: "Invalid `to` field." }), true);
+  assert.equal(addressProblem({ name: "validation_error", message: "Invalid `from` field. The email address needs to follow the email@example.com format." }), false);
+  assert.equal(addressProblem({ name: "validation_error", message: "Invalid `reply_to` field." }), false);
+  assert.equal(addressProblem({ name: "validation_error", message: "Invalid email address." }), false);
+  assert.equal(ADDRESS_REFUSAL_LIMIT, 3);
+});
+
+test("resending unanswered batches stays within the daily cap and the run's limit", () => {
+  const now = Date.parse("2026-11-26T15:00:00Z");
+  assert.equal(todayStartUtc(now), Date.parse("2026-11-26T00:00:00Z"));
+  const today = Date.parse("2026-11-26T09:00:00Z");
+  const yesterday = Date.parse("2026-11-25T22:00:00Z");
+  // Claimed today: already counted against today's cap.
+  assert.equal(resendFits(100, today, 0, 500, now), true);
+  // Claimed yesterday: needs room today.
+  assert.equal(resendFits(100, yesterday, 50, 500, now), false);
+  assert.equal(resendFits(100, yesterday, 100, 500, now), true);
+  // Never past the run's own limit.
+  assert.equal(resendFits(100, today, 500, 0, now), false);
+  assert.equal(resendFits(100, today, 500, 99, now), false);
 });

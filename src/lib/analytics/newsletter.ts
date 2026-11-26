@@ -291,11 +291,30 @@ export function failureKind(status: number | null): "fatal" | "invalid" | "retry
   return "unknown";
 }
 
-/** Whether a refusal of one email is about its address (that one person is skipped), not the email itself. */
+/**
+ * Whether a refusal of one email names the recipient (the `to` field), so only that person is skipped. A refusal about
+ * the sender (`from`, `reply_to`) is the owner's setup, never one subscriber's address.
+ */
 export function addressProblem(body: unknown, text = ""): boolean {
   const b = (body ?? {}) as { name?: string; message?: string };
   const words = `${b.name ?? ""} ${b.message ?? ""} ${text}`;
-  return /invalid_to|`to`|\bto field\b|recipient|email address|invalid.*address|address.*invalid|suppress/i.test(words);
+  if (/\bfrom\b|reply_?to|reply to|\bsender\b|domain/i.test(words)) return false;
+  return /invalid_to|`to`|"to"|'to'|\bto field\b|\bto address\b|\brecipient/i.test(words);
+}
+
+/** After this many address refusals in a row with no email going out between them, the problem is not the addresses. */
+export const ADDRESS_REFUSAL_LIMIT = 3;
+
+/** Midnight UTC of the day `now` falls in: the daily cap counts from there. */
+export const todayStartUtc = (now = Date.now()) => Math.floor(now / 86_400_000) * 86_400_000;
+
+/**
+ * Whether an unanswered batch may be sent again now. Rows claimed today already count against today's cap; rows
+ * claimed on an earlier day don't, so they need room in today's allowance. Never past this run's own limit.
+ */
+export function resendFits(size: number, claimedAt: number, left: number, runLeft: number, now = Date.now()): boolean {
+  if (runLeft <= 0 || size > runLeft) return false;
+  return claimedAt >= todayStartUtc(now) || left >= size;
 }
 
 /** Resend's Retry-After (seconds, or an HTTP date) in milliseconds; null when absent or unreadable. */
@@ -414,6 +433,8 @@ function schema(): Promise<void> {
     // The idempotency key a claimed row went out with, so an unanswered batch is sent again with exactly that key.
     await sql`ALTER TABLE insights_newsletter_sends ADD COLUMN IF NOT EXISTS batch_key text`;
     await sql`ALTER TABLE insights_newsletter_sends ADD COLUMN IF NOT EXISTS note text`;
+    // The answer a row's own last attempt got when it stayed pending (a status code, or 0 for no answer).
+    await sql`ALTER TABLE insights_newsletter_sends ADD COLUMN IF NOT EXISTS last_status integer`;
     await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_sends_pending ON insights_newsletter_sends (campaign_id, batch_key) WHERE status = 'pending'`;
     // When the hourly run last took a turn for this email, so sites take turns fairly.
     await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS last_run_at timestamptz`;
@@ -1053,13 +1074,16 @@ const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
  * One run at a time per site. The database is reached over HTTP (a new connection each query), so a Postgres advisory
  * lock would not hold between queries; a lease row does, and frees itself after 15 minutes if a run dies.
  */
-async function takeLease(accountId: string): Promise<boolean> {
-  const [row] = await sql`INSERT INTO insights_settings (key, value) VALUES (${`newsletter_lock:${accountId}`}, ${new Date().toISOString()})
+async function takeLease(accountId: string): Promise<string | null> {
+  const token = crypto.randomBytes(16).toString("base64url");
+  const [row] = await sql`INSERT INTO insights_settings (key, value) VALUES (${`newsletter_lock:${accountId}`}, ${token})
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
     WHERE insights_settings.updated_at < now() - interval '15 minutes' RETURNING key`;
-  return Boolean(row);
+  return row ? token : null;
 }
-const dropLease = (accountId: string) => sql`DELETE FROM insights_settings WHERE key = ${`newsletter_lock:${accountId}`}`;
+/** Frees the lease only if it is still this run's (a run that outlived its lease never frees the next run's). */
+const dropLease = (accountId: string, token: string) =>
+  sql`DELETE FROM insights_settings WHERE key = ${`newsletter_lock:${accountId}`} AND value = ${token}`;
 
 /**
  * Sends the site's oldest approved email to the next people on its list, in batches of up to 100, within the daily
@@ -1070,11 +1094,12 @@ const dropLease = (accountId: string) => sql`DELETE FROM insights_settings WHERE
 export async function runNewsletter(accountId: string, deadline = Date.now() + 60_000, send: ResendSender = resendPost, wait: (ms: number) => Promise<void> = sleep): Promise<string | null> {
   await schema();
   if (isSabbath()) return null;
-  if (!(await takeLease(accountId))) return "another run is sending for this site";
+  const lease = await takeLease(accountId);
+  if (!lease) return "another run is sending for this site";
   try {
     return await sendFor(accountId, deadline, send, wait);
   } finally {
-    await dropLease(accountId).catch(() => undefined);
+    await dropLease(accountId, lease).catch(() => undefined);
   }
 }
 
@@ -1134,6 +1159,11 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
     ids.length
       ? sql`UPDATE insights_newsletter_sends SET status = ${status}, note = ${note} WHERE campaign_id = ${cid} AND status = 'pending' AND subscriber_id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[])`
       : Promise.resolve([]);
+  /** Rows that stay pending (to be sent again with their key) remember what their own attempt got. */
+  const keepPending = (ids: string[], status: number | null) =>
+    ids.length
+      ? sql`UPDATE insights_newsletter_sends SET last_status = ${status ?? 0} WHERE campaign_id = ${cid} AND status = 'pending' AND subscriber_id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[])`
+      : Promise.resolve([]);
   let sentNow = 0;
   let runLeft = PER_RUN;
   const markSent = async (pairs: { id: string; rid: string | null }[]) => {
@@ -1159,7 +1189,8 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
   const idFromOne = (r: ResendAnswer) => (r.body as { id?: string } | null)?.id ?? null;
 
   // 1. Batches with no clear answer from an earlier run: exactly those rows again, with the same key, within 24 hours.
-  const unanswered = await sql`SELECT batch_key, min(sent_at) AS at, string_agg(subscriber_id::text, ',' ORDER BY subscriber_id) AS ids
+  const unanswered = await sql`SELECT batch_key, min(sent_at) AS at, string_agg(subscriber_id::text, ',' ORDER BY subscriber_id) AS ids,
+      bool_and(last_status = 422) AS own422
     FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'pending' GROUP BY batch_key ORDER BY min(sent_at) LIMIT 100`;
   for (const g of unanswered) {
     const ids = String(g.ids ?? "").split(",").filter(Boolean);
@@ -1170,7 +1201,11 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
       await mark(ids, "unknown", "No clear answer from Resend within 24 hours");
       continue;
     }
-    if (Date.now() > deadline || isSabbath()) return `${sentNow} sent; the rest goes next hour`;
+    if (Date.now() > deadline || isSabbath() || runLeft <= 0) return `${sentNow} sent; the rest goes next hour`;
+    // Within today's cap: rows claimed on an earlier day count as new sends today.
+    if (!resendFits(ids.length, at, allowance(s.dailyCap, await sentToday(accountId)), runLeft)) {
+      return runLeft < ids.length ? `${sentNow} sent; the rest goes next hour` : `${sentNow} sent, daily limit reached; the rest goes tomorrow`;
+    }
     if (!(await stillSending())) return `${sentNow} sent, then paused`;
     const rows = await sql`SELECT id, email, token, status FROM insights_newsletter_subscribers WHERE account_id = ${accountId}
       AND id = ANY(string_to_array(${inIds(ids)}, ',')::bigint[]) ORDER BY id`;
@@ -1188,17 +1223,18 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
     const why = resendWhy(r);
     const kind = failureKind(r.status);
     const pids = people.map((p) => p.id);
-    if (r.status === 409 && !/concurrent/i.test(why)) {
-      // The same key with a different request (the list changed, or the settings): it can't be known whether the first
-      // try went out, so these people are never sent it again.
-      await mark(pids, "unknown", `Resend: ${why}`);
-      continue;
-    }
-    if (kind === "invalid") {
-      // A validation refusal means Resend never took the first try either: the claims go, and they are sent fresh below.
+    if (kind === "invalid" && g.own422 === "t") {
+      // The row's own first attempt was refused the same way, so it never went out: the claims go and are made again.
       await drop(pids);
       continue;
     }
+    if ((r.status === 409 && !/concurrent/i.test(why)) || kind === "invalid") {
+      // The same key with a different request, or a refusal Resend gives before it looks the key up (the list or the
+      // settings changed): it can't be known whether the first try went out, so these people are never sent it again.
+      await mark(pids, "unknown", `Resend: ${why}`);
+      continue;
+    }
+    await keepPending(pids, r.status);
     if (kind === "fatal") await fail(refusedWhy(why), true);
     else await fail(`Resend gave no clear answer or asked to wait (${why}). The same emails are sent again next hour; nobody gets one twice.`, false);
     return `${sentNow} sent, then stopped: ${why}`;
@@ -1250,6 +1286,7 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
     if (kind === "unknown") {
       // No clear answer: the rows stay claimed with this key and are sent again with it next hour (Resend never
       // delivers the same key twice), or never, once 24 hours have passed.
+      await keepPending(pids, r.status);
       await fail(`Resend gave no clear answer (${why}). The same emails are sent again next hour; nobody gets one twice.`, false);
       return `${sentNow} sent, then stopped: ${why}`;
     }
@@ -1270,6 +1307,7 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
 
   /** A refused batch, one email at a time. Returns why the run stops, or null to carry on. */
   async function oneByOne(people: Person[], key: string): Promise<string | null> {
+    let refusedInARow = 0;
     for (let i = 0; i < people.length; i++) {
       const p = people[i];
       const rest = people.slice(i).map((x) => x.id);
@@ -1285,21 +1323,26 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
       await sql`UPDATE insights_newsletter_sends SET batch_key = ${one} WHERE campaign_id = ${cid} AND subscriber_id = ${p.id} AND status = 'pending'`;
       const r = await call("/emails", emailFor(p), one);
       if (r.ok) {
+        refusedInARow = 0;
         await markSent([{ id: p.id, rid: idFromOne(r) }]);
         continue;
       }
       const why = resendWhy(r);
       const kind = failureKind(r.status);
       if (kind === "invalid" && addressProblem(r.body, r.text)) {
+        // Only this send is marked failed; the subscriber stays as they are (real bounces come from Resend's webhook).
         await mark([p.id], "failed", `Resend: ${why}`);
-        // An address Resend calls invalid can never get email: it is marked bounced, so it isn't tried again.
-        if (/invalid/i.test(why)) {
-          await sql`UPDATE insights_newsletter_subscribers SET status = 'bounced', updated_at = now()
-            WHERE id = ${p.id} AND account_id = ${accountId} AND status = 'subscribed'`;
+        refusedInARow++;
+        if (refusedInARow >= ADDRESS_REFUSAL_LIMIT) {
+          // Several addresses in a row refused and none accepted: something in the setup, not the list. Stop here.
+          await drop(rest.slice(1));
+          await fail(`Resend refused ${ADDRESS_REFUSAL_LIMIT} addresses in a row (${why}). Check the email and your Resend settings, then click Try again.`, true);
+          return `${sentNow} sent, then stopped: ${why}`;
         }
         continue;
       }
       if (kind === "unknown") {
+        await keepPending([p.id], r.status);
         // This one stays claimed with its own key and is sent again next hour; the ones not tried yet are freed.
         await drop(rest.slice(1));
         await fail(`Resend gave no clear answer (${why}). The same email is sent again next hour; nobody gets one twice.`, false);
