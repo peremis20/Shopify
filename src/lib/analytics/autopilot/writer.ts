@@ -2549,3 +2549,33 @@ No greeting line and no sign off (the app adds both). No hyphens or dashes, no e
   );
   return { subject: String(out.subject ?? ""), opening: String(out.opening ?? "") };
 }
+
+/**
+ * A newsletter email that shares the site's own latest article with its subscribers. Only the article's own words are
+ * the source: the app adds the link to the article, the footer and the unsubscribe link itself. The owner reads it,
+ * sends a test to themselves and approves it before anything goes out.
+ */
+export async function writeNewsletterDraft(
+  ai: AiProvider,
+  p: { title: string; articleText: string; brand: string | null; site: string; health: boolean },
+): Promise<{ subject: string; preview: string; body: string }> {
+  const out = await askJson<{ subject: string; preview: string; body: string }>(
+    ai,
+    `Write a short newsletter email from ${p.brand ?? p.site} to people who chose to get its emails. It shares the business's newest article, titled "${p.title.slice(0, 160)}".
+The article (the only source; use nothing that isn't in it):
+"""
+${p.articleText.slice(0, 6000).replace(/"{3,}/g, '"')}
+"""
+"subject": under nine words, plain, true to the article, no clickbait.
+"preview": one short sentence shown next to the subject in the inbox.
+"body": three short plain paragraphs separated by a blank line: what the article is about, the most useful point it makes, and an invitation to read the whole article (the app adds the link after your text). No greeting line and no sign off.
+Never add a fact, number, study, price, offer or result the article doesn't state.${p.health ? " This is a health business: no medical claims, no promise to cure, treat, heal or prevent anything, no advice for someone's own health." : ""}
+No hyphens or dashes, no emojis, no exclamation marks, no links.`,
+    {
+      type: "object",
+      properties: { subject: { type: "string" }, preview: { type: "string" }, body: { type: "string" } },
+      required: ["subject", "preview", "body"],
+    },
+  );
+  return { subject: String(out.subject ?? ""), preview: String(out.preview ?? ""), body: String(out.body ?? "") };
+}

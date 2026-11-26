@@ -259,6 +259,16 @@ export const PART_FIX: Record<Part, { name: string; fix: (detail: string) => str
           : "It tries again by itself within the hour. Your contacts and history are not affected.",
     workaround: "Follow up tasks and the morning email wait until the next run; everything you add by hand works as usual.",
   },
+  newsletter: {
+    name: "The Newsletter (emails to subscribers through your own Resend account)",
+    fix: (d) =>
+      /key|401|403|restricted/i.test(d ?? "")
+        ? "Open Newsletter and check your Resend key. Sending carries on once it works."
+        : /domain|verify|422/i.test(d ?? "")
+          ? "Verify your sending domain in Resend (Domains), then click Try again on the newsletter."
+          : "It tries again by itself within the hour. Nobody gets the same email twice.",
+    workaround: "Emails not sent yet wait; the ones already sent are kept.",
+  },
   "site-watch": {
     name: "Site watch (the site answers, is open to Google and is measured)",
     fix: () => "It tries again by itself within the hour.",
