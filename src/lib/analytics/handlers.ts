@@ -52,6 +52,7 @@ import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
 import { draftSegment, searchContacts, addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
+import { accountsDueForNewsletter, approveCampaign, deleteCampaign, draftFromLatestArticle, escapeHtml as escapeNewsletter, importFromShopify, importList, markDelivery, newsletterView, ownerUnsubscribe, retryCampaign, runNewsletter, saveCampaign, saveNewsletterSettings, sendTest, stopCampaign, subscriberByToken, unsubscribeByToken, verifySvix, webhookSecretFor } from "./newsletter";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -1844,6 +1845,21 @@ export async function autopilotTick(): Promise<Response> {
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
       });
     }
+    // The Newsletter: approved emails go out through each site owner's own Resend account, in batches within the
+    // site's daily limit. Only emails the owner approved are ever sent; the tick itself rests in the Sabbath.
+    for (const accountId of late() ? [] : await accountsDueForNewsletter(5).catch(async (e) => {
+      console.error(`newsletter list failed: ${message(e)}`);
+      await report("newsletter", false, `The list of newsletters waiting to send couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runNewsletter(accountId, Math.min(Date.now() + 90_000, started + budget))).catch(async (e) => {
+        console.error(`newsletter failed for ${accountId}: ${message(e)}`);
+        await report("newsletter", false, `Newsletter for account ${accountId} couldn't send (${message(e)})`);
+        return null;
+      });
+      if (note) results.push(`account ${accountId} newsletter: ${note}`);
+    }
     // The Prospect finder: new businesses the owner sells to, found on Google Maps and added to the CRM (one site an hour).
     for (const accountId of late() ? [] : await accountsDueForFinder(1).catch(async (e) => {
       console.error(`finder list failed: ${message(e)}`);
@@ -2480,6 +2496,107 @@ export const crmApi = (req: Request) =>
     }
     return json({ ok: true, id });
   });
+
+/**
+ * The Newsletter: GET returns the settings (keys only as "saved"), subscriber counts, the latest subscribers (or a
+ * search with ?q=) and the emails; POST does one action the owner clicked. Nothing is sent without the approve click.
+ */
+export const newsletterApi = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "GET") {
+      const view = await newsletterView(account.id, new URL(req.url).searchParams.get("q") ?? "");
+      return json({ ...view, webhookUrl: `${appOrigin(req)}/api/newsletter/webhook?a=${account.id}` });
+    }
+    if (Number(req.headers.get("content-length") ?? 0) > 3_500_000) return json({ error: "That is too much at once. Import up to 20,000 people at a time." }, 413);
+    const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const rest = () => json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+    try {
+      switch (b.action) {
+        case "settings": return json({ ok: true, note: await saveNewsletterSettings(account.id, b.settings) });
+        case "import": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent) });
+        case "add": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent, "manual") });
+        case "shopify": return json({ result: await importFromShopify(account.id, Date.now() + 50_000) });
+        case "unsubscribe": await ownerUnsubscribe(account.id, b.id); break;
+        case "save": return json({ ok: true, id: await saveCampaign(account.id, b.campaign, b.id) });
+        case "delete": await deleteCampaign(account.id, b.id); break;
+        case "draft": {
+          if (isSabbath()) return rest();
+          return json({ ok: true, id: await draftFromLatestArticle(account.id) });
+        }
+        case "test": {
+          if (isSabbath()) return rest();
+          return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req)) });
+        }
+        case "approve": return json({ ok: true, count: await approveCampaign(account.id, b.id, b.count, appOrigin(req)) });
+        case "stop": await stopCampaign(account.id, b.id); break;
+        case "retry": await retryCampaign(account.id, b.id); break;
+        default: return json({ error: "Nothing to do." }, 400);
+      }
+    } catch (e) {
+      return json({ error: publicError(e, "newsletter") }, 400);
+    }
+    return json({ ok: true });
+  });
+
+function newsletterPage(title: string, body: string, status = 200): Response {
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${escapeNewsletter(title)}</title>
+<style>body{margin:0;background:#F7F3EC;color:#2B2A27;font:16px/1.5 system-ui,sans-serif}main{max-width:480px;margin:12vh auto;padding:0 16px}button{padding:10px 18px;border-radius:8px;border:0;background:#2B2A27;color:#fff;font:inherit;cursor:pointer}</style></head>
+<body><main>${body}</main></body></html>`;
+  return new Response(html, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'", "Referrer-Policy": "no-referrer" },
+  });
+}
+
+/**
+ * Unsubscribe (public, no sign in), by the token in the email's link. GET shows a confirmation button; POST
+ * unsubscribes right away, which is also what a mail app's one click unsubscribe sends (RFC 8058).
+ */
+export async function newsletterUnsubscribe(req: Request): Promise<Response> {
+  const token = new URL(req.url).searchParams.get("t");
+  try {
+    if (token === "test") return newsletterPage("Test email", "<h1>This was a test email</h1><p>In the real email, this link unsubscribes the person who got it.</p>");
+    const who = await subscriberByToken(token);
+    if (!who) return newsletterPage("Link not found", "<h1>This link doesn't work</h1><p>It may be cut short. Try the unsubscribe link in the email again.</p>", 404);
+    if (req.method === "POST") {
+      await unsubscribeByToken(token);
+      return newsletterPage("Unsubscribed", `<h1>You are unsubscribed</h1><p>${escapeNewsletter(who.email)} won't get more emails from ${escapeNewsletter(who.brand)}.</p>`);
+    }
+    if (who.status !== "subscribed") return newsletterPage("Unsubscribed", `<h1>You are unsubscribed</h1><p>${escapeNewsletter(who.email)} doesn't get emails from ${escapeNewsletter(who.brand)}.</p>`);
+    const action = `/api/newsletter/unsubscribe?t=${encodeURIComponent(token ?? "")}`;
+    return newsletterPage(
+      "Unsubscribe",
+      `<h1>Unsubscribe?</h1><p>Stop emails from ${escapeNewsletter(who.brand)} to ${escapeNewsletter(who.email)}.</p><form method="post" action="${escapeNewsletter(action)}"><button type="submit">Unsubscribe</button></form>`,
+    );
+  } catch (e) {
+    console.error(`unsubscribe failed: ${message(e)}`);
+    await report("newsletter", false, `An unsubscribe click couldn't be saved (${message(e)})`);
+    return newsletterPage("Please try again", "<h1>Something went wrong</h1><p>Please try the link again in a minute.</p>", 500);
+  }
+}
+
+/** Resend's delivery events for one site (public, signed with the site's own webhook secret): bounces and spam complaints. */
+export async function newsletterWebhook(req: Request): Promise<Response> {
+  const accountId = new URL(req.url).searchParams.get("a") ?? "";
+  const body = await readCapped(req, 200_000).catch(() => null);
+  if (body === null) return json({ error: "too large" }, 413);
+  const secret = await webhookSecretFor(accountId).catch(() => null);
+  if (!secret) return json({ error: "not set up" }, 404);
+  const ok = verifySvix(secret, { id: req.headers.get("svix-id"), timestamp: req.headers.get("svix-timestamp"), signature: req.headers.get("svix-signature") }, body);
+  if (!ok) return json({ error: "bad signature" }, 401);
+  try {
+    const ev = JSON.parse(body) as { type?: string; data?: { to?: string[] | string; bounce?: { type?: string } } };
+    const to = Array.isArray(ev.data?.to) ? ev.data!.to : typeof ev.data?.to === "string" ? [ev.data.to] : [];
+    if (ev.type === "email.complained") await markDelivery(accountId, to, "complained");
+    // A temporary bounce (a full inbox) isn't a reason to stop emailing someone.
+    else if (ev.type === "email.bounced" && !/transient|temporary|soft/i.test(ev.data?.bounce?.type ?? "")) await markDelivery(accountId, to, "bounced");
+    return json({ ok: true });
+  } catch (e) {
+    console.error(`newsletter webhook failed: ${message(e)}`);
+    await report("newsletter", false, `A bounce or complaint from Resend couldn't be saved (${message(e)})`);
+    return json({ error: "failed" }, 500);
+  }
+}
 
 /** The Leads card: the site's latest form requests and whether each is in Shopify yet. */
 export const leadsApi = (req: Request) => withAccount(req, async (account) => json(await leadsView(account.id)));

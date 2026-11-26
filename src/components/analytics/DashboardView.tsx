@@ -30,6 +30,7 @@ import { Creators } from "./Creators";
 import { StoreAudit } from "./StoreAudit";
 import { Conversion } from "./Conversion";
 import { Crm } from "./Crm";
+import { Newsletter } from "./Newsletter";
 import { Leads } from "./Leads";
 import { Speed } from "./Speed";
 import { ExpertReview } from "./ExpertReview";
@@ -400,6 +401,13 @@ export function DashboardView() {
                 <div hidden={page !== "crm"}>
                   <ErrorBoundary where="crm">
                   <Crm active={page === "crm"} />
+                  </ErrorBoundary>
+                </div>
+              )}
+              {keep("newsletter") && (
+                <div hidden={page !== "newsletter"}>
+                  <ErrorBoundary where="newsletter">
+                  <Newsletter active={page === "newsletter"} />
                   </ErrorBoundary>
                 </div>
               )}
@@ -809,6 +817,7 @@ export function DashboardView() {
 const SIMPLE_TITLE: Record<SimplePage, string> = {
   home: "Welcome back!",
   crm: "CRM",
+  newsletter: "Newsletter",
   keywords: "Keywords",
   content: "Content",
   backlinks: "Backlinks",
@@ -819,6 +828,7 @@ const SIMPLE_TITLE: Record<SimplePage, string> = {
 const SIMPLE_SUB: Record<SimplePage, string> = {
   home: "Here's how your site is doing on Google, and what to do next.",
   crm: "Your contacts, deals, emails, notes and follow ups.",
+  newsletter: "Emails to your subscribers, sent from your own Resend account after you approve each one.",
   keywords: "What people search for, how hard each one is, and where you rank.",
   content: "Every change the autopilot made, new articles, and your site's health.",
   backlinks: "Websites that could link to you, with the email written for each one.",
