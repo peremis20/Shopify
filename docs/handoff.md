@@ -38,3 +38,6 @@ Weekly report, text and HTML email explain a clear gap between Google Analytics 
 
 ## Nov 25: plan text for owners (released)
 Saved plans stay word for word; readStrategy, readAuthorityPlan, Plan now and the Inspector show them through cleanPlan/ownerText (writer.ts): no hyphens between words, while addresses, paths, domains, dates and the move's own search and page keep theirs. PLAN_RULES rule 6: title moves for condition searches never say which benefit to promise.
+
+## Nov 26: Newsletter v1 (released)
+src/lib/analytics/newsletter.ts + Newsletter page. Sends through the site owner's own Resend key (encrypted), subscribers from Shopify (SUBSCRIBED only) or consented imports, one click unsubscribe (RFC 8058) and postal address footer, test then approve before any send, hourly batched sending with daily cap, Sabbath skip, pause, idempotent resends, lease per site. Peremis: news.peremis.com verified in Resend; owner still to add key, from address and postal address. Not yet: unsubscribe sync back to Shopify, scheduled Shopify import, open or click tracking.

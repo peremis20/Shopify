@@ -1223,7 +1223,7 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
     const why = resendWhy(r);
     const kind = failureKind(r.status);
     const pids = people.map((p) => p.id);
-    if (kind === "invalid" && g.own422 === "t") {
+    if (kind === "invalid" && (String(g.own422) === "t" || String(g.own422) === "true")) {
       // The row's own first attempt was refused the same way, so it never went out: the claims go and are made again.
       await drop(pids);
       continue;
@@ -1298,6 +1298,8 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
     }
     // 422: one email of the batch may be the problem (one bad address). They are sent one at a time; a person whose
     // address Resend refuses is skipped, the rest go out.
+    // Remembered first: if the run dies partway, the rows not tried yet are known never to have gone out.
+    await keepPending(people.map((p) => p.id), 422);
     const stop = await oneByOne(people, key);
     if (stop) return stop;
   }
@@ -1308,6 +1310,7 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
   /** A refused batch, one email at a time. Returns why the run stops, or null to carry on. */
   async function oneByOne(people: Person[], key: string): Promise<string | null> {
     let refusedInARow = 0;
+    let streak: string[] = [];
     for (let i = 0; i < people.length; i++) {
       const p = people[i];
       const rest = people.slice(i).map((x) => x.id);
@@ -1320,10 +1323,11 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
         return `${sentNow} sent, then paused`;
       }
       const one = singleKey(key, p.id);
-      await sql`UPDATE insights_newsletter_sends SET batch_key = ${one} WHERE campaign_id = ${cid} AND subscriber_id = ${p.id} AND status = 'pending'`;
+      await sql`UPDATE insights_newsletter_sends SET batch_key = ${one}, last_status = NULL WHERE campaign_id = ${cid} AND subscriber_id = ${p.id} AND status = 'pending'`;
       const r = await call("/emails", emailFor(p), one);
       if (r.ok) {
         refusedInARow = 0;
+        streak = [];
         await markSent([{ id: p.id, rid: idFromOne(r) }]);
         continue;
       }
@@ -1333,8 +1337,11 @@ async function sendFor(accountId: string, deadline: number, send: ResendSender, 
         // Only this send is marked failed; the subscriber stays as they are (real bounces come from Resend's webhook).
         await mark([p.id], "failed", `Resend: ${why}`);
         refusedInARow++;
+        streak.push(p.id);
         if (refusedInARow >= ADDRESS_REFUSAL_LIMIT) {
-          // Several addresses in a row refused and none accepted: something in the setup, not the list. Stop here.
+          // Several addresses in a row refused and none accepted: something in the setup, not the list. Stop here,
+          // and free this streak too, so those people get the email after Try again.
+          await sql`DELETE FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'failed' AND subscriber_id = ANY(string_to_array(${inIds(streak)}, ',')::bigint[])`;
           await drop(rest.slice(1));
           await fail(`Resend refused ${ADDRESS_REFUSAL_LIMIT} addresses in a row (${why}). Check the email and your Resend settings, then click Try again.`, true);
           return `${sentNow} sent, then stopped: ${why}`;
