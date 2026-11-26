@@ -58,13 +58,24 @@ export interface ListRow {
   name: string;
 }
 
+/** A list split by semicolons reads like one split by commas; a semicolon inside double quotes (a name) stays. */
+export function semicolonsToCommas(text: string): string {
+  let out = "";
+  let quoted = false;
+  for (const ch of text) {
+    if (ch === '"') quoted = !quoted;
+    out += ch === ";" && !quoted ? "," : ch;
+  }
+  return out;
+}
+
 /**
  * Reads a pasted list or a CSV file: with a header row, the email column (and a name, or first and last name) is found
  * by its name; without one, every cell holding an email address counts ("Ana Lopez <ana@x.com>" keeps the name).
  * The same address twice is kept once.
  */
 export function parseSubscriberList(text: string): { rows: ListRow[]; invalid: number; duplicates: number } {
-  const table = parseCsv(text.replace(/;/g, ","));
+  const table = parseCsv(semicolonsToCommas(text));
   const rows: ListRow[] = [];
   const seen = new Set<string>();
   let invalid = 0;
@@ -217,10 +228,12 @@ export interface EmailParts {
   brand: string;
   postalAddress: string;
   unsubscribe: string;
-  campaignId: string;
 }
 
-/** One email as Resend takes it, with the one click unsubscribe headers (RFC 8058) and the footer. */
+/**
+ * One email as Resend takes it, with the one click unsubscribe headers (RFC 8058) and the footer. No tags: older
+ * Resend docs listed tags as not supported in batch sends, and a rejection there would refuse every batch.
+ */
 export function buildEmail(p: EmailParts): Record<string, unknown> {
   const content = renderBody(p.body);
   const foot = footer({ brand: p.brand, postalAddress: p.postalAddress, unsubscribe: p.unsubscribe });
@@ -239,7 +252,6 @@ export function buildEmail(p: EmailParts): Record<string, unknown> {
       "List-Unsubscribe": `<${p.unsubscribe}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
     },
-    tags: [{ name: "campaign", value: p.campaignId.replace(/[^A-Za-z0-9_-]/g, "") || "none" }],
   };
 }
 
@@ -265,15 +277,52 @@ export function chunk<T>(items: T[], size = BATCH_SIZE): T[][] {
 }
 
 /**
- * What a failed Resend call means. "fatal": Resend refused it (bad key, domain not verified, bad request), so nothing
- * was sent and the campaign waits for the owner. "retry": nothing was sent (rate limit), try next hour. "unknown":
- * no clear answer (a server error or no answer), so those emails might have gone out and are never sent again.
+ * What a failed Resend call means.
+ * "fatal": Resend refused it (bad key, domain not verified), so nothing was sent and the campaign waits for the owner.
+ * "invalid": Resend refused the content of the request (422); a batch is then tried one email at a time.
+ * "retry": nothing was sent (a rate limit, or an idempotency clash), so the claims are dropped and made again later.
+ * "unknown": no clear answer (a server error or no answer); those emails may have gone out, so exactly those are sent
+ * again with the same idempotency key (Resend then never sends twice) within 24 hours.
  */
-export function failureKind(status: number | null): "fatal" | "retry" | "unknown" {
-  if (status === 429) return "retry";
+export function failureKind(status: number | null): "fatal" | "invalid" | "retry" | "unknown" {
+  if (status === 429 || status === 409) return "retry";
+  if (status === 422) return "invalid";
   if (status !== null && status >= 400 && status < 500) return "fatal";
   return "unknown";
 }
+
+/** Whether a refusal of one email is about its address (that one person is skipped), not the email itself. */
+export function addressProblem(body: unknown, text = ""): boolean {
+  const b = (body ?? {}) as { name?: string; message?: string };
+  const words = `${b.name ?? ""} ${b.message ?? ""} ${text}`;
+  return /invalid_to|`to`|\bto field\b|recipient|email address|invalid.*address|address.*invalid|suppress/i.test(words);
+}
+
+/** Resend's Retry-After (seconds, or an HTTP date) in milliseconds; null when absent or unreadable. */
+export function retryAfterMs(header: string | null | undefined, now = Date.now()): number | null {
+  if (!header) return null;
+  const secs = Number(header.trim());
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  const at = Date.parse(header);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
+}
+
+/**
+ * The idempotency key for one batch. A fresh claim gets a fresh nonce, so a batch whose claims were dropped and made
+ * again never reuses a key (Resend would answer 409); only the safe resend of an unanswered batch reuses its key.
+ */
+export function batchKey(campaignId: string, subscriberIds: string[], nonce = crypto.randomBytes(6).toString("base64url")): string {
+  return `newsletter-${campaignId}-${nonce}-${subscriberIds[0] ?? 0}-${subscriberIds[subscriberIds.length - 1] ?? 0}-${subscriberIds.length}`;
+}
+
+/** Resend keeps idempotency keys for 24 hours: an unanswered batch is sent again with its key until then, never after. */
+export const RESEND_WINDOW_MS = 23 * 3_600_000;
+export function pendingAction(claimedAt: number, now = Date.now()): "resend" | "unknown" {
+  return now - claimedAt < RESEND_WINDOW_MS ? "resend" : "unknown";
+}
+
+/** The wait between batch calls, so a big list stays within Resend's rate limit. */
+export const BATCH_PAUSE_MS = 600;
 
 /** Checks a Svix signature (how Resend signs webhooks), within five minutes of its time. */
 export function verifySvix(secret: string, h: { id: string | null; timestamp: string | null; signature: string | null }, body: string, now = Date.now()): boolean {
@@ -359,6 +408,12 @@ function schema(): Promise<void> {
       PRIMARY KEY (campaign_id, subscriber_id)
     )`;
     await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_sends_day ON insights_newsletter_sends (account_id, sent_at)`;
+    // The idempotency key a claimed row went out with, so an unanswered batch is sent again with exactly that key.
+    await sql`ALTER TABLE insights_newsletter_sends ADD COLUMN IF NOT EXISTS batch_key text`;
+    await sql`ALTER TABLE insights_newsletter_sends ADD COLUMN IF NOT EXISTS note text`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_sends_pending ON insights_newsletter_sends (campaign_id, batch_key) WHERE status = 'pending'`;
+    // When the hourly run last took a turn for this email, so sites take turns fairly.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS last_run_at timestamptz`;
   })().catch((e) => {
     ready = null;
     throw e;
@@ -568,7 +623,7 @@ export async function newsletterView(accountId: string, query = "") {
     sql`SELECT c.*, (c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at) AS tested,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND (x.status = 'unknown' OR (x.status = 'pending' AND x.sent_at < now() - interval '15 minutes'))) AS unsure,
-        CASE WHEN c.status IN ('approved', 'sending') THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
+        CASE WHEN c.status IN ('approved', 'sending', 'stopped') AND c.approved_at IS NOT NULL THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
           AND s.status = 'subscribed' AND s.created_at <= c.approved_at
           AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)) ELSE 0 END AS waiting
       FROM insights_newsletter_campaigns c WHERE c.account_id = ${accountId} ORDER BY c.created_at DESC LIMIT 30`,
@@ -727,8 +782,9 @@ export async function subscriberByToken(token: unknown): Promise<{ accountId: st
   const [r] = await sql`SELECT account_id, email, status FROM insights_newsletter_subscribers WHERE token = ${token}`;
   if (!r?.account_id) return null;
   const profile = await readProfile(String(r.account_id)).catch(() => null);
-  const s = await readSettings(String(r.account_id)).catch(() => null);
-  return { accountId: String(r.account_id), email: r.email ?? "", status: (r.status ?? "subscribed") as SubscriberStatus, brand: s?.fromName || profile?.brandName || profile?.siteDomain || "this sender" };
+  // Only the from name: the public page never decrypts the site's keys.
+  const [st] = await sql`SELECT from_name FROM insights_newsletter_settings WHERE account_id = ${r.account_id}`.catch(() => [] as Record<string, string | null>[]);
+  return { accountId: String(r.account_id), email: r.email ?? "", status: (r.status ?? "subscribed") as SubscriberStatus, brand: st?.from_name || profile?.brandName || profile?.siteDomain || "this sender" };
 }
 
 /** One click unsubscribe. Bounced and complained stay as they are (they are already never emailed). */
@@ -847,7 +903,9 @@ export async function draftFromLatestArticle(accountId: string): Promise<string>
   return String(made.id);
 }
 
-async function resendPost(key: string, path: "/emails" | "/emails/batch", payload: unknown, idempotencyKey?: string): Promise<{ ok: boolean; status: number | null; body: unknown; text: string }> {
+type ResendAnswer = { ok: boolean; status: number | null; body: unknown; text: string; retryAfter?: string | null };
+
+async function resendPost(key: string, path: "/emails" | "/emails/batch", payload: unknown, idempotencyKey?: string): Promise<ResendAnswer> {
   const res = await fetch(`https://api.resend.com${path}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}) },
@@ -862,7 +920,7 @@ async function resendPost(key: string, path: "/emails" | "/emails/batch", payloa
   } catch {
     /* not JSON */
   }
-  return { ok: res.ok, status: res.status, body, text: text.slice(0, 300) };
+  return { ok: res.ok, status: res.status, body, text: text.slice(0, 300), retryAfter: res.headers.get("retry-after") };
 }
 
 const resendWhy = (r: { status: number | null; body: unknown; text: string }) => {
@@ -897,7 +955,6 @@ export async function sendTest(accountId: string, id: unknown, origin: string): 
     postalAddress: s.postalAddress,
     // A test link: it opens the unsubscribe page, which says it was only a test.
     unsubscribe: `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=test`,
-    campaignId: String(c.id),
   });
   const r = await resendPost(s.resendKey!, "/emails", payload);
   if (!r.ok) {
@@ -929,9 +986,20 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
   const profile = await readProfile(accountId);
   const problem = claimProblem(`${c.subject}\n${c.preview}\n${c.body}`, healthRulesApply(profile));
   if (problem) throw new Error(`Please change the email first. ${problem}`);
-  const { subscribed } = await subscriberCounts(accountId);
-  if (!subscribed) throw new Error("Nobody is subscribed yet. Import your subscribers first.");
-  if (Number(count) !== subscribed) throw new Error(`Your list changed: it now has ${subscribed.toLocaleString("en-US")} subscribers. Please check and approve again.`);
+  // A paused email carries on with the people still waiting for it (subscribed when it was first approved); a new one
+  // goes to everyone subscribed now. The number must be the one the owner saw on the button.
+  let subscribed: number;
+  if (c.status === "stopped" && c.approved_at) {
+    const [w] = await sql`SELECT count(*) AS n FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.status = 'subscribed'
+      AND s.created_at <= ${c.approved_at}::timestamptz AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${c.id} AND x.subscriber_id = s.id)`;
+    subscribed = Number(w?.n ?? 0);
+    if (!subscribed) throw new Error("Everyone on the list already got this email.");
+    if (Number(count) !== subscribed) throw new Error(`The number waiting changed: ${subscribed.toLocaleString("en-US")} people are still waiting for it. Please check and approve again.`);
+  } else {
+    subscribed = (await subscriberCounts(accountId)).subscribed;
+    if (!subscribed) throw new Error("Nobody is subscribed yet. Import your subscribers first.");
+    if (Number(count) !== subscribed) throw new Error(`Your list changed: it now has ${subscribed.toLocaleString("en-US")} subscribers. Please check and approve again.`);
+  }
   if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
   // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't.
   const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), approved_count = ${subscribed},
