@@ -95,6 +95,17 @@ export const COPY_RULES = `Copy rules for a homepage or landing page headline, a
 - No medical claims: never say a product cures, treats, prevents, heals or diagnoses anything, or a benefit as a promise. Wellness benefits only with careful wording such as "supports" or "may help", from the site's own words.
 - Every fact, number, rating and review count comes from the site's own data. Never round up, never invent one.`;
 
+/**
+ * How the conversion agents work, from the conversion experts the owner follows: research the customer's own words
+ * first, build product pages so every element sells together, write supplement emails and ads as direct response
+ * within the claim rules, and test one change at a time against a baseline. For every site.
+ */
+export const CONVERSION_RULES = `Conversion rules:
+- Research first: when the data has real customer reviews, questions or messages, use the customers' own words for the problem, the benefit and the objections. Quote only what a customer really wrote; never invent a quote or a testimonial.
+- A product page works as one piece, top to bottom: an outcome headline (the copy rules), up to 3 short benefit lines, real proof right beside the buy button (the store's real rating and review count, guarantee, testing, made where), the top worries answered (taste, size, how to take it, returns), and one clear button. Name which part is missing or weak.
+- Emails and ads are direct response: one problem, one benefit stated with care, one action. Every claim has a source in the store's own pages. For health products: no medical claims and no promised result.
+- Test like a conversion expert: one change per page at a time, measured against the recorded baseline, then kept or undone. A rise after a change is evidence, not proof.`;
+
 /** How many words a headline has (pure). */
 export const wordCount = (text: string) => text.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 /** Longest headline the copy rules allow. */
@@ -1708,6 +1719,8 @@ fix: one exact change someone can check after, saying what to add or change and 
 field: what changes: seo_title, meta_description, page_text (the text of a content page or article), product_description, theme (layout, buttons, sections, design, menus, footer), app (an app to add, remove or set up), other.
 fact: the name of the one fact it rests on, exactly as written in the facts (for example shippingInfo).
 impact: high when it likely stops a purchase, medium when it slows one, low when it is polish.
+Judge each product page against these conversion rules and name the part that is missing or weak:
+${CONVERSION_RULES}
 Hold the homepage's main headline and the first lines of each key page to these rules, and list it as a problem when a visitor can't tell within 2 seconds what is sold and what problem it solves (fix: new words that follow a framework below):
 ${COPY_RULES}
 Only what the facts clearly show; never guess. At most 3 per page and 12 in total, most important first. No hyphens or dashes. Never invent a fact, number, review, guarantee or policy the store doesn't state; a fix may ask the owner to add their own real policy.${health ? " This store sells health products: no health or medical claims of any kind, in any field." : ""}
@@ -1787,7 +1800,9 @@ page: for product_page, the product page address exactly as it appears above; ot
 draft: for product_page, the section to add to that product's description as plain paragraphs (a short heading line, then 2 to 5 short paragraphs or lines, under 1,000 characters), written for a shopper, using only facts stated in that same product's own description above (never another product's, never the store's numbers, no customer counts, ratings, reviews, stock levels, guarantees, returns or shipping unless that description states them); for follow_up or email, the message itself; otherwise an empty string.
 measure: how to tell next month whether it worked, in the store's own numbers (for example add to cart rate of that product).
 impact: high, medium or low.
-Rules: never invent a fact, number, review, testimonial, guarantee, discount or policy the store doesn't state; a move may ask the owner to set one up for real. No promised results or statistics. No hyphens or dashes. If the funnel data is thin, say what to measure instead of guessing.${health ? " This store sells health products: no health or medical claims at all, no saying a product treats, cures, prevents or improves any condition." : ""}`,
+${CONVERSION_RULES}
+${COPY_RULES}
+Rules: never invent a fact, number, review, testimonial, guarantee, discount or policy the store doesn't state; a move may ask the owner to set one up for real. At most one product_page move per product. No promised results or statistics. No hyphens or dashes. If the funnel data is thin, say what to measure instead of guessing.${health ? " This store sells health products: no health or medical claims at all, no saying a product treats, cures, prevents or improves any condition." : ""}`,
     CONVERSION_MOVE_SCHEMA,
   );
   return (out.moves ?? []).slice(0, 5).map((m) => ({

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COPY_RULES, headlineProblem, MAX_HEADLINE_WORDS, wordCount } from "../src/lib/analytics/autopilot/writer";
+import { CONVERSION_RULES, COPY_RULES, headlineProblem, MAX_HEADLINE_WORDS, wordCount } from "../src/lib/analytics/autopilot/writer";
 
 test("copy rules: the frameworks, the 2 second rule, the headline limit and no medical claims are all in the rules", () => {
   for (const must of ["2 seconds", "what the business offers and the problem it solves", "10 words or fewer", "StoryBrand", "without [painful trade off]", "Audience + category + outcome + differentiator", "We help [who] get [result] without [worry]", "No medical claims", "may help", "Never round up, never invent", "Article titles, informational sections and FAQs follow the search"]) {
@@ -29,4 +29,11 @@ test("newsletter checks: the local checks get the plain text, so a draft opening
   assert.ok(newsletterCheckText(d).startsWith("Imagine"));
   assert.ok(hasAiTell(newsletterCheckText(d)));
   assert.ok(newsletterCheckText(d, true).includes("Headline: h"));
+});
+
+test("conversion rules: research the customer's words, product page anatomy, direct response, one change at a time", () => {
+  for (const must of ["customers' own words", "never invent a quote", "beside the buy button", "one clear button", "one problem, one benefit", "no medical claims", "one change per page at a time", "evidence, not proof"]) {
+    assert.ok(CONVERSION_RULES.includes(must), must);
+  }
+  assert.ok(!/[\u2013\u2014]/.test(CONVERSION_RULES));
 });

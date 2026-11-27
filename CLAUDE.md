@@ -44,6 +44,16 @@ Visitors decide in about 2 seconds. Every homepage or landing headline, hero, pr
 - Every number, rating and review count comes from the site's own data (for a Shopify store, the reviews metafields), the same number everywhere on the site, and star icons that match it. Never round up or invent one.
 - The rules live in `COPY_RULES` (`autopilot/writer.ts`). The writer follows them, the second AI checks against them, and the store audit holds the homepage to them. A Claude session writing copy has an independent agent check it against these rules before it ships.
 
+## Conversion rules (from the owner)
+
+The conversion agents work the way conversion experts do (`CONVERSION_RULES` in `autopilot/writer.ts`, used by the conversion lead and the store audit):
+
+- Research first: customers' own words from real reviews and messages, never an invented quote.
+- A product page sells as one piece: outcome headline, up to 3 benefit lines, real proof beside the buy button, top worries answered, one clear button.
+- Emails and ads are direct response: one problem, one carefully stated benefit, one action, every claim sourced.
+- One change per page at a time, measured against the baseline, kept or undone. A rise is evidence, not proof.
+- Video sales letters and advertorials wait until ads come after the weekly loop works.
+
 ## Product direction (from the owner)
 
 One repeatable loop, not every marketing channel at once:
