@@ -47,3 +47,6 @@ ADMIN_EMAILS stays the root list; owners can add others under Platform keys (ins
 
 ## Nov 27: team members (released)
 src/lib/analytics/members.ts. Signed session carries the person (accountId.b64(email).exp.sig; old cookies mean the owner). Invites accepted by the invitee; members never connect, disconnect, send, publish, approve or change autopilot (ownerOnly and memberRefusal). Only the owner's own newsletter test counts toward approval. info@peremis.com added as a member of account 1 on the owner's request.
+
+## Nov 27: newsletter metrics and automatic sending (released)
+Resend webhook events (sent, delivered, delayed, bounced, complained, opened, clicked) feed per email metrics; links get utm_source=dashpatrol&utm_medium=newsletter and Shopify shows a Newsletter order source (last visit only). Welcome email (only to people marked welcome_ok), weekly AI newsletter (sends on its own only when the owner turned it on and a real second AI approved), and scheduled sends. Owner still to add the webhook in Resend with its signing secret.
