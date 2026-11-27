@@ -8,7 +8,7 @@ import { claimProblem, noDashes } from "./social-agent";
 import { shopifyGql, type StoreAccess } from "./autopilot/shopify";
 import { siteFor } from "./autopilot/site-source";
 import { aiProvider, readPlatformSettings } from "./autopilot/settings";
-import { hasAiTell, MAX_HEADLINE_WORDS, numbersKnown, secondCheck, wordCount, writeNewsletterDraft } from "./autopilot/writer";
+import { hasAiTell, headlineProblem, numbersKnown, secondCheck, writeNewsletterDraft } from "./autopilot/writer";
 import { report } from "./autopilot/status";
 import { closeNeed, postNote } from "./autopilot/team";
 import { salesFor } from "./autopilot/shopify-sales";
@@ -1635,13 +1635,13 @@ async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaig
   const preview = noDashes(raw.preview.replace(/\n/g, " ").trim()).slice(0, 200);
   const headline = noDashes(raw.headline.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, " ").replace(/[#*[\]\n]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
   const paras = draftParagraphs(raw.body);
-  const text = `${subject}\n${preview}\n${headline}\n${paras.join("\n\n")}`;
+  const text = `Subject: ${subject}\nPreview: ${preview}\nHeadline: ${headline}\nBody:\n${paras.join("\n\n")}`;
   if (!subject || !paras.length) throw new Error("The draft came back empty. Please try again.");
-  const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? (wordCount(headline) > MAX_HEADLINE_WORDS ? `The headline is longer than ${MAX_HEADLINE_WORDS} words.` : null) ?? (numbersKnown(text.replace(/^\d{1,2}\. /gm, ""), `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
+  const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? headlineProblem(headline) ?? (numbersKnown(text.replace(/^\d{1,2}\. /gm, ""), `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
   if (problem) throw new Error(`The draft didn't pass the checks, so it isn't offered: ${problem}`);
   const verdict = await secondCheck(ai, {
     what: "a newsletter email that shares the business's own article with its subscribers",
-    copy: true,
+    copyPart: "Headline",
     source: `${latest.title}\n${articleText}`,
     text,
     health,

@@ -31,7 +31,7 @@ About 20,000 visitors a month from Google, and revenue from them. Every feature 
 
 ## Copy rules (from the owner)
 
-Visitors decide in about 2 seconds. Every headline, hero and short sales copy, for any site, whether an agent or a Claude session writes it:
+Visitors decide in about 2 seconds. Every homepage or landing headline, hero, product or collection opening and short sales copy, for any site, whether an agent or a Claude session writes it (article titles, informational sections and FAQs follow the search instead):
 
 - The headline says plainly what the business offers and the problem it solves, in 10 words or fewer. A subheadline is 25 words or fewer. Short and to the point.
 - Use one of these frameworks:
@@ -39,8 +39,9 @@ Visitors decide in about 2 seconds. Every headline, hero and short sales copy, f
   - *Value proposition:* [desirable outcome] for [specific audience] without [painful trade off]. Headline and subheadline.
   - *Four part:* audience + category + outcome + differentiator, in one sentence.
   - *Plain version:* We help [who] get [result] without [worry]. Quick drafts.
-- No medical claims. Wellness benefits only as "supports", from the site's own words.
-- Every number, rating and review count comes from the site's own data (for a Shopify store, the reviews metafields), the same number everywhere on the site. Never round up or invent one.
+- No medical claims, and no benefit stated as a promise. Wellness benefits only with "supports" or "may help", from the site's own words.
+- Only claims every product in scope backs: a site wide line can't say what only some products' pages say (for example "nothing hidden" when some formulas are proprietary blends). Check the product pages and policies first.
+- Every number, rating and review count comes from the site's own data (for a Shopify store, the reviews metafields), the same number everywhere on the site, and star icons that match it. Never round up or invent one.
 - The rules live in `COPY_RULES` (`autopilot/writer.ts`). The writer follows them, the second AI checks against them, and the store audit holds the homepage to them. A Claude session writing copy has an independent agent check it against these rules before it ships.
 
 ## Product direction (from the owner)

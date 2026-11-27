@@ -84,7 +84,7 @@ export const isUnsourced = (text: string) => UNSOURCED.test(text);
  * so the first words must say what the business offers and the problem it solves. Used by the writer, checked by the
  * second AI, and the store audit holds the homepage to them.
  */
-export const COPY_RULES = `Copy rules (visitors decide in about 2 seconds):
+export const COPY_RULES = `Copy rules for a homepage or landing page headline, a hero, a product or collection page's opening lines and short sales copy (visitors decide in about 2 seconds). Article titles, informational sections and FAQs follow the search and are not held to these rules:
 - The headline says plainly what the business offers and the problem it solves. 10 words or fewer. Short and to the point, no filler, no clever wordplay that hides the offer.
 - Use one of these proven frameworks:
   Problem, solution, result (StoryBrand one liner): name the problem, say what you provide, show the outcome. Best for a homepage header.
@@ -92,13 +92,16 @@ export const COPY_RULES = `Copy rules (visitors decide in about 2 seconds):
   Audience + category + outcome + differentiator, in one sentence.
   Plain version: We help [who] get [result] without [worry].
 - A subheadline is one or two short sentences, 25 words or fewer.
-- No medical claims: never say a product cures, treats, prevents, heals or diagnoses anything. Wellness benefits only as "supports", from the site's own words.
+- No medical claims: never say a product cures, treats, prevents, heals or diagnoses anything, or a benefit as a promise. Wellness benefits only with careful wording such as "supports" or "may help", from the site's own words.
 - Every fact, number, rating and review count comes from the site's own data. Never round up, never invent one.`;
 
 /** How many words a headline has (pure). */
-export const wordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+export const wordCount = (text: string) => text.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 /** Longest headline the copy rules allow. */
 export const MAX_HEADLINE_WORDS = 10;
+/** Why a headline breaks the copy rules' length limit, or null (pure). */
+export const headlineProblem = (headline: string): string | null =>
+  wordCount(headline) > MAX_HEADLINE_WORDS ? `The headline is longer than ${MAX_HEADLINE_WORDS} words.` : null;
 
 const RULES = `
 ${COPY_RULES}
@@ -1624,7 +1627,7 @@ No hyphens or dashes, no emojis, no exclamation marks.`,
  */
 export async function secondCheck(
   ai: AiProvider,
-  p: { what: string; source: string; text: string; health: boolean; publicText?: string; copy?: boolean },
+  p: { what: string; source: string; text: string; health: boolean; publicText?: string; /** Which labeled part the copy rules apply to, e.g. "Headline". */ copyPart?: string },
 ): Promise<{ ok: boolean; why: string } | null> {
   await loadRests();
   if (!hasSecondAi(ai)) return null;
@@ -1639,7 +1642,7 @@ Text:
 """
 ${p.text}
 """
-ok: false if it claims more than the source says, invents a fact, number, study or result, ${p.health ? "makes a medical claim, promises to cure, treat or prevent anything, gives advice for someone's own health, " : ""}copies someone else's words, reads as spam or clickbait, is unkind, or would embarrass the owner.${p.copy ? ` Also false if it breaks these copy rules:\n${COPY_RULES}\n` : ""} When unsure, false.
+ok: false if it claims more than the source says, invents a fact, number, study or result, ${p.health ? "makes a medical claim, promises to cure, treat or prevent anything, gives advice for someone's own health, " : ""}copies someone else's words, reads as spam or clickbait, is unkind, or would embarrass the owner.${p.copyPart ? ` Also false if the part labeled "${p.copyPart}:" breaks these copy rules (they apply to that part only; in an educational email the headline names the reader's problem and what helps, it doesn't have to sell):\n${COPY_RULES}\n` : ""} When unsure, false.
 why: one short plain sentence, no hyphens or dashes.`,
     { type: "object", properties: { ok: { type: "boolean" }, why: { type: "string" } }, required: ["ok", "why"] },
   );
@@ -2224,8 +2227,8 @@ Proposed SEO title: ${change.metaTitle || "(unchanged)"}
 Proposed meta description: ${change.metaDescription || "(unchanged)"}
 Proposed new section: ${change.contentSectionHtml ? `\n"""\n${change.contentSectionHtml}\n"""` : "(none)"}
 
-For each proposed part, keep it only if the data supports it: it matches what people searching that want (Search Console and page one above), is at least as good as the current one, reads naturally (no keyword stuffing), says plainly what the page offers and the problem it solves, and states nothing the page text doesn't support. When unsure, do not keep it.
-${COPY_RULES}
+For each proposed part, keep it only if the data supports it: it matches what people searching that want (Search Console and page one above), is at least as good as the current one, reads naturally (no keyword stuffing), and states nothing the page text doesn't support. When unsure, do not keep it.
+${page.type === "product" || page.type === "collection" ? `For this ${page.type} page, the SEO title should also say plainly what is sold and the problem it solves (search titles keep their own length limits above):\n${COPY_RULES}` : ""}
 If you can write a clearly stronger SEO title (under 60 characters) or meta description (under 155 characters) for this search, using only what the page supports, give it in betterTitle or betterDescription; otherwise return an empty string. No hyphens or dashes.`;
   const out = await askJson<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string }>(
     reviewerOf(ai),
