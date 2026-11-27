@@ -113,9 +113,9 @@ export const CONVERSION_RULES = `Conversion rules:
  */
 export const OUTREACH_RULES = `Outreach rules:
 - Lead with a real, specific reason to write to this person, taken only from their own public information given here (their page, article, posts, type of business or city). Never fake familiarity.
-- Make it about them: what they or their readers, customers or followers get, not a list of what we do.
+- Make it about them: what the offer means for them, using only what the offer itself says, not a list of what we do. Never a promised result for them or their audience.
 - Short: under 120 words not counting the greeting and sign off, one idea, plain words a person would really write.
-- End with one easy question they can answer yes or no (for example "Would that be useful?" or "Open to taking a look?"), never a request for a meeting or a call in a first message.
+- Make the ask one easy question they can answer yes or no (for example "Would that be useful?" or "Open to taking a look?"), placed where the message's own structure puts the ask. Never a request for a sales meeting or call in a first message (offering to appear as a guest on their podcast is fine).
 - A follow up adds something new and useful or simply checks in once; never guilt, pressure or false urgency.
 - If they say no or don't reply after the follow up, stop. Never argue with an objection: acknowledge it and ask one honest question at most.`;
 
@@ -1323,7 +1323,7 @@ The owner's own style: build a relationship and trust first, ask for little. War
 - One honest sentence about their page by name, based only on its title (don't invent what it says).
 - Who you are, in one sentence, using only what is known about ${p.ourBrand ?? p.ourSite} above (if nothing is known, just the name and ${p.ourSite}).
 - The reason for writing, exactly as the instructions above say, including their order (a dead link comes first, before anything else about you). When it offers a page, put its address on its own line.
-- The ask from those instructions, gently.
+- The ask from those instructions, gently, ending with one easy yes or no question, before the thank you.
 - A closing thank you, that you would be glad to stay in touch, then a sign off such as "Best regards," with "The ${p.ourBrand ?? p.ourSite} team" and ${p.ourSite} on their own lines.
 Never write a placeholder like [Name]. Spell the brand exactly ${p.ourBrand ?? p.ourSite}, and write product and ingredient names with normal capitals (for example Magnesium L Threonate).
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
@@ -2597,16 +2597,15 @@ export async function writeContactIntro(
     p.followUp
       ? `Write a short, polite follow up from the owner of ${p.brand ?? p.site} to this business, which hasn't replied yet to an email with the subject "${p.followUp.slice(0, 120)}".
 ${who}
-What the owner offers (its own words, for context only): ${asData(p.offer, 600)}
 "subject": under eight words, plain.
-"opening": two plain sentences: a friendly check in with one new, useful line drawn only from what the owner offers above or the business's type and city, and that the details are below again. No pressure, no guilt, no flattery.
+"opening": two or three plain sentences: a friendly check in, that the details are below again, and one easy yes or no question. No pressure, no guilt, no flattery, no claims about the business you can't know, no numbers, no prices, no links, no promise of results.
 ${OUTREACH_RULES}`
       : `Write the opening of a first email from the owner of ${p.brand ?? p.site} to this business.
 ${who}
 What the owner offers (its own words, for context only; the app adds it after your text): ${asData(p.offer, 600)}
 ${OUTREACH_RULES}
 "subject": under eight words, plain, about working together, no clickbait.
-"opening": two or three plain sentences: who is writing in one line, why this business is a good fit given its type and city (what it gets, not what we do), and that the details are below, ending with one easy yes or no question. No flattery, no claims about the business you can't know (reviews, how good they are), no numbers, no prices, no links, no promise of results.`
+"opening": two or three plain sentences: who is writing in one line, why this business is a good fit given its type and city (what it gets, not what we do), and that the details are below. End with one easy yes or no question that makes sense before the reader sees the details (for example "Would it be worth a look?"). No flattery, no claims about the business you can't know (reviews, how good they are), no numbers, no prices, no links, no promise of results.`
       + `
 ${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
 No greeting line and no sign off (the app adds both). No hyphens or dashes, no emojis, no exclamation marks.`,

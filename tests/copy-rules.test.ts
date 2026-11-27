@@ -39,7 +39,7 @@ test("conversion rules: research the customer's words, product page anatomy, dir
 });
 
 test("outreach rules: a real reason, about them, short, an easy yes or no question, respectful follow ups, a no is respected", () => {
-  for (const must of ["real, specific reason", "Never fake familiarity", "about them", "under 120 words", "yes or no", "never a request for a meeting", "follow up adds something new", "stop", "Never argue with an objection"]) {
+  for (const must of ["real, specific reason", "Never fake familiarity", "about them", "under 120 words", "yes or no", "Never a request for a sales meeting", "only what the offer itself says", "follow up adds something new", "stop", "Never argue with an objection"]) {
     assert.ok(OUTREACH_RULES.includes(must), must);
   }
   assert.ok(!/[\u2013\u2014]/.test(OUTREACH_RULES));
