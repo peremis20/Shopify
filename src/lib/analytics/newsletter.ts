@@ -884,6 +884,11 @@ export interface Campaign {
   waiting: number;
   /** A test went out since the last edit. */
   tested: boolean;
+  kind: "campaign" | "welcome" | "weekly";
+  /** Approved for this time; the hourly run sends it from then on. */
+  scheduledAt: string | null;
+  /** Approved by the agent on the owner's standing permission. */
+  auto: boolean;
 }
 
 /** A timestamp as Postgres sends it as text ("2026-11-26 10:00:00.12+00"), in ISO form for the browser. */
@@ -912,6 +917,9 @@ const toCampaign = (r: Record<string, string | null>): Campaign => ({
   unsure: Number(r.unsure ?? 0),
   waiting: Number(r.waiting ?? 0),
   tested: r.tested === "t" || r.tested === "true",
+  kind: r.kind === "welcome" || r.kind === "weekly" ? r.kind : "campaign",
+  scheduledAt: iso(r.scheduled_at),
+  auto: r.auto === "t" || r.auto === "true",
 });
 
 export async function newsletterView(accountId: string, query = "") {
@@ -928,7 +936,11 @@ export async function newsletterView(accountId: string, query = "") {
     sql`SELECT c.*, (c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at) AS tested,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'unknown') AS unsure,
-        CASE WHEN c.status IN ('approved', 'sending', 'stopped') AND c.approved_at IS NOT NULL THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
+        CASE WHEN c.kind = 'welcome' THEN (SELECT count(*) FROM insights_newsletter_subscribers s, insights_newsletter_settings st
+          WHERE st.account_id = c.account_id AND s.account_id = c.account_id AND s.status = 'subscribed' AND s.welcomed_at IS NULL
+            AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id))
+        WHEN c.status IN ('approved', 'sending', 'stopped') AND c.approved_at IS NOT NULL THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
           AND s.status = 'subscribed' AND s.created_at <= c.approved_at
           AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)) ELSE 0 END AS waiting
       FROM insights_newsletter_campaigns c WHERE c.account_id = ${accountId} ORDER BY c.created_at DESC LIMIT 30`,
@@ -1163,7 +1175,8 @@ export async function saveCampaign(accountId: string, input: unknown, id?: unkno
       WHERE id = ${cur.id} AND account_id = ${accountId}`;
     return String(cur.id);
   }
-  const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body) VALUES (${accountId}, ${c.subject}, ${c.preview}, ${c.body}) RETURNING id`;
+  const kind = (input as { kind?: unknown } | null)?.kind === "welcome" ? "welcome" : "campaign";
+  const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body, kind) VALUES (${accountId}, ${c.subject}, ${c.preview}, ${c.body}, ${kind}) RETURNING id`;
   return String(made.id);
 }
 
@@ -1175,22 +1188,35 @@ export async function deleteCampaign(accountId: string, id: unknown): Promise<vo
   await sql`DELETE FROM insights_newsletter_campaigns WHERE id = ${cur.id} AND account_id = ${accountId}`;
 }
 
+/** No article to write from (none at all, or every one already used): a reason to skip, not a failure. */
+export class NoNewArticle extends Error {}
+
 /**
- * A draft from the site's latest article, written by the AI and checked before it is offered: the claim guard (strict
- * on health sites), AI wording, no number the article doesn't have, and a second AI from another service.
+ * A draft from one of the site's articles (the latest, or for the weekly newsletter the newest one no newsletter used
+ * yet), written by the AI and checked before it is offered: the claim guard (strict on health sites), AI wording, no
+ * number the article doesn't have, and a second AI from another service. A draft that fails a check is never saved.
  */
-export async function draftFromLatestArticle(accountId: string): Promise<string> {
+async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaign" | "weekly" }): Promise<{ id: string; checked: "ai" | "owner"; subject: string }> {
   await schema();
   if (isSabbath()) throw new Error("DashPatrol rests for the Sabbath. Try again after Saturday sundown.");
   const profile = await readProfile(accountId);
   const site = await siteFor(accountId);
   if (!site) throw new Error("Connect your website first, so there is an article to share.");
-  const [latest] = await site.articles();
-  if (!latest) throw new Error("No published article was found on your site yet.");
+  const articles = await site.articles();
+  if (!articles.length) throw new NoNewArticle("No published article was found on your site yet.");
+  const used = new Set<string>();
+  if (f.unused) {
+    const rows = await sql`SELECT DISTINCT source_url FROM insights_newsletter_campaigns WHERE account_id = ${accountId} AND source_url IS NOT NULL`;
+    for (const r of rows) if (r.source_url) used.add(r.source_url);
+  }
+  const latest = pickArticle(articles, used, profile.siteDomain);
+  if (!latest) {
+    if (!profile.siteDomain && !articles.some((a) => /^https?:\/\//i.test(a.url))) throw new Error("Your website address isn't set, so the email can't link to the article. Add it in Settings.");
+    throw new NoNewArticle("There is no new article since the last newsletter.");
+  }
+  const link = latest.link;
   const articleText = plainOf(latest.body);
-  if (articleText.length < 200) throw new Error("Your latest article is too short to write an email from.");
-  const link = /^https?:\/\//i.test(latest.url) ? latest.url : profile.siteDomain ? `https://${profile.siteDomain}${latest.url.startsWith("/") ? "" : "/"}${latest.url}` : null;
-  if (!link) throw new Error("Your website address isn't set, so the email can't link to the article. Add it in Settings.");
+  if (articleText.length < 200) throw new Error("The article is too short to write an email from.");
   const base = aiProvider(await readPlatformSettings());
   if (!base) throw new Error("An AI key is needed to write a draft. You can still write the email yourself.");
   const ai = { ...base, site: siteBrief(profile) };
@@ -1211,9 +1237,15 @@ export async function draftFromLatestArticle(accountId: string): Promise<string>
   });
   if (verdict && !verdict.ok) throw new Error(`A second AI turned the draft down, so it isn't offered: ${verdict.why || "no reason given."}`);
   const body = `${paras.join("\n\n")}\n\n[Read the article](${link})`;
-  const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body, checked, source_url)
-    VALUES (${accountId}, ${subject}, ${preview}, ${body}, ${verdict ? "ai" : "owner"}, ${link}) RETURNING id`;
-  return String(made.id);
+  const checked = verdict ? "ai" : "owner";
+  const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body, checked, source_url, kind)
+    VALUES (${accountId}, ${subject}, ${preview}, ${body}, ${checked}, ${link}, ${f.kind}) RETURNING id`;
+  return { id: String(made.id), checked, subject };
+}
+
+/** The owner's "Draft from my latest article" click. */
+export async function draftFromLatestArticle(accountId: string): Promise<string> {
+  return (await draftFrom(accountId, { unused: false, kind: "campaign" })).id;
 }
 
 type ResendAnswer = { ok: boolean; status: number | null; body: unknown; text: string; retryAfter?: string | null };
@@ -1290,12 +1322,16 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
 
 /**
  * The owner's Send click. Nothing is ever sent without it. The count the owner saw ("Send to N subscribers") must
- * match the list now, a test must have gone out since the last edit, and the words pass the claim guard.
+ * match the list now, a test must have gone out since the last edit, and the words pass the claim guard. With
+ * `scheduledAt` it waits until then. For the welcome email this turns it on: from then on each new subscriber gets it
+ * once (while the welcome email is turned on in Newsletter settings), and an earlier welcome email stops.
  */
-export async function approveCampaign(accountId: string, id: unknown, count: unknown, origin: string): Promise<number> {
+export async function approveCampaign(accountId: string, id: unknown, count: unknown, origin: string, scheduledAt?: unknown): Promise<number> {
   await schema();
   const c = await ownedCampaign(accountId, id);
   if (c.status !== "draft" && c.status !== "stopped") throw new Error("This email isn't a draft anymore.");
+  const welcome = c.kind === "welcome";
+  const at = welcome ? null : parseSchedule(scheduledAt);
   const s = await readSettings(accountId);
   const missing = missingSetup(s);
   if (missing.length) throw new Error(`Add ${missing.join(", ")} first. US law (CAN SPAM) needs a postal address in every marketing email.`);
@@ -1306,6 +1342,16 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
   const profile = await readProfile(accountId);
   const problem = claimProblem(`${c.subject}\n${c.preview}\n${c.body}`, healthRulesApply(profile));
   if (problem) throw new Error(`Please change the email first. ${problem}`);
+  if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
+  if (welcome) {
+    // One welcome email at a time: approving this one stops any earlier one (who got that one is never welcomed again).
+    await sql`UPDATE insights_newsletter_campaigns SET status = 'stopped' WHERE account_id = ${accountId} AND kind = 'welcome' AND id <> ${c.id} AND status IN ('approved', 'sending')`;
+    await sql`UPDATE insights_newsletter_settings SET welcome_since = coalesce(welcome_since, now()), origin = coalesce(origin, ${origin}) WHERE account_id = ${accountId}`;
+    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), origin = ${origin}, last_error = NULL, updated_at = updated_at
+      WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
+    if (!done) throw new Error("This email isn't a draft anymore.");
+    return 0;
+  }
   // A paused email carries on with the people still waiting for it (subscribed when it was first approved); a new one
   // goes to everyone subscribed now. The number must be the one the owner saw on the button.
   let subscribed: number;
@@ -1320,10 +1366,10 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
     if (!subscribed) throw new Error("Nobody is subscribed yet. Import your subscribers first.");
     if (Number(count) !== subscribed) throw new Error(`Your list changed: it now has ${subscribed.toLocaleString("en-US")} subscribers. Please check and approve again.`);
   }
-  if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
-  // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't.
+  // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't. A
+  // scheduled email goes to who is subscribed when it was approved, too: the owner approved that number.
   const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), approved_count = ${subscribed},
-      origin = ${origin}, last_error = NULL, updated_at = updated_at
+      origin = ${origin}, last_error = NULL, updated_at = updated_at, scheduled_at = ${at ? at.toISOString() : null}::timestamptz
     WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
   if (!done) throw new Error("This email isn't a draft anymore.");
   return subscribed;
