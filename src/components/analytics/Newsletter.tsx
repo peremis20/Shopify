@@ -117,7 +117,7 @@ function Checklist({ data }: { data: NewsletterData }) {
 function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => void }) {
   const s = data.settings;
   const [open, setOpen] = useState(data.missing.length > 0);
-  const [form, setForm] = useState({ fromName: s.fromName, fromAddress: s.fromAddress, replyTo: s.replyTo, postalAddress: s.postalAddress, dailyCap: String(s.dailyCap), testEmails: s.testEmails.join(", ") });
+  const [form, setForm] = useState({ fromName: s.fromName, fromAddress: s.fromAddress, replyTo: s.replyTo, postalAddress: s.postalAddress, dailyCap: String(s.dailyCap), testEmails: s.testEmails.join(", "), logoUrl: s.logoUrl ?? "", color: s.color ?? "" });
   const [key, setKey] = useState("");
   const [hook, setHook] = useState("");
   const [busy, setBusy] = useState(false);
@@ -174,6 +174,22 @@ function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => vo
             Business postal address
             <textarea className={`${field} mt-1`} rows={3} value={form.postalAddress} onChange={set("postalAddress")} placeholder={"Street and number\nCity, State Zip"} />
             <span className="mt-1 block text-xs font-normal text-dash-muted">US law (CAN SPAM) needs it at the bottom of every marketing email. Nothing can be sent until it is here. A PO box works.</span>
+          </label>
+          <label className="text-sm font-medium">
+            Logo
+            <input className={`${field} mt-1`} value={form.logoUrl} onChange={set("logoUrl")} placeholder="https://.../logo.png" />
+            <span className="mt-1 block text-xs font-normal text-dash-muted">A link to your logo as a PNG or JPG. It shows centered at the top of every email. In Shopify, upload it under Content, Files and copy its link.</span>
+            {form.logoUrl && /^https:\/\//.test(form.logoUrl) && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={form.logoUrl} alt="Your logo" className="mt-2 h-10 w-auto" />
+            )}
+          </label>
+          <label className="text-sm font-medium">
+            Title and link color
+            <span className="mt-1 flex items-center gap-2">
+              <input type="color" className="h-9 w-12 rounded border border-dash-line" value={/^#[0-9a-f]{6}$/i.test(form.color) ? form.color : "#2b2a27"} onChange={set("color")} />
+              <input className={`${field} max-w-[10rem]`} value={form.color} onChange={set("color")} placeholder="#2b2a27" />
+            </span>
           </label>
           <label className="text-sm font-medium">
             Most emails a day

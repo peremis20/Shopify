@@ -2558,8 +2558,8 @@ No greeting line and no sign off (the app adds both). No hyphens or dashes, no e
 export async function writeNewsletterDraft(
   ai: AiProvider,
   p: { title: string; articleText: string; brand: string | null; site: string; health: boolean },
-): Promise<{ subject: string; preview: string; body: string }> {
-  const out = await askJson<{ subject: string; preview: string; body: string }>(
+): Promise<{ subject: string; preview: string; headline: string; body: string }> {
+  const out = await askJson<{ subject: string; preview: string; headline: string; body: string }>(
     ai,
     `Write a short newsletter email from ${p.brand ?? p.site} to people who chose to get its emails. It shares the business's newest article, titled "${p.title.slice(0, 160)}".
 The article (the only source; use nothing that isn't in it):
@@ -2568,14 +2568,19 @@ ${p.articleText.slice(0, 6000).replace(/"{3,}/g, '"')}
 """
 "subject": under nine words, plain, true to the article, no clickbait.
 "preview": one short sentence shown next to the subject in the inbox.
-"body": three short plain paragraphs separated by a blank line: what the article is about, the most useful point it makes, and an invitation to read the whole article (the app adds the link after your text). No greeting line and no sign off.
-Never add a fact, number, study, price, offer or result the article doesn't state.${p.health ? " This is a health business: no medical claims, no promise to cure, treat, heal or prevent anything, no advice for someone's own health." : ""}
+"headline": one short, warm line that names the reader's problem the article speaks to, under twelve words, shown large at the top. No clickbait.
+"body": an educational email in this shape, each part separated by a blank line:
+  two short paragraphs that open on a moment the reader knows and then say plainly what the article explains;
+  "Try this:" on its own line, then up to three numbered steps, one per line, written as "1. ...", "2. ...", "3. ...", each a simple everyday step the article itself gives (fewer if the article gives fewer, none if it gives none);
+  one short closing paragraph that invites them to read the whole article (the app adds the link after your text).
+  No greeting line and no sign off (the app adds the sign off).
+Never add a fact, number, study, price, offer, step or result the article doesn't state.${p.health ? " This is a health business: no medical claims, no promise to cure, treat, heal or prevent anything, no advice about a medicine, dose or condition; a step can only be a simple everyday habit the article itself suggests." : ""}
 No hyphens or dashes, no emojis, no exclamation marks, no links.`,
     {
       type: "object",
-      properties: { subject: { type: "string" }, preview: { type: "string" }, body: { type: "string" } },
-      required: ["subject", "preview", "body"],
+      properties: { subject: { type: "string" }, preview: { type: "string" }, headline: { type: "string" }, body: { type: "string" } },
+      required: ["subject", "preview", "headline", "body"],
     },
   );
-  return { subject: String(out.subject ?? ""), preview: String(out.preview ?? ""), body: String(out.body ?? "") };
+  return { subject: String(out.subject ?? ""), preview: String(out.preview ?? ""), headline: String(out.headline ?? ""), body: String(out.body ?? "") };
 }

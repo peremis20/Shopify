@@ -195,17 +195,28 @@ const safeHref = (u: string) => (/^https?:\/\/[^\s"'<>]+$/i.test(u) ? u : null);
 type LinkFn = (url: string) => string;
 const same: LinkFn = (u) => u;
 
-function inlineHtml(text: string, link: LinkFn = same): string {
+/** The default accent color for headings and links when the owner hasn't picked one. */
+export const DEFAULT_EMAIL_COLOR = "#2b2a27";
+/** An accent color the owner may pick: a six digit hex color, or null. */
+export const cleanColor = (v: unknown): string | null => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : null);
+/** A logo address the owner may save: an https image link, or null. */
+export const cleanLogoUrl = (v: unknown): string | null => {
+  if (typeof v !== "string") return null;
+  const u = v.trim();
+  return u.length <= 500 && /^https:\/\/[^\s"'<>]+$/i.test(u) ? u : null;
+};
+
+function inlineHtml(text: string, link: LinkFn = same, color = DEFAULT_EMAIL_COLOR): string {
   // Links and bold are found in the raw text, then every piece is escaped, so nothing the owner types becomes markup.
   const out: string[] = [];
   const re = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"')]+)|\*\*([^*\n]{1,300})\*\*/g;
   let last = 0;
   for (const m of text.matchAll(re)) {
     out.push(escapeHtml(text.slice(last, m.index)));
-    if (m[1] && safeHref(m[2])) out.push(`<a href="${escapeHtml(link(m[2]))}" style="color:#0F5130">${escapeHtml(m[1])}</a>`);
+    if (m[1] && safeHref(m[2])) out.push(`<a href="${escapeHtml(link(m[2]))}" style="color:${color}">${escapeHtml(m[1])}</a>`);
     else if (m[3] && safeHref(splitTrailing(m[3])[0])) {
       const [href, trail] = splitTrailing(m[3]);
-      out.push(`<a href="${escapeHtml(link(href))}" style="color:#0F5130">${escapeHtml(href)}</a>${escapeHtml(trail)}`);
+      out.push(`<a href="${escapeHtml(link(href))}" style="color:${color}">${escapeHtml(href)}</a>${escapeHtml(trail)}`);
     }
     else if (m[4]) out.push(`<strong>${escapeHtml(m[4])}</strong>`);
     else out.push(escapeHtml(m[0]));
@@ -222,29 +233,42 @@ const inlineText = (text: string, link: LinkFn = same) =>
     .replace(/\*\*([^*\n]{1,300})\*\*/g, "$1");
 
 /**
- * The owner's simple format, as safe HTML and as plain text: paragraphs split by a blank line, "# " starts a heading,
- * "* " starts a list item, [words](https://link), bare https links and **bold**. Nothing else is markup; any HTML the
- * owner types is shown as text.
+ * The owner's simple format, as safe HTML and as plain text: paragraphs split by a blank line, "# " starts a heading
+ * (the first block, when it is a heading, is the email's large title), "* " starts a list item, "1. " starts a
+ * numbered step, [words](https://link), bare https links and **bold**. Nothing else is markup; any HTML the owner
+ * types is shown as text.
  */
-export function renderBody(body: string, link: LinkFn = same): { html: string; text: string } {
+export function renderBody(body: string, link: LinkFn = same, color = DEFAULT_EMAIL_COLOR): { html: string; text: string } {
   const blocks = body.replace(/\r\n?/g, "\n").split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
   const html: string[] = [];
   const text: string[] = [];
-  for (const b of blocks) {
+  const inl = (t: string) => inlineHtml(t, link, color);
+  blocks.forEach((b, i) => {
     const lines = b.split("\n").map((l) => l.trim());
     if (lines.length === 1 && /^#{1,3}\s+/.test(lines[0])) {
       const h = lines[0].replace(/^#{1,3}\s+/, "");
-      html.push(`<h2 style="font-size:20px;margin:24px 0 8px">${inlineHtml(h, link)}</h2>`);
-      text.push(inlineText(h, link).toUpperCase());
+      html.push(
+        i === 0
+          ? `<h1 style="font-size:40px;line-height:1.2;font-weight:400;color:${color};margin:8px 0 32px">${inl(h)}</h1>`
+          : `<h2 style="font-size:24px;line-height:1.3;font-weight:600;color:${color};margin:32px 0 12px">${inl(h)}</h2>`,
+      );
+      text.push(i === 0 ? inlineText(h, link) : inlineText(h, link).toUpperCase());
+    } else if (lines.every((l) => /^\d{1,2}[.)]\s+/.test(l))) {
+      // Numbered steps, each its own line with its number in bold.
+      for (const l of lines) {
+        const [, num, rest] = l.match(/^(\d{1,2})[.)]\s+(.*)$/) ?? [];
+        html.push(`<p style="margin:0 0 20px"><strong style="color:#333333">${num}.</strong> ${inl(rest ?? "")}</p>`);
+      }
+      text.push(lines.map((l) => inlineText(l.replace(/^(\d{1,2})[.)]\s+/, "$1. "), link)).join("\n"));
     } else if (lines.every((l) => /^[*-]\s+/.test(l))) {
       const items = lines.map((l) => l.replace(/^[*-]\s+/, ""));
-      html.push(`<ul style="margin:0 0 16px;padding-left:22px">${items.map((i) => `<li style="margin:4px 0">${inlineHtml(i, link)}</li>`).join("")}</ul>`);
-      text.push(items.map((i) => `* ${inlineText(i, link)}`).join("\n"));
+      html.push(`<ul style="margin:0 0 20px;padding-left:22px">${items.map((it) => `<li style="margin:6px 0">${inl(it)}</li>`).join("")}</ul>`);
+      text.push(items.map((it) => `* ${inlineText(it, link)}`).join("\n"));
     } else {
-      html.push(`<p style="margin:0 0 16px">${lines.map((l) => inlineHtml(l, link)).join("<br>")}</p>`);
+      html.push(`<p style="margin:0 0 20px">${lines.map((l) => inl(l)).join("<br>")}</p>`);
       text.push(lines.map((l) => inlineText(l, link)).join("\n"));
     }
-  }
+  });
   return { html: html.join("\n"), text: text.join("\n\n") };
 }
 
@@ -254,7 +278,7 @@ export function footer(p: { brand: string; postalAddress: string; unsubscribe: s
   const addr = p.postalAddress.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter(Boolean);
   return {
     text: `${why}\nUnsubscribe: ${p.unsubscribe}\n${addr.join("\n")}`,
-    html: `<hr style="border:none;border-top:1px solid #e5e1d8;margin:28px 0 16px"><p style="font-size:12px;color:#6b675f;margin:0 0 6px">${escapeHtml(why)} <a href="${escapeHtml(p.unsubscribe)}" style="color:#6b675f">Unsubscribe</a></p><p style="font-size:12px;color:#6b675f;margin:0">${addr.map(escapeHtml).join("<br>")}</p>`,
+    html: `<hr style="border:none;border-top:1px solid #eeeeee;margin:40px 0 16px"><p style="font-size:12px;line-height:1.6;color:#888888;margin:0 0 6px">${escapeHtml(why)} <a href="${escapeHtml(p.unsubscribe)}" style="color:#888888">Unsubscribe</a></p><p style="font-size:12px;line-height:1.6;color:#888888;margin:0">${addr.map(escapeHtml).join("<br>")}</p>`,
   };
 }
 
@@ -285,6 +309,10 @@ export interface EmailParts {
   unsubscribe: string;
   /** UTM tags for links to the site's own domain. */
   utm?: { domain: string | null; slug: string } | null;
+  /** The owner's logo (an https image link), shown centered at the top. */
+  logoUrl?: string | null;
+  /** The accent color for the title, headings and links. */
+  color?: string | null;
 }
 
 /**
@@ -293,12 +321,17 @@ export interface EmailParts {
  */
 export function buildEmail(p: EmailParts): Record<string, unknown> {
   const utm = p.utm;
-  const content = renderBody(p.body, utm ? (u) => withUtm(u, utm.domain, utm.slug) : same);
+  const color = cleanColor(p.color) ?? DEFAULT_EMAIL_COLOR;
+  const content = renderBody(p.body, utm ? (u) => withUtm(u, utm.domain, utm.slug) : same, color);
+  const logoUrl = cleanLogoUrl(p.logoUrl);
+  const logo = logoUrl
+    ? `<div style="text-align:center;margin:0 0 40px"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(p.brand)}" width="190" style="display:inline-block;width:190px;max-width:100%;height:auto;border:0"></div>`
+    : "";
   const foot = footer({ brand: p.brand, postalAddress: p.postalAddress, unsubscribe: p.unsubscribe });
   const preheader = p.preview
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(p.preview)}</div>`
     : "";
-  const html = `<!doctype html><html><body style="margin:0;background:#f7f3ec"><div style="max-width:600px;margin:0 auto;padding:24px 20px;background:#ffffff;font:16px/1.6 Georgia,serif;color:#2b2a27">${preheader}${content.html}${foot.html}</div></body></html>`;
+  const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#ffffff"><div style="max-width:600px;margin:0 auto;padding:40px 24px;background:#ffffff;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:17px;line-height:1.7;color:#555555">${preheader}${logo}${content.html}${foot.html}</div></body></html>`;
   return {
     from: p.from,
     to: [p.to],
@@ -867,6 +900,9 @@ function schema(): Promise<void> {
     // The weekly newsletter's audience (all or a segment), and up to 3 extra test addresses.
     await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_audience jsonb`;
     await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS test_emails jsonb`;
+    // The email's look: the owner's logo link and accent color.
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS logo_url text`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS brand_color text`;
     // The owner's own tags on subscribers, kept lowercase.
     await sql`CREATE TABLE IF NOT EXISTS insights_newsletter_tags (
       account_id bigint NOT NULL,
@@ -939,6 +975,9 @@ interface Settings {
   weeklyAudience: Audience;
   /** Up to 3 more test addresses (team members). */
   testEmails: string[];
+  /** The logo shown at the top of every email, and the accent color. */
+  logoUrl: string | null;
+  color: string | null;
 }
 
 const yes = (v: string | null | undefined) => v === "t" || v === "true";
@@ -972,6 +1011,8 @@ async function readSettings(accountId: string): Promise<Settings> {
       const a = readAudience(r?.weekly_audience);
       return a.type === "people" ? { type: "all" as const } : a;
     })(),
+    logoUrl: cleanLogoUrl(r?.logo_url),
+    color: cleanColor(r?.brand_color),
     testEmails: (() => {
       try {
         const v = r?.test_emails ? JSON.parse(r.test_emails) : [];
@@ -1014,6 +1055,8 @@ export interface NewsletterSettingsView {
   weeklyNote: string | null;
   weeklyAudience: Audience;
   testEmails: string[];
+  logoUrl: string | null;
+  color: string | null;
 }
 
 /** The connected Shopify store's own time zone. */
@@ -1099,6 +1142,19 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
     const [acct] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
     const list = cleanTestEmails(b.testEmails, acct?.email ?? null);
     await sql`UPDATE insights_newsletter_settings SET test_emails = ${JSON.stringify(list)}::jsonb WHERE account_id = ${accountId}`;
+  }
+  if (b.logoUrl !== undefined) {
+    const raw = typeof b.logoUrl === "string" ? b.logoUrl.trim() : "";
+    const logo = raw ? cleanLogoUrl(raw) : null;
+    if (raw && !logo) throw new Error("The logo link must be an https link to a PNG or JPG image.");
+    if (logo && /\.(avif|svg)(\?|$)/i.test(logo)) throw new Error("Use a PNG or JPG logo. Gmail and Outlook don't show AVIF or SVG images.");
+    await sql`UPDATE insights_newsletter_settings SET logo_url = ${logo} WHERE account_id = ${accountId}`;
+  }
+  if (b.color !== undefined) {
+    const raw = typeof b.color === "string" ? b.color.trim() : "";
+    const color = raw ? cleanColor(raw) : null;
+    if (raw && !color) throw new Error("Pick the color as a hex code like #5f3d7a.");
+    await sql`UPDATE insights_newsletter_settings SET brand_color = ${color} WHERE account_id = ${accountId}`;
   }
   // Turning the welcome email on starts counting new subscribers from now: nobody who joined while it was off gets it.
   const welcomeStart = auto.welcomeOn && !cur.welcomeOn;
@@ -1274,6 +1330,8 @@ export async function newsletterView(accountId: string, query = "") {
     weeklyNote: s.weeklyNote,
     weeklyAudience: s.weeklyAudience,
     testEmails: s.testEmails,
+    logoUrl: s.logoUrl,
+    color: s.color,
   };
   return {
     settings,
@@ -1573,8 +1631,9 @@ async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaig
   const raw = await writeNewsletterDraft(ai, { title: latest.title, articleText, brand: profile.brandName, site: profile.siteDomain ?? "this site", health });
   const subject = noDashes(raw.subject.replace(/["\n]/g, " ").trim()).slice(0, 120);
   const preview = noDashes(raw.preview.replace(/\n/g, " ").trim()).slice(0, 200);
-  const paras = raw.body.replace(/https?:\/\/\S+/g, " ").split(/\n\s*\n/).map((p) => noDashes(p.replace(/[ \t]+/g, " ").trim())).filter(Boolean);
-  const text = `${subject}\n${preview}\n${paras.join("\n\n")}`;
+  const headline = noDashes(raw.headline.replace(/[#\n]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
+  const paras = draftParagraphs(raw.body);
+  const text = `${subject}\n${preview}\n${headline}\n${paras.join("\n\n")}`;
   if (!subject || !paras.length) throw new Error("The draft came back empty. Please try again.");
   const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? (numbersKnown(text, `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
   if (problem) throw new Error(`The draft didn't pass the checks, so it isn't offered: ${problem}`);
@@ -1585,11 +1644,35 @@ async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaig
     health,
   });
   if (verdict && !verdict.ok) throw new Error(`A second AI turned the draft down, so it isn't offered: ${verdict.why || "no reason given."}`);
-  const body = `${paras.join("\n\n")}\n\n[Read the article](${link})`;
+  const body = draftBody({ headline, paras, link, brand: profile.brandName || profile.siteDomain || "" });
   const checked = verdict ? "ai" : "owner";
   const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body, checked, source_url, kind)
     VALUES (${accountId}, ${subject}, ${preview}, ${body}, ${checked}, ${link}, ${f.kind}) RETURNING id`;
   return { id: String(made.id), checked, subject };
+}
+
+/**
+ * The AI's body as clean blocks (pure): links and markup dropped, numbered steps kept one per line, at most three,
+ * and nothing that could read as a heading or list the writer didn't mean.
+ */
+export function draftParagraphs(raw: string): string[] {
+  return raw
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .split(/\n\s*\n/)
+    .map((block) => {
+      const lines = block.split("\n").map((l) => noDashes(l.replace(/[ \t]+/g, " ").replace(/^#+\s*/, "").replace(/^[*-]\s+/, "").trim())).filter(Boolean);
+      const steps = lines.filter((l) => /^\d{1,2}[.)]\s+\S/.test(l));
+      if (steps.length && steps.length === lines.length) return steps.slice(0, 3).map((l, i) => l.replace(/^\d{1,2}[.)]\s+/, `${i + 1}. `)).join("\n");
+      return lines.join(" ");
+    })
+    .filter(Boolean);
+}
+
+/** The newsletter draft in the house format (pure): the large title, the body, the article link and the sign off. */
+export function draftBody(p: { headline: string; paras: string[]; link: string; brand: string }): string {
+  const sign = p.brand ? `Talk soon,\nThe ${p.brand.replace(/[\n#*[\]]/g, "").trim()} team` : "Talk soon";
+  return [p.headline ? `# ${p.headline}` : "", ...p.paras, `[Read the article](${p.link})`, sign].filter(Boolean).join("\n\n");
 }
 
 /** The owner's "Draft from my latest article" click. */
@@ -1673,6 +1756,8 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
       body: c.body ?? "",
       brand,
       postalAddress: s.postalAddress,
+      logoUrl: s.logoUrl,
+      color: s.color,
       // A test link: it opens the unsubscribe page, which says it was only a test.
       unsubscribe: `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=test`,
       // The links look exactly as they will in the real email.
@@ -2597,6 +2682,8 @@ async function sendCampaign(
       body: c.body ?? "",
       brand,
       postalAddress: s.postalAddress,
+      logoUrl: s.logoUrl,
+      color: s.color,
       unsubscribe: unsubscribeUrl(origin, p.token, cid),
       utm,
     });

@@ -92,7 +92,7 @@ test("unsubscribe tokens are random, unguessable and only their exact shape is a
 
 test("the owner's format becomes safe HTML: no tags, no script links", () => {
   const r = renderBody('# Hello\n\nA <b>bold</b> move & **this**.\nSee [our shop](https://shop.com/a).\n\n* one\n* two\n\n[bad](javascript:alert(1)) https://shop.com/b');
-  assert.ok(r.html.includes("<h2"));
+  assert.ok(r.html.includes("<h1"));
   assert.ok(r.html.includes("&#60;b&#62;bold&#60;/b&#62;"));
   assert.ok(!r.html.includes("<b>"));
   assert.ok(r.html.includes("<strong>this</strong>"));
