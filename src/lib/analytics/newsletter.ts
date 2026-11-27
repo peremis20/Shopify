@@ -10,7 +10,8 @@ import { siteFor } from "./autopilot/site-source";
 import { aiProvider, readPlatformSettings } from "./autopilot/settings";
 import { hasAiTell, numbersKnown, secondCheck, writeNewsletterDraft } from "./autopilot/writer";
 import { report } from "./autopilot/status";
-import { postNote, syncNeeds } from "./autopilot/team";
+import { closeNeed, postNote } from "./autopilot/team";
+import { salesFor } from "./autopilot/shopify-sales";
 import { isSabbath } from "./autopilot/sabbath";
 
 /**
@@ -1083,7 +1084,7 @@ export async function importFromShopify(accountId: string, deadline = Date.now()
   }
   let optedOut = 0;
   for (const part of chunk(no.rows.map((r) => r.email), 2000)) {
-    const done = await sql`UPDATE insights_newsletter_subscribers SET status = 'unsubscribed', updated_at = now()
+    const done = await sql`UPDATE insights_newsletter_subscribers SET status = 'unsubscribed', unsub_at = now(), updated_at = now()
       WHERE account_id = ${accountId} AND status = 'subscribed' AND email = ANY(string_to_array(${part.join(String.fromCharCode(31))}, chr(31))) RETURNING id`;
     optedOut += done.length;
   }
@@ -1096,7 +1097,7 @@ export async function importFromShopify(accountId: string, deadline = Date.now()
 export async function ownerUnsubscribe(accountId: string, id: unknown): Promise<void> {
   await schema();
   if (typeof id !== "string" || !/^\d{1,18}$/.test(id)) throw new Error("That person isn't on your list.");
-  await sql`UPDATE insights_newsletter_subscribers SET status = 'unsubscribed', updated_at = now()
+  await sql`UPDATE insights_newsletter_subscribers SET status = 'unsubscribed', unsub_at = now(), updated_at = now()
     WHERE id = ${id} AND account_id = ${accountId} AND status = 'subscribed'`;
 }
 
@@ -1113,11 +1114,16 @@ export async function subscriberByToken(token: unknown): Promise<{ accountId: st
 }
 
 /** One click unsubscribe. Bounced and complained stay as they are (they are already never emailed). */
-export async function unsubscribeByToken(token: unknown): Promise<boolean> {
+export async function unsubscribeByToken(token: unknown, campaignId?: unknown): Promise<boolean> {
   if (!validToken(token)) return false;
   await schema();
-  const [r] = await sql`UPDATE insights_newsletter_subscribers SET status = CASE WHEN status = 'subscribed' THEN 'unsubscribed' ELSE status END, updated_at = now()
-    WHERE token = ${token} RETURNING id`;
+  // The email it came from is kept only when it is this subscriber's own site's email, for that email's numbers.
+  const cid = typeof campaignId === "string" && /^\d{1,18}$/.test(campaignId) ? campaignId : null;
+  const [r] = await sql`UPDATE insights_newsletter_subscribers s SET
+      unsub_campaign_id = CASE WHEN s.status = 'subscribed' THEN (SELECT k.id FROM insights_newsletter_campaigns k WHERE k.id = ${cid}::bigint AND k.account_id = s.account_id) ELSE s.unsub_campaign_id END,
+      unsub_at = CASE WHEN s.status = 'subscribed' THEN now() ELSE s.unsub_at END,
+      status = CASE WHEN s.status = 'subscribed' THEN 'unsubscribed' ELSE s.status END, updated_at = now()
+    WHERE s.token = ${token} RETURNING s.id`;
   return Boolean(r);
 }
 
