@@ -2570,11 +2570,11 @@ ${p.articleText.slice(0, 6000).replace(/"{3,}/g, '"')}
 "preview": one short sentence shown next to the subject in the inbox.
 "headline": one short, warm line that names the reader's problem the article speaks to, under twelve words, shown large at the top. No clickbait.
 "body": an educational email in this shape, each part separated by a blank line:
-  two short paragraphs that open on a moment the reader knows and then say plainly what the article explains;
+  two short paragraphs that open on the everyday problem the article itself describes, in its own terms (invent no scene, time, person or detail), and then say plainly what the article explains;
   "Try this:" on its own line, then up to three numbered steps, one per line, written as "1. ...", "2. ...", "3. ...", each a simple everyday step the article itself gives (fewer if the article gives fewer, none if it gives none);
   one short closing paragraph that invites them to read the whole article (the app adds the link after your text).
   No greeting line and no sign off (the app adds the sign off).
-Never add a fact, number, study, price, offer, step or result the article doesn't state.${p.health ? " This is a health business: no medical claims, no promise to cure, treat, heal or prevent anything, no advice about a medicine, dose or condition; a step can only be a simple everyday habit the article itself suggests." : ""}
+Never add a fact, number, study, price, offer, step or result the article doesn't state.${p.health ? " This is a health business: no medical claims, no promise to cure, treat, heal or prevent anything, no advice for someone's own health. A step may only restate a general everyday habit the article itself states, as it states it, never about a medicine, supplement, dose or condition; leave the steps out if the article has none." : ""}
 No hyphens or dashes, no emojis, no exclamation marks, no links.`,
     {
       type: "object",

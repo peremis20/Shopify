@@ -4,7 +4,7 @@ import { buildEmail, cleanColor, cleanLogoUrl, draftBody, draftParagraphs, rende
 
 test("email look: the first heading is the large title, later ones are section headings, numbered steps keep their bold number", () => {
   const r = renderBody("# You are not lazy\n\nIt is 3 p.m.\n\nTry this:\n\n1. Step outside\n2) Drink water\n\n# Later\n\n* a\n* b", undefined, "#5f3d7a");
-  assert.ok(r.html.startsWith('<h1 style="font-size:40px'));
+  assert.ok(r.html.startsWith('<h1 style="font-family:') && r.html.includes('font-size:40px'));
   assert.ok(r.html.includes("color:#5f3d7a"));
   assert.ok(r.html.includes("<h2"));
   assert.ok(r.html.includes("<strong style=\"color:#333333\">1.</strong> Step outside"));
@@ -47,4 +47,14 @@ test("weekly draft: the AI's body becomes clean blocks, at most three steps, num
   assert.ok(body.startsWith("# You are running on empty\n\n"));
   assert.ok(body.endsWith("[Read the article](https://x.com/a)\n\nTalk soon,\nThe Peremis team"));
   assert.ok(!draftBody({ headline: "", paras: ["x"], link: "https://x.com", brand: "" }).includes("#"));
+});
+
+test("weekly draft: a lead line written right above the steps is split off, and the cap still holds", () => {
+  assert.deepEqual(draftParagraphs("Intro.\n\nTry this:\n1. Step outside.\n2. Drink water.\n3. Eat breakfast.\n4. Sleep.\nThat is all.\n\nEnd."), [
+    "Intro.",
+    "Try this:",
+    "1. Step outside.\n2. Drink water.\n3. Eat breakfast.",
+    "That is all.",
+    "End.",
+  ]);
 });

@@ -197,6 +197,8 @@ const same: LinkFn = (u) => u;
 
 /** The default accent color for headings and links when the owner hasn't picked one. */
 export const DEFAULT_EMAIL_COLOR = "#2b2a27";
+/** The email's font, set on each block too, since Outlook doesn't pass it down to headings. */
+const FONT = "font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;";
 /** An accent color the owner may pick: a six digit hex color, or null. */
 export const cleanColor = (v: unknown): string | null => (typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : null);
 /** A logo address the owner may save: an https image link, or null. */
@@ -249,23 +251,23 @@ export function renderBody(body: string, link: LinkFn = same, color = DEFAULT_EM
       const h = lines[0].replace(/^#{1,3}\s+/, "");
       html.push(
         i === 0
-          ? `<h1 style="font-size:40px;line-height:1.2;font-weight:400;color:${color};margin:8px 0 32px">${inl(h)}</h1>`
-          : `<h2 style="font-size:24px;line-height:1.3;font-weight:600;color:${color};margin:32px 0 12px">${inl(h)}</h2>`,
+          ? `<h1 style="${FONT}font-size:40px;line-height:1.2;font-weight:400;color:${color};margin:8px 0 32px">${inl(h)}</h1>`
+          : `<h2 style="${FONT}font-size:24px;line-height:1.3;font-weight:600;color:${color};margin:32px 0 12px">${inl(h)}</h2>`,
       );
       text.push(i === 0 ? inlineText(h, link) : inlineText(h, link).toUpperCase());
     } else if (lines.every((l) => /^\d{1,2}[.)]\s+/.test(l))) {
       // Numbered steps, each its own line with its number in bold.
       for (const l of lines) {
         const [, num, rest] = l.match(/^(\d{1,2})[.)]\s+(.*)$/) ?? [];
-        html.push(`<p style="margin:0 0 20px"><strong style="color:#333333">${num}.</strong> ${inl(rest ?? "")}</p>`);
+        html.push(`<p style="${FONT}margin:0 0 20px"><strong style="color:#333333">${num}.</strong> ${inl(rest ?? "")}</p>`);
       }
       text.push(lines.map((l) => inlineText(l.replace(/^(\d{1,2})[.)]\s+/, "$1. "), link)).join("\n"));
     } else if (lines.every((l) => /^[*-]\s+/.test(l))) {
       const items = lines.map((l) => l.replace(/^[*-]\s+/, ""));
-      html.push(`<ul style="margin:0 0 20px;padding-left:22px">${items.map((it) => `<li style="margin:6px 0">${inl(it)}</li>`).join("")}</ul>`);
+      html.push(`<ul style="${FONT}margin:0 0 20px;padding-left:22px">${items.map((it) => `<li style="${FONT}margin:6px 0">${inl(it)}</li>`).join("")}</ul>`);
       text.push(items.map((it) => `* ${inlineText(it, link)}`).join("\n"));
     } else {
-      html.push(`<p style="margin:0 0 20px">${lines.map((l) => inl(l)).join("<br>")}</p>`);
+      html.push(`<p style="${FONT}margin:0 0 20px">${lines.map((l) => inl(l)).join("<br>")}</p>`);
       text.push(lines.map((l) => inlineText(l, link)).join("\n"));
     }
   });
@@ -1147,7 +1149,7 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
     const raw = typeof b.logoUrl === "string" ? b.logoUrl.trim() : "";
     const logo = raw ? cleanLogoUrl(raw) : null;
     if (raw && !logo) throw new Error("The logo link must be an https link to a PNG or JPG image.");
-    if (logo && /\.(avif|svg)(\?|$)/i.test(logo)) throw new Error("Use a PNG or JPG logo. Gmail and Outlook don't show AVIF or SVG images.");
+    if (logo && !/\.(png|jpe?g|gif)$/i.test(new URL(logo).pathname)) throw new Error("Use a link that ends in .png or .jpg. Gmail and Outlook don't show AVIF, WebP or SVG images.");
     await sql`UPDATE insights_newsletter_settings SET logo_url = ${logo} WHERE account_id = ${accountId}`;
   }
   if (b.color !== undefined) {
@@ -1631,11 +1633,11 @@ async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaig
   const raw = await writeNewsletterDraft(ai, { title: latest.title, articleText, brand: profile.brandName, site: profile.siteDomain ?? "this site", health });
   const subject = noDashes(raw.subject.replace(/["\n]/g, " ").trim()).slice(0, 120);
   const preview = noDashes(raw.preview.replace(/\n/g, " ").trim()).slice(0, 200);
-  const headline = noDashes(raw.headline.replace(/[#\n]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
+  const headline = noDashes(raw.headline.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, " ").replace(/[#*[\]\n]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
   const paras = draftParagraphs(raw.body);
   const text = `${subject}\n${preview}\n${headline}\n${paras.join("\n\n")}`;
   if (!subject || !paras.length) throw new Error("The draft came back empty. Please try again.");
-  const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? (numbersKnown(text, `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
+  const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? (numbersKnown(text.replace(/^\d{1,2}\. /gm, ""), `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
   if (problem) throw new Error(`The draft didn't pass the checks, so it isn't offered: ${problem}`);
   const verdict = await secondCheck(ai, {
     what: "a newsletter email that shares the business's own article with its subscribers",
@@ -1662,10 +1664,16 @@ export function draftParagraphs(raw: string): string[] {
     .split(/\n\s*\n/)
     .map((block) => {
       const lines = block.split("\n").map((l) => noDashes(l.replace(/[ \t]+/g, " ").replace(/^#+\s*/, "").replace(/^[*-]\s+/, "").trim())).filter(Boolean);
-      const steps = lines.filter((l) => /^\d{1,2}[.)]\s+\S/.test(l));
-      if (steps.length && steps.length === lines.length) return steps.slice(0, 3).map((l, i) => l.replace(/^\d{1,2}[.)]\s+/, `${i + 1}. `)).join("\n");
-      return lines.join(" ");
+      const isStep = (l: string) => /^\d{1,2}[.)]\s+\S/.test(l);
+      const first = lines.findIndex(isStep);
+      if (first < 0) return [lines.join(" ")];
+      // A lead line like "Try this:" written right above the steps becomes its own paragraph.
+      const lead = lines.slice(0, first).join(" ");
+      const steps = lines.slice(first).filter(isStep).slice(0, 3).map((l, i) => l.replace(/^\d{1,2}[.)]\s+/, `${i + 1}. `)).join("\n");
+      const after = lines.slice(first).filter((l) => !isStep(l)).join(" ");
+      return [lead, steps, after];
     })
+    .flat()
     .filter(Boolean);
 }
 
