@@ -231,7 +231,7 @@ function AutoCard({ data, onDone }: { data: NewsletterData; onDone: () => void }
       <h2 className="font-serif text-xl text-dash-ink">Automatic sending</h2>
       <p className="mt-1 text-sm text-dash-muted">Nothing goes out on its own unless you turn it on here. Pause works on every email, automatic ones too. Nothing is sent from Friday sundown to Saturday sundown.</p>
       <div className="mt-4 grid gap-4">
-        {box("welcomeOn", "Welcome email", welcome ? `Each new subscriber gets "${welcome.subject}" once.` : "Write an email, tick This is my welcome email, send yourself a test and approve it. Then each new subscriber gets it once. People already on your list don't.")}
+        {box("welcomeOn", "Welcome email", welcome ? `Each new subscriber gets "${welcome.subject}" once.` : "Write an email, tick This is my welcome email, send yourself a test and approve it. Then people who join after you turn it on get it once. People already on your list don't, and imported people only when you tick Send them the welcome email.")}
         {box("weeklyOn", "Weekly newsletter", "On your chosen day, the agent writes an email from your newest article that no newsletter used yet, with every check: the claim guard, AI wording, numbers in the article and a second AI. No new article, no email.")}
         {form.weeklyOn && (
           <div className="ml-6 grid gap-3 sm:grid-cols-3">
@@ -431,7 +431,10 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
         </div>
       </div>
       {draft && !c.tested && !editing && <p className="mt-2 text-xs text-dash-muted">Send yourself a test first. Then you can approve it.</p>}
-      {draft && !member && !welcome && !resume && c.tested && (
+      {resume && c.scheduledAt && Date.parse(c.scheduledAt) > Date.now() && !later && (
+        <p className="mt-2 text-xs text-dash-muted">When you carry on, it still waits until {when(c.scheduledAt)}. Tick Send later to pick another time.</p>
+      )}
+      {draft && !member && !welcome && c.tested && (
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <label className="flex items-center gap-1">
             <input type="checkbox" checked={later} onChange={(e) => setLater(e.target.checked)} />
@@ -460,6 +463,8 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
   const [text, setText] = useState("");
   const [agreed, setAgreed] = useState(false);
   const [consent, setConsent] = useState("");
+  // Off unless the owner ticks it: people imported from a list or a store don't get the welcome email.
+  const [welcomeThem, setWelcomeThem] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [search, setSearch] = useState(q);
@@ -494,10 +499,17 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
       <h2 className="font-serif text-xl text-dash-ink">Subscribers</h2>
       <p className="mt-1 text-sm text-dash-muted">Only people who agreed to get your emails. Anyone who unsubscribed is never added back.</p>
       <OwnerOnly note={null}>
+      <label className="mt-4 flex items-start gap-2 text-sm">
+        <input type="checkbox" className="mt-1" checked={welcomeThem} onChange={(e) => setWelcomeThem(e.target.checked)} />
+        <span>
+          Send them the welcome email
+          <span className="block text-xs text-dash-muted">Off unless you tick it. People you import, from a list or from Shopify, don't get the welcome email otherwise. It only goes out while the welcome email is turned on.</span>
+        </span>
+      </label>
       {data.hasStore && (
         <div className="mt-4 rounded-xl border border-dash-line p-4">
           <p className="text-sm">Customers who said yes to email marketing in your Shopify store.</p>
-          <button className={`${primary} mt-2`} disabled={Boolean(busy)} onClick={() => run("shopify", { action: "shopify" })}>
+          <button className={`${primary} mt-2`} disabled={Boolean(busy)} onClick={() => run("shopify", { action: "shopify", welcome: welcomeThem })}>
             {busy === "shopify" ? "Reading your store..." : "Import from Shopify"}
           </button>
         </div>
@@ -519,7 +531,7 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
           <input type="checkbox" className="mt-1" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
           These people agreed to get emails from my business.
         </label>
-        <button className={`${primary} mt-2`} disabled={Boolean(busy) || !agreed || !text.trim()} onClick={() => run("import", { action: "import", text, confirmed: agreed, consent })}>
+        <button className={`${primary} mt-2`} disabled={Boolean(busy) || !agreed || !text.trim()} onClick={() => run("import", { action: "import", text, confirmed: agreed, consent, welcome: welcomeThem })}>
           {busy === "import" ? "Importing..." : "Import"}
         </button>
       </div>

@@ -2674,9 +2674,9 @@ export const newsletterApi = (req: Request) =>
     try {
       switch (b.action) {
         case "settings": return json({ ok: true, note: await saveNewsletterSettings(account.id, b.settings, appOrigin(req)) });
-        case "import": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent) });
-        case "add": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent, "manual") });
-        case "shopify": return json({ result: await importFromShopify(account.id, Date.now() + 50_000) });
+        case "import": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent, "import", b.welcome) });
+        case "add": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent, "manual", b.welcome) });
+        case "shopify": return json({ result: await importFromShopify(account.id, Date.now() + 50_000, b.welcome) });
         case "unsubscribe": await ownerUnsubscribe(account.id, b.id); break;
         case "save": return json({ ok: true, id: await saveCampaign(account.id, b.campaign, b.id) });
         case "delete": await deleteCampaign(account.id, b.id); break;

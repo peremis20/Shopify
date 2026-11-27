@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inAnalyticsWeek, orderSource } from "../src/lib/analytics/autopilot/shopify-sales";
+import { inAnalyticsWeek, newsletterTag, orderSource } from "../src/lib/analytics/autopilot/shopify-sales";
 
 test("analytics week: seven whole days ending yesterday, in the shop's time zone", () => {
   const now = Date.parse("2026-11-25T23:00:00Z"); // 5 PM on Nov 25 in Chicago
@@ -48,9 +48,19 @@ test("order source: Google app, Shopping, ads names, unknown and the store's own
   assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("google.evil.com") }), "google.evil.com");
 });
 
-test("order source: a visit from a newsletter link counts as Newsletter, after Google search", () => {
-  const letter = { source: "newsletter", referrerUrl: null, landingPage: "https://x.com/a", utmParameters: { medium: "email", source: "newsletter", campaign: "12_spring" } };
+test("order source: the last visit from a DashPatrol newsletter link counts as Newsletter, after Google search", () => {
+  const letter = { source: "dashpatrol", referrerUrl: null, landingPage: "https://x.com/a", utmParameters: { medium: "newsletter", source: "dashpatrol", campaign: "12_spring" } };
   assert.equal(orderSource("web", { firstVisit: null, lastVisit: letter }), "Newsletter");
-  assert.equal(orderSource("web", { firstVisit: letter, lastVisit: visit("direct") }), "Newsletter");
+  // The last visit only, as for every other source.
+  assert.notEqual(orderSource("web", { firstVisit: letter, lastVisit: visit("direct") }), "Newsletter");
   assert.equal(orderSource("web", { firstVisit: visit("Google", "https://www.google.com/"), lastVisit: letter }), "Google search");
+});
+
+test("newsletter tags: the distinctive tag, the old one only with an email id, anything else not", () => {
+  const v = (source: string, medium: string, campaign: string) => ({ source, referrerUrl: null, landingPage: null, utmParameters: { source, medium, campaign } });
+  assert.equal(newsletterTag(v("dashpatrol", "newsletter", "12_a")), "dashpatrol");
+  assert.equal(newsletterTag(v("newsletter", "email", "12_a")), "legacy");
+  assert.equal(newsletterTag(v("newsletter", "email", "spring_sale")), null);
+  assert.equal(newsletterTag(v("klaviyo", "email", "12")), null);
+  assert.equal(newsletterTag(null), null);
 });

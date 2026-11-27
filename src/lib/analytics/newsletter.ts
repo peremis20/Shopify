@@ -152,9 +152,14 @@ export function campaignSlug(id: string, subject: string): string {
   return `${id}${words ? `_${words}` : ""}`.slice(0, 50);
 }
 
+/** The tags this app's newsletter links carry; Shopify sales read them back (shopify-sales.ts newsletterTag). */
+export const UTM_SOURCE = "dashpatrol";
+export const UTM_MEDIUM = "newsletter";
+
 /**
- * Adds the newsletter's UTM tags to a link, only when it points at the site's own domain (www or not). Tags the owner
- * already set are kept; other sites' links are never changed.
+ * Adds the newsletter's UTM tags to a link, only when it points at the site's own domain (www or not). A link that
+ * already has any utm_ tag is left exactly as the owner wrote it; otherwise the tags are added as text before any
+ * "#", so the rest of the address is never rewritten.
  */
 export function withUtm(url: string, siteDomain: string | null | undefined, slug: string): string {
   const site = (siteDomain ?? "").toLowerCase().replace(/^www\./, "").trim();
@@ -166,10 +171,19 @@ export function withUtm(url: string, siteDomain: string | null | undefined, slug
     return url;
   }
   if (!/^https?:$/.test(u.protocol) || u.hostname.toLowerCase().replace(/^www\./, "") !== site) return url;
-  for (const [k, v] of [["utm_source", "newsletter"], ["utm_medium", "email"], ["utm_campaign", slug]] as const) {
-    if (!u.searchParams.has(k)) u.searchParams.set(k, v);
-  }
-  return u.toString();
+  const cut = url.indexOf("#");
+  const base = cut === -1 ? url : url.slice(0, cut);
+  const hash = cut === -1 ? "" : url.slice(cut);
+  if (/[?&]utm_[a-z]+=/i.test(base)) return url;
+  const tags = `utm_source=${UTM_SOURCE}&utm_medium=${UTM_MEDIUM}&utm_campaign=${encodeURIComponent(slug)}`;
+  const join = !base.includes("?") ? "?" : /[?&]$/.test(base) ? "" : "&";
+  return `${base}${join}${tags}${hash}`;
+}
+
+/** A bare link's address and the sentence punctuation after it ("see https://x.com/a." links to /a). */
+export function splitTrailing(link: string): [string, string] {
+  const trail = link.match(/[.,;:!?]+$/)?.[0] ?? "";
+  return [link.slice(0, link.length - trail.length), trail];
 }
 
 export const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -188,7 +202,10 @@ function inlineHtml(text: string, link: LinkFn = same): string {
   for (const m of text.matchAll(re)) {
     out.push(escapeHtml(text.slice(last, m.index)));
     if (m[1] && safeHref(m[2])) out.push(`<a href="${escapeHtml(link(m[2]))}" style="color:#0F5130">${escapeHtml(m[1])}</a>`);
-    else if (m[3] && safeHref(m[3])) out.push(`<a href="${escapeHtml(link(m[3]))}" style="color:#0F5130">${escapeHtml(m[3])}</a>`);
+    else if (m[3] && safeHref(splitTrailing(m[3])[0])) {
+      const [href, trail] = splitTrailing(m[3]);
+      out.push(`<a href="${escapeHtml(link(href))}" style="color:#0F5130">${escapeHtml(href)}</a>${escapeHtml(trail)}`);
+    }
     else if (m[4]) out.push(`<strong>${escapeHtml(m[4])}</strong>`);
     else out.push(escapeHtml(m[0]));
     last = (m.index ?? 0) + m[0].length;
@@ -200,7 +217,7 @@ function inlineHtml(text: string, link: LinkFn = same): string {
 const inlineText = (text: string, link: LinkFn = same) =>
   text
     .replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"')]+)/g, (_m, words: string | undefined, href: string | undefined, bare: string | undefined) =>
-      words && href ? `${words} (${link(href)})` : link(bare ?? ""))
+      words && href ? `${words} (${link(href)})` : ((b: [string, string]) => `${link(b[0])}${b[1]}`)(splitTrailing(bare ?? "")))
     .replace(/\*\*([^*\n]{1,300})\*\*/g, "$1");
 
 /**
@@ -526,6 +543,15 @@ export function eventFields(ev: unknown): { type: EventType; resendId: string | 
   };
 }
 
+/** What an event does to the person's place on the list: a spam report or a lasting bounce takes them off. */
+export function deliveryStatus(ev: { type: string; bounceType: string | null } | null): "bounced" | "complained" | null {
+  if (!ev) return null;
+  if (ev.type === "email.complained") return "complained";
+  // A temporary bounce (a full inbox) isn't a reason to stop emailing someone.
+  if (ev.type === "email.bounced" && !/transient|temporary|soft/i.test(ev.bounceType ?? "")) return "bounced";
+  return null;
+}
+
 /** The newest article whose link no newsletter used yet; null when every one was used. */
 export function pickArticle<T extends { url: string }>(articles: T[], used: Set<string>, siteDomain: string | null): (T & { link: string }) | null {
   for (const a of articles) {
@@ -633,6 +659,8 @@ function schema(): Promise<void> {
     await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS origin text`;
     // The welcome email went to this person (once ever), and which email an unsubscribe came from.
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS welcomed_at timestamptz`;
+    // May get the welcome email: only someone who signed up themselves, or whom the owner chose to welcome at import.
+    await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS welcome_ok boolean NOT NULL DEFAULT false`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_campaign_id bigint`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_at timestamptz`;
     // Resend's delivery and engagement events, once each (the Svix message id), keyed by account.
@@ -813,7 +841,10 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
   if (!auto.timeZone && auto.weeklyOn) auto.timeZone = await shopZone(accountId).catch(() => null);
   // Turning the weekly newsletter on again (a pause turns it off) clears the pause and its failure count.
   const weeklyRestart = auto.weeklyOn && !cur.weeklyOn;
-  await sql`UPDATE insights_newsletter_settings SET welcome_on = ${auto.welcomeOn}, weekly_on = ${auto.weeklyOn}, weekly_auto_send = ${auto.weeklyAutoSend},
+  // Turning the welcome email on starts counting new subscribers from now: nobody who joined while it was off gets it.
+  const welcomeStart = auto.welcomeOn && !cur.welcomeOn;
+  await sql`UPDATE insights_newsletter_settings SET welcome_since = CASE WHEN ${welcomeStart ? "1" : "0"}::text = '1' THEN now() ELSE welcome_since END,
+      welcome_on = ${auto.welcomeOn}, weekly_on = ${auto.weeklyOn}, weekly_auto_send = ${auto.weeklyAutoSend},
       weekly_day = ${auto.weeklyDay}, weekly_hour = ${auto.weeklyHour}, time_zone = ${auto.timeZone},
       weekly_failures = CASE WHEN ${weeklyRestart ? "1" : "0"}::text = '1' THEN 0 ELSE weekly_failures END,
       weekly_paused = CASE WHEN ${weeklyRestart ? "1" : "0"}::text = '1' THEN NULL ELSE weekly_paused END,
@@ -938,9 +969,12 @@ export async function newsletterView(accountId: string, query = "") {
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'unknown') AS unsure,
         CASE WHEN c.kind = 'welcome' THEN (SELECT count(*) FROM insights_newsletter_subscribers s, insights_newsletter_settings st
-          WHERE st.account_id = c.account_id AND s.account_id = c.account_id AND s.status = 'subscribed' AND s.welcomed_at IS NULL
-            AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
-            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id))
+          WHERE st.account_id = c.account_id AND s.account_id = c.account_id
+            -- WELCOME_ELIGIBLE: the same rule as the hourly run's due list and claim.
+            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)
+            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
+              WHERE x.subscriber_id = s.id AND w.account_id = c.account_id AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown')))
         WHEN c.status IN ('approved', 'sending', 'stopped') AND c.approved_at IS NOT NULL THEN (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = c.account_id
           AND s.status = 'subscribed' AND s.created_at <= c.approved_at
           AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)) ELSE 0 END AS waiting
@@ -1001,12 +1035,12 @@ async function existingStatuses(accountId: string, emails: string[]): Promise<Ma
   return out;
 }
 
-async function insertRows(accountId: string, rows: ListRow[], source: SubscriberSource, consent: string): Promise<number> {
+async function insertRows(accountId: string, rows: ListRow[], source: SubscriberSource, consent: string, welcomeOk = false): Promise<number> {
   let added = 0;
   for (const part of chunk(rows, 1000)) {
     // ON CONFLICT DO NOTHING: anyone already on the list (whatever their status) is never changed by an import.
-    const made = await sql`INSERT INTO insights_newsletter_subscribers (account_id, email, name, status, source, consent, token)
-      SELECT ${accountId}, x.email, x.name, 'subscribed', ${source}, ${consent}, x.token
+    const made = await sql`INSERT INTO insights_newsletter_subscribers (account_id, email, name, status, source, consent, token, welcome_ok)
+      SELECT ${accountId}, x.email, x.name, 'subscribed', ${source}, ${consent}, x.token, ${welcomeOk}
       FROM jsonb_to_recordset(${JSON.stringify(part.map((r) => ({ email: r.email, name: r.name, token: newToken() })))}::jsonb) AS x(email text, name text, token text)
       ON CONFLICT (account_id, email) DO NOTHING RETURNING id`;
     added += made.length;
@@ -1022,7 +1056,7 @@ export interface ImportResult {
 }
 
 /** A pasted list or CSV file. Only with the owner's word that these people agreed to get emails. */
-export async function importList(accountId: string, text: unknown, confirmed: unknown, consentNote: unknown, source: SubscriberSource = "import"): Promise<ImportResult> {
+export async function importList(accountId: string, text: unknown, confirmed: unknown, consentNote: unknown, source: SubscriberSource = "import", welcome: unknown = false): Promise<ImportResult> {
   await schema();
   if (confirmed !== true) throw new Error("Tick the box to confirm these people agreed to get emails from you.");
   if (typeof text !== "string" || !text.trim()) throw new Error("Paste the email addresses, or choose a CSV file.");
@@ -1032,7 +1066,8 @@ export async function importList(accountId: string, text: unknown, confirmed: un
   if (!parsed.rows.length) throw new Error("No email addresses were found in that list.");
   const note = oneLine(consentNote, 200) || (source === "manual" ? "Added by the owner, who confirmed they agreed to get emails" : "Imported by the owner, who confirmed they agreed to get emails");
   const plan = mergeImport(await existingStatuses(accountId, parsed.rows.map((r) => r.email)), parsed.rows);
-  const added = await insertRows(accountId, plan.add, source, `${note} (${new Date().toISOString().slice(0, 10)})`);
+  // Imported people get the welcome email only when the owner ticked "Send them the welcome email" for this import.
+  const added = await insertRows(accountId, plan.add, source, `${note} (${new Date().toISOString().slice(0, 10)})`, welcome === true);
   return { added, already: plan.already + (plan.add.length - added), blocked: plan.blocked, invalid: parsed.invalid };
 }
 
@@ -1067,7 +1102,7 @@ async function shopCustomers(store: StoreAccess, state: "SUBSCRIBED" | "UNSUBSCR
  * Customers of the connected Shopify store who said yes to email marketing there. Customers who unsubscribed in
  * Shopify are marked unsubscribed here too, so a choice made in the store is respected.
  */
-export async function importFromShopify(accountId: string, deadline = Date.now() + 50_000): Promise<ImportResult & { optedOut: number; complete: boolean }> {
+export async function importFromShopify(accountId: string, deadline = Date.now() + 50_000, welcome: unknown = false): Promise<ImportResult & { optedOut: number; complete: boolean }> {
   await schema();
   const store = (await siteFor(accountId))?.store ?? null;
   if (!store) throw new Error("Connect your Shopify store first (Settings, Connected apps).");
@@ -1089,7 +1124,7 @@ export async function importFromShopify(accountId: string, deadline = Date.now()
     optedOut += done.length;
   }
   const plan = mergeImport(await existingStatuses(accountId, yes.rows.map((r) => r.email)), yes.rows);
-  const added = await insertRows(accountId, plan.add, "shopify", `Subscribed to email marketing in Shopify (${new Date().toISOString().slice(0, 10)})`);
+  const added = await insertRows(accountId, plan.add, "shopify", `Subscribed to email marketing in Shopify (${new Date().toISOString().slice(0, 10)})`, welcome === true);
   return { added, already: plan.already + (plan.add.length - added), blocked: plan.blocked, invalid: 0, optedOut, complete: yes.complete && no.complete };
 }
 
@@ -1351,7 +1386,15 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
   if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
   if (welcome) {
     // One welcome email at a time: approving this one stops any earlier one (who got that one is never welcomed again).
-    await sql`UPDATE insights_newsletter_campaigns SET status = 'stopped' WHERE account_id = ${accountId} AND kind = 'welcome' AND id <> ${c.id} AND status IN ('approved', 'sending')`;
+    const old = await sql`UPDATE insights_newsletter_campaigns SET status = 'stopped' WHERE account_id = ${accountId} AND kind = 'welcome' AND id <> ${c.id} AND status IN ('approved', 'sending') RETURNING id`;
+    // The old one's batches still waiting for Resend's answer are never sent again (they may have gone out): those
+    // people count as welcomed, so the new welcome email never reaches them a second time.
+    for (const o of old) {
+      const rows = await sql`UPDATE insights_newsletter_sends SET status = 'unknown', note = 'A newer welcome email replaced this one before Resend answered'
+        WHERE campaign_id = ${o.id} AND account_id = ${accountId} AND status = 'pending' RETURNING subscriber_id`;
+      if (rows.length) await sql`UPDATE insights_newsletter_subscribers SET welcomed_at = coalesce(welcomed_at, now())
+        WHERE account_id = ${accountId} AND id = ANY(string_to_array(${rows.map((r) => String(r.subscriber_id)).join(",")}, ',')::bigint[])`;
+    }
     await sql`UPDATE insights_newsletter_settings SET welcome_since = coalesce(welcome_since, now()), origin = coalesce(origin, ${origin}) WHERE account_id = ${accountId}`;
     const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), origin = ${origin}, last_error = NULL, updated_at = updated_at
       WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
@@ -1375,7 +1418,10 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
   // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't. A
   // scheduled email goes to who is subscribed when it was approved, too: the owner approved that number.
   const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), approved_count = ${subscribed},
-      origin = ${origin}, last_error = NULL, updated_at = updated_at, scheduled_at = ${at ? at.toISOString() : null}::timestamptz
+      origin = ${origin}, last_error = NULL, updated_at = updated_at,
+      -- A new time replaces the old one; resuming a paused email keeps its time if that hasn't come yet.
+      scheduled_at = CASE WHEN ${at ? at.toISOString() : null}::timestamptz IS NOT NULL THEN ${at ? at.toISOString() : null}::timestamptz
+        WHEN scheduled_at > now() THEN scheduled_at ELSE NULL END
     WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
   if (!done) throw new Error("This email isn't a draft anymore.");
   if (c.kind === "weekly") await closeNeed(accountId, "Newsletter", `newsletter:weekly:${c.id}`).catch(() => undefined);
@@ -1504,14 +1550,14 @@ export async function recordEvent(accountId: string, svixId: string, raw: unknow
   const [send] = ev.resendId
     ? await sql`SELECT campaign_id, subscriber_id FROM insights_newsletter_sends WHERE account_id = ${accountId} AND resend_id = ${ev.resendId} LIMIT 1`
     : [];
+  // First, and on every delivery (a repeat too): if the event row was saved but this step failed, Resend's retry still
+  // takes the person off the list. Setting the same status again changes nothing.
+  const off = deliveryStatus(ev);
+  if (off) await markDelivery(accountId, ev.emails, off);
   const [made] = await sql`INSERT INTO insights_newsletter_events (account_id, svix_id, type, resend_id, campaign_id, subscriber_id, link, at)
     VALUES (${accountId}, ${svixId}, ${ev.type}, ${ev.resendId}, ${send?.campaign_id ?? null}, ${send?.subscriber_id ?? null}, ${ev.link}, coalesce(${ev.at}::timestamptz, now()))
     ON CONFLICT (account_id, svix_id) DO NOTHING RETURNING svix_id`;
-  if (!made) return false;
-  if (ev.type === "email.complained") await markDelivery(accountId, ev.emails, "complained");
-  // A temporary bounce (a full inbox) isn't a reason to stop emailing someone.
-  else if (ev.type === "email.bounced" && !/transient|temporary|soft/i.test(ev.bounceType ?? "")) await markDelivery(accountId, ev.emails, "bounced");
-  return true;
+  return Boolean(made);
 }
 
 export interface CampaignRow {
@@ -1538,6 +1584,16 @@ const metricsOf = (r: Record<string, string | null> | undefined): CampaignMetric
   uniqueClicks: Number(r?.uclicks ?? 0),
 });
 
+/** Newsletter sales rows that name one of this site's own emails, with that email's id (pure). */
+export function ownNewsletterSales<T extends { campaign: string; orders: number; revenue: number }>(rows: T[], own: Set<string>): (T & { id: string })[] {
+  const out: (T & { id: string })[] = [];
+  for (const r of rows) {
+    const id = slugCampaign(r.campaign);
+    if (id && own.has(id)) out.push({ ...r, id });
+  }
+  return out;
+}
+
 /** The campaign id at the start of a utm_campaign slug ("12_spring_tips"), or null. */
 export const slugCampaign = (slug: string) => slug.match(/^(\d{1,18})(?:_|$)/)?.[1] ?? null;
 
@@ -1553,7 +1609,13 @@ export async function newsletterMetrics(accountId: string) {
       FROM insights_newsletter_campaigns c WHERE c.account_id = ${accountId}
         AND EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent')
       ORDER BY coalesce(c.finished_at, c.approved_at) DESC NULLS LAST LIMIT 30`,
-    sql`SELECT campaign_id,
+    // An event that arrived before its send was saved as sent is matched now, by Resend's email id.
+    sql`WITH e AS (
+        SELECT ev.type, coalesce(ev.campaign_id, x.campaign_id) AS campaign_id, coalesce(ev.subscriber_id, x.subscriber_id) AS subscriber_id
+        FROM insights_newsletter_events ev
+        LEFT JOIN insights_newsletter_sends x ON ev.campaign_id IS NULL AND x.account_id = ev.account_id AND x.resend_id = ev.resend_id
+        WHERE ev.account_id = ${accountId})
+      SELECT campaign_id,
         count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.delivered') AS delivered,
         count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.bounced') AS bounced,
         count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.complained') AS complained,
@@ -1561,7 +1623,7 @@ export async function newsletterMetrics(accountId: string) {
         count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.opened') AS uopens,
         count(*) FILTER (WHERE type = 'email.clicked') AS clicks,
         count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.clicked') AS uclicks
-      FROM insights_newsletter_events WHERE account_id = ${accountId} AND campaign_id IS NOT NULL GROUP BY campaign_id`,
+      FROM e WHERE campaign_id IS NOT NULL GROUP BY campaign_id`,
     sql`SELECT unsub_campaign_id AS campaign_id, count(*) AS n FROM insights_newsletter_subscribers
       WHERE account_id = ${accountId} AND unsub_campaign_id IS NOT NULL GROUP BY unsub_campaign_id`,
     sql`WITH w AS (SELECT generate_series(date_trunc('week', now()) - interval '11 weeks', date_trunc('week', now()), interval '1 week') AS week)
@@ -1579,15 +1641,14 @@ export async function newsletterMetrics(accountId: string) {
     const got = await salesFor(accountId);
     if (got === "access") sales = "access";
     else if (got) {
-      // Summed from every newsletter order (the sources list folds small sources into Other).
-      const list = got.newsletter ?? [];
+      // Only campaigns that name one of this site's own emails count, so no other tool's tags are summed here.
+      const own = new Set((await sql`SELECT id FROM insights_newsletter_campaigns WHERE account_id = ${accountId}`).map((r) => String(r.id)));
+      const list = ownNewsletterSales(got.newsletter ?? [], own);
       const src = { orders: list.reduce((n, x) => n + x.orders, 0), revenue: list.reduce((n, x) => n + x.revenue, 0) };
       const byCampaign = new Map<string, { orders: number; revenue: number }>();
-      for (const n of got.newsletter ?? []) {
-        const id = slugCampaign(n.campaign);
-        if (!id) continue;
-        const cur = byCampaign.get(id) ?? { orders: 0, revenue: 0 };
-        byCampaign.set(id, { orders: cur.orders + n.orders, revenue: cur.revenue + n.revenue });
+      for (const n of list) {
+        const cur = byCampaign.get(n.id) ?? { orders: 0, revenue: 0 };
+        byCampaign.set(n.id, { orders: cur.orders + n.orders, revenue: cur.revenue + n.revenue });
       }
       sales = { orders: src.orders, revenue: src.revenue, currency: got.currency, days: got.days, capped: Boolean(got.capped), byCampaign };
     }
@@ -1632,9 +1693,14 @@ export async function newsletterScore(accountId: string): Promise<{ agent: strin
     WHERE x.account_id = ${accountId} AND x.sent_at > now() - interval '30 days'`;
   const sent = Number(r?.sent ?? 0);
   if (!sent) return null;
-  const [e] = await sql`SELECT count(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE type = 'email.opened') AS opened,
+  const [e] = await sql`WITH e AS (
+        SELECT ev.type, coalesce(ev.campaign_id, x.campaign_id) AS campaign_id, coalesce(ev.subscriber_id, x.subscriber_id) AS subscriber_id
+        FROM insights_newsletter_events ev
+        LEFT JOIN insights_newsletter_sends x ON ev.campaign_id IS NULL AND x.account_id = ev.account_id AND x.resend_id = ev.resend_id
+        WHERE ev.account_id = ${accountId} AND ev.at > now() - interval '30 days')
+    SELECT count(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE type = 'email.opened') AS opened,
       count(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE type = 'email.clicked') AS clicked
-    FROM insights_newsletter_events WHERE account_id = ${accountId} AND campaign_id IS NOT NULL AND at > now() - interval '30 days'`;
+    FROM e WHERE campaign_id IS NOT NULL`;
   const opened = Number(e?.opened ?? 0);
   const clicked = Number(e?.clicked ?? 0);
   const auto = Number(r?.auto ?? 0);
@@ -1661,9 +1727,13 @@ export async function accountsDueForNewsletter(limit = 5): Promise<string[]> {
     WHERE c.status IN ('approved', 'sending') AND (c.scheduled_at IS NULL OR c.scheduled_at <= now())
       AND (c.kind <> 'welcome'
         OR EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'pending')
-        OR (coalesce(st.welcome_on, false) AND st.welcome_since IS NOT NULL AND EXISTS (SELECT 1 FROM insights_newsletter_subscribers s
-          WHERE s.account_id = c.account_id AND s.status = 'subscribed' AND s.welcomed_at IS NULL AND s.created_at >= st.welcome_since
-            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id))))
+        OR (coalesce(st.welcome_on, false) AND EXISTS (SELECT 1 FROM insights_newsletter_subscribers s
+          WHERE s.account_id = c.account_id
+            -- WELCOME_ELIGIBLE: the same rule as the claim and the page's count.
+            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)
+            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
+              WHERE x.subscriber_id = s.id AND w.account_id = c.account_id AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown')))))
       AND (SELECT count(*) FROM insights_newsletter_sends x WHERE x.account_id = c.account_id AND x.status IN ('pending', 'sent', 'unknown')
         AND x.sent_at >= ((now() AT TIME ZONE 'UTC')::date::timestamp AT TIME ZONE 'UTC')) < coalesce(st.daily_cap, ${DEFAULT_DAILY_CAP})
     GROUP BY c.account_id ORDER BY max(c.last_run_at) NULLS FIRST LIMIT ${limit}`;
@@ -1813,6 +1883,15 @@ async function sendCampaign(
       FROM jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) AS y(id bigint, rid text)
       WHERE x.campaign_id = ${cid} AND x.subscriber_id = y.id AND x.status = 'pending'`;
     await welcomed(pairs.map((p) => p.id));
+    // Events Resend sent before this was saved (they can arrive first) are tied to their send now. The numbers also
+    // match them at read time, so a failure here loses nothing.
+    const rids = pairs.map((p) => p.rid).filter((x): x is string => Boolean(x));
+    if (rids.length) {
+      await sql`UPDATE insights_newsletter_events ev SET campaign_id = x.campaign_id, subscriber_id = x.subscriber_id
+        FROM insights_newsletter_sends x
+        WHERE ev.account_id = ${accountId} AND ev.campaign_id IS NULL AND x.account_id = ${accountId} AND x.campaign_id = ${cid}
+          AND x.resend_id = ev.resend_id AND ev.resend_id = ANY(string_to_array(${rids.join(",")}, ','))`.catch(() => undefined);
+    }
     sentNow += pairs.length;
     budget.runLeft -= pairs.length;
   };
@@ -1895,10 +1974,11 @@ async function sendCampaign(
     // welcomed (by this or an earlier welcome email).
     const claimed = welcome
       ? await sql`WITH pick AS (
-          SELECT s.id FROM insights_newsletter_subscribers s
-          WHERE s.account_id = ${accountId} AND s.status = 'subscribed' AND s.welcomed_at IS NULL AND s.created_at >= ${s.welcomeSince}::timestamptz
+          SELECT s.id FROM insights_newsletter_subscribers s, insights_newsletter_settings st
+          WHERE s.account_id = ${accountId} AND st.account_id = ${accountId} AND st.welcome_on
             AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ${cid} AND k.account_id = ${accountId} AND k.status = 'sending')
-            AND EXISTS (SELECT 1 FROM insights_newsletter_settings st WHERE st.account_id = ${accountId} AND st.welcome_on)
+            -- WELCOME_ELIGIBLE: the same rule as the due list and the page's count.
+            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
               WHERE x.subscriber_id = s.id AND w.account_id = ${accountId} AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown'))

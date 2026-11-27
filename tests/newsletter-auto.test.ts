@@ -5,6 +5,9 @@ import {
   buildEmail,
   campaignSlug,
   cleanAuto,
+  deliveryStatus,
+  ownNewsletterSales,
+  splitTrailing,
   emptyMetrics,
   eventFields,
   localTime,
@@ -21,13 +24,44 @@ import {
   withUtm,
 } from "../src/lib/analytics/newsletter";
 
-test("UTM tags go only on links to the site's own domain, and never replace the owner's", () => {
-  assert.equal(withUtm("https://shop.com/blogs/a", "shop.com", "7_tips"), "https://shop.com/blogs/a?utm_source=newsletter&utm_medium=email&utm_campaign=7_tips");
-  assert.equal(withUtm("https://www.shop.com/a?x=1", "shop.com", "7"), "https://www.shop.com/a?x=1&utm_source=newsletter&utm_medium=email&utm_campaign=7");
+test("UTM tags go only on links to the site's own domain; a link with any utm tag is left as written", () => {
+  assert.equal(withUtm("https://shop.com/blogs/a", "shop.com", "7_tips"), "https://shop.com/blogs/a?utm_source=dashpatrol&utm_medium=newsletter&utm_campaign=7_tips");
+  assert.equal(withUtm("https://www.shop.com/a?x=1", "shop.com", "7"), "https://www.shop.com/a?x=1&utm_source=dashpatrol&utm_medium=newsletter&utm_campaign=7");
   assert.equal(withUtm("https://other.com/a", "shop.com", "7"), "https://other.com/a");
   assert.equal(withUtm("https://shop.com.evil.com/a", "shop.com", "7"), "https://shop.com.evil.com/a");
-  assert.equal(withUtm("https://shop.com/a?utm_source=ig", "shop.com", "7"), "https://shop.com/a?utm_source=ig&utm_medium=email&utm_campaign=7");
+  assert.equal(withUtm("https://shop.com/a?utm_source=ig", "shop.com", "7"), "https://shop.com/a?utm_source=ig");
+  assert.equal(withUtm("https://shop.com/a?ref=x&utm_content=b", "shop.com", "7"), "https://shop.com/a?ref=x&utm_content=b");
   assert.equal(withUtm("https://shop.com/a", null, "7"), "https://shop.com/a");
+  // Before the "#", and the rest of the address is never rewritten (no re-encoding).
+  assert.equal(withUtm("https://shop.com/a?q=a%20b+c#reviews", "shop.com", "7"), "https://shop.com/a?q=a%20b+c&utm_source=dashpatrol&utm_medium=newsletter&utm_campaign=7#reviews");
+  assert.equal(withUtm("https://shop.com/a?", "shop.com", "7"), "https://shop.com/a?utm_source=dashpatrol&utm_medium=newsletter&utm_campaign=7");
+});
+
+test("a bare link ending a sentence keeps its period outside the link", () => {
+  assert.deepEqual(splitTrailing("https://shop.com/a."), ["https://shop.com/a", "."]);
+  assert.deepEqual(splitTrailing("https://shop.com/a"), ["https://shop.com/a", ""]);
+  const r = renderBody("Read it at https://shop.com/a.", (u) => withUtm(u, "shop.com", "5"));
+  assert.ok(r.html.includes('href="https://shop.com/a?utm_source=dashpatrol&#38;utm_medium=newsletter&#38;utm_campaign=5"'));
+  assert.ok(r.html.endsWith("</a>.</p>"));
+  assert.ok(r.text.endsWith("utm_campaign=5."));
+});
+
+test("a spam report or a lasting bounce takes the person off; a temporary bounce or other events don't", () => {
+  assert.equal(deliveryStatus({ type: "email.complained", bounceType: null }), "complained");
+  assert.equal(deliveryStatus({ type: "email.bounced", bounceType: "Permanent" }), "bounced");
+  assert.equal(deliveryStatus({ type: "email.bounced", bounceType: "Transient" }), null);
+  assert.equal(deliveryStatus({ type: "email.opened", bounceType: null }), null);
+  assert.equal(deliveryStatus(null), null);
+});
+
+test("newsletter sales: only campaigns naming this site's own emails are counted", () => {
+  const rows = [
+    { campaign: "12_spring", legacy: false, orders: 2, revenue: 50 },
+    { campaign: "99_other_site", legacy: true, orders: 5, revenue: 500 },
+    { campaign: "spring_sale", legacy: false, orders: 1, revenue: 10 },
+  ];
+  const own = ownNewsletterSales(rows, new Set(["12", "13"]));
+  assert.deepEqual(own.map((r) => [r.id, r.orders]), [["12", 2]]);
 });
 
 test("campaign slugs: the id first, plain words, and read back to the id", () => {
@@ -40,9 +74,9 @@ test("campaign slugs: the id first, plain words, and read back to the id", () =>
 
 test("links in the email carry the tags in both the HTML and the text, other links stay as they are", () => {
   const r = renderBody("See [the post](https://shop.com/p) and https://shop.com/q or https://other.com/z", (u) => withUtm(u, "shop.com", "9"));
-  assert.ok(r.html.includes('href="https://shop.com/p?utm_source=newsletter&#38;utm_medium=email&#38;utm_campaign=9"'));
-  assert.ok(r.text.includes("the post (https://shop.com/p?utm_source=newsletter&utm_medium=email&utm_campaign=9)"));
-  assert.ok(r.text.includes("https://shop.com/q?utm_source=newsletter"));
+  assert.ok(r.html.includes('href="https://shop.com/p?utm_source=dashpatrol&#38;utm_medium=newsletter&#38;utm_campaign=9"'));
+  assert.ok(r.text.includes("the post (https://shop.com/p?utm_source=dashpatrol&utm_medium=newsletter&utm_campaign=9)"));
+  assert.ok(r.text.includes("https://shop.com/q?utm_source=dashpatrol"));
   assert.ok(r.text.includes("https://other.com/z"));
   assert.ok(!r.text.includes("other.com/z?utm"));
   const e = buildEmail({ from: "a@b.co", replyTo: null, to: "c@d.co", subject: "s", preview: "", body: "[x](https://shop.com/)", brand: "B", postalAddress: "1 Main", unsubscribe: "https://app/u", utm: { domain: "shop.com", slug: "4_s" } });

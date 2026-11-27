@@ -32,8 +32,13 @@ export interface ShopifySales {
   pages: { path: string; orders: number; revenue: number }[];
   /** Where every order came from (Shopify's customer journey, else the sales channel), most orders first. */
   sources?: { name: string; orders: number; revenue: number }[];
-  /** Orders whose visit came from the Newsletter's own emails (utm_source=newsletter), by their utm_campaign. */
-  newsletter?: { campaign: string; orders: number; revenue: number }[];
+  /**
+   * Orders whose last visit came from a newsletter link, by utm_campaign. `legacy`: the older tag (utm_source=newsletter),
+   * which any email tool may use, so the newsletter counts it only when the campaign names one of the site's own emails.
+   */
+  newsletter?: { campaign: string; legacy: boolean; orders: number; revenue: number }[];
+  /** The shape of `newsletter`; an older cached copy is read again. */
+  newsletterV?: number;
 }
 
 interface Visit {
@@ -64,11 +69,18 @@ const GOOGLE_ADS_SOURCE = /^(google|google[ _]?ads|adwords)$/i;
 
 const fromGoogleSearch = (v: Visit | null) => Boolean(v && isGoogle(v) && !isPaid(v));
 
-/** A visit from a DashPatrol newsletter email: its links carry utm_source=newsletter (newsletter.ts withUtm). */
-export const fromNewsletter = (v: Visit | null) => /^newsletter$/i.test((v?.utmParameters?.source ?? "").trim());
-/** The newsletter visit that led to an order (the last one first), or null. */
-export const newsletterVisit = (j: { firstVisit: Visit | null; lastVisit: Visit | null } | null) =>
-  fromNewsletter(j?.lastVisit ?? null) ? j!.lastVisit : fromNewsletter(j?.firstVisit ?? null) ? j!.firstVisit : null;
+/**
+ * A visit from a DashPatrol newsletter link (newsletter.ts withUtm): "dashpatrol" for utm_source=dashpatrol with
+ * utm_medium=newsletter; "legacy" for the first links (utm_source=newsletter with a campaign starting with an email's
+ * id), which only count once matched to the site's own emails. Pure.
+ */
+export function newsletterTag(v: Visit | null): "dashpatrol" | "legacy" | null {
+  const u = v?.utmParameters;
+  const source = (u?.source ?? "").trim().toLowerCase();
+  if (source === "dashpatrol" && (u?.medium ?? "").trim().toLowerCase() === "newsletter") return "dashpatrol";
+  if (source === "newsletter" && /^\d{1,18}(_|$)/.test((u?.campaign ?? "").trim())) return "legacy";
+  return null;
+}
 
 /** Known places, matched on the visit's source name and the referring host only, never a page path. */
 const KNOWN: [RegExp, string][] = [
@@ -93,7 +105,8 @@ const clean = (x: string) => x.replace(/[_]+/g, " ").replace(/\s*[-–—]+\s*/g
 export function orderSource(sourceName: string | null, j: { firstVisit: Visit | null; lastVisit: Visit | null } | null): string {
   if (fromGoogleSearch(j?.lastVisit ?? null) || fromGoogleSearch(j?.firstVisit ?? null)) return "Google search";
   // After Google search, so the sources list still matches how `fromGoogle` is counted.
-  if (newsletterVisit(j)) return "Newsletter";
+  // The last visit only, as for every other source.
+  if (newsletterTag(j?.lastVisit ?? null) === "dashpatrol") return "Newsletter";
   const v = j?.lastVisit ?? j?.firstVisit ?? null;
   if (v) {
     if (isGoogle(v) || (isPaid(v) && GOOGLE_ADS_SOURCE.test((v.source ?? "").trim()))) return "Google ads";
@@ -197,12 +210,14 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       src.orders++;
       src.revenue += amount;
       sources.set(srcName, src);
-      if (srcName === "Newsletter") {
-        const slug = (newsletterVisit(j)?.utmParameters?.campaign ?? "").trim().slice(0, 80);
-        const l = letters.get(slug) ?? { orders: 0, revenue: 0 };
+      const tag = srcName === "Google search" ? null : newsletterTag(j?.lastVisit ?? null);
+      if (tag) {
+        const slug = (j?.lastVisit?.utmParameters?.campaign ?? "").trim().slice(0, 80);
+        const k = `${tag}\u0000${slug}`;
+        const l = letters.get(k) ?? { orders: 0, revenue: 0 };
         l.orders++;
         l.revenue += amount;
-        letters.set(slug, l);
+        letters.set(k, l);
       }
       // Credited to Google search when the visit that led to the order (or the first one) came from it.
       const v = fromGoogleSearch(j?.lastVisit ?? null) ? j!.lastVisit : fromGoogleSearch(j?.firstVisit ?? null) ? j!.firstVisit : null;
@@ -225,7 +240,11 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
     after = d.orders.pageInfo.endCursor;
   }
   out.analyticsWeekTo = analyticsWeekEnd(now, out.timezone ?? null);
-  out.newsletter = [...letters.entries()].map(([campaign, v]) => ({ campaign, ...v }));
+  out.newsletter = [...letters.entries()].map(([k, v]) => {
+    const [tag, campaign] = k.split("\u0000");
+    return { campaign, legacy: tag === "legacy", ...v };
+  });
+  out.newsletterV = 2;
   out.pages = [...pages.entries()].map(([path, v]) => ({ path, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 10);
   // The top 8 by name, the rest as one "Other" row, so the list stays short and still adds up to every order.
   const all = [...sources.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue);
@@ -254,7 +273,7 @@ export async function salesFor(accountId: string): Promise<ShopifySales | "acces
     const cached = (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
     // A row from before orders were grouped by source is read again, so the owner sees the new list now.
     // A row counted before the shop's midnight covers other days than Analytics now does, so it is read again.
-    if (cached.sources !== undefined && cached.newsletter !== undefined && cached.analyticsWeekTo === analyticsWeekEnd(Date.now(), cached.timezone ?? null)) return cached;
+    if (cached.sources !== undefined && cached.newsletterV === 2 && cached.analyticsWeekTo === analyticsWeekEnd(Date.now(), cached.timezone ?? null)) return cached;
   }
   const site = await siteFor(accountId).catch(() => null);
   if (!site?.store) return null;
