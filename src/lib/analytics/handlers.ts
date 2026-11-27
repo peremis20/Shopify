@@ -210,6 +210,13 @@ async function withAccount(req: Request, run: (account: Account) => Promise<Resp
   }
 }
 
+/**
+ * True for anyone signed in to a business other than its own main sign in (a team member, or a platform owner acting
+ * with owner rights there). The business's Google connection, Disconnect and Leave always follow the real person.
+ */
+const notMainSignIn = (a: Pick<Account, "email" | "ownerEmail"> | null | undefined): boolean =>
+  Boolean(a && a.email.toLowerCase() !== a.ownerEmail.toLowerCase());
+
 const withAdmin = (req: Request, run: (account: Account) => Promise<Response>) =>
   withAccount(req, (a) => (a.admin ? run(a) : Promise.resolve(json({ error: "Only the platform owner can do this." }, 403))));
 
@@ -254,7 +261,7 @@ export async function authStart(req: Request): Promise<Response> {
   }
   // A team member may sign in again (to switch Google accounts); every purpose that adds Google access is refused.
   const linkAsked = Boolean(new URL(req.url).searchParams.get("link"));
-  if (purpose !== "ads" && (purpose !== "signin" || linkAsked) && (await currentAccount(req).catch(() => null))?.role === "member") {
+  if (purpose !== "ads" && (purpose !== "signin" || linkAsked) && notMainSignIn(await currentAccount(req).catch(() => null))) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent(MEMBER_GOOGLE_REFUSAL)}`);
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
@@ -334,7 +341,7 @@ export async function authCallback(req: Request): Promise<Response> {
       // and once: a link someone else sends can't capture this browser's Google connection for their account.
       const here = await currentAccount(req).catch(() => null);
       // A team member never changes the business's Google connection, whatever ticket reaches this browser.
-      if (here?.role === "member" && here.id === link.accountId) throw new Error(MEMBER_GOOGLE_REFUSAL);
+      if (notMainSignIn(here) && here!.id === link.accountId) throw new Error(MEMBER_GOOGLE_REFUSAL);
       // Only a ticket made from a signed in browser is tied to that session; one made inside Shopify admin has no cookie to match.
       if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
       if (link.session && !here) throw new Error("Please sign in again, then connect Google from the app.");
@@ -396,7 +403,7 @@ export async function logout(req: Request): Promise<Response> {
 /** Removes the customer's Google connection and signs them out. A team member is only signed out. */
 export async function disconnect(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
-    if (account.role === "member") return json({ ok: true, signedOutOnly: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
+    if (notMainSignIn(account)) return json({ ok: true, signedOutOnly: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
     const conn = await getConnection(account.id);
     if (conn) await revokeToken(conn.refreshToken);
     await deleteConnection(account.id);
@@ -656,7 +663,7 @@ export async function embeddedAppKey(): Promise<string | null> {
 export const googleLinkStart = (req: Request) =>
   withAccount(req, async (account) => {
     // Covers every Google link: connect, Set it up for me, recrawl, inside Shopify admin and Gmail.
-    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
+    if (notMainSignIn(account)) return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const acct = await readAccountAutopilot(account.id);
     const embedded = Boolean(req.headers.get("authorization"));
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
@@ -670,7 +677,7 @@ export const googleLinkStart = (req: Request) =>
 /** "Set it up for me": creates Search Console and Analytics for a store that has neither. */
 export const setupGoogleTools = (req: Request) =>
   withAccount(req, async (account) => {
-    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
+    if (notMainSignIn(account)) return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     // A new Analytics account comes back through the Google callback (an address the OAuth client already allows).
     const state = await setupGoogle(account.id, redirectUri(req));
     return json({ state, onboarding: await onboardingStatus(account.id, account.ownerEmail) });
@@ -761,7 +768,7 @@ export async function properties(req: Request): Promise<Response> {
 /** Saves which GA4 property and Search Console site the dashboard reads. */
 export async function saveSettings(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
-    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
+    if (notMainSignIn(account)) return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const conn = await getConnection(account.id);
     if (!conn) return json({ error: "Sign in with Google again." }, 401);
     const body = await req.json().catch(() => ({}));
@@ -1025,7 +1032,7 @@ export const gmailSendEmail = (req: Request) =>
 /** Stops sending from Gmail: the saved access is deleted (see removeGmail for when Google is told too). */
 export const gmailDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
-    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
+    if (notMainSignIn(account)) return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const conn = await getConnection(account.id).catch(() => null);
     await removeGmail(account.id, conn?.email);
     return json({ ok: true });
@@ -1377,7 +1384,7 @@ export const teamMembers = (req: Request) =>
           ? `Invite saved. ${out.email} already has a business here; they join only if they accept, and theirs stays as it is.`
           : `Invite saved. Ask ${out.email} to sign in to DashPatrol with Google and click Join.`;
       } else if (b.remove !== undefined) {
-        const leaving = account.role === "member" && cleanEmail(b.remove) === account.email.toLowerCase();
+        const leaving = notMainSignIn(account) && cleanEmail(b.remove) === account.email.toLowerCase();
         await removeMember(account, b.remove);
         if (leaving) {
           // Back to a business of their own, or signed out.
@@ -2664,7 +2671,7 @@ export const newsletterApi = (req: Request) =>
         case "test": {
           if (isSabbath()) return rest();
           // A member's test goes to the member who pressed it; the owner's to the owner.
-          return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req), account.role === "member" ? account.email : undefined) });
+          return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req), notMainSignIn(account) ? account.email : undefined, account.role === "owner") });
         }
         case "approve": return json({ ok: true, count: await approveCampaign(account.id, b.id, b.count, appOrigin(req)) });
         case "stop": await stopCampaign(account.id, b.id); break;

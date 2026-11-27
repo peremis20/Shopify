@@ -961,7 +961,7 @@ async function brandOf(accountId: string, s: Settings): Promise<string> {
  * A test through the business's Resend account: to the owner's own sign in address, or to `person` (a team member
  * who pressed it, with the verified email they signed in with).
  */
-export async function sendTest(accountId: string, id: unknown, origin: string, person?: string): Promise<string> {
+export async function sendTest(accountId: string, id: unknown, origin: string, person?: string, canApprove = !person): Promise<string> {
   await schema();
   if (isSabbath()) throw new Error("DashPatrol rests for the Sabbath. Try again after Saturday sundown.");
   const c = await ownedCampaign(accountId, id);
@@ -991,9 +991,9 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
     throw new Error(`Resend didn't send the test (${why}).`);
   }
   await report("newsletter", true);
-  // Only the owner's own test counts toward approval: a team member's test shows them the email, but the owner must
-  // see this exact version in their own inbox before it can go to the list (any later edit needs a new test).
-  if (to === normalizeEmail(owner?.email ?? "")) {
+  // Only a test seen by someone with the right to approve counts: the owner, or a platform owner acting with owner rights,
+  // each in their own inbox. A team member's test only shows them the email. Any later edit needs a new test.
+  if (canApprove || to === normalizeEmail(owner?.email ?? "")) {
     await sql`UPDATE insights_newsletter_campaigns SET test_sent_at = now() WHERE id = ${c.id} AND account_id = ${accountId}`;
   }
   return to;
