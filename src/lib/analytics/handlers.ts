@@ -331,6 +331,8 @@ export async function authCallback(req: Request): Promise<Response> {
       await saveGmail(link.accountId, { refreshToken, email });
       return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
     }
+    // Accounts are found by email, so only an address Google has verified may sign in to one.
+    if (!link && !verified) throw new Error("Google hasn't verified this email address yet. Verify it with Google, then sign in again.");
     const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
     const previous = await getConnection(account.id).catch(() => null);
@@ -1310,13 +1312,13 @@ async function clearAiCausedProblems(): Promise<void> {
  */
 export const platformOwners = (req: Request) =>
   withAdmin(req, async (account) => {
-    const root = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => cleanEmail(e)).filter((e): e is string => Boolean(e));
+    const root = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
     let extra = await extraAdmins();
     if (req.method === "POST") {
-      const b = await req.json().catch(() => ({}));
+      const b = ((await req.json().catch(() => null)) ?? {}) as { add?: unknown; remove?: unknown };
       const add = b.add === undefined ? null : cleanEmail(b.add);
       const remove = b.remove === undefined ? null : cleanEmail(b.remove);
-      if (b.add !== undefined && !add) return json({ error: "That doesn't look like an email address." }, 400);
+      if ((b.add !== undefined && !add) || (b.remove !== undefined && !remove)) return json({ error: "That doesn't look like an email address." }, 400);
       if (remove && isAdminEmail(remove)) return json({ error: "This owner is set on the server and can't be removed here." }, 400);
       if (remove && remove === account.email.toLowerCase()) return json({ error: "You can't remove yourself. Ask another owner." }, 400);
       if (add && !isAdminEmail(add)) extra = await saveExtraAdmins([...extra, add]);

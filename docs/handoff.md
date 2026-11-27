@@ -41,3 +41,6 @@ Saved plans stay word for word; readStrategy, readAuthorityPlan, Plan now and th
 
 ## Nov 26: Newsletter v1 (released)
 src/lib/analytics/newsletter.ts + Newsletter page. Sends through the site owner's own Resend key (encrypted), subscribers from Shopify (SUBSCRIBED only) or consented imports, one click unsubscribe (RFC 8058) and postal address footer, test then approve before any send, hourly batched sending with daily cap, Sabbath skip, pause, idempotent resends, lease per site. Peremis: news.peremis.com verified in Resend; owner still to add key, from address and postal address. Not yet: unsubscribe sync back to Shopify, scheduled Shopify import, open or click tracking.
+
+## Nov 27: platform owners in the app (released)
+ADMIN_EMAILS stays the root list; owners can add others under Platform keys (insights_settings admin_emails, read via isAdmin with a 60 s cache). Inside Shopify admin only ADMIN_EMAILS owners count. Google sign in now refuses unverified emails. info@peremis.com added as an owner.

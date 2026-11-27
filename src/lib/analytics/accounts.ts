@@ -43,7 +43,8 @@ const EXTRA_ADMINS_KEY = "admin_emails";
 /** Platform owners added from inside the app by another owner (the server setting ADMIN_EMAILS stays the root list). */
 export async function extraAdmins(): Promise<string[]> {
   await ensureSchema();
-  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${EXTRA_ADMINS_KEY}`.catch(() => [] as { value: string | null }[]);
+  // A failed read throws, so an add or remove never saves over the list from an empty read.
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${EXTRA_ADMINS_KEY}`;
   return String(row?.value ?? "")
     .split(",")
     .map((e) => cleanEmail(e))
