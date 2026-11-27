@@ -684,7 +684,20 @@ export function audienceWhere(a: Audience, ref: string | null): SqlPart[] {
  * approved_at now, and everyone subscribed in the audience at that moment is saved as its recipients. Nothing is
  * saved unless the approval itself happened. Returns whether it was approved and how many people were saved.
  */
-export function freezeParts(accountId: string, cid: string, a: Audience, set: { origin: string; scheduledAt: string | null; auto: boolean; from: ("draft" | "stopped")[] }): SqlPart[] {
+export function freezeParts(accountId: string, cid: string, a: Audience, set: { origin: string; scheduledAt: string | null; auto: boolean; from: ("draft" | "stopped")[]; expected?: number }): SqlPart[] {
+  // With an expected count (the number on the owner's button) the approval itself only happens when the audience is
+  // still exactly that size, in the same statement, so a changed list can never be approved, even for a moment.
+  const countMatches: SqlPart[] =
+    set.expected === undefined
+      ? []
+      : [
+          " AND (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ",
+          param(accountId),
+          " AND s.status = 'subscribed' AND ",
+          ...audienceWhere(a, null),
+          ") = ",
+          param(set.expected),
+        ];
   return [
     "WITH upd AS (UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = now(), frozen = true, origin = ",
     param(set.origin),
@@ -698,7 +711,9 @@ export function freezeParts(accountId: string, cid: string, a: Audience, set: { 
     param(accountId),
     " AND status = ANY(string_to_array(",
     param(set.from.join(",")),
-    ", ',')) RETURNING id), ins AS (INSERT INTO insights_newsletter_recipients (campaign_id, subscriber_id, account_id) SELECT ",
+    ", ','))",
+    ...countMatches,
+    " RETURNING id), ins AS (INSERT INTO insights_newsletter_recipients (campaign_id, subscriber_id, account_id) SELECT ",
     param(cid),
     ", s.id, ",
     param(accountId),
@@ -1779,15 +1794,18 @@ export async function countFrozen(accountId: string, cid: string): Promise<numbe
 async function approveFrozen(accountId: string, cid: string, a: Audience, set: { origin: string; scheduledAt: string | null; auto: boolean }, expected?: number): Promise<number> {
   const sent = await sql`SELECT 1 FROM insights_newsletter_sends WHERE campaign_id = ${cid} LIMIT 1`;
   if (sent.length) throw new Error("This email was already sent.");
-  // Never a list from an earlier approval: this approval saves its own.
-  await sql`DELETE FROM insights_newsletter_recipients WHERE campaign_id = ${cid} AND account_id = ${accountId}`;
-  const [r] = await runSql(freezeParts(accountId, cid, a, { ...set, from: ["draft", "stopped"] }));
-  if (!Number(r?.approved ?? 0)) throw new Error("This email isn't a draft anymore.");
-  const n = Number(r?.n ?? 0);
-  if (expected !== undefined && n !== expected) {
-    await unfreeze(accountId, cid, ["approved"]);
-    throw new Error(`The number of people changed: it is now ${n.toLocaleString("en-US")}. Please check and approve again.`);
+  // An earlier approval's list is cleared when the email goes back to a draft (unfreeze), never here: a second click
+  // on Approve must not wipe the list the first click saved.
+  const [r] = await runSql(freezeParts(accountId, cid, a, { ...set, from: ["draft", "stopped"], expected }));
+  if (!Number(r?.approved ?? 0)) {
+    const [c] = await sql`SELECT status FROM insights_newsletter_campaigns WHERE id = ${cid} AND account_id = ${accountId}`;
+    if (expected !== undefined && (c?.status === "draft" || c?.status === "stopped")) {
+      const now = await countAudience(accountId, a).catch(() => null);
+      throw new Error(`The number of people changed${now === null ? "" : `: it is now ${now.toLocaleString("en-US")}`}. Please check and approve again.`);
+    }
+    throw new Error("This email isn't a draft anymore.");
   }
+  const n = Number(r?.n ?? 0);
   await sql`UPDATE insights_newsletter_campaigns SET approved_count = ${n} WHERE id = ${cid} AND account_id = ${accountId}`;
   return n;
 }

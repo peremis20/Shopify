@@ -50,3 +50,6 @@ src/lib/analytics/members.ts. Signed session carries the person (accountId.b64(e
 
 ## Nov 27: newsletter metrics and automatic sending (released)
 Resend webhook events (sent, delivered, delayed, bounced, complained, opened, clicked) feed per email metrics; links get utm_source=dashpatrol&utm_medium=newsletter and Shopify shows a Newsletter order source (last visit only). Welcome email (only to people marked welcome_ok), weekly AI newsletter (sends on its own only when the owner turned it on and a real second AI approved), and scheduled sends. Owner still to add the webhook in Resend with its signing secret.
+
+## Nov 27: newsletter audiences (released)
+Each email has Send to: all, segments (built in groups and owner tags), chosen people, consenting CRM contacts, typed emails (up to 20, with consent). The exact recipients are frozen at approval in insights_newsletter_recipients (approval only happens when the count matches the button, in one statement). Tagging and adding people are owner only; member tests go only to the member.
