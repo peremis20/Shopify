@@ -16,12 +16,13 @@ export const SEGMENT_LABEL: Record<Segment, string> = {
 /**
  * "all": everyone subscribed. "segment": anyone in one of the chosen built in segments or owner tags. "people": chosen
  * subscribers (picked from the list, CRM contacts who agreed, or typed addresses; `from` only says how they were
- * picked). Whatever the audience, only people still subscribed are ever emailed.
+ * picked; "direct" is a Send now email, the only audience that reaches people who agreed to that one email and aren't on
+ * the list). Whatever the audience, only people still subscribed are ever emailed.
  */
 export type Audience =
   | { type: "all" }
   | { type: "segment"; segments: Segment[]; tags: string[] }
-  | { type: "people"; ids: string[]; from: "chosen" | "crm" | "typed" };
+  | { type: "people"; ids: string[]; from: "chosen" | "crm" | "typed" | "direct" };
 
 /** At most this many people for "Send now" from Write an email; more goes through the usual approve flow. */
 export const MAX_DIRECT = 3;

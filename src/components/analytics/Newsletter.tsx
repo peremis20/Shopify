@@ -22,6 +22,8 @@ interface NewsletterData {
   /** Where a test from the person signed in goes first. */
   testTo: string | null;
   tags: { tag: string; n: number }[];
+  /** People who agreed to one Send now email only (not on the list). */
+  directOnly: number;
 }
 
 const btn = "rounded-lg px-3 py-1.5 text-sm font-semibold disabled:opacity-60";
@@ -73,7 +75,7 @@ export function Newsletter({ active = true }: { active?: boolean }) {
             <p className="text-sm text-dash-muted">Subscribers</p>
             <p className="font-serif text-4xl text-dash-ink">{n(data.counts.subscribed)}</p>
             <p className="mt-1 text-xs text-dash-muted">
-              {n(data.counts.unsubscribed)} unsubscribed, {n(data.counts.bounced)} bounced, {n(data.counts.complained)} marked as spam. Sent today: {n(data.sentToday)} of {n(data.settings.dailyCap)}.
+              {n(data.counts.unsubscribed)} unsubscribed, {n(data.counts.bounced)} bounced, {n(data.counts.complained)} marked as spam.{data.directOnly ? ` ${n(data.directOnly)} more got one email only (not on your list).` : ""} Sent today: {n(data.sentToday)} of {n(data.settings.dailyCap)}.
             </p>
           </div>
         </div>
@@ -295,8 +297,18 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
   const [welcome, setWelcome] = useState(false);
   const [to, setTo] = useState("");
   const [agreed, setAgreed] = useState(false);
+  // One id per Send now: kept while the words and people stay the same, so a repeat of the same click is recognised
+  // by the server and never sends twice; a new one once anything changes.
+  const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, "");
+  const [requestId, setRequestId] = useState(newId);
+  const [sentId, setSentId] = useState<string | null>(null);
   const member = useIsMember();
   const people = splitTo(to);
+  const changed = (f: () => void) => {
+    f();
+    setRequestId(newId());
+    setSentId(null);
+  };
   // Send now is for 1 to 3 people; with more, or nobody, the usual save, test and approve applies.
   const direct = people.length >= 1 && people.length <= MAX_DIRECT && !welcome;
   const [busy, setBusy] = useState<string | null>(null);
@@ -319,7 +331,7 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
           <div>
             <label className="text-sm font-medium">
               To
-              <input className={`${field} mt-1`} value={to} onChange={(e) => setTo(e.target.value)} placeholder="Leave empty to pick who it goes to later, or type up to 3 emails" />
+              <input className={`${field} mt-1`} value={to} onChange={(e) => changed(() => setTo(e.target.value))} placeholder="Leave empty to pick who it goes to later, or type up to 3 emails" />
             </label>
             {people.length > MAX_DIRECT && <p className="mt-1 text-xs text-dash-muted">More than {MAX_DIRECT} people: save the email, then pick who it goes to and approve it.</p>}
             {direct && (
@@ -333,9 +345,9 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
             )}
           </div>
         )}
-        <input className={field} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" maxLength={150} />
-        <input className={field} value={preview} onChange={(e) => setPreview(e.target.value)} placeholder="Preview text, shown next to the subject in the inbox (optional)" maxLength={200} />
-        <textarea className={field} rows={10} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your email here." />
+        <input className={field} value={subject} onChange={(e) => changed(() => setSubject(e.target.value))} placeholder="Subject" maxLength={150} />
+        <input className={field} value={preview} onChange={(e) => changed(() => setPreview(e.target.value))} placeholder="Preview text, shown next to the subject in the inbox (optional)" maxLength={200} />
+        <textarea className={field} rows={10} value={body} onChange={(e) => changed(() => setBody(e.target.value))} placeholder="Write your email here." />
         <p className="text-xs text-dash-muted">
           Leave a blank line between paragraphs. Start a line with # for a heading, or * for a list. Links look like [Read more](https://yoursite.com). Links to your own site get newsletter tags, so visits and sales from them can be counted. Your unsubscribe link and postal address are added at the bottom.
         </p>
@@ -347,27 +359,31 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
           {direct && !member && (
             <ConfirmButton
               className={primary}
-              disabled={Boolean(busy) || !subject.trim() || !body.trim()}
+              disabled={Boolean(busy) || !subject.trim() || !body.trim() || Boolean(sentId)}
               label="Send now"
               confirmLabel={`Click again to send to ${people.join(", ")}`}
               onConfirm={() => run("send", async () => {
-                const out = await post<{ result: { sent: string[]; failed: { email: string; why: string }[]; waiting: string[]; note: string | null } }>({
-                  action: "sendNow", to, agreed, campaign: { subject, preview, body },
+                const out = await post<{ result: { id: string; sent: string[]; failed: { email: string; why: string }[]; waiting: string[]; note: string | null; again?: boolean } }>({
+                  action: "sendNow", to, agreed, requestId, campaign: { subject, preview, body },
                 });
                 const r = out.result;
+                // The server made (or already had) the email: the form is cleared and Send now can't run again for it.
+                if (r.id) setSentId(r.id);
                 setMsg([
+                  r.again ? "That send was already made; nothing new was sent." : "",
                   r.sent.length ? `Sent to ${r.sent.join(", ")}.` : "",
                   ...r.failed.map((f) => `Not sent to ${f.email}: ${f.why}.`),
                   r.waiting.length ? `Waiting for Resend's answer for ${r.waiting.join(", ")}; it is tried again within the hour and never sent twice.` : "",
                   r.note && !r.sent.length ? r.note : "",
                   "It is in Your emails below, where its opens and clicks show.",
                 ].filter(Boolean).join(" "));
-                if (r.sent.length) {
+                if (r.id) {
                   setTo("");
                   setAgreed(false);
                   setSubject("");
                   setPreview("");
                   setBody("");
+                  setRequestId(newId());
                 }
                 onDone();
               })}
@@ -656,7 +672,7 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
               {!member && <input type="checkbox" className="mt-1" checked={ticked.includes(s.id)} onChange={() => setTicked(ticked.includes(s.id) ? ticked.filter((x) => x !== s.id) : [...ticked, s.id])} aria-label={`Pick ${s.email}`} />}
               <span>
                 {s.name ? `${s.name}, ` : ""}{s.email}
-                <span className="ml-2 text-xs text-dash-muted">{SUB_LABEL[s.status]}, {SOURCE_LABEL[s.source]}{s.tags.length ? `, tags: ${s.tags.join(", ")}` : ""}</span>
+                <span className="ml-2 text-xs text-dash-muted">{SUB_LABEL[s.status]}{s.directOnly ? ", this email only" : ""}, {SOURCE_LABEL[s.source]}{s.tags.length ? `, tags: ${s.tags.join(", ")}` : ""}</span>
               </span>
             </span>
             {s.status === "subscribed" && (

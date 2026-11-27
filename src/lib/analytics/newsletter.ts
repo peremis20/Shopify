@@ -579,7 +579,7 @@ export function cleanTag(v: unknown): string {
 }
 
 /** An audience from the browser, checked; "all" for anything missing or unreadable. */
-export function cleanAudience(v: unknown, opts: { allowPeople?: boolean } = {}): Audience {
+export function cleanAudience(v: unknown, opts: { allowPeople?: boolean; allowDirect?: boolean } = {}): Audience {
   const a = (v ?? {}) as { type?: unknown; segments?: unknown; tags?: unknown; ids?: unknown; from?: unknown };
   if (a.type === "segment") {
     const segments = Array.isArray(a.segments) ? [...new Set(a.segments.filter((x): x is Segment => (SEGMENTS as readonly unknown[]).includes(x)))] : [];
@@ -591,7 +591,8 @@ export function cleanAudience(v: unknown, opts: { allowPeople?: boolean } = {}):
     const ids = Array.isArray(a.ids) ? [...new Set(a.ids.map(String).filter((x) => /^\d{1,18}$/.test(x)))] : [];
     if (ids.length > MAX_PEOPLE) throw new Error(`Pick up to ${MAX_PEOPLE.toLocaleString("en-US")} people, or send to a group instead.`);
     if (!ids.length) throw new Error("Pick at least one person to send to.");
-    return { type: "people", ids, from: a.from === "crm" || a.from === "typed" ? a.from : "chosen" };
+    // "direct" (a Send now email) only from the server's own records, never from the browser.
+    return { type: "people", ids, from: a.from === "crm" || a.from === "typed" || (a.from === "direct" && opts.allowDirect) ? a.from : "chosen" };
   }
   return { type: "all" };
 }
@@ -600,7 +601,7 @@ export function cleanAudience(v: unknown, opts: { allowPeople?: boolean } = {}):
 export function readAudience(v: unknown): Audience {
   try {
     const raw = typeof v === "string" ? JSON.parse(v) : v;
-    return raw ? cleanAudience(raw) : { type: "all" };
+    return raw ? cleanAudience(raw, { allowDirect: true }) : { type: "all" };
   } catch {
     return { type: "all" };
   }
@@ -609,7 +610,7 @@ export function readAudience(v: unknown): Audience {
 /** The audience in a few plain words. */
 export function describeAudience(a: Audience): string {
   if (a.type === "all") return "All subscribers";
-  if (a.type === "people") return `${a.ids.length.toLocaleString("en-US")} chosen ${a.ids.length === 1 ? "person" : "people"}${a.from === "crm" ? " from your CRM" : a.from === "typed" ? " you typed in" : ""}`;
+  if (a.type === "people") return `${a.ids.length.toLocaleString("en-US")} chosen ${a.ids.length === 1 ? "person" : "people"}${a.from === "crm" ? " from your CRM" : a.from === "typed" ? " you typed in" : a.from === "direct" ? ", sent directly" : ""}`;
   return [...a.segments.map((x) => SEGMENT_LABEL[x]), ...a.tags.map((t) => `tag ${t}`)].join(", ");
 }
 
@@ -637,6 +638,12 @@ export function joinSql(parts: SqlPart[]): { strings: string[]; values: unknown[
  * "last 30 days" group counts back from then); null means now.
  */
 export function audienceWhere(a: Audience, ref: string | null): SqlPart[] {
+  // People who agreed to one Send now email only are never on the list: only that email's own audience reaches them.
+  if (a.type === "people" && a.from === "direct") return [" s.id = ANY(string_to_array(", param(a.ids.join(",")), ", ',')::bigint[]) "];
+  return [" NOT s.direct_only AND ", ...listWhere(a, ref)];
+}
+
+function listWhere(a: Audience, ref: string | null): SqlPart[] {
   if (a.type === "all") return [" TRUE "];
   if (a.type === "people") return [" s.id = ANY(string_to_array(", param(a.ids.join(",")), ", ',')::bigint[]) "];
   const or: SqlPart[][] = [];
@@ -879,6 +886,12 @@ function schema(): Promise<void> {
     )`;
     // Set when the list above was saved; emails approved before it existed keep their old rule until they finish.
     await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS frozen boolean NOT NULL DEFAULT false`;
+    // Agreed to one Send now email only: not on the newsletter list (no "all", groups, tags, welcome or weekly email).
+    // Unsubscribe, bounces and spam reports still apply to them.
+    await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS direct_only boolean NOT NULL DEFAULT false`;
+    // The browser's id for one Send now click, so the same click arriving twice never makes a second email.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS request_id text`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS insights_newsletter_campaigns_request ON insights_newsletter_campaigns (account_id, request_id) WHERE request_id IS NOT NULL`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_campaign_id bigint`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_at timestamptz`;
     // Resend's delivery and engagement events, once each (the Svix message id), keyed by account.
@@ -1117,7 +1130,8 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
 }
 
 async function subscriberCounts(accountId: string): Promise<Record<SubscriberStatus, number>> {
-  const rows = await sql`SELECT status, count(*) AS n FROM insights_newsletter_subscribers WHERE account_id = ${accountId} GROUP BY status`;
+  // People who agreed to one Send now email only aren't on the list, so they aren't counted as subscribers.
+  const rows = await sql`SELECT status, count(*) AS n FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND NOT direct_only GROUP BY status`;
   const out: Record<SubscriberStatus, number> = { subscribed: 0, unsubscribed: 0, bounced: 0, complained: 0 };
   for (const r of rows) if (r.status && r.status in out) out[r.status as SubscriberStatus] = Number(r.n ?? 0);
   return out;
@@ -1139,6 +1153,8 @@ export interface Subscriber {
   consent: string;
   createdAt: string;
   tags: string[];
+  /** Agreed to one Send now email only: not on the newsletter list. */
+  directOnly: boolean;
 }
 
 export interface Campaign {
@@ -1216,10 +1232,10 @@ export async function newsletterView(accountId: string, query = "") {
     subscriberCounts(accountId),
     sentToday(accountId),
     q
-      ? sql`SELECT id, email, name, status, source, consent, created_at,
+      ? sql`SELECT id, email, name, status, source, consent, created_at, direct_only,
           (SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM insights_newsletter_tags t WHERE t.subscriber_id = insights_newsletter_subscribers.id) AS tags
           FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND (email LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`} OR lower(name) LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`}) ORDER BY id DESC LIMIT 50`
-      : sql`SELECT id, email, name, status, source, consent, created_at,
+      : sql`SELECT id, email, name, status, source, consent, created_at, direct_only,
           (SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM insights_newsletter_tags t WHERE t.subscriber_id = insights_newsletter_subscribers.id) AS tags
           FROM insights_newsletter_subscribers WHERE account_id = ${accountId} ORDER BY id DESC LIMIT 50`,
     sql`SELECT c.*, (c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at) AS tested,
@@ -1228,7 +1244,7 @@ export async function newsletterView(accountId: string, query = "") {
         CASE WHEN c.kind = 'welcome' THEN (SELECT count(*) FROM insights_newsletter_subscribers s, insights_newsletter_settings st
           WHERE st.account_id = c.account_id AND s.account_id = c.account_id
             -- WELCOME_ELIGIBLE: the same rule as the hourly run's due list and claim.
-            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND s.status = 'subscribed' AND NOT s.direct_only AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
               WHERE x.subscriber_id = s.id AND w.account_id = c.account_id AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown')))
@@ -1274,8 +1290,10 @@ export async function newsletterView(accountId: string, query = "") {
         consent: r.consent ?? "",
         createdAt: iso(r.created_at) ?? "",
         tags: r.tags ? r.tags.split(",") : [],
+        directOnly: yes(r.direct_only),
       }),
     ),
+    directOnly: Number((await sql`SELECT count(*) AS n FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND direct_only AND status = 'subscribed'`)[0]?.n ?? 0),
     campaigns: await Promise.all(
       camps.map(async (r) => {
         const c = toCampaign(r);
@@ -1308,17 +1326,30 @@ async function existingStatuses(accountId: string, emails: string[]): Promise<Ma
   return out;
 }
 
-async function insertRows(accountId: string, rows: ListRow[], source: SubscriberSource, consent: string, welcomeOk = false): Promise<number> {
+async function insertRows(accountId: string, rows: ListRow[], source: SubscriberSource, consent: string, welcomeOk = false, directOnly = false): Promise<number> {
   let added = 0;
   for (const part of chunk(rows, 1000)) {
     // ON CONFLICT DO NOTHING: anyone already on the list (whatever their status) is never changed by an import.
-    const made = await sql`INSERT INTO insights_newsletter_subscribers (account_id, email, name, status, source, consent, token, welcome_ok)
-      SELECT ${accountId}, x.email, x.name, 'subscribed', ${source}, ${consent}, x.token, ${welcomeOk}
+    const made = await sql`INSERT INTO insights_newsletter_subscribers (account_id, email, name, status, source, consent, token, welcome_ok, direct_only)
+      SELECT ${accountId}, x.email, x.name, 'subscribed', ${source}, ${consent}, x.token, ${welcomeOk}, ${directOnly}
       FROM jsonb_to_recordset(${JSON.stringify(part.map((r) => ({ email: r.email, name: r.name, token: newToken() })))}::jsonb) AS x(email text, name text, token text)
       ON CONFLICT (account_id, email) DO NOTHING RETURNING id`;
     added += made.length;
   }
   return added;
+}
+
+/**
+ * Someone who so far agreed to one Send now email only, now joining the list with consent for it (an import, a CRM
+ * contact who agreed, a typed address): they become an ordinary subscriber, with the new consent noted. Only people
+ * still subscribed: anyone who left stays left.
+ */
+async function promoteDirect(accountId: string, emails: string[], note: string): Promise<void> {
+  for (const part of chunk(emails, 2000)) {
+    if (!part.length) continue;
+    await sql`UPDATE insights_newsletter_subscribers SET direct_only = false, consent = left(consent || '; joined the list: ' || ${note}, 600), updated_at = now()
+      WHERE account_id = ${accountId} AND direct_only AND status = 'subscribed' AND email = ANY(string_to_array(${part.join(String.fromCharCode(31))}, chr(31)))`;
+  }
 }
 
 export interface ImportResult {
@@ -1341,6 +1372,7 @@ export async function importList(accountId: string, text: unknown, confirmed: un
   const plan = mergeImport(await existingStatuses(accountId, parsed.rows.map((r) => r.email)), parsed.rows);
   // Imported people get the welcome email only when the owner ticked "Send them the welcome email" for this import.
   const added = await insertRows(accountId, plan.add, source, `${note} (${new Date().toISOString().slice(0, 10)})`, welcome === true);
+  await promoteDirect(accountId, parsed.rows.map((r) => r.email), note);
   return { added, already: plan.already + (plan.add.length - added), blocked: plan.blocked, invalid: parsed.invalid };
 }
 
@@ -1398,6 +1430,7 @@ export async function importFromShopify(accountId: string, deadline = Date.now()
   }
   const plan = mergeImport(await existingStatuses(accountId, yes.rows.map((r) => r.email)), yes.rows);
   const added = await insertRows(accountId, plan.add, "shopify", `Subscribed to email marketing in Shopify (${new Date().toISOString().slice(0, 10)})`, welcome === true);
+  await promoteDirect(accountId, yes.rows.map((r) => r.email), "subscribed to email marketing in Shopify");
   return { added, already: plan.already + (plan.add.length - added), blocked: plan.blocked, invalid: 0, optedOut, complete: yes.complete && no.complete };
 }
 
@@ -1900,7 +1933,7 @@ export interface PeopleResult {
 }
 
 /** Adds addresses for one email; anyone unsubscribed, bounced or complained is skipped and never subscribed again. */
-async function addPeople(accountId: string, emails: { email: string; name: string }[], source: SubscriberSource, consent: string): Promise<{ ids: string[]; added: number; skipped: { email: string; why: string }[] }> {
+async function addPeople(accountId: string, emails: { email: string; name: string }[], source: SubscriberSource, consent: string, direct = false): Promise<{ ids: string[]; added: number; skipped: { email: string; why: string }[] }> {
   const existing = await existingStatuses(accountId, emails.map((e) => e.email));
   const skipped: { email: string; why: string }[] = [];
   const fresh = emails.filter((e) => {
@@ -1908,7 +1941,10 @@ async function addPeople(accountId: string, emails: { email: string; name: strin
     if (why) skipped.push({ email: e.email, why });
     return !why && !existing.has(e.email);
   });
-  const added = await insertRows(accountId, fresh, source, `${consent} (${new Date().toISOString().slice(0, 10)})`);
+  // Send now: new people agreed to this email only (direct_only). Otherwise they join the list, and anyone who so far
+  // agreed to one email only joins it too. A subscribed list member never changes.
+  const added = await insertRows(accountId, fresh, source, `${consent} (${new Date().toISOString().slice(0, 10)})`, false, direct);
+  if (!direct) await promoteDirect(accountId, emails.map((e) => e.email), consent);
   const ok = emails.filter((e) => !skipped.some((x) => x.email === e.email)).map((e) => e.email);
   const rows = ok.length
     ? await sql`SELECT id FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND status = 'subscribed'
@@ -2191,7 +2227,7 @@ export async function newsletterMetrics(accountId: string) {
       WHERE account_id = ${accountId} AND unsub_campaign_id IS NOT NULL GROUP BY unsub_campaign_id`,
     sql`WITH w AS (SELECT generate_series(date_trunc('week', now()) - interval '11 weeks', date_trunc('week', now()), interval '1 week') AS week)
       SELECT to_char(w.week, 'YYYY-MM-DD') AS week,
-        (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.created_at >= w.week AND s.created_at < w.week + interval '1 week') AS subscribed,
+        (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND NOT s.direct_only AND s.created_at >= w.week AND s.created_at < w.week + interval '1 week') AS subscribed,
         (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.status = 'unsubscribed'
           AND coalesce(s.unsub_at, s.updated_at) >= w.week AND coalesce(s.unsub_at, s.updated_at) < w.week + interval '1 week') AS unsubscribed
       FROM w ORDER BY w.week`,
@@ -2301,7 +2337,21 @@ export function directProblem(emails: string[], statuses: Map<string, Subscriber
   return null;
 }
 
-export const DIRECT_CONSENT = "Agreed: sent directly from Write an email";
+/** Kept with each person added by Send now: their agreement covers this one email, not the newsletter list. */
+export const DIRECT_CONSENT = "Agreed: sent directly from Write an email, for this email only";
+
+/** The browser's id for one Send now click (pure check). */
+export const validRequestId = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v);
+
+/** Whether two lists name the same people, whatever the order or letter case (pure). */
+export function sameRecipients(a: string[], b: string[]): boolean {
+  const x = new Set(a.map((e) => e.trim().toLowerCase()).filter(Boolean));
+  const y = new Set(b.map((e) => e.trim().toLowerCase()).filter(Boolean));
+  return x.size === y.size && [...x].every((e) => y.has(e));
+}
+
+/** How long a Send now with the same words to the same people is refused as a repeat. */
+export const REPEAT_WINDOW_MINUTES = 10;
 
 export interface DirectResult {
   id: string;
@@ -2310,18 +2360,41 @@ export interface DirectResult {
   /** Waiting for Resend's answer: sent again with the same key within the hour, never twice. */
   waiting: string[];
   note: string | null;
+  /** The same click arrived again: this is the first one's email, nothing new was sent. */
+  again?: boolean;
+}
+
+/** What happened to a Send now email so far, from its send rows. */
+async function directResult(accountId: string, id: string, note: string | null, again = false): Promise<DirectResult> {
+  const rows = await sql`SELECT s.email, x.status, x.note FROM insights_newsletter_sends x JOIN insights_newsletter_subscribers s ON s.id = x.subscriber_id
+    WHERE x.campaign_id = ${id} AND x.account_id = ${accountId} ORDER BY s.email`;
+  const [c] = await sql`SELECT status, last_error FROM insights_newsletter_campaigns WHERE id = ${id} AND account_id = ${accountId}`;
+  return {
+    id,
+    sent: rows.filter((r) => r.status === "sent").map((r) => r.email ?? ""),
+    failed: rows.filter((r) => r.status === "failed").map((r) => ({ email: r.email ?? "", why: r.note ?? "Resend refused it" })),
+    waiting: rows.filter((r) => r.status === "pending" || r.status === "unknown").map((r) => r.email ?? ""),
+    note: c?.status === "draft" ? "It is saved as a draft in Your emails and wasn't sent." : (c?.last_error ?? note),
+    again,
+  };
 }
 
 /**
- * Send now (owner only, checked by the caller): saves the email, adds the people (source manual, never subscribing
- * again anyone who left), makes them its audience, approves it with that exact list and sends it at once through
- * Resend's single email endpoint, with the same send rows, keys, footer, headers and link tags as every email. All the
- * usual checks apply; for 1 to 3 people no test is needed first.
+ * Send now (owner only, checked by the caller): saves the email, adds the people for this email only (never on the
+ * newsletter list; a subscribed list member stays as they are; nobody who left is subscribed again), makes them its
+ * audience, approves it with that exact list and sends it at once through Resend's single email endpoint, with the
+ * same send rows, keys, footer, headers and link tags as every email. All the usual checks apply; for 1 to 3 people no
+ * test is needed first. The same click arriving twice returns the first one's email, and the same words to the same
+ * people within 10 minutes are refused as already on their way.
  */
 export async function sendNow(accountId: string, input: unknown, origin: string, deadline = Date.now() + 40_000, send: ResendSender = resendPost): Promise<DirectResult> {
   await schema();
   if (isSabbath()) throw new Error("DashPatrol rests for the Sabbath. Try again after Saturday sundown.");
-  const b = (input ?? {}) as { campaign?: unknown; to?: unknown; agreed?: unknown };
+  const b = (input ?? {}) as { campaign?: unknown; to?: unknown; agreed?: unknown; requestId?: unknown };
+  if (!validRequestId(b.requestId)) throw new Error("Please reload the page and try again.");
+  const requestId = b.requestId;
+  const [prior] = await sql`SELECT id FROM insights_newsletter_campaigns WHERE account_id = ${accountId} AND request_id = ${requestId}`;
+  if (prior) return directResult(accountId, String(prior.id), null, true);
   const emails = parseDirectTo(b.to);
   const content = cleanCampaign(b.campaign);
   const s = await readSettings(accountId);
@@ -2330,14 +2403,39 @@ export async function sendNow(accountId: string, input: unknown, origin: string,
   const profile = await readProfile(accountId);
   const problem = claimProblem(`${content.subject}\n${content.preview}\n${content.body}`, healthRulesApply(profile));
   if (problem) throw new Error(`Please change the email first. ${problem}`);
-  const why = directProblem(emails, await existingStatuses(accountId, emails), b.agreed);
+  // Someone who agreed to an earlier Send now email only needs the owner's word again: that agreement was for one email.
+  const statuses = await existingStatuses(accountId, emails);
+  const once = await sql`SELECT email FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND direct_only AND status = 'subscribed'
+    AND email = ANY(string_to_array(${emails.join(String.fromCharCode(31))}, chr(31)))`;
+  for (const r of once) if (r.email) statuses.delete(r.email);
+  const why = directProblem(emails, statuses, b.agreed);
   if (why) throw new Error(why);
   if (allowance(s.dailyCap, await sentToday(accountId)) < emails.length) throw new Error("Today's sending limit is reached. It can go tomorrow, or raise the limit in Sending settings.");
   if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
-  const id = await saveCampaign(accountId, content);
-  const people = await addPeople(accountId, emails.map((email) => ({ email, name: "" })), "manual", DIRECT_CONSENT);
+  // The same words to the same people, approved in the last 10 minutes: already on their way.
+  const recent = await sql`SELECT c.id, string_agg(s.email, ',') AS emails FROM insights_newsletter_campaigns c
+      JOIN insights_newsletter_recipients r ON r.campaign_id = c.id AND r.account_id = c.account_id
+      JOIN insights_newsletter_subscribers s ON s.id = r.subscriber_id AND s.account_id = c.account_id
+    WHERE c.account_id = ${accountId} AND c.status IN ('approved', 'sending', 'sent')
+      AND c.approved_at > now() - (${REPEAT_WINDOW_MINUTES}::int * interval '1 minute')
+      AND c.subject = ${content.subject}::text AND c.body = ${content.body}::text
+    GROUP BY c.id`;
+  if (recent.some((r) => sameRecipients(String(r.emails ?? "").split(","), emails))) {
+    throw new Error(`This email is already on its way to ${emails.join(", ")} (approved in the last ${REPEAT_WINDOW_MINUTES} minutes). See it in Your emails.`);
+  }
+  // Made with the click's id in one statement, so a second arrival of the same click finds it instead of making another.
+  const [made] = await sql`INSERT INTO insights_newsletter_campaigns (account_id, subject, preview, body, kind, request_id)
+    VALUES (${accountId}, ${content.subject}, ${content.preview}, ${content.body}, 'campaign', ${requestId})
+    ON CONFLICT (account_id, request_id) WHERE request_id IS NOT NULL DO NOTHING RETURNING id`;
+  if (!made) {
+    const [again] = await sql`SELECT id FROM insights_newsletter_campaigns WHERE account_id = ${accountId} AND request_id = ${requestId}`;
+    return directResult(accountId, String(again?.id ?? ""), null, true);
+  }
+  const id = String(made.id);
+  const people = await addPeople(accountId, emails.map((email) => ({ email, name: "" })), "manual", DIRECT_CONSENT, true);
   if (people.skipped.length || people.ids.length !== emails.length) throw new Error("Someone's place on your list changed just now. The email is saved as a draft; please try again.");
-  const audience = cleanAudience({ type: "people", ids: people.ids, from: "typed" });
+  // Only this email's own audience reaches people who agreed to this email only.
+  const audience: Audience = { type: "people", ids: people.ids, from: "direct" };
   await sql`UPDATE insights_newsletter_campaigns SET audience = ${JSON.stringify(audience)}::jsonb WHERE id = ${id} AND account_id = ${accountId}`;
   await approveFrozen(accountId, id, audience, { origin, scheduledAt: null, auto: false }, people.ids.length);
   // Sent now, under the same one run at a time lease as the hourly run; if that run holds it, it sends this within the hour.
@@ -2352,16 +2450,7 @@ export async function sendNow(accountId: string, input: unknown, origin: string,
       await dropLease(accountId, lease).catch(() => undefined);
     }
   } else note = "The hourly run is sending right now, so this email goes out within the hour.";
-  const rows = await sql`SELECT s.email, x.status, x.note FROM insights_newsletter_sends x JOIN insights_newsletter_subscribers s ON s.id = x.subscriber_id
-    WHERE x.campaign_id = ${id} AND x.account_id = ${accountId} ORDER BY s.email`;
-  const [last] = await sql`SELECT last_error FROM insights_newsletter_campaigns WHERE id = ${id} AND account_id = ${accountId}`;
-  return {
-    id,
-    sent: rows.filter((r) => r.status === "sent").map((r) => r.email ?? ""),
-    failed: rows.filter((r) => r.status === "failed").map((r) => ({ email: r.email ?? "", why: r.note ?? "Resend refused it" })),
-    waiting: rows.filter((r) => r.status === "pending" || r.status === "unknown").map((r) => r.email ?? ""),
-    note: last?.last_error ?? note,
-  };
+  return directResult(accountId, id, note);
 }
 
 // ---------- sending (the hourly run) ----------
@@ -2381,7 +2470,7 @@ export async function accountsDueForNewsletter(limit = 5): Promise<string[]> {
         OR (coalesce(st.welcome_on, false) AND EXISTS (SELECT 1 FROM insights_newsletter_subscribers s
           WHERE s.account_id = c.account_id
             -- WELCOME_ELIGIBLE: the same rule as the claim and the page's count.
-            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND s.status = 'subscribed' AND NOT s.direct_only AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.subscriber_id = s.id)
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
               WHERE x.subscriber_id = s.id AND w.account_id = c.account_id AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown')))))
@@ -2631,7 +2720,7 @@ async function sendCampaign(
           WHERE s.account_id = ${accountId} AND st.account_id = ${accountId} AND st.welcome_on
             AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ${cid} AND k.account_id = ${accountId} AND k.status = 'sending')
             -- WELCOME_ELIGIBLE: the same rule as the due list and the page's count.
-            AND s.status = 'subscribed' AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
+            AND s.status = 'subscribed' AND NOT s.direct_only AND s.welcome_ok AND s.welcomed_at IS NULL AND st.welcome_since IS NOT NULL AND s.created_at >= st.welcome_since
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)
             AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns w ON w.id = x.campaign_id
               WHERE x.subscriber_id = s.id AND w.account_id = ${accountId} AND w.kind = 'welcome' AND x.status IN ('pending', 'sent', 'unknown'))

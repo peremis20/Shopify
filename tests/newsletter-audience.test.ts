@@ -54,8 +54,8 @@ test("the audience condition: values are always parameters, never written into t
   assert.ok(!text.includes("DROP"));
   assert.deepEqual(seg.values, ["2026-11-01 00:00:00+00", "it's; DROP"]);
   // Groups are joined by OR inside one bracket, so they never loosen the conditions around them.
-  assert.ok(/^ \(/.test(seg.strings[0]) && /\) $/.test(seg.strings[seg.strings.length - 1]));
-  assert.deepEqual(joinSql(audienceWhere({ type: "all" }, null)), { strings: [" TRUE "], values: [] });
+  assert.ok(/^ NOT s\.direct_only AND  \(/.test(seg.strings[0]) && /\) $/.test(seg.strings[seg.strings.length - 1]));
+  assert.deepEqual(joinSql(audienceWhere({ type: "all" }, null)), { strings: [" NOT s.direct_only AND  TRUE "], values: [] });
 });
 
 test("tags and typed addresses", () => {

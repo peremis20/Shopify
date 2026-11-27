@@ -97,7 +97,8 @@ export function AudiencePicker({ c, allTags, onDone }: { c: Campaign; allTags: {
     ].join(" ");
   const search = async () => {
     const d = await apiFresh<{ subscribers: Subscriber[] }>(`/api/newsletter?q=${encodeURIComponent(q.trim())}`);
-    setFound(d.subscribers.filter((s) => s.status === "subscribed"));
+    // Only list members: someone who agreed to one Send now email only can't be picked for another.
+    setFound(d.subscribers.filter((s) => s.status === "subscribed" && !s.directOnly));
   };
   const loadCrm = async () => {
     const d = await apiFresh<{ contacts: CrmCandidate[] }>(`/api/newsletter?crm=1&q=${encodeURIComponent(q.trim())}`);
