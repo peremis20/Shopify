@@ -53,7 +53,7 @@ import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
 import { draftSegment, searchContacts, addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
-import { accountsDueForNewsletter, approveCampaign, deleteCampaign, draftFromLatestArticle, escapeHtml as escapeNewsletter, importFromShopify, importList, markDelivery, newsletterView, ownerUnsubscribe, retryCampaign, runNewsletter, saveCampaign, saveNewsletterSettings, sendTest, stopCampaign, subscriberByToken, unsubscribeByToken, verifySvix, webhookSecretFor } from "./newsletter";
+import { accountsDueForWeekly, newsletterMetrics, recordEvent, runWeekly, accountsDueForNewsletter, approveCampaign, deleteCampaign, draftFromLatestArticle, escapeHtml as escapeNewsletter, importFromShopify, importList, newsletterView, ownerUnsubscribe, retryCampaign, runNewsletter, saveCampaign, saveNewsletterSettings, sendTest, stopCampaign, subscriberByToken, unsubscribeByToken, verifySvix, webhookSecretFor } from "./newsletter";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -1976,6 +1976,21 @@ export async function autopilotTick(): Promise<Response> {
         await report("crm", false, `The CRM's follow ups or morning email failed (${message(e)})`);
       });
     }
+    // The weekly newsletter (only where the owner turned it on): drafted from the newest unused article on the owner's
+    // weekday and hour, with every check; sent on its own only with the owner's permission and a second AI's yes.
+    for (const accountId of late() ? [] : await accountsDueForWeekly(3).catch(async (e) => {
+      console.error(`weekly newsletter list failed: ${message(e)}`);
+      await report("newsletter", false, `The list of weekly newsletters due couldn't be read (${message(e)})`);
+      return [] as string[];
+    })) {
+      if (late()) break;
+      const note = await forSite(accountId, () => runWeekly(accountId)).catch(async (e) => {
+        console.error(`weekly newsletter failed for ${accountId}: ${message(e)}`);
+        await report("newsletter", false, `The weekly newsletter for account ${accountId} failed (${message(e)})`);
+        return null;
+      });
+      if (note) results.push(`account ${accountId} weekly newsletter: ${note}`);
+    }
     // The Newsletter: approved emails go out through each site owner's own Resend account, in batches within the
     // site's daily limit. Only emails the owner approved are ever sent; the tick itself rests in the Sabbath.
     for (const accountId of late() ? [] : await accountsDueForNewsletter(5).catch(async (e) => {
@@ -2647,6 +2662,7 @@ export const crmApi = (req: Request) =>
 export const newsletterApi = (req: Request) =>
   withAccount(req, async (account) => {
     if (req.method === "GET") {
+      if (new URL(req.url).searchParams.get("metrics")) return json(await newsletterMetrics(account.id));
       const view = await newsletterView(account.id, new URL(req.url).searchParams.get("q") ?? "");
       return json({ ...view, webhookUrl: `${appOrigin(req)}/api/newsletter/webhook?a=${account.id}` });
     }
@@ -2657,7 +2673,7 @@ export const newsletterApi = (req: Request) =>
     if (refused) return refused;
     try {
       switch (b.action) {
-        case "settings": return json({ ok: true, note: await saveNewsletterSettings(account.id, b.settings) });
+        case "settings": return json({ ok: true, note: await saveNewsletterSettings(account.id, b.settings, appOrigin(req)) });
         case "import": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent) });
         case "add": return json({ result: await importList(account.id, b.text, b.confirmed, b.consent, "manual") });
         case "shopify": return json({ result: await importFromShopify(account.id, Date.now() + 50_000) });
@@ -2673,7 +2689,7 @@ export const newsletterApi = (req: Request) =>
           // A member's test goes to the member who pressed it; the owner's to the owner.
           return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req), notMainSignIn(account) ? account.email : undefined, account.role === "owner") });
         }
-        case "approve": return json({ ok: true, count: await approveCampaign(account.id, b.id, b.count, appOrigin(req)) });
+        case "approve": return json({ ok: true, count: await approveCampaign(account.id, b.id, b.count, appOrigin(req), b.scheduledAt) });
         case "stop": await stopCampaign(account.id, b.id); break;
         case "retry": await retryCampaign(account.id, b.id); break;
         default: return json({ error: "Nothing to do." }, 400);
@@ -2705,11 +2721,12 @@ export async function newsletterUnsubscribe(req: Request): Promise<Response> {
     const who = await subscriberByToken(token);
     if (!who) return newsletterPage("Link not found", "<h1>This link doesn't work</h1><p>It may be cut short. Try the unsubscribe link in the email again.</p>", 404);
     if (req.method === "POST") {
-      await unsubscribeByToken(token);
+      await unsubscribeByToken(token, new URL(req.url).searchParams.get("c"));
       return newsletterPage("Unsubscribed", `<h1>You are unsubscribed</h1><p>${escapeNewsletter(who.email)} won't get more emails from ${escapeNewsletter(who.brand)}.</p>`);
     }
     if (who.status !== "subscribed") return newsletterPage("Unsubscribed", `<h1>You are unsubscribed</h1><p>${escapeNewsletter(who.email)} doesn't get emails from ${escapeNewsletter(who.brand)}.</p>`);
-    const action = `/api/newsletter/unsubscribe?t=${encodeURIComponent(token ?? "")}`;
+    const from = new URL(req.url).searchParams.get("c");
+    const action = `/api/newsletter/unsubscribe?t=${encodeURIComponent(token ?? "")}${from && /^\d{1,18}$/.test(from) ? `&c=${from}` : ""}`;
     return newsletterPage(
       "Unsubscribe",
       `<h1>Unsubscribe?</h1><p>Stop emails from ${escapeNewsletter(who.brand)} to ${escapeNewsletter(who.email)}.</p><form method="post" action="${escapeNewsletter(action)}"><button type="submit">Unsubscribe</button></form>`,
@@ -2732,15 +2749,13 @@ export async function newsletterWebhook(req: Request): Promise<Response> {
   const ok = verifySvix(secret, { id: req.headers.get("svix-id"), timestamp: req.headers.get("svix-timestamp"), signature: req.headers.get("svix-signature") }, body);
   if (!ok) return json({ error: "bad signature" }, 401);
   try {
-    const ev = JSON.parse(body) as { type?: string; data?: { to?: string[] | string; bounce?: { type?: string } } };
-    const to = Array.isArray(ev.data?.to) ? ev.data!.to : typeof ev.data?.to === "string" ? [ev.data.to] : [];
-    if (ev.type === "email.complained") await markDelivery(accountId, to, "complained");
-    // A temporary bounce (a full inbox) isn't a reason to stop emailing someone.
-    else if (ev.type === "email.bounced" && !/transient|temporary|soft/i.test(ev.data?.bounce?.type ?? "")) await markDelivery(accountId, to, "bounced");
+    // Kept once per Svix message id (Resend retries deliveries), tied to its send; bounces and complaints also take the
+    // person off the list (recordEvent).
+    await recordEvent(accountId, req.headers.get("svix-id") ?? "", JSON.parse(body));
     return json({ ok: true });
   } catch (e) {
     console.error(`newsletter webhook failed: ${message(e)}`);
-    await report("newsletter", false, `A bounce or complaint from Resend couldn't be saved (${message(e)})`);
+    await report("newsletter", false, `An event from Resend couldn't be saved (${message(e)})`);
     return json({ error: "failed" }, 500);
   }
 }

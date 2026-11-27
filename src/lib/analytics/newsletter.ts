@@ -1378,6 +1378,7 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
       origin = ${origin}, last_error = NULL, updated_at = updated_at, scheduled_at = ${at ? at.toISOString() : null}::timestamptz
     WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
   if (!done) throw new Error("This email isn't a draft anymore.");
+  if (c.kind === "weekly") await closeNeed(accountId, "Newsletter", `newsletter:weekly:${c.id}`).catch(() => undefined);
   return subscribed;
 }
 
@@ -1397,6 +1398,254 @@ export async function retryCampaign(accountId: string, id: unknown): Promise<voi
   await sql`UPDATE insights_newsletter_campaigns SET status = 'sending', last_error = NULL WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'failed'`;
 }
 
+
+// ---------- the weekly newsletter (automatic, owner turned on) ----------
+
+/** Sites whose weekly newsletter is due this hour (their weekday and hour, in their time zone), up to `limit`. */
+export async function accountsDueForWeekly(limit = 3, now = Date.now()): Promise<string[]> {
+  await schema();
+  const rows = await sql`SELECT account_id, weekly_day, weekly_hour, time_zone, weekly_last_key FROM insights_newsletter_settings
+    WHERE weekly_on AND weekly_paused IS NULL ORDER BY account_id`;
+  return rows
+    .filter((r) => weeklyDue({ now, tz: r.time_zone ?? "UTC", day: Number(r.weekly_day), hour: Number(r.weekly_hour), lastKey: r.weekly_last_key ?? null }).due)
+    .slice(0, limit)
+    .map((r) => String(r.account_id));
+}
+
+/**
+ * The weekly newsletter: drafts from the newest article not used yet, with every check of a manual draft. With
+ * "send on its own" on and a real second AI verdict, the agent approves it on the owner's standing permission;
+ * otherwise it waits as a draft and the owner is told on the team board. No new article: skipped. Two failed weeks in
+ * a row: it pauses itself and says why.
+ */
+export async function runWeekly(accountId: string, now = Date.now()): Promise<string | null> {
+  await schema();
+  if (isSabbath()) return null;
+  const s = await readSettings(accountId);
+  if (!s.weeklyOn || s.weeklyPaused) return null;
+  const due = weeklyDue({ now, tz: s.timeZone ?? "UTC", day: s.weeklyDay, hour: s.weeklyHour, lastKey: s.weeklyLastKey });
+  if (!due.due) return null;
+  // Marked first, so a failure waits for next week instead of trying again every hour.
+  const [took] = await sql`UPDATE insights_newsletter_settings SET weekly_last_key = ${due.key}
+    WHERE account_id = ${accountId} AND weekly_on AND weekly_last_key IS DISTINCT FROM ${due.key} RETURNING account_id`;
+  if (!took) return null;
+  const note = (text: string) => sql`UPDATE insights_newsletter_settings SET weekly_note = ${text.slice(0, 500)} WHERE account_id = ${accountId}`;
+  let draft: { id: string; checked: "ai" | "owner"; subject: string };
+  try {
+    draft = await draftFrom(accountId, { unused: true, kind: "weekly" });
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    if (e instanceof NoNewArticle) {
+      await note(`${new Date(now).toISOString().slice(0, 10)}: no new article since the last newsletter, so none was sent.`);
+      return "no new article";
+    }
+    const failures = s.weeklyFailures + 1;
+    const paused = failures >= WEEKLY_FAILURE_LIMIT;
+    await sql`UPDATE insights_newsletter_settings SET weekly_failures = ${failures},
+        weekly_paused = CASE WHEN ${paused ? "1" : "0"}::text = '1' THEN ${`Paused after ${WEEKLY_FAILURE_LIMIT} weeks in a row without a draft that passed the checks. Last time: ${why}`.slice(0, 500)} ELSE weekly_paused END,
+        weekly_on = CASE WHEN ${paused ? "1" : "0"}::text = '1' THEN false ELSE weekly_on END
+      WHERE account_id = ${accountId}`;
+    await note(`${new Date(now).toISOString().slice(0, 10)}: no draft this week. ${why}`);
+    // Seen by the Inspector (status board) and by the owner (team board).
+    await report("newsletter", false, `Weekly newsletter for account ${accountId}: ${why}`);
+    await postNote(
+      accountId,
+      "Newsletter",
+      "needs",
+      paused
+        ? `The weekly newsletter paused itself after ${WEEKLY_FAILURE_LIMIT} weeks without a draft that passed the checks. ${why} Turn it on again in Newsletter settings when it is fixed.`
+        : `This week's newsletter wasn't drafted. ${why}`,
+      { ref: "newsletter:weekly:failed" },
+    );
+    return `no draft: ${why}`;
+  }
+  await sql`UPDATE insights_newsletter_settings SET weekly_failures = 0 WHERE account_id = ${accountId}`;
+  await closeNeed(accountId, "Newsletter", "newsletter:weekly:failed").catch(() => undefined);
+  const { subscribed } = await subscriberCounts(accountId);
+  const missing = missingSetup(s);
+  // Sent on its own only with the owner's standing permission, a real second AI verdict (never the owner standing in
+  // for it), a complete setup, someone to send it to and the app's address for the unsubscribe links.
+  const own = s.weeklyAutoSend && draft.checked === "ai" && !missing.length && subscribed > 0 && Boolean(s.origin);
+  if (own) {
+    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = now(), approved_count = ${subscribed},
+        origin = ${s.origin}, auto = true, updated_at = updated_at
+      WHERE id = ${draft.id} AND account_id = ${accountId} AND status = 'draft' RETURNING id`;
+    if (done) {
+      await note(`${new Date(now).toISOString().slice(0, 10)}: "${draft.subject}" was checked by a second AI and is going out on its own to ${subscribed.toLocaleString("en-US")} subscribers.`);
+      await postNote(accountId, "Newsletter", "did", `The weekly newsletter "${draft.subject}" passed every check, including a second AI, and is going out on its own to ${subscribed.toLocaleString("en-US")} subscribers. You can pause it in Newsletter.`, { ref: `newsletter:auto:${draft.id}` });
+      return `approved on its own for ${subscribed} subscribers`;
+    }
+  }
+  const why = !s.weeklyAutoSend
+    ? "Send on its own is off"
+    : draft.checked !== "ai"
+      ? "no second AI was free to check it"
+      : missing.length
+        ? `${missing.join(", ")} still needed`
+        : !subscribed
+          ? "nobody is subscribed yet"
+          : "the app's address isn't saved yet (save Newsletter settings once)";
+  await note(`${new Date(now).toISOString().slice(0, 10)}: "${draft.subject}" is drafted and waiting for your approval (${why}).`);
+  await postNote(accountId, "Newsletter", "needs", `This week's newsletter "${draft.subject}" is drafted and waiting for your test and approval in Newsletter.`, { ref: `newsletter:weekly:${draft.id}` });
+  return `drafted, waiting for approval (${why})`;
+}
+
+// ---------- Resend's events and the numbers ----------
+
+/**
+ * Keeps one Resend webhook event (once per Svix message id), tied to the send it belongs to by Resend's email id.
+ * A bounce (not a temporary one) or a spam complaint also takes the person off the list. Returns false for a repeat.
+ */
+export async function recordEvent(accountId: string, svixId: string, raw: unknown): Promise<boolean> {
+  await schema();
+  if (!/^\d{1,18}$/.test(accountId) || !svixId || svixId.length > 100) return false;
+  const ev = eventFields(raw);
+  if (!ev) return false;
+  const [send] = ev.resendId
+    ? await sql`SELECT campaign_id, subscriber_id FROM insights_newsletter_sends WHERE account_id = ${accountId} AND resend_id = ${ev.resendId} LIMIT 1`
+    : [];
+  const [made] = await sql`INSERT INTO insights_newsletter_events (account_id, svix_id, type, resend_id, campaign_id, subscriber_id, link, at)
+    VALUES (${accountId}, ${svixId}, ${ev.type}, ${ev.resendId}, ${send?.campaign_id ?? null}, ${send?.subscriber_id ?? null}, ${ev.link}, coalesce(${ev.at}::timestamptz, now()))
+    ON CONFLICT (account_id, svix_id) DO NOTHING RETURNING svix_id`;
+  if (!made) return false;
+  if (ev.type === "email.complained") await markDelivery(accountId, ev.emails, "complained");
+  // A temporary bounce (a full inbox) isn't a reason to stop emailing someone.
+  else if (ev.type === "email.bounced" && !/transient|temporary|soft/i.test(ev.bounceType ?? "")) await markDelivery(accountId, ev.emails, "bounced");
+  return true;
+}
+
+export interface CampaignRow {
+  id: string;
+  subject: string;
+  kind: Campaign["kind"];
+  auto: boolean;
+  at: string | null;
+  metrics: CampaignMetrics;
+  rates: ReturnType<typeof metricRates>;
+  /** Orders and revenue from visits tagged with this email (Shopify, last 28 days); null when not known. */
+  sales: { orders: number; revenue: number } | null;
+}
+
+const metricsOf = (r: Record<string, string | null> | undefined): CampaignMetrics => ({
+  sent: Number(r?.sent ?? 0),
+  delivered: Number(r?.delivered ?? 0),
+  bounced: Number(r?.bounced ?? 0),
+  complained: Number(r?.complained ?? 0),
+  unsubscribed: Number(r?.unsubscribed ?? 0),
+  opens: Number(r?.opens ?? 0),
+  uniqueOpens: Number(r?.uopens ?? 0),
+  clicks: Number(r?.clicks ?? 0),
+  uniqueClicks: Number(r?.uclicks ?? 0),
+});
+
+/** The campaign id at the start of a utm_campaign slug ("12_spring_tips"), or null. */
+export const slugCampaign = (slug: string) => slug.match(/^(\d{1,18})(?:_|$)/)?.[1] ?? null;
+
+/**
+ * The Newsletter's numbers, from this site's own records: sends, Resend's events, our unsubscribe records, the
+ * subscriber list by week, and (for a Shopify store) orders from newsletter visits. Nothing is estimated.
+ */
+export async function newsletterMetrics(accountId: string) {
+  await schema();
+  const [camps, events, unsubs, growth] = await Promise.all([
+    sql`SELECT c.id, c.subject, c.kind, c.auto, coalesce(c.finished_at, c.approved_at) AS at,
+        (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent
+      FROM insights_newsletter_campaigns c WHERE c.account_id = ${accountId}
+        AND EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent')
+      ORDER BY coalesce(c.finished_at, c.approved_at) DESC NULLS LAST LIMIT 30`,
+    sql`SELECT campaign_id,
+        count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.delivered') AS delivered,
+        count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.bounced') AS bounced,
+        count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.complained') AS complained,
+        count(*) FILTER (WHERE type = 'email.opened') AS opens,
+        count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.opened') AS uopens,
+        count(*) FILTER (WHERE type = 'email.clicked') AS clicks,
+        count(DISTINCT subscriber_id) FILTER (WHERE type = 'email.clicked') AS uclicks
+      FROM insights_newsletter_events WHERE account_id = ${accountId} AND campaign_id IS NOT NULL GROUP BY campaign_id`,
+    sql`SELECT unsub_campaign_id AS campaign_id, count(*) AS n FROM insights_newsletter_subscribers
+      WHERE account_id = ${accountId} AND unsub_campaign_id IS NOT NULL GROUP BY unsub_campaign_id`,
+    sql`WITH w AS (SELECT generate_series(date_trunc('week', now()) - interval '11 weeks', date_trunc('week', now()), interval '1 week') AS week)
+      SELECT to_char(w.week, 'YYYY-MM-DD') AS week,
+        (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.created_at >= w.week AND s.created_at < w.week + interval '1 week') AS subscribed,
+        (SELECT count(*) FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.status = 'unsubscribed'
+          AND coalesce(s.unsub_at, s.updated_at) >= w.week AND coalesce(s.unsub_at, s.updated_at) < w.week + interval '1 week') AS unsubscribed
+      FROM w ORDER BY w.week`,
+  ]);
+  const ev = new Map(events.map((r) => [String(r.campaign_id), r]));
+  const un = new Map(unsubs.map((r) => [String(r.campaign_id), Number(r.n ?? 0)]));
+  // Sales from newsletter visits: only for a Shopify store, read from Shopify, never estimated.
+  let sales: { orders: number; revenue: number; currency: string | null; days: number; capped: boolean; byCampaign: Map<string, { orders: number; revenue: number }> } | "access" | "failed" | null = null;
+  try {
+    const got = await salesFor(accountId);
+    if (got === "access") sales = "access";
+    else if (got) {
+      // Summed from every newsletter order (the sources list folds small sources into Other).
+      const list = got.newsletter ?? [];
+      const src = { orders: list.reduce((n, x) => n + x.orders, 0), revenue: list.reduce((n, x) => n + x.revenue, 0) };
+      const byCampaign = new Map<string, { orders: number; revenue: number }>();
+      for (const n of got.newsletter ?? []) {
+        const id = slugCampaign(n.campaign);
+        if (!id) continue;
+        const cur = byCampaign.get(id) ?? { orders: 0, revenue: 0 };
+        byCampaign.set(id, { orders: cur.orders + n.orders, revenue: cur.revenue + n.revenue });
+      }
+      sales = { orders: src.orders, revenue: src.revenue, currency: got.currency, days: got.days, capped: Boolean(got.capped), byCampaign };
+    }
+  } catch {
+    sales = "failed";
+  }
+  const rows: CampaignRow[] = camps.map((c) => {
+    const m = metricsOf({ ...(ev.get(String(c.id)) ?? {}), sent: c.sent, unsubscribed: String(un.get(String(c.id)) ?? 0) });
+    return {
+      id: String(c.id),
+      subject: c.subject ?? "",
+      kind: c.kind === "welcome" || c.kind === "weekly" ? c.kind : "campaign",
+      auto: c.auto === "t" || c.auto === "true",
+      at: iso(c.at),
+      metrics: m,
+      rates: metricRates(m),
+      sales: sales && typeof sales === "object" ? sales.byCampaign.get(String(c.id)) ?? { orders: 0, revenue: 0 } : null,
+    };
+  });
+  // Every email ever sent counts in the totals, not only the 30 listed.
+  const [tot] = await sql`SELECT (SELECT count(*) FROM insights_newsletter_sends WHERE account_id = ${accountId} AND status = 'sent') AS sent,
+      (SELECT count(*) FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND unsub_campaign_id IS NOT NULL) AS unsubscribed`;
+  let total = metricsOf({ sent: tot?.sent ?? "0", unsubscribed: tot?.unsubscribed ?? "0" });
+  for (const r of events) total = addMetrics(total, { ...metricsOf(r), sent: 0, unsubscribed: 0 });
+  return {
+    total,
+    rates: metricRates(total),
+    campaigns: rows,
+    growth: weekSeries(growth.map((g) => ({ week: g.week ?? "", subscribed: Number(g.subscribed ?? 0), unsubscribed: Number(g.unsubscribed ?? 0) }))),
+    sales: sales && typeof sales === "object" ? { orders: sales.orders, revenue: sales.revenue, currency: sales.currency, days: sales.days, capped: sales.capped } : sales,
+    tracking: { events: events.length > 0 },
+  };
+}
+
+/** The Newsletter's line on the agents' scorecard: what went out (and how much of it on its own), and what came of it. */
+export async function newsletterScore(accountId: string): Promise<{ agent: string; did: string; result: string | null } | null> {
+  await schema();
+  const [r] = await sql`SELECT count(*) FILTER (WHERE x.status = 'sent') AS sent,
+      count(*) FILTER (WHERE x.status = 'sent' AND (c.auto OR c.kind = 'welcome')) AS auto,
+      count(DISTINCT x.campaign_id) FILTER (WHERE x.status = 'sent') AS emails
+    FROM insights_newsletter_sends x JOIN insights_newsletter_campaigns c ON c.id = x.campaign_id
+    WHERE x.account_id = ${accountId} AND x.sent_at > now() - interval '30 days'`;
+  const sent = Number(r?.sent ?? 0);
+  if (!sent) return null;
+  const [e] = await sql`SELECT count(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE type = 'email.opened') AS opened,
+      count(DISTINCT (campaign_id, subscriber_id)) FILTER (WHERE type = 'email.clicked') AS clicked
+    FROM insights_newsletter_events WHERE account_id = ${accountId} AND campaign_id IS NOT NULL AND at > now() - interval '30 days'`;
+  const opened = Number(e?.opened ?? 0);
+  const clicked = Number(e?.clicked ?? 0);
+  const auto = Number(r?.auto ?? 0);
+  return {
+    agent: "Newsletter",
+    did: `${sent.toLocaleString("en-US")} emails sent in the last 30 days (${Number(r?.emails ?? 0)} different), ${auto.toLocaleString("en-US")} of them automatic`,
+    result: opened || clicked
+      ? `${opened.toLocaleString("en-US")} opened (approximate) and ${clicked.toLocaleString("en-US")} clicked, from Resend's reports.`
+      : "No opens or clicks reported yet. They need Resend's webhook and tracking turned on.",
+  };
+}
 
 // ---------- sending (the hourly run) ----------
 

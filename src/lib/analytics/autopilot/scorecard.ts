@@ -146,6 +146,9 @@ export async function readScorecard(accountId: string): Promise<AgentScore[]> {
     const repaired = problems.filter((p) => p.who === "repaired").length;
     out.push({ agent: "Inspector", did: `${problems.length} ${problems.length === 1 ? "problem" : "problems"} found in the last check`, result: `${repaired} repaired by agents, ${problems.length - repaired} need a person or are being watched.` });
   }
+  // Loaded when needed: the newsletter module reaches the site's store and writer, which the scorecard doesn't need.
+  const letter = await import("../newsletter").then((m) => m.newsletterScore(accountId)).catch(() => null);
+  if (letter) out.push(letter);
   const used = await usageThisMonth(accountId).catch(() => null);
   if (used) {
     out.push({

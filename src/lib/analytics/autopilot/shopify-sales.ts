@@ -32,13 +32,15 @@ export interface ShopifySales {
   pages: { path: string; orders: number; revenue: number }[];
   /** Where every order came from (Shopify's customer journey, else the sales channel), most orders first. */
   sources?: { name: string; orders: number; revenue: number }[];
+  /** Orders whose visit came from the Newsletter's own emails (utm_source=newsletter), by their utm_campaign. */
+  newsletter?: { campaign: string; orders: number; revenue: number }[];
 }
 
 interface Visit {
   source: string | null;
   referrerUrl: string | null;
   landingPage: string | null;
-  utmParameters: { medium: string | null } | null;
+  utmParameters: { medium: string | null; source?: string | null; campaign?: string | null } | null;
 }
 
 /** The host of a URL or bare domain, without "www."; null when it isn't one. */
@@ -62,6 +64,12 @@ const GOOGLE_ADS_SOURCE = /^(google|google[ _]?ads|adwords)$/i;
 
 const fromGoogleSearch = (v: Visit | null) => Boolean(v && isGoogle(v) && !isPaid(v));
 
+/** A visit from a DashPatrol newsletter email: its links carry utm_source=newsletter (newsletter.ts withUtm). */
+export const fromNewsletter = (v: Visit | null) => /^newsletter$/i.test((v?.utmParameters?.source ?? "").trim());
+/** The newsletter visit that led to an order (the last one first), or null. */
+export const newsletterVisit = (j: { firstVisit: Visit | null; lastVisit: Visit | null } | null) =>
+  fromNewsletter(j?.lastVisit ?? null) ? j!.lastVisit : fromNewsletter(j?.firstVisit ?? null) ? j!.firstVisit : null;
+
 /** Known places, matched on the visit's source name and the referring host only, never a page path. */
 const KNOWN: [RegExp, string][] = [
   [/(^|\.)tiktok\.com$|^tiktok$/i, "TikTok"],
@@ -84,6 +92,8 @@ const clean = (x: string) => x.replace(/[_]+/g, " ").replace(/\s*[-–—]+\s*/g
 /** One plain name for where an order came from. Google search matches how `fromGoogle` is counted. Pure. */
 export function orderSource(sourceName: string | null, j: { firstVisit: Visit | null; lastVisit: Visit | null } | null): string {
   if (fromGoogleSearch(j?.lastVisit ?? null) || fromGoogleSearch(j?.firstVisit ?? null)) return "Google search";
+  // After Google search, so the sources list still matches how `fromGoogle` is counted.
+  if (newsletterVisit(j)) return "Newsletter";
   const v = j?.lastVisit ?? j?.firstVisit ?? null;
   if (v) {
     if (isGoogle(v) || (isPaid(v) && GOOGLE_ADS_SOURCE.test((v.source ?? "").trim()))) return "Google ads";
@@ -133,6 +143,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
   const now = Date.now();
   const pages = new Map<string, { orders: number; revenue: number }>();
   const sources = new Map<string, { orders: number; revenue: number }>();
+  const letters = new Map<string, { orders: number; revenue: number }>();
   let after: string | null = null;
   for (let page = 0; page < 20; page++) {
     const d: {
@@ -155,8 +166,8 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       `query($q: String!, $after: String) { shop { ianaTimezone } orders(first: 50, after: $after, query: $q, sortKey: CREATED_AT, reverse: true) { pageInfo { hasNextPage endCursor } nodes {
         test createdAt sourceName cancelledAt displayFinancialStatus currentTotalPriceSet { shopMoney { amount currencyCode } } totalPriceSet { shopMoney { amount } }
         customerJourneySummary {
-          firstVisit { source referrerUrl landingPage utmParameters { medium } }
-          lastVisit { source referrerUrl landingPage utmParameters { medium } }
+          firstVisit { source referrerUrl landingPage utmParameters { medium source campaign } }
+          lastVisit { source referrerUrl landingPage utmParameters { medium source campaign } }
         } } } }`,
       { q: `created_at:>=${since}`, after },
     );
@@ -186,6 +197,13 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
       src.orders++;
       src.revenue += amount;
       sources.set(srcName, src);
+      if (srcName === "Newsletter") {
+        const slug = (newsletterVisit(j)?.utmParameters?.campaign ?? "").trim().slice(0, 80);
+        const l = letters.get(slug) ?? { orders: 0, revenue: 0 };
+        l.orders++;
+        l.revenue += amount;
+        letters.set(slug, l);
+      }
       // Credited to Google search when the visit that led to the order (or the first one) came from it.
       const v = fromGoogleSearch(j?.lastVisit ?? null) ? j!.lastVisit : fromGoogleSearch(j?.firstVisit ?? null) ? j!.firstVisit : null;
       if (!v) continue;
@@ -207,6 +225,7 @@ export async function shopifySales(store: StoreAccess, days = 28): Promise<Shopi
     after = d.orders.pageInfo.endCursor;
   }
   out.analyticsWeekTo = analyticsWeekEnd(now, out.timezone ?? null);
+  out.newsletter = [...letters.entries()].map(([campaign, v]) => ({ campaign, ...v }));
   out.pages = [...pages.entries()].map(([path, v]) => ({ path, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue).slice(0, 10);
   // The top 8 by name, the rest as one "Other" row, so the list stays short and still adds up to every order.
   const all = [...sources.entries()].map(([name, v]) => ({ name, ...v })).sort((a, b) => b.orders - a.orders || b.revenue - a.revenue);
@@ -235,7 +254,7 @@ export async function salesFor(accountId: string): Promise<ShopifySales | "acces
     const cached = (typeof hit.data === "string" ? JSON.parse(hit.data) : hit.data) as ShopifySales;
     // A row from before orders were grouped by source is read again, so the owner sees the new list now.
     // A row counted before the shop's midnight covers other days than Analytics now does, so it is read again.
-    if (cached.sources !== undefined && cached.analyticsWeekTo === analyticsWeekEnd(Date.now(), cached.timezone ?? null)) return cached;
+    if (cached.sources !== undefined && cached.newsletter !== undefined && cached.analyticsWeekTo === analyticsWeekEnd(Date.now(), cached.timezone ?? null)) return cached;
   }
   const site = await siteFor(accountId).catch(() => null);
   if (!site?.store) return null;
