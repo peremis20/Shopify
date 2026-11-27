@@ -44,3 +44,6 @@ src/lib/analytics/newsletter.ts + Newsletter page. Sends through the site owner'
 
 ## Nov 27: platform owners in the app (released)
 ADMIN_EMAILS stays the root list; owners can add others under Platform keys (insights_settings admin_emails, read via isAdmin with a 60 s cache). Inside Shopify admin only ADMIN_EMAILS owners count. Google sign in now refuses unverified emails. info@peremis.com added as an owner.
+
+## Nov 27: team members (released)
+src/lib/analytics/members.ts. Signed session carries the person (accountId.b64(email).exp.sig; old cookies mean the owner). Invites accepted by the invitee; members never connect, disconnect, send, publish, approve or change autopilot (ownerOnly and memberRefusal). Only the owner's own newsletter test counts toward approval. info@peremis.com added as a member of account 1 on the owner's request.

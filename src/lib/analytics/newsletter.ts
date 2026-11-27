@@ -991,7 +991,11 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
     throw new Error(`Resend didn't send the test (${why}).`);
   }
   await report("newsletter", true);
-  await sql`UPDATE insights_newsletter_campaigns SET test_sent_at = now() WHERE id = ${c.id} AND account_id = ${accountId}`;
+  // Only the owner's own test counts toward approval: a team member's test shows them the email, but the owner must
+  // see this exact version in their own inbox before it can go to the list (any later edit needs a new test).
+  if (to === normalizeEmail(owner?.email ?? "")) {
+    await sql`UPDATE insights_newsletter_campaigns SET test_sent_at = now() WHERE id = ${c.id} AND account_id = ${accountId}`;
+  }
   return to;
 }
 
