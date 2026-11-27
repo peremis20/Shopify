@@ -2598,7 +2598,7 @@ export async function writeContactIntro(
       ? `Write a short, polite follow up from the owner of ${p.brand ?? p.site} to this business, which hasn't replied yet to an email with the subject "${p.followUp.slice(0, 120)}".
 ${who}
 "subject": under eight words, plain.
-"opening": two or three plain sentences: a friendly check in, that the details are below again, and one easy yes or no question. No pressure, no guilt, no flattery, no claims about the business you can't know, no numbers, no prices, no links, no promise of results.
+"opening": two or three plain sentences: a friendly check in only (add nothing about the offer), that the details are below again, and one easy yes or no question. No pressure, no guilt, no flattery, no claims about the business you can't know, no numbers, no prices, no links, no promise of results.
 ${OUTREACH_RULES}`
       : `Write the opening of a first email from the owner of ${p.brand ?? p.site} to this business.
 ${who}
