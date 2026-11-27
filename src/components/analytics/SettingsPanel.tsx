@@ -163,8 +163,6 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
           </div>
         )}
 
-        {account && <TeamMembers />}
-
         {account?.admin && (
           <div className="mt-8 space-y-4 border-t border-dash-line pt-6 text-sm">
             <p className="font-serif text-xl">Platform owner</p>
@@ -331,66 +329,6 @@ export function SetupSteps({ redirectUri, canSaveClient }: { redirectUri?: strin
           </li>
         )}
       </ol>
-    </div>
-  );
-}
-
-/** Other people who sign in to this business with their own Google email. */
-function TeamMembers() {
-  const [data, setData] = useState<{ owner: string; members: { email: string }[] } | null>(null);
-  const [email, setEmail] = useState("");
-  const [note, setNote] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const call = async (body?: { add?: string; remove?: string }) => {
-    const res = await fetch("/api/account/team", body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-    const out = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(out.error || "That didn't save. Please try again.");
-    return out as { owner: string; members: { email: string }[] };
-  };
-  useEffect(() => {
-    call().then(setData).catch(() => setNote("The team couldn't be loaded."));
-  }, []);
-  const send = async (body: { add?: string; remove?: string }) => {
-    setBusy(true);
-    setNote(null);
-    try {
-      setData(await call(body));
-      if (body.add) {
-        setEmail("");
-        setNote(`${body.add} can now sign in with Google and lands in this business.`);
-      } else setNote("Removed.");
-    } catch (e) {
-      setNote(e instanceof Error ? e.message : "That didn't save. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="mt-8 space-y-3 border-t border-dash-line pt-6 text-sm">
-      <p className="font-serif text-xl">Team</p>
-      <p className="text-dash-muted">People you add sign in with their own Google email and see this business. Your Google connection stays as it is.</p>
-      {data && (
-        <ul className="space-y-1">
-          <li className="flex justify-between gap-2"><span className="break-all">{data.owner}</span><span className="text-xs text-dash-muted">main sign in</span></li>
-          {data.members.map((m) => (
-            <li key={m.email} className="flex justify-between gap-2">
-              <span className="break-all">{m.email}</span>
-              <button type="button" disabled={busy} onClick={() => void send({ remove: m.email })} className="text-xs font-semibold text-dash-down hover:underline disabled:opacity-50">Remove</button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <form
-        onSubmit={(ev) => {
-          ev.preventDefault();
-          if (email.trim()) void send({ add: email.trim() });
-        }}
-        className="flex gap-2"
-      >
-        <input value={email} onChange={(ev) => setEmail(ev.target.value)} type="email" placeholder="name@example.com" aria-label="Team member email" className="w-full min-w-0 rounded-lg border border-dash-line px-3 py-2" />
-        <button type="submit" disabled={busy || !email.trim()} className="rounded-lg bg-dash-green px-3 py-2 font-semibold text-white disabled:opacity-60">Add</button>
-      </form>
-      {note && <p className="text-xs text-dash-ink">{note}</p>}
     </div>
   );
 }
