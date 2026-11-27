@@ -262,10 +262,48 @@ export async function setImageAlt(s: StoreAccess, fileId: string, alt: string) {
   });
 }
 
+/** A blog post's featured image (ArticleImageInput): Shopify copies the image from the address. */
+export interface ArticleImage {
+  url: string;
+  altText: string;
+}
+
+/** The store's active products with their featured image (first 100), the only images the app puts on blog posts. */
+export async function listProductImages(s: StoreAccess): Promise<{ title: string; imageUrl: string | null; imageAlt: string | null }[]> {
+  const d = await shopifyGql<{ products: { nodes: { title: string; featuredMedia: { alt: string | null; preview: { image: { url: string; altText: string | null } | null } | null } | null }[] } }>(
+    s,
+    `{ products(first: 100, query: "status:active") { nodes { title featuredMedia { alt preview { image { url altText } } } } } }`
+  );
+  return d.products.nodes.map((p) => ({
+    title: p.title,
+    imageUrl: p.featuredMedia?.preview?.image?.url ?? null,
+    imageAlt: p.featuredMedia?.alt?.trim() || p.featuredMedia?.preview?.image?.altText?.trim() || null,
+  }));
+}
+
+/** Published blog posts that have no featured image (newest first, from the latest 100). */
+export async function listArticlesWithoutImage(s: StoreAccess): Promise<{ id: string; title: string; body: string; path: string }[]> {
+  const d = await shopifyGql<{ articles: { nodes: { id: string; handle: string; title: string; body: string; isPublished: boolean; image: { url: string } | null; blog: { handle: string } }[] } }>(
+    s,
+    `{ articles(first: 100, sortKey: PUBLISHED_AT, reverse: true) { nodes { id handle title body isPublished image { url } blog { handle } } } }`
+  );
+  return d.articles.nodes
+    .filter((a) => a.isPublished && !a.image?.url)
+    .map((a) => ({ id: a.id, title: a.title, body: a.body ?? "", path: `/blogs/${a.blog.handle}/${a.handle}` }));
+}
+
+/** Sets an existing blog post's featured image. */
+export async function setArticleImage(s: StoreAccess, id: string, image: ArticleImage) {
+  await shopifyGql(s, `mutation($id: ID!, $a: ArticleUpdateInput!) { articleUpdate(id: $id, article: $a) { userErrors { message } } }`, {
+    id,
+    a: { image: { url: image.url, altText: image.altText } },
+  });
+}
+
 /** Publishes (or saves as a draft) a new blog post in the store's first blog. Returns its id and path. */
 export async function createArticle(
   s: StoreAccess,
-  a: { title: string; html: string; handle: string; summary: string; author: string; publish: boolean }
+  a: { title: string; html: string; handle: string; summary: string; author: string; publish: boolean; image?: ArticleImage | null }
 ): Promise<{ id: string; path: string }> {
   const blogs = await shopifyGql<{ blogs: { nodes: { id: string; handle: string }[] } }>(s, `{ blogs(first: 1) { nodes { id handle } } }`);
   const blog = blogs.blogs.nodes[0];
@@ -273,7 +311,7 @@ export async function createArticle(
   const d = await shopifyGql<{ articleCreate: { article: { id: string; handle: string } | null; userErrors: { message: string }[] } }>(
     s,
     `mutation($a: ArticleCreateInput!) { articleCreate(article: $a) { article { id handle } userErrors { message } } }`,
-    { a: { blogId: blog.id, title: a.title, body: a.html, handle: a.handle, summary: a.summary, author: { name: a.author }, isPublished: a.publish } }
+    { a: { blogId: blog.id, title: a.title, body: a.html, handle: a.handle, summary: a.summary, author: { name: a.author }, isPublished: a.publish, ...(a.image ? { image: { url: a.image.url, altText: a.image.altText } } : {}) } }
   );
   const made = d.articleCreate.article;
   if (!made) throw new Error(d.articleCreate.userErrors.map((e) => e.message).join(" ") || "Shopify didn't create the article.");
