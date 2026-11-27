@@ -24,7 +24,7 @@ export const OWNER_ONLY = "Only the main sign in can do this for the business.";
 const OWNER_ONLY_ACTIONS: Record<string, readonly string[]> = {
   crm: ["email", "settings"],
   // Adding people to the list (imports, CRM contacts, typed addresses), tagging them and anything that sends are the owner's.
-  newsletter: ["settings", "import", "add", "shopify", "approve", "retry", "crm", "typed", "tag"],
+  newsletter: ["settings", "import", "add", "shopify", "approve", "retry", "crm", "typed", "tag", "sendNow"],
   social: ["approve"],
   storeAudit: ["apply-price", "undo-price"],
   speed: ["shrink", "undo"],

@@ -53,7 +53,7 @@ import { connectWebflow } from "./autopilot/webflow";
 import { connectWix } from "./autopilot/wix";
 import { accountForSiteKey, checkSnippet, removeSnippet, SNIPPET_JS, snippetData, snippetInstalled, snippetKey, snippetTag } from "./autopilot/snippet";
 import { draftSegment, searchContacts, addActivity, archiveContact, archivedContacts, contactFromLead, contactTimeline, crmView, deleteActivity, deleteTemplate as deleteCrmTemplate, forgetLeadCopies, addFileLink, deleteFile as deleteCrmFile, filesFor, readFile as readCrmFile, uploadFile, discardDraft, draftDueEmails, draftEmail, accountsDueForCrm, addDueFollowUps, addStock, closeStock, contactOrders, countStock, digestFor, markCrmUpkeep, markDigest, readCrmSettings, saveCrmSettings, setCountPaid, stockFor, stockSummary, emailContact, importContacts, logEmail, moveContact, saveContact, saveStages, saveTemplate as saveCrmTemplate, setTaskDone } from "./crm";
-import { addCrmPeople, addTyped, crmCandidates, saveAudience, tagSubscribers, accountsDueForWeekly, newsletterMetrics, recordEvent, runWeekly, accountsDueForNewsletter, approveCampaign, deleteCampaign, draftFromLatestArticle, escapeHtml as escapeNewsletter, importFromShopify, importList, newsletterView, ownerUnsubscribe, retryCampaign, runNewsletter, saveCampaign, saveNewsletterSettings, sendTest, stopCampaign, subscriberByToken, unsubscribeByToken, verifySvix, webhookSecretFor } from "./newsletter";
+import { sendNow, addCrmPeople, addTyped, crmCandidates, saveAudience, tagSubscribers, accountsDueForWeekly, newsletterMetrics, recordEvent, runWeekly, accountsDueForNewsletter, approveCampaign, deleteCampaign, draftFromLatestArticle, escapeHtml as escapeNewsletter, importFromShopify, importList, newsletterView, ownerUnsubscribe, retryCampaign, runNewsletter, saveCampaign, saveNewsletterSettings, sendTest, stopCampaign, subscriberByToken, unsubscribeByToken, verifySvix, webhookSecretFor } from "./newsletter";
 import { accountsWithWaitingLeads, leadAccounts, leadEmails, cleanLead, forgetLeadEmail, forgetShopLeads, fromSite, keepLead, leadsForEmail, leadsView, syncLeads } from "./autopilot/leads";
 import { crawlSite } from "./site-crawl";
 import { claimReport, claimScanDue, scanSiteClaims, scanStoreClaims } from "./autopilot/claim-scan";
@@ -2698,6 +2698,10 @@ export const newsletterApi = (req: Request) =>
         case "audience": return json({ ok: true, count: await saveAudience(account.id, b.id, b.audience) });
         case "crm": return json({ result: await addCrmPeople(account.id, b.id, b.contactIds, b.agreed, b.consent) });
         case "typed": return json({ result: await addTyped(account.id, b.id, b.text, b.confirmed, b.consent) });
+        case "sendNow": {
+          if (isSabbath()) return rest();
+          return json({ result: await sendNow(account.id, b, appOrigin(req)) });
+        }
         case "tag": return json({ ok: true, changed: await tagSubscribers(account.id, b.ids, b.tag, b.remove === true) });
         case "retry": await retryCampaign(account.id, b.id); break;
         default: return json({ error: "Nothing to do." }, 400);

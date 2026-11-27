@@ -7,6 +7,7 @@ import { Card, ConfirmButton } from "./ui";
 import { MemberNote, OwnerOnly, useIsMember } from "./team-role";
 import { NewsletterMetrics } from "./NewsletterMetrics";
 import { AudiencePicker, SegmentChooser } from "./NewsletterAudience";
+import { MAX_DIRECT, splitTo } from "@/lib/analytics/newsletter-audience";
 
 interface NewsletterData {
   settings: NewsletterSettingsView;
@@ -292,6 +293,12 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
   const [preview, setPreview] = useState("");
   const [body, setBody] = useState("");
   const [welcome, setWelcome] = useState(false);
+  const [to, setTo] = useState("");
+  const [agreed, setAgreed] = useState(false);
+  const member = useIsMember();
+  const people = splitTo(to);
+  // Send now is for 1 to 3 people; with more, or nobody, the usual save, test and approve applies.
+  const direct = people.length >= 1 && people.length <= MAX_DIRECT && !welcome;
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const run = async (what: string, work: () => Promise<void>) => {
@@ -308,6 +315,24 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
     <Card>
       <h2 className="font-serif text-xl text-dash-ink">Write an email</h2>
       <div className="mt-4 grid gap-3">
+        {!member && (
+          <div>
+            <label className="text-sm font-medium">
+              To
+              <input className={`${field} mt-1`} value={to} onChange={(e) => setTo(e.target.value)} placeholder="Leave empty to pick who it goes to later, or type up to 3 emails" />
+            </label>
+            {people.length > MAX_DIRECT && <p className="mt-1 text-xs text-dash-muted">More than {MAX_DIRECT} people: save the email, then pick who it goes to and approve it.</p>}
+            {direct && (
+              <label className="mt-2 flex items-start gap-2 text-sm">
+                <input type="checkbox" className="mt-1" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} />
+                <span>
+                  They asked for or agreed to get this email.
+                  <span className="block text-xs text-dash-muted">Needed for anyone not already subscribed. People who unsubscribed, bounced or marked an email as spam are never emailed.</span>
+                </span>
+              </label>
+            )}
+          </div>
+        )}
         <input className={field} value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject" maxLength={150} />
         <input className={field} value={preview} onChange={(e) => setPreview(e.target.value)} placeholder="Preview text, shown next to the subject in the inbox (optional)" maxLength={200} />
         <textarea className={field} rows={10} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your email here." />
@@ -319,8 +344,37 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
           This is my welcome email: each new subscriber gets it once, after I approve it and turn it on.
         </label>
         <div className="flex flex-wrap gap-2">
+          {direct && !member && (
+            <ConfirmButton
+              className={primary}
+              disabled={Boolean(busy) || !subject.trim() || !body.trim()}
+              label="Send now"
+              confirmLabel={`Click again to send to ${people.join(", ")}`}
+              onConfirm={() => run("send", async () => {
+                const out = await post<{ result: { sent: string[]; failed: { email: string; why: string }[]; waiting: string[]; note: string | null } }>({
+                  action: "sendNow", to, agreed, campaign: { subject, preview, body },
+                });
+                const r = out.result;
+                setMsg([
+                  r.sent.length ? `Sent to ${r.sent.join(", ")}.` : "",
+                  ...r.failed.map((f) => `Not sent to ${f.email}: ${f.why}.`),
+                  r.waiting.length ? `Waiting for Resend's answer for ${r.waiting.join(", ")}; it is tried again within the hour and never sent twice.` : "",
+                  r.note && !r.sent.length ? r.note : "",
+                  "It is in Your emails below, where its opens and clicks show.",
+                ].filter(Boolean).join(" "));
+                if (r.sent.length) {
+                  setTo("");
+                  setAgreed(false);
+                  setSubject("");
+                  setPreview("");
+                  setBody("");
+                }
+                onDone();
+              })}
+            />
+          )}
           <button
-            className={primary}
+            className={direct ? quiet : primary}
             disabled={Boolean(busy)}
             onClick={() => run("save", async () => {
               await post({ action: "save", campaign: { subject, preview, body, kind: welcome ? "welcome" : "campaign" } });

@@ -13,7 +13,7 @@ import { report } from "./autopilot/status";
 import { closeNeed, postNote } from "./autopilot/team";
 import { salesFor } from "./autopilot/shopify-sales";
 import { isSabbath } from "./autopilot/sabbath";
-import { SEGMENT_LABEL, SEGMENTS, type Audience, type Segment } from "./newsletter-audience";
+import { MAX_DIRECT, SEGMENT_LABEL, SEGMENTS, splitTo, type Audience, type Segment } from "./newsletter-audience";
 
 /**
  * The Newsletter: each site emails its own subscribers through the site owner's OWN Resend account (never the
@@ -2276,6 +2276,94 @@ export async function newsletterScore(accountId: string): Promise<{ agent: strin
   };
 }
 
+// ---------- Send now: 1 to 3 people straight from Write an email ----------
+
+/** The addresses in To, checked: 1 to 3 real addresses, each once (pure). */
+export function parseDirectTo(text: unknown): string[] {
+  const raw = typeof text === "string" ? splitTo(text) : [];
+  const bad = raw.filter((x) => !normalizeEmail(x));
+  if (bad.length) throw new Error(`${bad.slice(0, 3).join(", ")} ${bad.length === 1 ? "isn't an email address" : "aren't email addresses"}.`);
+  const emails = [...new Set(raw.map((x) => normalizeEmail(x)!))];
+  if (!emails.length) throw new Error("Type who it goes to in To.");
+  if (emails.length > MAX_DIRECT) throw new Error(`Send now takes up to ${MAX_DIRECT} people. For more, save the email and pick who it goes to.`);
+  return emails;
+}
+
+/**
+ * Why a direct send can't go (pure): anyone unsubscribed, bounced or complained is refused with the reason, and the
+ * owner's word that they agreed is needed unless every one is already subscribed. Null when it may go.
+ */
+export function directProblem(emails: string[], statuses: Map<string, SubscriberStatus>, agreed: unknown): string | null {
+  const refused = emails.map((e) => ({ e, why: skipReason(statuses.get(e)) })).filter((x) => x.why);
+  if (refused.length) return `Not sent. ${refused.map((x) => `${x.e}: ${x.why}`).join("; ")}. Nobody who left your list is emailed again.`;
+  const newPeople = emails.filter((e) => statuses.get(e) !== "subscribed");
+  if (newPeople.length && agreed !== true) return `Tick that ${newPeople.join(", ")} asked for or agreed to get this email.`;
+  return null;
+}
+
+export const DIRECT_CONSENT = "Agreed: sent directly from Write an email";
+
+export interface DirectResult {
+  id: string;
+  sent: string[];
+  failed: { email: string; why: string }[];
+  /** Waiting for Resend's answer: sent again with the same key within the hour, never twice. */
+  waiting: string[];
+  note: string | null;
+}
+
+/**
+ * Send now (owner only, checked by the caller): saves the email, adds the people (source manual, never subscribing
+ * again anyone who left), makes them its audience, approves it with that exact list and sends it at once through
+ * Resend's single email endpoint, with the same send rows, keys, footer, headers and link tags as every email. All the
+ * usual checks apply; for 1 to 3 people no test is needed first.
+ */
+export async function sendNow(accountId: string, input: unknown, origin: string, deadline = Date.now() + 40_000, send: ResendSender = resendPost): Promise<DirectResult> {
+  await schema();
+  if (isSabbath()) throw new Error("DashPatrol rests for the Sabbath. Try again after Saturday sundown.");
+  const b = (input ?? {}) as { campaign?: unknown; to?: unknown; agreed?: unknown };
+  const emails = parseDirectTo(b.to);
+  const content = cleanCampaign(b.campaign);
+  const s = await readSettings(accountId);
+  const missing = missingSetup(s);
+  if (missing.length) throw new Error(`Add ${missing.join(", ")} first. US law (CAN SPAM) needs a postal address in every marketing email.`);
+  const profile = await readProfile(accountId);
+  const problem = claimProblem(`${content.subject}\n${content.preview}\n${content.body}`, healthRulesApply(profile));
+  if (problem) throw new Error(`Please change the email first. ${problem}`);
+  const why = directProblem(emails, await existingStatuses(accountId, emails), b.agreed);
+  if (why) throw new Error(why);
+  if (allowance(s.dailyCap, await sentToday(accountId)) < emails.length) throw new Error("Today's sending limit is reached. It can go tomorrow, or raise the limit in Sending settings.");
+  if (!/^https?:\/\/[a-z0-9.:-]+$/i.test(origin)) throw new Error("Something went wrong on our side. Please try again in a minute.");
+  const id = await saveCampaign(accountId, content);
+  const people = await addPeople(accountId, emails.map((email) => ({ email, name: "" })), "manual", DIRECT_CONSENT);
+  if (people.skipped.length || people.ids.length !== emails.length) throw new Error("Someone's place on your list changed just now. The email is saved as a draft; please try again.");
+  const audience = cleanAudience({ type: "people", ids: people.ids, from: "typed" });
+  await sql`UPDATE insights_newsletter_campaigns SET audience = ${JSON.stringify(audience)}::jsonb WHERE id = ${id} AND account_id = ${accountId}`;
+  await approveFrozen(accountId, id, audience, { origin, scheduledAt: null, auto: false }, people.ids.length);
+  // Sent now, under the same one run at a time lease as the hourly run; if that run holds it, it sends this within the hour.
+  const lease = await takeLease(accountId);
+  let note: string | null = null;
+  if (lease) {
+    try {
+      const [c] = await sql`SELECT * FROM insights_newsletter_campaigns WHERE id = ${id} AND account_id = ${accountId}`;
+      const turn = await sendCampaign(accountId, c, s, deadline, send, sleep, { runLeft: MAX_DIRECT, calls: 0 }, { single: true });
+      if (/stopped|limit/i.test(turn.note)) note = turn.note;
+    } finally {
+      await dropLease(accountId, lease).catch(() => undefined);
+    }
+  } else note = "The hourly run is sending right now, so this email goes out within the hour.";
+  const rows = await sql`SELECT s.email, x.status, x.note FROM insights_newsletter_sends x JOIN insights_newsletter_subscribers s ON s.id = x.subscriber_id
+    WHERE x.campaign_id = ${id} AND x.account_id = ${accountId} ORDER BY s.email`;
+  const [last] = await sql`SELECT last_error FROM insights_newsletter_campaigns WHERE id = ${id} AND account_id = ${accountId}`;
+  return {
+    id,
+    sent: rows.filter((r) => r.status === "sent").map((r) => r.email ?? ""),
+    failed: rows.filter((r) => r.status === "failed").map((r) => ({ email: r.email ?? "", why: r.note ?? "Resend refused it" })),
+    waiting: rows.filter((r) => r.status === "pending" || r.status === "unknown").map((r) => r.email ?? ""),
+    note: last?.last_error ?? note,
+  };
+}
+
 // ---------- sending (the hourly run) ----------
 
 /**
@@ -2373,6 +2461,8 @@ async function sendCampaign(
   send: ResendSender,
   wait: (ms: number) => Promise<void>,
   budget: { runLeft: number; calls: number },
+  /** "Send now" for 1 to 3 people: each one through Resend's single email endpoint, with its own idempotency key. */
+  opts: { single?: boolean } = {},
 ): Promise<Turn> {
   const cid = String(c.id);
   const welcome = c.kind === "welcome";
@@ -2582,6 +2672,12 @@ async function sendCampaign(
     await drop(ids.filter((id) => !people.some((p) => p.id === id)));
     if (!people.length) continue;
     const pids = people.map((p) => p.id);
+    if (opts.single) {
+      // One email per person (send rows, keys and failures handled exactly as a refused batch sent one at a time).
+      const stopped = await oneByOne(people, key);
+      if (stopped) return stop(stopped);
+      continue;
+    }
     const r = await call("/emails/batch", people.map(emailFor), key);
     if (r.ok) {
       const got = idsFromBatch(r);

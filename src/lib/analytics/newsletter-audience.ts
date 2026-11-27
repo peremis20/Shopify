@@ -22,3 +22,11 @@ export type Audience =
   | { type: "all" }
   | { type: "segment"; segments: Segment[]; tags: string[] }
   | { type: "people"; ids: string[]; from: "chosen" | "crm" | "typed" };
+
+/** At most this many people for "Send now" from Write an email; more goes through the usual approve flow. */
+export const MAX_DIRECT = 3;
+
+/** The addresses typed in To, split on commas, semicolons and spaces (pure; the server checks each one). */
+export function splitTo(text: string): string[] {
+  return [...new Set(text.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean))];
+}
