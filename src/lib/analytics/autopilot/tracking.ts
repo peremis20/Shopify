@@ -66,9 +66,9 @@ async function queriesToTrack(accountId: string, conn: Connection, ourDomain: st
   const saved = [...chosen, ...(await getLists(accountId).catch(() => [])).flatMap((l) => l.keywords).filter((k) => !chosen.includes(k)).slice(0, 10)];
   const targets = (
     await sql`SELECT query, max(created_at) AS at FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND field <> 'intent' AND created_at > now() - interval '120 days'
+      WHERE account_id = ${accountId} AND field NOT IN ('intent', 'article_image') AND coalesce(trim(query), '') <> '' AND created_at > now() - interval '120 days'
       GROUP BY query ORDER BY at DESC LIMIT 10`
-  ).map((r) => r.query!);
+  ).map((r) => r.query!).filter((q) => q.trim());
   // Without Search Console: the keywords picked for each page (see site-keywords.ts).
   if (!conn.gscSiteUrl) {
     const picked = await trackablePicks(accountId);

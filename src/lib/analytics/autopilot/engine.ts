@@ -1434,7 +1434,7 @@ export async function rescuable(accountId: string): Promise<string[]> {
       AND h.checked_at > now() - interval '8 days'
       AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.issues) i WHERE i->>'text' ~* '^Not in Google: .*(crawled|discovered)')
       AND NOT EXISTS (SELECT 1 FROM insights_autopilot_changes c WHERE c.account_id = ${accountId} AND c.page_url = h.url
-        AND c.status IN ('applied', 'kept', 'suggested')
+        AND c.status IN ('applied', 'kept', 'suggested') AND c.field <> 'article_image'
         AND (c.created_at > now() - make_interval(days => ${RESCUE_AFTER_DAYS})
           OR (c.field = 'content' AND c.created_at > now() - make_interval(days => ${RESCUE_EVERY_DAYS}))))
       AND NOT EXISTS (SELECT 1 FROM insights_autopilot_controls k WHERE k.account_id = ${accountId} AND k.page_url = h.url AND k.evaluated_at IS NULL)

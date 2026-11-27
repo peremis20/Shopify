@@ -119,7 +119,7 @@ export async function weeklyReportText(accountId: string): Promise<string> {
   const authorityPlan = await readAuthorityPlan(accountId).catch(() => null);
   const authorityKept = plannedMoves(null, authorityPlan).authority;
   const [week] = await sql`
-    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
+    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link', 'article_image')) AS changes,
       -- Every suggestion still waiting for the owner, whenever it was made: the fix list as it stands, the same count
       -- each agent's line shows.
       (SELECT count(*) FROM insights_autopilot_changes s WHERE s.account_id = ${accountId} AND s.status = 'suggested') AS suggested,
@@ -340,7 +340,7 @@ export async function weeklyReportData(accountId: string): Promise<WeeklyReportD
   ]);
   const planned = plannedMoves(strategy, authority);
   const [week] = await sql`
-    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link')) AS changes,
+    SELECT count(*) FILTER (WHERE status IN ('applied', 'kept') AND field NOT IN ('new_article', 'prune', 'link_fix', 'internal_link', 'article_image')) AS changes,
       -- Every suggestion still waiting for the owner, whenever it was made: the fix list as it stands, the same count
       -- each agent's line shows.
       (SELECT count(*) FROM insights_autopilot_changes s WHERE s.account_id = ${accountId} AND s.status = 'suggested') AS suggested,
