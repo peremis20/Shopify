@@ -165,7 +165,10 @@ export async function currentAccount(req: Request): Promise<Account | null> {
   const person = s.person ?? row.email;
   const role = roleFor(person, row.email, row.member === "t" || row.member === "true");
   if (!role) return null;
-  return { id: row.id!, email: person, ownerEmail: row.email, role, admin: await isAdmin(person) };
+  const admin = await isAdmin(person);
+  // A platform owner who is on a business's team acts with the main sign in's rights there (keys, connections,
+  // approvals). Everyone else on a team stays a member.
+  return { id: row.id!, email: person, ownerEmail: row.email, role: role === "member" && admin ? "owner" : role, admin };
 }
 
 /** The email an account signs in with, or null. */
