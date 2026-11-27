@@ -32,7 +32,7 @@ test("newsletter checks: the local checks get the plain text, so a draft opening
 });
 
 test("conversion rules: research the customer's words, product page anatomy, direct response, one change at a time", () => {
-  for (const must of ["customers' own words", "never invent a quote", "beside the buy button", "one clear button", "one problem, one benefit", "no medical claims", "one change per page at a time", "evidence, not proof"]) {
+  for (const must of ["customers' own words", "never invent a quote", "beside the buy button", "never written into a product page draft", "one clear button", "one problem, one benefit", "no medical claims", "one change per page at a time", "evidence, not proof"]) {
     assert.ok(CONVERSION_RULES.includes(must), must);
   }
   assert.ok(!/[\u2013\u2014]/.test(CONVERSION_RULES));
