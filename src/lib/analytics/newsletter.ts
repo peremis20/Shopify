@@ -140,22 +140,53 @@ export const newToken = () => crypto.randomBytes(32).toString("base64url");
 /** Only a token in the exact shape newToken makes is ever looked up. */
 export const validToken = (t: unknown): t is string => typeof t === "string" && /^[A-Za-z0-9_-]{43}$/.test(t);
 
-export const unsubscribeUrl = (origin: string, token: string) => `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=${encodeURIComponent(token)}`;
+/** The unsubscribe link; with the campaign's id, so an unsubscribe is counted for the email it came from. */
+export const unsubscribeUrl = (origin: string, token: string, campaignId?: string) =>
+  `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=${encodeURIComponent(token)}${campaignId && /^\d{1,18}$/.test(campaignId) ? `&c=${campaignId}` : ""}`;
+
+/** The campaign's name in links (utm_campaign): its id and the first words of its subject, plain letters and digits. */
+export function campaignSlug(id: string, subject: string): string {
+  const words = subject.toLowerCase().normalize("NFKD").replace(/[^a-z0-9\s]/g, " ").trim().split(/\s+/).filter(Boolean).slice(0, 5).join("_");
+  return `${id}${words ? `_${words}` : ""}`.slice(0, 50);
+}
+
+/**
+ * Adds the newsletter's UTM tags to a link, only when it points at the site's own domain (www or not). Tags the owner
+ * already set are kept; other sites' links are never changed.
+ */
+export function withUtm(url: string, siteDomain: string | null | undefined, slug: string): string {
+  const site = (siteDomain ?? "").toLowerCase().replace(/^www\./, "").trim();
+  if (!site) return url;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return url;
+  }
+  if (!/^https?:$/.test(u.protocol) || u.hostname.toLowerCase().replace(/^www\./, "") !== site) return url;
+  for (const [k, v] of [["utm_source", "newsletter"], ["utm_medium", "email"], ["utm_campaign", slug]] as const) {
+    if (!u.searchParams.has(k)) u.searchParams.set(k, v);
+  }
+  return u.toString();
+}
 
 export const escapeHtml = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /** A link's address: only https (or http) addresses, never javascript: or data:. */
 const safeHref = (u: string) => (/^https?:\/\/[^\s"'<>]+$/i.test(u) ? u : null);
 
-function inlineHtml(text: string): string {
+type LinkFn = (url: string) => string;
+const same: LinkFn = (u) => u;
+
+function inlineHtml(text: string, link: LinkFn = same): string {
   // Links and bold are found in the raw text, then every piece is escaped, so nothing the owner types becomes markup.
   const out: string[] = [];
   const re = /\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"')]+)|\*\*([^*\n]{1,300})\*\*/g;
   let last = 0;
   for (const m of text.matchAll(re)) {
     out.push(escapeHtml(text.slice(last, m.index)));
-    if (m[1] && safeHref(m[2])) out.push(`<a href="${escapeHtml(m[2])}" style="color:#0F5130">${escapeHtml(m[1])}</a>`);
-    else if (m[3] && safeHref(m[3])) out.push(`<a href="${escapeHtml(m[3])}" style="color:#0F5130">${escapeHtml(m[3])}</a>`);
+    if (m[1] && safeHref(m[2])) out.push(`<a href="${escapeHtml(link(m[2]))}" style="color:#0F5130">${escapeHtml(m[1])}</a>`);
+    else if (m[3] && safeHref(m[3])) out.push(`<a href="${escapeHtml(link(m[3]))}" style="color:#0F5130">${escapeHtml(m[3])}</a>`);
     else if (m[4]) out.push(`<strong>${escapeHtml(m[4])}</strong>`);
     else out.push(escapeHtml(m[0]));
     last = (m.index ?? 0) + m[0].length;
@@ -164,14 +195,18 @@ function inlineHtml(text: string): string {
   return out.join("");
 }
 
-const inlineText = (text: string) => text.replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)/g, "$1 ($2)").replace(/\*\*([^*\n]{1,300})\*\*/g, "$1");
+const inlineText = (text: string, link: LinkFn = same) =>
+  text
+    .replace(/\[([^\]\n]{1,200})\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"')]+)/g, (_m, words: string | undefined, href: string | undefined, bare: string | undefined) =>
+      words && href ? `${words} (${link(href)})` : link(bare ?? ""))
+    .replace(/\*\*([^*\n]{1,300})\*\*/g, "$1");
 
 /**
  * The owner's simple format, as safe HTML and as plain text: paragraphs split by a blank line, "# " starts a heading,
  * "* " starts a list item, [words](https://link), bare https links and **bold**. Nothing else is markup; any HTML the
  * owner types is shown as text.
  */
-export function renderBody(body: string): { html: string; text: string } {
+export function renderBody(body: string, link: LinkFn = same): { html: string; text: string } {
   const blocks = body.replace(/\r\n?/g, "\n").split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
   const html: string[] = [];
   const text: string[] = [];
@@ -179,15 +214,15 @@ export function renderBody(body: string): { html: string; text: string } {
     const lines = b.split("\n").map((l) => l.trim());
     if (lines.length === 1 && /^#{1,3}\s+/.test(lines[0])) {
       const h = lines[0].replace(/^#{1,3}\s+/, "");
-      html.push(`<h2 style="font-size:20px;margin:24px 0 8px">${inlineHtml(h)}</h2>`);
-      text.push(inlineText(h).toUpperCase());
+      html.push(`<h2 style="font-size:20px;margin:24px 0 8px">${inlineHtml(h, link)}</h2>`);
+      text.push(inlineText(h, link).toUpperCase());
     } else if (lines.every((l) => /^[*-]\s+/.test(l))) {
       const items = lines.map((l) => l.replace(/^[*-]\s+/, ""));
-      html.push(`<ul style="margin:0 0 16px;padding-left:22px">${items.map((i) => `<li style="margin:4px 0">${inlineHtml(i)}</li>`).join("")}</ul>`);
-      text.push(items.map((i) => `* ${inlineText(i)}`).join("\n"));
+      html.push(`<ul style="margin:0 0 16px;padding-left:22px">${items.map((i) => `<li style="margin:4px 0">${inlineHtml(i, link)}</li>`).join("")}</ul>`);
+      text.push(items.map((i) => `* ${inlineText(i, link)}`).join("\n"));
     } else {
-      html.push(`<p style="margin:0 0 16px">${lines.map(inlineHtml).join("<br>")}</p>`);
-      text.push(lines.map(inlineText).join("\n"));
+      html.push(`<p style="margin:0 0 16px">${lines.map((l) => inlineHtml(l, link)).join("<br>")}</p>`);
+      text.push(lines.map((l) => inlineText(l, link)).join("\n"));
     }
   }
   return { html: html.join("\n"), text: text.join("\n\n") };
@@ -228,6 +263,8 @@ export interface EmailParts {
   brand: string;
   postalAddress: string;
   unsubscribe: string;
+  /** UTM tags for links to the site's own domain. */
+  utm?: { domain: string | null; slug: string } | null;
 }
 
 /**
@@ -235,7 +272,8 @@ export interface EmailParts {
  * Resend docs listed tags as not supported in batch sends, and a rejection there would refuse every batch.
  */
 export function buildEmail(p: EmailParts): Record<string, unknown> {
-  const content = renderBody(p.body);
+  const utm = p.utm;
+  const content = renderBody(p.body, utm ? (u) => withUtm(u, utm.domain, utm.slug) : same);
   const foot = footer({ brand: p.brand, postalAddress: p.postalAddress, unsubscribe: p.unsubscribe });
   const preheader = p.preview
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(p.preview)}</div>`
@@ -366,6 +404,138 @@ export function verifySvix(secret: string, h: { id: string | null; timestamp: st
 export const plainOf = (html: string) =>
   html.replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
 
+// ---------- metrics, schedules and events (pure) ----------
+
+export interface CampaignMetrics {
+  sent: number;
+  delivered: number;
+  bounced: number;
+  complained: number;
+  unsubscribed: number;
+  opens: number;
+  uniqueOpens: number;
+  clicks: number;
+  uniqueClicks: number;
+}
+
+export const emptyMetrics = (): CampaignMetrics => ({ sent: 0, delivered: 0, bounced: 0, complained: 0, unsubscribed: 0, opens: 0, uniqueOpens: 0, clicks: 0, uniqueClicks: 0 });
+
+/** A share as a whole percent with one decimal, or null when there is nothing to divide by (never a made up 0%). */
+const pct = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : null);
+
+/**
+ * The rates the owner sees. Opens and clicks are counted against delivered emails once Resend reports deliveries,
+ * else against sent ones; each is null when there is nothing to count against.
+ */
+export function metricRates(m: CampaignMetrics) {
+  const base = m.delivered || m.sent;
+  return {
+    delivered: pct(m.delivered, m.sent),
+    bounced: pct(m.bounced, m.sent),
+    complained: pct(m.complained, m.sent),
+    unsubscribed: pct(m.unsubscribed, m.sent),
+    opens: pct(m.uniqueOpens, base),
+    clicks: pct(m.uniqueClicks, base),
+  };
+}
+
+export function addMetrics(a: CampaignMetrics, b: CampaignMetrics): CampaignMetrics {
+  const out = emptyMetrics();
+  for (const k of Object.keys(out) as (keyof CampaignMetrics)[]) out[k] = a[k] + b[k];
+  return out;
+}
+
+/** Monday of the UTC week a moment falls in, as YYYY-MM-DD. */
+export function weekOf(ms: number): string {
+  const d = new Date(ms);
+  const day = (d.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day)).toISOString().slice(0, 10);
+}
+
+/** The last `weeks` weeks, oldest first, with the counts found and zeros for weeks with none. */
+export function weekSeries(rows: { week: string; subscribed: number; unsubscribed: number }[], weeks = 12, now = Date.now()) {
+  const by = new Map(rows.map((r) => [r.week.slice(0, 10), r]));
+  const out: { week: string; subscribed: number; unsubscribed: number }[] = [];
+  for (let i = weeks - 1; i >= 0; i--) {
+    const w = weekOf(now - i * 7 * 864e5);
+    const r = by.get(w);
+    out.push({ week: w, subscribed: r?.subscribed ?? 0, unsubscribed: r?.unsubscribed ?? 0 });
+  }
+  return out;
+}
+
+/** True when `tz` is a time zone this server knows (an IANA name like America/Chicago). */
+export function validZone(tz: unknown): tz is string {
+  if (typeof tz !== "string" || !tz.trim() || tz.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The weekday (0 Sunday to 6 Saturday), hour and date of a moment in a time zone. */
+export function localTime(now: number, tz: string): { weekday: number; hour: number; date: string } {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", hour: "numeric", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(get("weekday"));
+  return { weekday, hour: Number(get("hour")) % 24, date: `${get("year")}-${get("month")}-${get("day")}` };
+}
+
+/**
+ * Whether the weekly newsletter is due now: on the owner's weekday, at or after their hour (in their time zone), and
+ * not tried yet that day. `key` is the local date, saved when it runs so it is tried once a week.
+ */
+export function weeklyDue(f: { now: number; tz: string; day: number; hour: number; lastKey: string | null }): { due: boolean; key: string } {
+  const t = localTime(f.now, validZone(f.tz) ? f.tz : "UTC");
+  return { due: t.weekday === f.day && t.hour >= f.hour && f.lastKey !== t.date, key: t.date };
+}
+
+/** A send time the owner picked: in the future and within 60 days; null for "send now". */
+export function parseSchedule(v: unknown, now = Date.now()): Date | null {
+  if (v === undefined || v === null || v === "") return null;
+  const at = typeof v === "string" ? Date.parse(v) : NaN;
+  if (Number.isNaN(at)) throw new Error("Pick a date and time to send it.");
+  if (at < now + 60_000) throw new Error("Pick a time in the future.");
+  if (at > now + 60 * 864e5) throw new Error("Pick a time within the next 60 days.");
+  return new Date(at);
+}
+
+export const EVENT_TYPES = ["email.sent", "email.delivered", "email.delivery_delayed", "email.bounced", "email.complained", "email.opened", "email.clicked"] as const;
+export type EventType = (typeof EVENT_TYPES)[number];
+
+/** The parts of a Resend webhook event this app keeps; null for an event it doesn't track. */
+export function eventFields(ev: unknown): { type: EventType; resendId: string | null; emails: string[]; link: string | null; at: string | null; bounceType: string | null } | null {
+  const e = (ev ?? {}) as { type?: unknown; created_at?: unknown; data?: Record<string, unknown> };
+  if (typeof e.type !== "string" || !(EVENT_TYPES as readonly string[]).includes(e.type)) return null;
+  const d = e.data ?? {};
+  const to = Array.isArray(d.to) ? d.to : typeof d.to === "string" ? [d.to] : [];
+  const click = (d.click ?? {}) as { link?: unknown };
+  const bounce = (d.bounce ?? {}) as { type?: unknown };
+  const at = typeof d.created_at === "string" ? d.created_at : typeof e.created_at === "string" ? e.created_at : null;
+  return {
+    type: e.type as EventType,
+    resendId: typeof d.email_id === "string" && d.email_id.length <= 100 ? d.email_id : null,
+    emails: to.filter((x): x is string => typeof x === "string").slice(0, 50),
+    link: typeof click.link === "string" ? click.link.slice(0, 1000) : null,
+    at: at && !Number.isNaN(Date.parse(at)) ? new Date(Date.parse(at)).toISOString() : null,
+    bounceType: typeof bounce.type === "string" ? bounce.type : null,
+  };
+}
+
+/** The newest article whose link no newsletter used yet; null when every one was used. */
+export function pickArticle<T extends { url: string }>(articles: T[], used: Set<string>, siteDomain: string | null): (T & { link: string }) | null {
+  for (const a of articles) {
+    const link = /^https?:\/\//i.test(a.url) ? a.url : siteDomain ? `https://${siteDomain}${a.url.startsWith("/") ? "" : "/"}${a.url}` : null;
+    if (link && !used.has(link)) return { ...a, link };
+  }
+  return null;
+}
+
+/** After this many failed weekly runs in a row, the weekly newsletter pauses itself until the owner turns it on again. */
+export const WEEKLY_FAILURE_LIMIT = 2;
+
 // ---------- storage ----------
 
 let ready: Promise<void> | null = null;
@@ -438,6 +608,45 @@ function schema(): Promise<void> {
     await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_sends_pending ON insights_newsletter_sends (campaign_id, batch_key) WHERE status = 'pending'`;
     // When the hourly run last took a turn for this email, so sites take turns fairly.
     await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS last_run_at timestamptz`;
+    // What kind of email: a one off campaign, the welcome email (always on once approved), or the weekly newsletter.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'campaign'`;
+    // Approved for a later time: the hourly run sends it from then on.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS scheduled_at timestamptz`;
+    // Approved by the agent on the owner's standing permission (send on its own), not by a click.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS auto boolean NOT NULL DEFAULT false`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_sends_resend ON insights_newsletter_sends (account_id, resend_id) WHERE resend_id IS NOT NULL`;
+    // Automatic sending, all off until the owner turns it on.
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS welcome_on boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS welcome_since timestamptz`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_on boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_auto_send boolean NOT NULL DEFAULT false`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_day integer NOT NULL DEFAULT 2`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_hour integer NOT NULL DEFAULT 9`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS time_zone text`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_last_key text`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_failures integer NOT NULL DEFAULT 0`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_note text`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_paused text`;
+    // The app's public address, saved by the owner's settings click, for links in emails the agent sends on its own.
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS origin text`;
+    // The welcome email went to this person (once ever), and which email an unsubscribe came from.
+    await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS welcomed_at timestamptz`;
+    await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_campaign_id bigint`;
+    await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_at timestamptz`;
+    // Resend's delivery and engagement events, once each (the Svix message id), keyed by account.
+    await sql`CREATE TABLE IF NOT EXISTS insights_newsletter_events (
+      account_id bigint NOT NULL,
+      svix_id text NOT NULL,
+      type text NOT NULL,
+      resend_id text,
+      campaign_id bigint,
+      subscriber_id bigint,
+      link text,
+      at timestamptz NOT NULL DEFAULT now(),
+      received_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, svix_id)
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_events_campaign ON insights_newsletter_events (account_id, campaign_id, type)`;
   })().catch((e) => {
     ready = null;
     throw e;
@@ -453,7 +662,21 @@ interface Settings {
   replyTo: string;
   postalAddress: string;
   dailyCap: number;
+  welcomeOn: boolean;
+  welcomeSince: string | null;
+  weeklyOn: boolean;
+  weeklyAutoSend: boolean;
+  weeklyDay: number;
+  weeklyHour: number;
+  timeZone: string | null;
+  weeklyLastKey: string | null;
+  weeklyFailures: number;
+  weeklyNote: string | null;
+  weeklyPaused: string | null;
+  origin: string | null;
 }
+
+const yes = (v: string | null | undefined) => v === "t" || v === "true";
 
 async function readSettings(accountId: string): Promise<Settings> {
   await schema();
@@ -468,6 +691,18 @@ async function readSettings(accountId: string): Promise<Settings> {
     replyTo: r?.reply_to ?? "",
     postalAddress: r?.postal_address ?? "",
     dailyCap: Number.isInteger(cap) && cap > 0 ? cap : DEFAULT_DAILY_CAP,
+    welcomeOn: yes(r?.welcome_on),
+    welcomeSince: r?.welcome_since ?? null,
+    weeklyOn: yes(r?.weekly_on),
+    weeklyAutoSend: yes(r?.weekly_auto_send),
+    weeklyDay: Number.isInteger(Number(r?.weekly_day)) ? Number(r?.weekly_day) : 2,
+    weeklyHour: Number.isInteger(Number(r?.weekly_hour)) ? Number(r?.weekly_hour) : 9,
+    timeZone: validZone(r?.time_zone) ? r!.time_zone : null,
+    weeklyLastKey: r?.weekly_last_key ?? null,
+    weeklyFailures: Number(r?.weekly_failures ?? 0) || 0,
+    weeklyNote: r?.weekly_note ?? null,
+    weeklyPaused: r?.weekly_paused ?? null,
+    origin: r?.origin ?? null,
   };
 }
 
@@ -490,9 +725,43 @@ export interface NewsletterSettingsView {
   postalAddress: string;
   dailyCap: number;
   subdomain: boolean;
+  welcomeOn: boolean;
+  weeklyOn: boolean;
+  weeklyAutoSend: boolean;
+  weeklyDay: number;
+  weeklyHour: number;
+  timeZone: string | null;
+  /** Why the weekly newsletter paused itself, or null. */
+  weeklyPaused: string | null;
+  /** What the last weekly run did, in plain words. */
+  weeklyNote: string | null;
 }
 
-export async function saveNewsletterSettings(accountId: string, input: unknown): Promise<string | null> {
+/** The connected Shopify store's own time zone. */
+async function shopZone(accountId: string): Promise<string | null> {
+  const store = (await siteFor(accountId))?.store ?? null;
+  if (!store) return null;
+  const d = await shopifyGql<{ shop: { ianaTimezone: string | null } }>(store, "{ shop { ianaTimezone } }");
+  return validZone(d.shop.ianaTimezone) ? d.shop.ianaTimezone : null;
+}
+
+/** The automatic sending choices (owner only, checked by the caller). Pure apart from the time zone check. */
+export function cleanAuto(b: Record<string, unknown>, cur: Pick<Settings, "welcomeOn" | "weeklyOn" | "weeklyAutoSend" | "weeklyDay" | "weeklyHour" | "timeZone">) {
+  const flag = (v: unknown, keep: boolean) => (v === undefined ? keep : v === true);
+  const day = b.weeklyDay === undefined ? cur.weeklyDay : Number(b.weeklyDay);
+  const hour = b.weeklyHour === undefined ? cur.weeklyHour : Number(b.weeklyHour);
+  if (!Number.isInteger(day) || day < 0 || day > 6) throw new Error("Pick a day of the week.");
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error("Pick an hour of the day.");
+  let tz = cur.timeZone;
+  if (b.timeZone !== undefined) {
+    if (b.timeZone === "" || b.timeZone === null) tz = null;
+    else if (validZone(b.timeZone)) tz = b.timeZone;
+    else throw new Error("That time zone isn't known. Use a name like America/Chicago.");
+  }
+  return { welcomeOn: flag(b.welcomeOn, cur.welcomeOn), weeklyOn: flag(b.weeklyOn, cur.weeklyOn), weeklyAutoSend: flag(b.weeklyAutoSend, cur.weeklyAutoSend), weeklyDay: day, weeklyHour: hour, timeZone: tz };
+}
+
+export async function saveNewsletterSettings(accountId: string, input: unknown, origin?: string): Promise<string | null> {
   await schema();
   const b = (input ?? {}) as Record<string, unknown>;
   const cur = await readSettings(accountId);
@@ -537,6 +806,17 @@ export async function saveNewsletterSettings(accountId: string, input: unknown):
       resend_key_enc = CASE WHEN ${keyEnc === undefined ? "keep" : "set"}::text = 'keep' THEN insights_newsletter_settings.resend_key_enc ELSE EXCLUDED.resend_key_enc END,
       webhook_secret_enc = CASE WHEN ${hookEnc === undefined ? "keep" : "set"}::text = 'keep' THEN insights_newsletter_settings.webhook_secret_enc ELSE EXCLUDED.webhook_secret_enc END,
       updated_at = now()`;
+  const auto = cleanAuto(b, cur);
+  // No zone chosen: the shop's own, when a Shopify store is connected.
+  if (!auto.timeZone && auto.weeklyOn) auto.timeZone = await shopZone(accountId).catch(() => null);
+  // Turning the weekly newsletter on again (a pause turns it off) clears the pause and its failure count.
+  const weeklyRestart = auto.weeklyOn && !cur.weeklyOn;
+  await sql`UPDATE insights_newsletter_settings SET welcome_on = ${auto.welcomeOn}, weekly_on = ${auto.weeklyOn}, weekly_auto_send = ${auto.weeklyAutoSend},
+      weekly_day = ${auto.weeklyDay}, weekly_hour = ${auto.weeklyHour}, time_zone = ${auto.timeZone},
+      weekly_failures = CASE WHEN ${weeklyRestart ? "1" : "0"}::text = '1' THEN 0 ELSE weekly_failures END,
+      weekly_paused = CASE WHEN ${weeklyRestart ? "1" : "0"}::text = '1' THEN NULL ELSE weekly_paused END,
+      origin = coalesce(${origin && /^https?:\/\/[a-z0-9.:-]+$/i.test(origin) ? origin : null}, origin)
+    WHERE account_id = ${accountId}`;
   // With a full access key, say whether the from address's domain is verified in Resend. A sending only key can't
   // list domains, which is fine: the test email shows it.
   const key = keyEnc ? decrypt(keyEnc, secret) : cur.resendKey;
@@ -663,6 +943,14 @@ export async function newsletterView(accountId: string, query = "") {
     postalAddress: s.postalAddress,
     dailyCap: s.dailyCap,
     subdomain: s.fromAddress ? onSubdomain(s.fromAddress) : false,
+    welcomeOn: s.welcomeOn,
+    weeklyOn: s.weeklyOn,
+    weeklyAutoSend: s.weeklyAutoSend,
+    weeklyDay: s.weeklyDay,
+    weeklyHour: s.weeklyHour,
+    timeZone: s.timeZone,
+    weeklyPaused: s.weeklyPaused,
+    weeklyNote: s.weeklyNote,
   };
   return {
     settings,
