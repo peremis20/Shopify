@@ -56,3 +56,6 @@ Each email has Send to: all, segments (built in groups and owner tags), chosen p
 
 ## Nov 27: Send now (released)
 Write an email has a To field: 1 to 3 people get it at once through /emails, no test needed. Request id and a 10 minute repeat check stop double sends. People added only for that email are direct_only and never get list emails; joining the list later needs list consent (CRM or typed, both now worded as consent to your emails).
+
+## Newsletter look (Nov 27)
+Every email now uses one clean layout: the owner's logo centered at the top, a large title in the owner's accent color (first block when it is a heading), a sans serif body, numbered steps with bold numbers, and the same footer. Logo link (PNG, JPG or GIF) and accent color are per site settings under Sending settings. Weekly drafts from the latest article follow the educational shape: headline, two opening paragraphs, up to three steps the article itself states, a closing line, the article link and a "Talk soon" sign off. Health rules unchanged.

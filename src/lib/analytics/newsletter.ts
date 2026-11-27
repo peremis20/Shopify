@@ -280,7 +280,7 @@ export function footer(p: { brand: string; postalAddress: string; unsubscribe: s
   const addr = p.postalAddress.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter(Boolean);
   return {
     text: `${why}\nUnsubscribe: ${p.unsubscribe}\n${addr.join("\n")}`,
-    html: `<hr style="border:none;border-top:1px solid #eeeeee;margin:40px 0 16px"><p style="font-size:12px;line-height:1.6;color:#888888;margin:0 0 6px">${escapeHtml(why)} <a href="${escapeHtml(p.unsubscribe)}" style="color:#888888">Unsubscribe</a></p><p style="font-size:12px;line-height:1.6;color:#888888;margin:0">${addr.map(escapeHtml).join("<br>")}</p>`,
+    html: `<hr style="border:none;border-top:1px solid #eeeeee;margin:40px 0 16px"><p style="${FONT}font-size:12px;line-height:1.6;color:#888888;margin:0 0 6px">${escapeHtml(why)} <a href="${escapeHtml(p.unsubscribe)}" style="color:#888888">Unsubscribe</a></p><p style="${FONT}font-size:12px;line-height:1.6;color:#888888;margin:0">${addr.map(escapeHtml).join("<br>")}</p>`,
   };
 }
 
@@ -1149,7 +1149,7 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
     const raw = typeof b.logoUrl === "string" ? b.logoUrl.trim() : "";
     const logo = raw ? cleanLogoUrl(raw) : null;
     if (raw && !logo) throw new Error("The logo link must be an https link to a PNG or JPG image.");
-    if (logo && !/\.(png|jpe?g|gif)$/i.test(new URL(logo).pathname)) throw new Error("Use a link that ends in .png or .jpg. Gmail and Outlook don't show AVIF, WebP or SVG images.");
+    if (logo && !/\.(png|jpe?g|gif)$/i.test(logo.split(/[?#]/)[0])) throw new Error("Use a link that ends in .png or .jpg. Gmail and Outlook don't show AVIF, WebP or SVG images.");
     await sql`UPDATE insights_newsletter_settings SET logo_url = ${logo} WHERE account_id = ${accountId}`;
   }
   if (b.color !== undefined) {
