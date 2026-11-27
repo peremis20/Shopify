@@ -1959,10 +1959,10 @@ async function addPeople(accountId: string, emails: { email: string; name: strin
  */
 export async function addTyped(accountId: string, id: unknown, text: unknown, confirmed: unknown, consentNote: unknown): Promise<PeopleResult> {
   await schema();
-  if (confirmed !== true) throw new Error("Tick the box to confirm these people asked for or agreed to get this email.");
+  if (confirmed !== true) throw new Error("Tick the box to confirm these people agreed to get your emails.");
   const c = await audienceEditable(accountId, id);
   const { emails } = parseTyped(text);
-  const note = oneLine(consentNote, 200) || "Typed in by the owner, who confirmed they asked for or agreed to get emails";
+  const note = oneLine(consentNote, 200) || "Typed in by the owner, who confirmed they agreed to get your emails";
   const r = await addPeople(accountId, emails.map((email) => ({ email, name: "" })), "manual", note);
   const a = await addToAudience(accountId, c, r.ids, "typed");
   return { added: r.added, included: r.ids.length, skipped: r.skipped, count: await countAudience(accountId, a) };
@@ -2006,11 +2006,14 @@ export async function addCrmPeople(accountId: string, id: unknown, contactIds: u
   const c = await audienceEditable(accountId, id);
   const ids = Array.isArray(contactIds) ? [...new Set(contactIds.map(String).filter((x) => /^\d{1,18}$/.test(x)))].slice(0, 500) : [];
   if (!ids.length) throw new Error("Pick at least one contact.");
-  const rows = await sql`SELECT c.name, lower(trim(c.email)) AS email, s.status FROM insights_crm_contacts c
+  const rows = await sql`SELECT c.name, lower(trim(c.email)) AS email, s.status, s.direct_only FROM insights_crm_contacts c
     LEFT JOIN insights_newsletter_subscribers s ON s.account_id = c.account_id AND s.email = lower(trim(c.email))
     WHERE c.account_id = ${accountId} AND NOT c.archived AND c.id = ANY(string_to_array(${ids.join(",")}, ',')::bigint[])`;
-  const people = rows.map((r) => ({ email: normalizeEmail(r.email ?? "") ?? "", name: oneLine(r.name ?? "", 120), status: r.status as SubscriberStatus | null })).filter((p) => p.email);
-  const needConsent = people.filter((p) => !p.status);
+  const people = rows
+    .map((r) => ({ email: normalizeEmail(r.email ?? "") ?? "", name: oneLine(r.name ?? "", 120), status: r.status as SubscriberStatus | null, direct: ["t", "true"].includes(String(r.direct_only)) }))
+    .filter((p) => p.email);
+  // Someone who only agreed to one Send now email isn't on the list yet: joining it needs their consent too.
+  const needConsent = people.filter((p) => !p.status || p.direct);
   const note = oneLine(consentNote, 200);
   if (needConsent.length && (agreed !== true || !note)) {
     throw new Error("Some of these contacts aren't on your newsletter list. Tick that they agreed to get emails from you and say how they agreed (for example, they asked at a trade show).");

@@ -53,3 +53,6 @@ Resend webhook events (sent, delivered, delayed, bounced, complained, opened, cl
 
 ## Nov 27: newsletter audiences (released)
 Each email has Send to: all, segments (built in groups and owner tags), chosen people, consenting CRM contacts, typed emails (up to 20, with consent). The exact recipients are frozen at approval in insights_newsletter_recipients (approval only happens when the count matches the button, in one statement). Tagging and adding people are owner only; member tests go only to the member.
+
+## Nov 27: Send now (released)
+Write an email has a To field: 1 to 3 people get it at once through /emails, no test needed. Request id and a 10 minute repeat check stop double sends. People added only for that email are direct_only and never get list emails; joining the list later needs list consent (CRM or typed, both now worded as consent to your emails).

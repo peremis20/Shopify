@@ -189,7 +189,7 @@ export function AudiencePicker({ c, allTags, onDone }: { c: Campaign; allTags: {
                 <input className={field} value={typedNote} onChange={(e) => setTypedNote(e.target.value)} placeholder="How they asked or agreed (optional)" maxLength={200} />
                 <label className="flex items-start gap-2 text-sm">
                   <input type="checkbox" className="mt-1" checked={typedOk} onChange={(e) => setTypedOk(e.target.checked)} />
-                  These people asked for or agreed to get this email.
+                  These people agreed to get your emails. They join your newsletter list.
                 </label>
                 <p className="text-xs text-dash-muted">They join your list and get this email. Anyone who unsubscribed, bounced or marked an email as spam is skipped and never added back.</p>
                 <button className={`${primary} w-fit`} disabled={busy || !typedOk || !typed.trim()} onClick={() => run(async () => told((await post<{ result: PeopleResult }>({ action: "typed", id: c.id, text: typed, confirmed: typedOk, consent: typedNote })).result))}>
