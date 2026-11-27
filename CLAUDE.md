@@ -54,6 +54,10 @@ The conversion agents work the way conversion experts do (`CONVERSION_RULES` in 
 - One change per page at a time, measured against the baseline, kept or undone. A rise is evidence, not proof.
 - Video sales letters and advertorials wait until ads come after the weekly loop works.
 
+## Outreach rules (from the owner)
+
+Every first email and follow up the agents draft (backlinks, creators, journalists, wholesale and local businesses) follows `OUTREACH_RULES` in `autopilot/writer.ts`, from the outbound and cold email experts: a real reason from their own public information, about them not us, under 120 words, one easy yes or no question (never a meeting ask in a first message), a follow up that adds something or checks in once, and a no or silence after it ends it. The owner sends every message. Cold calling, hiring a sales team and executive sales don't apply to the app.
+
 ## Product direction (from the owner)
 
 One repeatable loop, not every marketing channel at once:

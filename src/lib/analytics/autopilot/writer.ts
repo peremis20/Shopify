@@ -106,6 +106,19 @@ export const CONVERSION_RULES = `Conversion rules:
 - Emails and ads are direct response: one problem, one benefit stated with care, one action. Every claim has a source in the store's own pages. For health products: no medical claims and no promised result.
 - Test like a conversion expert: one change per page at a time, measured against the recorded baseline, then kept or undone. A rise after a change is evidence, not proof.`;
 
+/**
+ * How the outreach writers work, from the outbound and cold email experts the owner follows: a real reason to write,
+ * about them not us, short, an easy question to answer, follow ups that add something, and a no that is respected.
+ * For every site. The owner sends every message.
+ */
+export const OUTREACH_RULES = `Outreach rules:
+- Lead with a real, specific reason to write to this person, taken only from their own public information given here (their page, article, posts, type of business or city). Never fake familiarity.
+- Make it about them: what they or their readers, customers or followers get, not a list of what we do.
+- Short: under 120 words not counting the greeting and sign off, one idea, plain words a person would really write.
+- End with one easy question they can answer yes or no (for example "Would that be useful?" or "Open to taking a look?"), never a request for a meeting or a call in a first message.
+- A follow up adds something new and useful or simply checks in once; never guilt, pressure or false urgency.
+- If they say no or don't reply after the follow up, stop. Never argue with an objection: acknowledge it and ask one honest question at most.`;
+
 /** How many words a headline has (pure). */
 export const wordCount = (text: string) => text.trim().split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
 /** Longest headline the copy rules allow. */
@@ -1302,7 +1315,7 @@ export async function writeOutreach(
         : `They accept guest articles. Offer one specific, useful article idea on ${p.topic} for their readers (give the working title). Offer it for their readers only, and don't mention links at all.`;
   // What the business offers is a known fact for the writer and for the second AI's check alike.
   const given = `${p.sells ? `What ${p.ourBrand ?? p.ourSite} offers: ${p.sells}. Keep the email about how that fits their page and readers; never invent products, services or offers beyond this.\n` : ""}${ask}`;
-  const prompt = `Write an outreach email (under 160 words) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
+  const prompt = `Write an outreach email (under 160 words in all) from the owner of ${p.ourSite} to the person who runs ${p.siteName}.
 Their page: "${p.pageTitle}" (${p.pageUrl}).
 ${given}
 The owner's own style: build a relationship and trust first, ask for little. Warm, sincere, professional, never pushy, no flattery, no hype, no slang, no "I hope this email finds you well", no exclamation marks, no hyphens or dashes. Vary the wording so it never reads like a template. Short paragraphs, each separated by a blank line:
@@ -1314,6 +1327,7 @@ The owner's own style: build a relationship and trust first, ask for little. War
 - A closing thank you, that you would be glad to stay in touch, then a sign off such as "Best regards," with "The ${p.ourBrand ?? p.ourSite} team" and ${p.ourSite} on their own lines.
 Never write a placeholder like [Name]. Spell the brand exactly ${p.ourBrand ?? p.ourSite}, and write product and ingredient names with normal capitals (for example Magnesium L Threonate).
 Health topics: offer only general, well established knowledge. No numbers, doses, studies, statistics or health claims, and never invent credentials, titles, experience or results for the sender.
+${OUTREACH_RULES}
 Return JSON with "subject" (under 8 words) and "body" (plain text with line breaks).`;
   const schema = {
     type: "object",
@@ -1571,6 +1585,7 @@ What the creator posts about (their public bio and recent captions):
 ${asData(p.creatorText, 1200)}
 "message": three to five plain sentences, personal to what they really post about, no flattery, no promises of money amounts or results, no links (one is added after).
 "brief": one or two sentences of approved wording the creator may use about the offer, only what the business says it offers.
+${OUTREACH_RULES}
 ${SOCIAL_RULES(p.health)}`,
     { type: "object", properties: { message: { type: "string" }, brief: { type: "string" } }, required: ["message", "brief"] },
   );
@@ -1597,9 +1612,10 @@ ${asData(`Outlet: ${p.outlet}${p.articleTitle.trim() ? `\nArticle: ${p.articleTi
 ${p.topic ? `The topic they cover that fits this business: ${p.topic}` : ""}
 What the business offers (its own words): ${p.offer}
 ${p.expertise ? `What it knows well (its own words): ${p.expertise}` : ""}
+${OUTREACH_RULES}
 What to offer them: ${p.offerKind === "sample" ? "a free sample of the product to review, with no obligation to write about it" : "a short expert quote or background on the topic for a future story"}.
 "subject": under ten words, plain, no clickbait.
-"body": three to five plain sentences. ${p.articleTitle.trim() ? "Mention their article naturally, say" : "Don't mention any article of theirs (none is known), say"} who the owner is in one line, make the offer, and end politely. No flattery, no attachments, no links (the site address is added after), no numbers, no prices or amounts of money, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
+"body": three to five plain sentences. ${p.articleTitle.trim() ? "Mention their article naturally, say" : "Don't mention any article of theirs (none is known), say"} who the owner is in one line, make the offer, and end with one easy yes or no question. No flattery, no attachments, no links (the site address is added after), no numbers, no prices or amounts of money, no claims the offer above doesn't make, no promise of results. Don't invent a name for the owner; sign off is added after.
 ${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
 No hyphens or dashes, no emojis, no exclamation marks.`,
     { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"] },
@@ -2581,13 +2597,16 @@ export async function writeContactIntro(
     p.followUp
       ? `Write a short, polite follow up from the owner of ${p.brand ?? p.site} to this business, which hasn't replied yet to an email with the subject "${p.followUp.slice(0, 120)}".
 ${who}
+What the owner offers (its own words, for context only): ${asData(p.offer, 600)}
 "subject": under eight words, plain.
-"opening": two plain sentences: a friendly check in, and that the details are below again. No pressure, no guilt, no flattery.`
+"opening": two plain sentences: a friendly check in with one new, useful line drawn only from what the owner offers above or the business's type and city, and that the details are below again. No pressure, no guilt, no flattery.
+${OUTREACH_RULES}`
       : `Write the opening of a first email from the owner of ${p.brand ?? p.site} to this business.
 ${who}
 What the owner offers (its own words, for context only; the app adds it after your text): ${asData(p.offer, 600)}
+${OUTREACH_RULES}
 "subject": under eight words, plain, about working together, no clickbait.
-"opening": two or three plain sentences: who is writing in one line, why this business is a good fit given its type and city, and that the details are below. No flattery, no claims about the business you can't know (reviews, how good they are), no numbers, no prices, no links, no promise of results.`
+"opening": two or three plain sentences: who is writing in one line, why this business is a good fit given its type and city (what it gets, not what we do), and that the details are below, ending with one easy yes or no question. No flattery, no claims about the business you can't know (reviews, how good they are), no numbers, no prices, no links, no promise of results.`
       + `
 ${p.health ? "This is a health business: no health or medical claims of any kind, no promise to cure, treat, heal or prevent anything." : ""}
 No greeting line and no sign off (the app adds both). No hyphens or dashes, no emojis, no exclamation marks.`,

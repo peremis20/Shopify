@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CONVERSION_RULES, COPY_RULES, headlineProblem, MAX_HEADLINE_WORDS, wordCount } from "../src/lib/analytics/autopilot/writer";
+import { CONVERSION_RULES, COPY_RULES, OUTREACH_RULES, headlineProblem, MAX_HEADLINE_WORDS, wordCount } from "../src/lib/analytics/autopilot/writer";
 
 test("copy rules: the frameworks, the 2 second rule, the headline limit and no medical claims are all in the rules", () => {
   for (const must of ["2 seconds", "what the business offers and the problem it solves", "10 words or fewer", "StoryBrand", "without [painful trade off]", "Audience + category + outcome + differentiator", "We help [who] get [result] without [worry]", "No medical claims", "may help", "Never round up, never invent", "Article titles, informational sections and FAQs follow the search"]) {
@@ -36,4 +36,11 @@ test("conversion rules: research the customer's words, product page anatomy, dir
     assert.ok(CONVERSION_RULES.includes(must), must);
   }
   assert.ok(!/[\u2013\u2014]/.test(CONVERSION_RULES));
+});
+
+test("outreach rules: a real reason, about them, short, an easy yes or no question, respectful follow ups, a no is respected", () => {
+  for (const must of ["real, specific reason", "Never fake familiarity", "about them", "under 120 words", "yes or no", "never a request for a meeting", "follow up adds something new", "stop", "Never argue with an objection"]) {
+    assert.ok(OUTREACH_RULES.includes(must), must);
+  }
+  assert.ok(!/[\u2013\u2014]/.test(OUTREACH_RULES));
 });
