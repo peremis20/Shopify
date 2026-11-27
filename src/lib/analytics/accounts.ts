@@ -32,13 +32,54 @@ export const isAdminEmail = (email: string) =>
     .filter(Boolean)
     .includes(email.toLowerCase());
 
+/** A lowercase email when it looks like one, else null. */
+export const cleanEmail = (raw: unknown): string | null => {
+  const e = String(raw ?? "").trim().toLowerCase();
+  return /^[^\s@,]+@[^\s@,]+\.[a-z]{2,}$/.test(e) ? e : null;
+};
+
+const EXTRA_ADMINS_KEY = "admin_emails";
+
+/** Platform owners added from inside the app by another owner (the server setting ADMIN_EMAILS stays the root list). */
+export async function extraAdmins(): Promise<string[]> {
+  await ensureSchema();
+  const [row] = await sql`SELECT value FROM insights_settings WHERE key = ${EXTRA_ADMINS_KEY}`.catch(() => [] as { value: string | null }[]);
+  return String(row?.value ?? "")
+    .split(",")
+    .map((e) => cleanEmail(e))
+    .filter((e): e is string => Boolean(e));
+}
+
+/** Saves the in app owner list (deduplicated, valid emails only) and returns it. */
+export async function saveExtraAdmins(emails: string[]): Promise<string[]> {
+  const list = [...new Set(emails.map((e) => cleanEmail(e)).filter((e): e is string => Boolean(e)))];
+  await ensureSchema();
+  await sql`
+    INSERT INTO insights_settings (key, value) VALUES (${EXTRA_ADMINS_KEY}, ${list.join(",")})
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`;
+  ownersCache = null;
+  return list;
+}
+
+/** The in app owner list, kept a minute so a page load doesn't read it on every request. */
+let ownersCache: { at: number; list: string[] } | null = null;
+
+/** A platform owner: in ADMIN_EMAILS, or added in the app by an owner. */
+export async function isAdmin(email: string): Promise<boolean> {
+  if (isAdminEmail(email)) return true;
+  if (!ownersCache || Date.now() - ownersCache.at > 60_000) {
+    ownersCache = { at: Date.now(), list: await extraAdmins().catch(() => [] as string[]) };
+  }
+  return ownersCache.list.includes(email.toLowerCase());
+}
+
 export async function upsertAccount(email: string): Promise<Account> {
   await ensureSchema();
   const [row] = await sql`
     INSERT INTO insights_accounts (email) VALUES (${email.toLowerCase()})
     ON CONFLICT (email) DO UPDATE SET last_login_at = now()
     RETURNING id, email`;
-  return { id: row.id!, email: row.email!, admin: isAdminEmail(row.email!) };
+  return { id: row.id!, email: row.email!, admin: await isAdmin(row.email!) };
 }
 
 export function sessionCookie(req: Request, accountId: string | null): string {
@@ -64,7 +105,7 @@ export async function currentAccount(req: Request): Promise<Account | null> {
   if (Number(exp) * 1000 < Date.now()) return null;
   await ensureSchema();
   const [row] = await sql`SELECT id, email FROM insights_accounts WHERE id = ${id}`;
-  return row ? { id: row.id!, email: row.email!, admin: isAdminEmail(row.email!) } : null;
+  return row ? { id: row.id!, email: row.email!, admin: await isAdmin(row.email!) } : null;
 }
 
 /** The email an account signs in with, or null. */

@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { isAdminEmail, upsertAccount, type Account } from "./accounts";
+import { isAdmin, upsertAccount, type Account } from "./accounts";
 import { encryptShopTokens, readAccountAutopilot, readPlatformSettings, saveAccountAutopilot } from "./autopilot/settings";
 import { ensureSchema, sql } from "./db";
 
@@ -82,7 +82,7 @@ async function findOrCreateAccount(shop: string): Promise<Account> {
   const [row] = await sql`
     SELECT a.id, a.email FROM insights_account_autopilot ap JOIN insights_accounts a ON a.id = ap.account_id
     WHERE ap.shop_domain = ${shop} ORDER BY a.id LIMIT 1`;
-  if (row) return { id: row.id!, email: row.email!, admin: isAdminEmail(row.email!) };
+  if (row) return { id: row.id!, email: row.email!, admin: await isAdmin(row.email!) };
   return upsertAccount(shop);
 }
 

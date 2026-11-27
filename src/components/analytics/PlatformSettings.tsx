@@ -131,6 +131,7 @@ export function PlatformForm({ settings, onSaved }: {
           </li>
           <li>Paste the app&apos;s Client ID and secret here.</li>
         </ol>
+        <PlatformOwners />
       </div>
       <form onSubmit={save} className="space-y-3 rounded-xl border border-dash-line bg-white p-4">
         {input("pf-claude", "Claude API key", anthropicKey, setAnthropicKey, has?.hasAnthropic)}
@@ -186,6 +187,60 @@ export function PlatformForm({ settings, onSaved }: {
           {busy ? "Saving…" : "Save platform keys"}
         </button>
       </form>
+    </div>
+  );
+}
+
+/** Who can see and change these platform settings. Owners set on the server stay; others can be added here. */
+function PlatformOwners() {
+  const [data, setData] = useState<{ root: string[]; extra: string[] } | null>(null);
+  const [email, setEmail] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api<{ root: string[]; extra: string[] }>("/api/autopilot/owners").then(setData).catch(() => setNote("Owners couldn't be loaded."));
+  }, []);
+  const send = async (body: { add?: string; remove?: string }) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      setData(await api<{ root: string[]; extra: string[] }>("/api/autopilot/owners", body));
+      if (body.add) setEmail("");
+      setNote(body.add ? `${body.add} can now see platform settings after signing in.` : "Removed.");
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "That didn't save. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-2 rounded-xl border border-dash-line bg-white p-4">
+      <p className="font-semibold">Platform owners</p>
+      <p className="text-dash-muted">They see these settings and every site&apos;s platform problems. Add only people you trust.</p>
+      {data && (
+        <ul className="space-y-1">
+          {data.root.map((e) => (
+            <li key={e} className="flex justify-between gap-2"><span className="break-all">{e}</span><span className="text-xs text-dash-muted">set on the server</span></li>
+          ))}
+          {data.extra.map((e) => (
+            <li key={e} className="flex justify-between gap-2">
+              <span className="break-all">{e}</span>
+              <button type="button" disabled={busy} onClick={() => void send({ remove: e })} className="text-xs font-semibold text-dash-down hover:underline disabled:opacity-50">Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        onSubmit={(ev) => {
+          ev.preventDefault();
+          if (email.trim()) void send({ add: email.trim() });
+        }}
+        className="flex gap-2"
+      >
+        <input value={email} onChange={(ev) => setEmail(ev.target.value)} type="email" placeholder="name@example.com" aria-label="Owner email" className="w-full min-w-0 rounded-lg border border-dash-line px-3 py-2" />
+        <button type="submit" disabled={busy || !email.trim()} className="rounded-lg bg-dash-green px-3 py-2 font-semibold text-white disabled:opacity-60">Add</button>
+      </form>
+      {note && <p className="text-xs text-dash-ink">{note}</p>}
     </div>
   );
 }

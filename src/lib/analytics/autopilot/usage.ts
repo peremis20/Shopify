@@ -56,7 +56,7 @@ export async function siteVerified(accountId: string): Promise<boolean> {
   const hit = verifiedCache.get(accountId);
   if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ok;
   const ok = await (async () => {
-    const [{ getConnection }, { readProfile, bareDomain }, { isAdminEmail }, { readAccountAutopilot }, { shopifyGql }] = await Promise.all([
+    const [{ getConnection }, { readProfile, bareDomain }, { isAdmin }, { readAccountAutopilot }, { shopifyGql }] = await Promise.all([
       import("../connection"),
       import("../profile"),
       import("../accounts"),
@@ -64,7 +64,7 @@ export async function siteVerified(accountId: string): Promise<boolean> {
       import("./shopify"),
     ]);
     const [acct] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`.catch(() => [] as { email: string | null }[]);
-    if (acct?.email && isAdminEmail(String(acct.email))) return true;
+    if (acct?.email && (await isAdmin(String(acct.email)))) return true;
     const [conn, profile, auto] = await Promise.all([
       getConnection(accountId).catch(() => null),
       readProfile(accountId).catch(() => null),

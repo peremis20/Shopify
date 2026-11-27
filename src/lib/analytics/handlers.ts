@@ -18,7 +18,7 @@ import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
-import { accountEmail, currentAccount, readCookie, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { accountEmail, cleanEmail, currentAccount, extraAdmins, isAdminEmail, readCookie, saveExtraAdmins, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
@@ -1303,6 +1303,27 @@ async function clearAiCausedProblems(): Promise<void> {
     console.warn(`clearing AI caused warnings failed: ${message(e)}`),
   );
 }
+
+/**
+ * Platform owners. The server setting ADMIN_EMAILS is the root list and can't be changed here; an owner can add or
+ * remove other owners in the app. Only owners can see or change this.
+ */
+export const platformOwners = (req: Request) =>
+  withAdmin(req, async (account) => {
+    const root = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => cleanEmail(e)).filter((e): e is string => Boolean(e));
+    let extra = await extraAdmins();
+    if (req.method === "POST") {
+      const b = await req.json().catch(() => ({}));
+      const add = b.add === undefined ? null : cleanEmail(b.add);
+      const remove = b.remove === undefined ? null : cleanEmail(b.remove);
+      if (b.add !== undefined && !add) return json({ error: "That doesn't look like an email address." }, 400);
+      if (remove && isAdminEmail(remove)) return json({ error: "This owner is set on the server and can't be removed here." }, 400);
+      if (remove && remove === account.email.toLowerCase()) return json({ error: "You can't remove yourself. Ask another owner." }, 400);
+      if (add && !isAdminEmail(add)) extra = await saveExtraAdmins([...extra, add]);
+      if (remove) extra = await saveExtraAdmins(extra.filter((e) => e !== remove));
+    }
+    return json({ root, extra });
+  });
 
 /** The platform owner's keys: Claude, and the public Shopify app. */
 export const savePlatform = (req: Request) =>
