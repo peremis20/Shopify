@@ -292,12 +292,27 @@ export async function listArticlesWithoutImage(s: StoreAccess): Promise<{ id: st
     .map((a) => ({ id: a.id, title: a.title, body: a.body ?? "", path: `/blogs/${a.blog.handle}/${a.handle}` }));
 }
 
-/** Sets an existing blog post's featured image. */
-export async function setArticleImage(s: StoreAccess, id: string, image: ArticleImage) {
-  await shopifyGql(s, `mutation($id: ID!, $a: ArticleUpdateInput!) { articleUpdate(id: $id, article: $a) { userErrors { message } } }`, {
-    id,
-    a: { image: { url: image.url, altText: image.altText } },
-  });
+/**
+ * Sets an existing blog post's featured image, or removes it with null (the undo). Returns the image address Shopify
+ * now serves for the post (it copies the image, so the address differs from the one sent), or null when it has none.
+ * Throws when Shopify accepted the call but the post doesn't show the requested state, so nothing passes as done.
+ */
+export async function setArticleImage(s: StoreAccess, id: string, image: ArticleImage | null): Promise<string | null> {
+  const d = await shopifyGql<{ articleUpdate: { article: { image: { url: string } | null } | null } }>(
+    s,
+    `mutation($id: ID!, $a: ArticleUpdateInput!) { articleUpdate(id: $id, article: $a) { article { image { url } } userErrors { message } } }`,
+    { id, a: { image: image ? { url: image.url, altText: image.altText } : null } }
+  );
+  const now = d.articleUpdate.article?.image?.url ?? null;
+  if (image && !now) throw new Error("Shopify accepted the image but the blog post still shows none.");
+  if (!image && now) throw new Error("Shopify kept the blog post's image; remove it in Shopify (Online Store, Blog posts).");
+  return now;
+}
+
+/** The image a blog post shows now, or null. */
+export async function articleImageUrl(s: StoreAccess, id: string): Promise<string | null> {
+  const d = await shopifyGql<{ article: { image: { url: string } | null } | null }>(s, `query($id: ID!) { article(id: $id) { image { url } } }`, { id });
+  return d.article?.image?.url ?? null;
 }
 
 /** Publishes (or saves as a draft) a new blog post in the store's first blog. Returns its id and path. */

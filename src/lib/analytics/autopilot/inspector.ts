@@ -4,7 +4,7 @@ import { clientListKnown, otherClient } from "./clients";
 import type { Connection } from "../connection";
 import { ensureSchema, sql } from "../db";
 import { readAccountAutopilot, readPlatformSettings } from "./settings";
-import { readStatus, report, type Part } from "./status";
+import { readStatus, type Part } from "./status";
 import { trackRanks } from "./tracking";
 import { isSabbath } from "./sabbath";
 import { hasScope } from "../google-auth";
@@ -14,7 +14,7 @@ import { trafficCheck } from "./guards";
 import { usageThisMonth } from "./usage";
 import { readAudit } from "./site-audit";
 import { appCheck } from "./app-check";
-import { articleImageProblems } from "./article-images";
+import { articleImageProblems, reportFor } from "./article-images";
 
 /** An AI account with no money left: retrying never helps, so the owner is told exactly where to add credit. */
 const OUT_OF_CREDIT = /credit balance|purchase credits|insufficient[_ ](credit|funds|balance)|payment required|(^|status |\()402\b/i;
@@ -578,10 +578,11 @@ export async function inspect(accountId: string, conn: Connection | null, opts: 
   problems.push(...(await appCheck(accountId, conn, { readOnly: !opts.repair })));
   // 8. The site itself: it answers, is open to Google, has a sitemap and is measured (Site watch, run each hour).
   problems.push(...(await siteWatchProblems(accountId).catch(() => [])));
-  // 9. Blog posts without a featured image (an empty box on the blog): the sweep gives each the image of the store's
-  // own product it is about, and the owner is told about a post no product fits.
+  // 9. Blog posts without a featured image (an empty box on the blog): while the autopilot is on and may change live
+  // content, the sweep gives each the image of the store's own product it is plainly about (logged, undoable), and the
+  // owner is told, in one problem, about the posts no product fits.
   problems.push(...(await articleImageProblems(accountId, { repair: opts.repair }).catch(async (e) => {
-    await report("article-images", false, `The blog post image check failed (${(e as Error).message})`);
+    await reportFor(accountId, `the blog post image check failed (${(e as Error).message})`);
     return [] as Problem[];
   })));
 

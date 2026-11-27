@@ -31,6 +31,7 @@ const FIELD_LABEL: Record<ChangeField, string> = {
   intent: "Content gap",
   new_article: "New article",
   prune: "Taken down (no Google views)",
+  article_image: "Blog post image (store product)",
 };
 
 /** The same changes in plain words, for the Simple view. */
@@ -45,6 +46,7 @@ const FIELD_LABEL_SIMPLE: Record<ChangeField, string> = {
   intent: "Missing topic",
   new_article: "New article",
   prune: "Taken down (no Google views)",
+  article_image: "Picture for a blog post",
 };
 
 const STATUS_STYLE: Record<AutopilotChange["status"], string> = {

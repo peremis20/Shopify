@@ -1,5 +1,5 @@
 import { readTargets, saveTarget } from "./targets";
-import { setArticlePublished } from "./shopify";
+import { articleImageUrl, setArticleImage, setArticlePublished } from "./shopify";
 import { restoreTarget } from "./pruner";
 import { nextNewArticle, unpublishArticle } from "./new-articles";
 import { getConnection, type Connection } from "../connection";
@@ -977,7 +977,7 @@ async function runAutopilotChecked(accountId: string, conn: Connection | null, t
 
     const [{ pages }] = await sql`
       SELECT count(DISTINCT page_url) AS pages FROM insights_autopilot_changes
-      WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix', 'prune')
+      WHERE account_id = ${accountId} AND status IN ('applied', 'kept', 'suggested') AND field NOT IN ('internal_link', 'link_fix', 'prune', 'article_image')
         AND created_at > now() - interval '7 days'`;
     const capped = Number(pages) >= ctx.maxPagesPerWeek;
     // The weekly limit keeps the site steady, but it shouldn't block a rescue: a couple of urgent fixes may go over it.
@@ -1215,6 +1215,19 @@ async function revertRow(ctx: Ctx, c: Row, opts: { checkLive?: boolean } = {}): 
     await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
     await restoreTarget(ctx.accountId, c.page_url!).catch(() => undefined);
     return "Published again.";
+  }
+  if (field === "article_image") {
+    // Undo a blog post image the sweep set (article-images.ts): the post goes back to no image, unless the owner
+    // has put a different image on it since, which is kept.
+    if (ctx.site?.mode !== "shopify" || !ctx.site.store) throw new Error("Reconnect your Shopify store first.");
+    const live = await articleImageUrl(ctx.site.store, c.resource_id!);
+    if (live && c.after_value && live !== c.after_value) {
+      await sql`UPDATE insights_autopilot_changes SET status = 'kept', note = ${"The post has a different image now, so the owner's image was kept."} WHERE id = ${c.id}`;
+      return "Kept: the post has a different image now.";
+    }
+    if (live) await setArticleImage(ctx.site.store, c.resource_id!, null);
+    await sql`UPDATE insights_autopilot_changes SET status = 'reverted', reverted_at = now() WHERE id = ${c.id}`;
+    return "Removed the image from the blog post.";
   }
   if (field === "new_article") {
     await unpublishArticle(ctx.accountId, ctx.site, c.resource_id!);

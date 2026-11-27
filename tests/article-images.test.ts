@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bestProductImage, distinctiveWords } from "../src/lib/analytics/autopilot/article-images";
+import { bestProductImage, distinctiveWords, imageNeedsProblem } from "../src/lib/analytics/autopilot/article-images";
 
 const p = (title: string, imageUrl: string | null = `https://cdn.example.com/${encodeURIComponent(title)}.jpg`, imageAlt: string | null = null) => ({ title, imageUrl, imageAlt });
 
@@ -34,7 +34,7 @@ test("a general magnesium article picks a magnesium product, and the alt text fa
 });
 
 test("a single product goes before a bundle when the scores tie", () => {
-  const img = bestProductImage([p("Sleep Bundle: Magnesium Glycinate"), p("Magnesium Glycinate")], "magnesium glycinate benefits", { title: "Magnesium glycinate" });
+  const img = bestProductImage([p("Magnesium Glycinate Bundle"), p("Magnesium Glycinate")], "magnesium glycinate benefits", { title: "Magnesium glycinate" });
   assert.equal(img?.altText, "Magnesium Glycinate");
 });
 
@@ -48,4 +48,48 @@ test("the brand name alone is not a match", () => {
 
 test("products without an image are never picked", () => {
   assert.equal(bestProductImage([p("Magnesium Threonate", null)], "magnesium threonate", { title: "Magnesium threonate" }), null);
+});
+
+test("short codes like d3, k2 and b12 stay distinctive, and vitamin letters join the word", () => {
+  assert.deepEqual(distinctiveWords("Acme Vitamin D3 + K2 Daily Complex", new Set(["acme"])), ["vitamin d3", "k2"]);
+  assert.deepEqual(distinctiveWords("Methyl B12 1000mcg 60 Count"), ["methyl", "b12"]);
+  assert.deepEqual(distinctiveWords("Vitamin C 1000mg"), ["vitamin c"]);
+});
+
+const glycinateOnly = [p("Peremis Magnesium Glycinate 120 Capsules")];
+
+test("a store selling only glycinate gives no image to posts about other forms or general magnesium", () => {
+  for (const [title, body] of [
+    ["Magnesium Threonate Benefits", "<p>Magnesium threonate is the form studied for the brain.</p><p>Some people also take glycinate.</p>"],
+    ["Magnesium Citrate vs Oxide", "<p>Citrate and oxide are two common forms of magnesium.</p>"],
+    ["Best magnesium for sleep", "<p>Magnesium helps many people sleep.</p><p>Glycinate is one gentle form.</p>"],
+  ]) {
+    assert.equal(bestProductImage(glycinateOnly, body, { title, brand: "Peremis" }), null, title);
+  }
+});
+
+test("a glycinate article still picks the glycinate product", () => {
+  const img = bestProductImage(glycinateOnly, "<p>Magnesium glycinate is gentle on the stomach.</p>", { title: "Magnesium Glycinate for Sleep", brand: "Peremis" });
+  assert.equal(img?.altText, "Peremis Magnesium Glycinate 120 Capsules");
+});
+
+test("Vitamin C for colds gets no image from a D3 + K2 product", () => {
+  assert.equal(bestProductImage([p("Vitamin D3 + K2")], "<p>Vitamin C may shorten a cold a little.</p>", { title: "Vitamin C for colds" }), null);
+});
+
+test("only the title and first paragraph count, not a mention deep in the body", () => {
+  const body = "<p>Jet lag fades with morning light.</p><p>Some travelers also take magnesium glycinate at night.</p>";
+  assert.equal(bestProductImage(glycinateOnly, body, { title: "How to beat jet lag", brand: "Peremis" }), null);
+});
+
+test("posts no product fits become one owner problem naming up to 10 posts", () => {
+  assert.deepEqual(imageNeedsProblem([]), []);
+  const many = Array.from({ length: 12 }, (_, i) => ({ title: `Post ${i + 1}` }));
+  const [one] = imageNeedsProblem(many);
+  assert.equal(one.who, "owner");
+  assert.equal(one.id, "article-image:needs");
+  assert.match(one.text, /^12 blog posts have no image/);
+  assert.match(one.text, /"Post 10", and 2 more/);
+  assert.ok(!one.text.includes("Post 11"));
+  assert.ok(!/[\u2013\u2014]| - /.test(one.text + one.fix), "no dashes in owner text");
 });

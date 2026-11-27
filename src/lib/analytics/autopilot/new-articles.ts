@@ -3,9 +3,8 @@ import { ensureSchema, sql } from "../db";
 import { readProfile } from "../profile";
 import { analyzeCompetition } from "./serp";
 import type { AiProvider, PlatformSettings } from "./settings";
-import { pickArticleImage } from "./article-images";
-import { createArticle, setArticlePublished, setSeoField } from "./shopify";
-import { report } from "./status";
+import { pickArticleImage, reportFor } from "./article-images";
+import { createArticle, setArticlePublished, setSeoField, shopName } from "./shopify";
 import type { SiteAccess } from "./site-source";
 import { readTargets, saveTarget, supportingTargets } from "./targets";
 import { readWp, wpCreatePost, wpSetPublished } from "./wordpress";
@@ -205,9 +204,11 @@ export async function nextNewArticle(opts: {
     article.html += signupBlock(author || "us");
     // The featured image (the blog card's picture): the store's own product this article is about. A failure to read
     // the products never stops the article; it goes up without one, and the Inspector's image sweep adds it later.
-    const image = await pickArticleImage(site.store, { title: article.title, html: article.html }, author || null).catch(async (e) => {
+    // The brand is never a match: the profile's brand name and the store's name, the same as the sweep.
+    const brand = [profile.brandName, await shopName(site.store).catch(() => "")].filter(Boolean).join(" ") || author || null;
+    const image = await pickArticleImage(site.store, { title: article.title, html: article.html }, brand).catch(async (e) => {
       console.error(`article image not picked: ${(e as Error).message}`);
-      await report("article-images", false, `The store's products couldn't be read for a new article's image (${(e as Error).message})`);
+      await reportFor(accountId, `the store's products couldn't be read for a new article's image (${(e as Error).message})`);
       return null;
     });
     const made = await createArticle(site.store, {
