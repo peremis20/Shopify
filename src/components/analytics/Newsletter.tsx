@@ -502,6 +502,8 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [search, setSearch] = useState(q);
+  // Tagging people is the owner's, like adding them.
+  const member = useIsMember();
   const [ticked, setTicked] = useState<string[]>([]);
   const [tag, setTag] = useState("");
   const tagThem = async (remove: boolean) => {
@@ -597,7 +599,7 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
         {data.subscribers.map((s) => (
           <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
             <span className="flex min-w-0 items-start gap-2 break-all">
-              <input type="checkbox" className="mt-1" checked={ticked.includes(s.id)} onChange={() => setTicked(ticked.includes(s.id) ? ticked.filter((x) => x !== s.id) : [...ticked, s.id])} aria-label={`Pick ${s.email}`} />
+              {!member && <input type="checkbox" className="mt-1" checked={ticked.includes(s.id)} onChange={() => setTicked(ticked.includes(s.id) ? ticked.filter((x) => x !== s.id) : [...ticked, s.id])} aria-label={`Pick ${s.email}`} />}
               <span>
                 {s.name ? `${s.name}, ` : ""}{s.email}
                 <span className="ml-2 text-xs text-dash-muted">{SUB_LABEL[s.status]}, {SOURCE_LABEL[s.source]}{s.tags.length ? `, tags: ${s.tags.join(", ")}` : ""}</span>
@@ -621,14 +623,14 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
         ))}
         {!data.subscribers.length && <li className="py-2 text-dash-muted">{q ? "Nobody found." : "No subscribers yet."}</li>}
       </ul>
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+      {!member && <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
         <span className="text-dash-muted">{n(ticked.length)} picked</span>
         <button className={quiet} onClick={() => setTicked(ticked.length ? [] : data.subscribers.map((s) => s.id))}>{ticked.length ? "Clear" : "Pick all shown"}</button>
         <input className={`${field} max-w-[14rem]`} value={tag} onChange={(e) => setTag(e.target.value)} placeholder="A tag, like wholesale" maxLength={40} list="newsletter-tags" />
         <datalist id="newsletter-tags">{data.tags.map((t) => <option key={t.tag} value={t.tag} />)}</datalist>
         <button className={quiet} disabled={!ticked.length || !tag.trim()} onClick={() => void tagThem(false)}>Add tag</button>
         <button className={quiet} disabled={!ticked.length || !tag.trim()} onClick={() => void tagThem(true)}>Remove tag</button>
-      </div>
+      </div>}
     </Card>
   );
 }

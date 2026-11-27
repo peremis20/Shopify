@@ -679,6 +679,37 @@ export function audienceWhere(a: Audience, ref: string | null): SqlPart[] {
   return out;
 }
 
+/**
+ * The approval and the saving of its exact audience as one statement (pure): the campaign becomes approved with
+ * approved_at now, and everyone subscribed in the audience at that moment is saved as its recipients. Nothing is
+ * saved unless the approval itself happened. Returns whether it was approved and how many people were saved.
+ */
+export function freezeParts(accountId: string, cid: string, a: Audience, set: { origin: string; scheduledAt: string | null; auto: boolean; from: ("draft" | "stopped")[] }): SqlPart[] {
+  return [
+    "WITH upd AS (UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = now(), frozen = true, origin = ",
+    param(set.origin),
+    ", last_error = NULL, updated_at = updated_at, auto = (auto OR ",
+    param(set.auto),
+    "::boolean), scheduled_at = ",
+    param(set.scheduledAt),
+    "::timestamptz WHERE id = ",
+    param(cid),
+    " AND account_id = ",
+    param(accountId),
+    " AND status = ANY(string_to_array(",
+    param(set.from.join(",")),
+    ", ',')) RETURNING id), ins AS (INSERT INTO insights_newsletter_recipients (campaign_id, subscriber_id, account_id) SELECT ",
+    param(cid),
+    ", s.id, ",
+    param(accountId),
+    " FROM insights_newsletter_subscribers s WHERE EXISTS (SELECT 1 FROM upd) AND s.account_id = ",
+    param(accountId),
+    " AND s.status = 'subscribed' AND ",
+    ...audienceWhere(a, null),
+    " ON CONFLICT DO NOTHING RETURNING 1) SELECT (SELECT count(*) FROM upd) AS approved, (SELECT count(*) FROM ins) AS n",
+  ];
+}
+
 /** Up to 20 typed addresses, read like a pasted list; more is refused so this is never a bulk import. */
 export function parseTyped(text: unknown): { emails: string[]; invalid: number } {
   if (typeof text !== "string" || !text.trim()) throw new Error("Type at least one email address.");
@@ -823,6 +854,16 @@ function schema(): Promise<void> {
       PRIMARY KEY (subscriber_id, tag)
     )`;
     await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_tags_account ON insights_newsletter_tags (account_id, tag)`;
+    // The exact people an email was approved for, saved in the same statement as the approval. The hourly run sends
+    // only to them (still subscribed, not sent yet), so the audience can't grow or change after the owner's click.
+    await sql`CREATE TABLE IF NOT EXISTS insights_newsletter_recipients (
+      campaign_id bigint NOT NULL,
+      subscriber_id bigint NOT NULL,
+      account_id bigint NOT NULL,
+      PRIMARY KEY (campaign_id, subscriber_id)
+    )`;
+    // Set when the list above was saved; emails approved before it existed keep their old rule until they finish.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS frozen boolean NOT NULL DEFAULT false`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_campaign_id bigint`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_at timestamptz`;
     // Resend's delivery and engagement events, once each (the Svix message id), keyed by account.
@@ -1227,7 +1268,7 @@ export async function newsletterView(accountId: string, query = "") {
         // The number on the approve button, and the people still waiting, from the email's own audience.
         if (c.status === "draft" || ((c.status === "stopped" || c.status === "failed") && !r.approved_at)) c.audienceCount = await countAudience(accountId, c.audience).catch(() => 0);
         else if (r.approved_at && (c.status === "approved" || c.status === "sending" || c.status === "stopped" || c.status === "failed")) {
-          c.waiting = await countAudience(accountId, c.audience, { ref: r.approved_at, campaignId: c.id }).catch(() => c.waiting);
+          c.waiting = await (yes(r.frozen) ? countFrozen(accountId, c.id) : countAudience(accountId, c.audience, { ref: r.approved_at, campaignId: c.id })).catch(() => c.waiting);
           c.audienceCount = c.waiting;
         }
         return c;
@@ -1431,6 +1472,8 @@ export async function saveCampaign(accountId: string, input: unknown, id?: unkno
         checked = CASE WHEN subject = ${c.subject}::text AND preview = ${c.preview}::text AND body = ${c.body}::text THEN checked ELSE 'owner' END,
         updated_at = CASE WHEN subject = ${c.subject} AND preview = ${c.preview} AND body = ${c.body} THEN updated_at ELSE now() END, last_error = NULL
       WHERE id = ${cur.id} AND account_id = ${accountId}`;
+    // Back to a draft: any list of people saved at an earlier approval goes, so the next approval saves its own.
+    await unfreeze(accountId, String(cur.id));
     return String(cur.id);
   }
   const kind = (input as { kind?: unknown } | null)?.kind === "welcome" ? "welcome" : "campaign";
@@ -1565,7 +1608,8 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
   if (missing.length) throw new Error(`Add ${missing.join(", ")} first.`);
   const [owner] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
   const presser = normalizeEmail(person ?? owner?.email ?? "");
-  const to = testRecipients(presser, s.testEmails);
+  // A team member's test goes only to them; the extra test addresses are the owner's.
+  const to = testRecipients(presser, canApprove ? s.testEmails : []);
   if (!to.length) throw new Error("Your account has no email address to send the test to.");
   const brand = await brandOf(accountId, s);
   const profile = await readProfile(accountId).catch(() => null);
@@ -1643,34 +1687,34 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
         WHERE account_id = ${accountId} AND id = ANY(string_to_array(${rows.map((r) => String(r.subscriber_id)).join(",")}, ',')::bigint[])`;
     }
     await sql`UPDATE insights_newsletter_settings SET welcome_since = coalesce(welcome_since, now()), origin = coalesce(origin, ${origin}) WHERE account_id = ${accountId}`;
-    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), origin = ${origin}, last_error = NULL, updated_at = updated_at
+    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = CASE WHEN status = 'draft' THEN now() ELSE coalesce(approved_at, now()) END, origin = ${origin}, last_error = NULL, updated_at = updated_at
       WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
     if (!done) throw new Error("This email isn't a draft anymore.");
     return 0;
   }
-  // A paused email carries on with the people still waiting for it (subscribed when it was first approved); a new one
-  // goes to everyone subscribed now. The number must be the one the owner saw on the button.
-  // Only subscribed people in the email's audience (all, a segment or tags, or chosen people) count.
+  // Only subscribed people in the email's audience (all, a segment or tags, or chosen people) count, and the number
+  // must be the one the owner saw on the button.
   const audience = readAudience(c.audience);
   let subscribed: number;
   if (c.status === "stopped" && c.approved_at) {
-    subscribed = await countAudience(accountId, audience, { ref: c.approved_at, campaignId: String(c.id) });
+    // Carrying on after a pause: the people saved at the first approval who haven't had it, never anyone new.
+    const frozen = yes(c.frozen);
+    subscribed = frozen ? await countFrozen(accountId, String(c.id)) : await countAudience(accountId, audience, { ref: c.approved_at, campaignId: String(c.id) });
     if (!subscribed) throw new Error("Everyone this email goes to already got it.");
     if (Number(count) !== subscribed) throw new Error(`The number waiting changed: ${subscribed.toLocaleString("en-US")} people are still waiting for it. Please check and approve again.`);
+    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', origin = ${origin}, last_error = NULL, updated_at = updated_at,
+        -- A new time replaces the old one; resuming a paused email keeps its time if that hasn't come yet.
+        scheduled_at = CASE WHEN ${at ? at.toISOString() : null}::timestamptz IS NOT NULL THEN ${at ? at.toISOString() : null}::timestamptz
+          WHEN scheduled_at > now() THEN scheduled_at ELSE NULL END
+      WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'stopped' RETURNING id`;
+    if (!done) throw new Error("This email isn't paused anymore.");
   } else {
     subscribed = await countAudience(accountId, audience);
     if (!subscribed) throw new Error(audience.type === "all" ? "Nobody is subscribed yet. Import your subscribers first." : "Nobody subscribed is in this audience. Pick other people or send to everyone.");
     if (Number(count) !== subscribed) throw new Error(`The number of people changed: it is now ${subscribed.toLocaleString("en-US")}. Please check and approve again.`);
+    // Approved now, with exactly these people saved in the same statement.
+    subscribed = await approveFrozen(accountId, String(c.id), audience, { origin, scheduledAt: at ? at.toISOString() : null, auto: false }, subscribed);
   }
-  // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't. A
-  // scheduled email goes to who is subscribed when it was approved, too: the owner approved that number.
-  const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = coalesce(approved_at, now()), approved_count = ${subscribed},
-      origin = ${origin}, last_error = NULL, updated_at = updated_at,
-      -- A new time replaces the old one; resuming a paused email keeps its time if that hasn't come yet.
-      scheduled_at = CASE WHEN ${at ? at.toISOString() : null}::timestamptz IS NOT NULL THEN ${at ? at.toISOString() : null}::timestamptz
-        WHEN scheduled_at > now() THEN scheduled_at ELSE NULL END
-    WHERE id = ${c.id} AND account_id = ${accountId} AND status IN ('draft', 'stopped') RETURNING id`;
-  if (!done) throw new Error("This email isn't a draft anymore.");
   if (c.kind === "weekly") await closeNeed(accountId, "Newsletter", `newsletter:weekly:${c.id}`).catch(() => undefined);
   return subscribed;
 }
@@ -1718,7 +1762,61 @@ export async function countAudience(accountId: string, a: Audience, opts: { ref:
   return Number(r?.n ?? 0);
 }
 
-/** Claims the next people of a campaign's audience who haven't had it, only while it is still sending. */
+/** People saved at approval who are still subscribed and haven't had the email yet. */
+export async function countFrozen(accountId: string, cid: string): Promise<number> {
+  await schema();
+  const [r] = await sql`SELECT count(*) AS n FROM insights_newsletter_recipients r
+    JOIN insights_newsletter_subscribers s ON s.id = r.subscriber_id AND s.account_id = ${accountId}
+    WHERE r.campaign_id = ${cid} AND r.account_id = ${accountId} AND s.status = 'subscribed'
+      AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)`;
+  return Number(r?.n ?? 0);
+}
+
+/**
+ * Approves an email and saves exactly who it goes to, in one statement. With `expected` (the number on the owner's
+ * button) a different number undoes the approval and asks the owner to look again.
+ */
+async function approveFrozen(accountId: string, cid: string, a: Audience, set: { origin: string; scheduledAt: string | null; auto: boolean }, expected?: number): Promise<number> {
+  const sent = await sql`SELECT 1 FROM insights_newsletter_sends WHERE campaign_id = ${cid} LIMIT 1`;
+  if (sent.length) throw new Error("This email was already sent.");
+  // Never a list from an earlier approval: this approval saves its own.
+  await sql`DELETE FROM insights_newsletter_recipients WHERE campaign_id = ${cid} AND account_id = ${accountId}`;
+  const [r] = await runSql(freezeParts(accountId, cid, a, { ...set, from: ["draft", "stopped"] }));
+  if (!Number(r?.approved ?? 0)) throw new Error("This email isn't a draft anymore.");
+  const n = Number(r?.n ?? 0);
+  if (expected !== undefined && n !== expected) {
+    await unfreeze(accountId, cid, ["approved"]);
+    throw new Error(`The number of people changed: it is now ${n.toLocaleString("en-US")}. Please check and approve again.`);
+  }
+  await sql`UPDATE insights_newsletter_campaigns SET approved_count = ${n} WHERE id = ${cid} AND account_id = ${accountId}`;
+  return n;
+}
+
+/**
+ * Back to a draft: the saved list of people and the approval time are cleared, so a later approval saves its own.
+ * Only for an email nobody got yet.
+ */
+async function unfreeze(accountId: string, cid: string, from: string[] = ["draft", "stopped", "failed"]): Promise<void> {
+  const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'draft', frozen = false, approved_at = NULL, approved_count = NULL, scheduled_at = NULL
+    WHERE id = ${cid} AND account_id = ${accountId} AND status = ANY(string_to_array(${from.join(",")}, ','))
+      AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid}) RETURNING id`;
+  if (done) await sql`DELETE FROM insights_newsletter_recipients WHERE campaign_id = ${cid} AND account_id = ${accountId}`;
+}
+
+/** Claims the next of the people saved at approval: still subscribed, not sent yet, only while it is still sending. */
+function claimFrozen(accountId: string, cid: string, size: number, key: string) {
+  return sql`WITH pick AS (
+      SELECT s.id FROM insights_newsletter_recipients r
+      JOIN insights_newsletter_subscribers s ON s.id = r.subscriber_id AND s.account_id = ${accountId}
+      WHERE r.campaign_id = ${cid} AND r.account_id = ${accountId} AND s.status = 'subscribed'
+        AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ${cid} AND k.account_id = ${accountId} AND k.status = 'sending')
+        AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)
+      ORDER BY s.id LIMIT ${size})
+    INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key)
+    SELECT ${cid}, id, ${accountId}, 'pending', ${key} FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`;
+}
+
+/** Claims the next people of a campaign's audience who haven't had it, only while it is still sending (emails approved before the saved list existed). */
 function claimAudience(accountId: string, cid: string, approvedAt: string, a: Audience, size: number, key: string) {
   return runSql([
     "WITH pick AS (SELECT s.id FROM insights_newsletter_subscribers s WHERE s.account_id = ",
@@ -1760,8 +1858,9 @@ export async function saveAudience(accountId: string, id: unknown, raw: unknown)
   await schema();
   const c = await audienceEditable(accountId, id);
   const a = cleanAudience(raw);
-  await sql`UPDATE insights_newsletter_campaigns SET audience = ${a.type === "all" ? null : JSON.stringify(a)}::jsonb, status = CASE WHEN status = 'failed' THEN 'draft' ELSE status END
-    WHERE id = ${c.id} AND account_id = ${accountId}`;
+  await sql`UPDATE insights_newsletter_campaigns SET audience = ${a.type === "all" ? null : JSON.stringify(a)}::jsonb WHERE id = ${c.id} AND account_id = ${accountId}`;
+  // A new audience means a new approval: back to a draft, without the people saved before.
+  await unfreeze(accountId, String(c.id));
   return countAudience(accountId, a);
 }
 
@@ -1771,6 +1870,7 @@ async function addToAudience(accountId: string, c: Record<string, string | null>
   const all = [...new Set([...(cur.type === "people" ? cur.ids : []), ...ids])];
   const a = cleanAudience({ type: "people", ids: all, from: cur.type === "people" && cur.from !== from ? "chosen" : from });
   await sql`UPDATE insights_newsletter_campaigns SET audience = ${JSON.stringify(a)}::jsonb WHERE id = ${c.id} AND account_id = ${accountId}`;
+  await unfreeze(accountId, String(c.id));
   return a;
 }
 
@@ -1954,14 +2054,18 @@ export async function runWeekly(accountId: string, now = Date.now()): Promise<st
   // for it), a complete setup, someone to send it to and the app's address for the unsubscribe links.
   const own = s.weeklyAutoSend && draft.checked === "ai" && !missing.length && subscribed > 0 && Boolean(s.origin);
   if (own) {
-    const [done] = await sql`UPDATE insights_newsletter_campaigns SET status = 'approved', approved_at = now(), approved_count = ${subscribed},
-        origin = ${s.origin}, auto = true, updated_at = updated_at
-      WHERE id = ${draft.id} AND account_id = ${accountId} AND status = 'draft' RETURNING id`;
-    if (done) {
-      await note(`${new Date(now).toISOString().slice(0, 10)}: "${draft.subject}" was checked by a second AI and is going out on its own to ${subscribed.toLocaleString("en-US")} subscribers.`);
-      await postNote(accountId, "Newsletter", "did", `The weekly newsletter "${draft.subject}" passed every check, including a second AI, and is going out on its own to ${subscribed.toLocaleString("en-US")} subscribers. You can pause it in Newsletter.`, { ref: `newsletter:auto:${draft.id}` });
-      return `approved on its own for ${subscribed} subscribers`;
+    // Approved on the owner's standing permission, with exactly who it goes to saved in the same statement.
+    const frozen = await approveFrozen(accountId, draft.id, s.weeklyAudience, { origin: s.origin!, scheduledAt: null, auto: true }).catch(async (e) => {
+      await report("newsletter", false, `The weekly newsletter for account ${accountId} couldn't be approved on its own (${(e as Error).message})`);
+      return 0;
+    });
+    if (frozen) {
+      await note(`${new Date(now).toISOString().slice(0, 10)}: "${draft.subject}" was checked by a second AI and is going out on its own to ${frozen.toLocaleString("en-US")} subscribers.`);
+      await postNote(accountId, "Newsletter", "did", `The weekly newsletter "${draft.subject}" passed every check, including a second AI, and is going out on its own to ${frozen.toLocaleString("en-US")} subscribers. You can pause it in Newsletter.`, { ref: `newsletter:auto:${draft.id}` });
+      return `approved on its own for ${frozen} subscribers`;
     }
+    // Nobody was saved (the list emptied meanwhile): back to a draft for the owner.
+    await unfreeze(accountId, draft.id, ["approved"]);
   }
   const why = !s.weeklyAutoSend
     ? "Send on its own is off"
@@ -2426,7 +2530,9 @@ async function sendCampaign(
           ORDER BY s.id LIMIT ${size})
         INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key)
         SELECT ${cid}, id, ${accountId}, 'pending', ${key} FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`
-      : await claimAudience(accountId, cid, c.approved_at ?? new Date().toISOString(), readAudience(c.audience), size, key);
+      : yes(c.frozen)
+        ? await claimFrozen(accountId, cid, size, key)
+        : await claimAudience(accountId, cid, c.approved_at ?? new Date().toISOString(), readAudience(c.audience), size, key);
     if (!claimed.length) {
       if (!(await stillSending())) return { note: `${sentNow} sent, then paused`, more: true };
       // The welcome email stays on for the next new subscriber; it is never "done".

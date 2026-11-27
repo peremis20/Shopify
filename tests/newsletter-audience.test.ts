@@ -6,6 +6,7 @@ import {
   cleanTag,
   cleanTestEmails,
   describeAudience,
+  freezeParts,
   joinSql,
   MAX_PEOPLE,
   parseTyped,
@@ -89,10 +90,33 @@ test("test emails: the presser first, up to 3 more, and it counts only when some
   assert.equal(testCounts({ canApprove: true, presser: "owner@x.com", reached: ["a@x.com"], ownerEmail: "owner@x.com" }), false);
 });
 
-test("adding CRM contacts or typed addresses is the owner's; members may still choose an audience and tag people", () => {
+test("adding CRM contacts or typed addresses and tagging people are the owner's; members may still choose an audience", () => {
   assert.ok(memberRefusal("member", "newsletter", "crm"));
   assert.ok(memberRefusal("member", "newsletter", "typed"));
+  assert.ok(memberRefusal("member", "newsletter", "tag"));
   assert.equal(memberRefusal("member", "newsletter", "audience"), null);
-  assert.equal(memberRefusal("member", "newsletter", "tag"), null);
+  assert.equal(memberRefusal("owner", "newsletter", "tag"), null);
   assert.equal(memberRefusal("owner", "newsletter", "crm"), null);
+});
+
+test("approval and its exact audience are one statement; nothing is saved unless the approval happened", () => {
+  const q = joinSql(freezeParts("4", "77", { type: "segment", segments: ["shopify"], tags: ["vip"] }, { origin: "https://app.x.com", scheduledAt: null, auto: false, from: ["draft", "stopped"] }));
+  const text = q.strings.join("$?");
+  // approved_at is the moment of this approval, never an older one.
+  assert.ok(text.includes("approved_at = now()"));
+  assert.ok(text.includes("frozen = true"));
+  assert.ok(text.includes("INSERT INTO insights_newsletter_recipients"));
+  // Saved only when the update returned the email, and only people still subscribed and in the audience.
+  assert.ok(text.includes("WHERE EXISTS (SELECT 1 FROM upd)"));
+  assert.ok(text.includes("s.status = 'subscribed'"));
+  assert.ok(text.includes("s.source = 'shopify'"));
+  // Every value is a parameter.
+  assert.ok(!text.includes("app.x.com") && !text.includes("vip"));
+  assert.ok(q.values.includes("https://app.x.com") && q.values.includes("vip") && q.values.includes("draft,stopped"));
+});
+
+test("a team member's test goes only to them; the extra test addresses are the owner's", () => {
+  // sendTest passes the extra addresses only for someone who can approve.
+  assert.deepEqual(testRecipients("m@x.com", []), ["m@x.com"]);
+  assert.deepEqual(testRecipients("owner@x.com", ["a@x.com"]), ["owner@x.com", "a@x.com"]);
 });
