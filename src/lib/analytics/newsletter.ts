@@ -13,6 +13,7 @@ import { report } from "./autopilot/status";
 import { closeNeed, postNote } from "./autopilot/team";
 import { salesFor } from "./autopilot/shopify-sales";
 import { isSabbath } from "./autopilot/sabbath";
+import { SEGMENT_LABEL, SEGMENTS, type Audience, type Segment } from "./newsletter-audience";
 
 /**
  * The Newsletter: each site emails its own subscribers through the site owner's OWN Resend account (never the
@@ -33,7 +34,7 @@ export const PER_RUN = 2_000;
 export const IMPORT_MAX = 20_000;
 
 export type SubscriberStatus = "subscribed" | "unsubscribed" | "bounced" | "complained";
-export type SubscriberSource = "shopify" | "import" | "signup" | "manual";
+export type SubscriberSource = "shopify" | "import" | "signup" | "manual" | "crm";
 export type CampaignStatus = "draft" | "approved" | "sending" | "sent" | "failed" | "stopped";
 
 // ---------- pure parts (tested in tests/newsletter.test.ts) ----------
@@ -564,6 +565,153 @@ export function pickArticle<T extends { url: string }>(articles: T[], used: Set<
 /** After this many failed weekly runs in a row, the weekly newsletter pauses itself until the owner turns it on again. */
 export const WEEKLY_FAILURE_LIMIT = 2;
 
+// ---------- who an email goes to (pure) ----------
+
+export { SEGMENT_LABEL, SEGMENTS, type Audience, type Segment };
+
+export const MAX_PEOPLE = 5_000;
+export const MAX_TAGS = 20;
+export const MAX_TYPED = 20;
+
+/** A tag as kept: trimmed, single spaces, lowercase, up to 40 characters; "" when nothing is left. */
+export function cleanTag(v: unknown): string {
+  return typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 40) : "";
+}
+
+/** An audience from the browser, checked; "all" for anything missing or unreadable. */
+export function cleanAudience(v: unknown, opts: { allowPeople?: boolean } = {}): Audience {
+  const a = (v ?? {}) as { type?: unknown; segments?: unknown; tags?: unknown; ids?: unknown; from?: unknown };
+  if (a.type === "segment") {
+    const segments = Array.isArray(a.segments) ? [...new Set(a.segments.filter((x): x is Segment => (SEGMENTS as readonly unknown[]).includes(x)))] : [];
+    const tags = Array.isArray(a.tags) ? [...new Set(a.tags.map(cleanTag).filter(Boolean))].slice(0, MAX_TAGS) : [];
+    if (!segments.length && !tags.length) throw new Error("Pick at least one group or tag to send to.");
+    return { type: "segment", segments, tags };
+  }
+  if (a.type === "people" && opts.allowPeople !== false) {
+    const ids = Array.isArray(a.ids) ? [...new Set(a.ids.map(String).filter((x) => /^\d{1,18}$/.test(x)))] : [];
+    if (ids.length > MAX_PEOPLE) throw new Error(`Pick up to ${MAX_PEOPLE.toLocaleString("en-US")} people, or send to a group instead.`);
+    if (!ids.length) throw new Error("Pick at least one person to send to.");
+    return { type: "people", ids, from: a.from === "crm" || a.from === "typed" ? a.from : "chosen" };
+  }
+  return { type: "all" };
+}
+
+/** A stored audience (jsonb text), read leniently: anything broken is "all", never an error at send time. */
+export function readAudience(v: unknown): Audience {
+  try {
+    const raw = typeof v === "string" ? JSON.parse(v) : v;
+    return raw ? cleanAudience(raw) : { type: "all" };
+  } catch {
+    return { type: "all" };
+  }
+}
+
+/** The audience in a few plain words. */
+export function describeAudience(a: Audience): string {
+  if (a.type === "all") return "All subscribers";
+  if (a.type === "people") return `${a.ids.length.toLocaleString("en-US")} chosen ${a.ids.length === 1 ? "person" : "people"}${a.from === "crm" ? " from your CRM" : a.from === "typed" ? " you typed in" : ""}`;
+  return [...a.segments.map((x) => SEGMENT_LABEL[x]), ...a.tags.map((t) => `tag ${t}`)].join(", ");
+}
+
+/** A piece of SQL: text, or a value sent as a parameter (never written into the text). */
+export type SqlPart = string | { v: unknown };
+export const param = (v: unknown): SqlPart => ({ v });
+
+/** The text and values a list of parts becomes ($1, $2 ...), so pieces can be shared between queries (pure). */
+export function joinSql(parts: SqlPart[]): { strings: string[]; values: unknown[] } {
+  const strings = [""];
+  const values: unknown[] = [];
+  for (const p of parts) {
+    if (typeof p === "string") strings[strings.length - 1] += p;
+    else {
+      values.push(p.v);
+      strings.push("");
+    }
+  }
+  return { strings, values };
+}
+
+/**
+ * The audience as a condition on subscriber `s` (pure). Used by the count on the approve button, the count of people
+ * still waiting and the hourly run's claim, so all three always agree. `ref` is when the email was approved (the
+ * "last 30 days" group counts back from then); null means now.
+ */
+export function audienceWhere(a: Audience, ref: string | null): SqlPart[] {
+  if (a.type === "all") return [" TRUE "];
+  if (a.type === "people") return [" s.id = ANY(string_to_array(", param(a.ids.join(",")), ", ',')::bigint[]) "];
+  const or: SqlPart[][] = [];
+  const has = (x: Segment) => a.segments.includes(x);
+  if (has("shopify")) or.push([" s.source = 'shopify' "]);
+  if (has("imported")) or.push([" s.source = 'import' "]);
+  if (has("recent")) or.push([" s.created_at > coalesce(", param(ref), "::timestamptz, now()) - interval '30 days' "]);
+  // Opens and clicks matched to the person through their send when the event came before the send was saved.
+  if (has("engaged")) {
+    or.push([
+      ` EXISTS (SELECT 1 FROM insights_newsletter_events ev
+        LEFT JOIN insights_newsletter_sends ex ON ev.subscriber_id IS NULL AND ex.account_id = ev.account_id AND ex.resend_id = ev.resend_id
+        WHERE ev.account_id = s.account_id AND ev.type IN ('email.opened', 'email.clicked') AND coalesce(ev.subscriber_id, ex.subscriber_id) = s.id) `,
+    ]);
+  }
+  // Got at least 3 emails and opened none of the last 3. Only once the site has any opens at all (tracking is on),
+  // so an account without open tracking never calls everyone "not opening".
+  if (has("unengaged")) {
+    or.push([
+      ` (EXISTS (SELECT 1 FROM insights_newsletter_events oe WHERE oe.account_id = s.account_id AND oe.type = 'email.opened')
+        AND (SELECT count(*) FROM insights_newsletter_sends y WHERE y.account_id = s.account_id AND y.subscriber_id = s.id AND y.status = 'sent') >= 3
+        AND NOT EXISTS (SELECT 1 FROM (SELECT y.campaign_id FROM insights_newsletter_sends y WHERE y.account_id = s.account_id AND y.subscriber_id = s.id
+            AND y.status = 'sent' ORDER BY y.sent_at DESC LIMIT 3) last3
+          JOIN insights_newsletter_events ev ON ev.account_id = s.account_id AND ev.type = 'email.opened'
+          LEFT JOIN insights_newsletter_sends ex ON ev.campaign_id IS NULL AND ex.account_id = ev.account_id AND ex.resend_id = ev.resend_id
+          WHERE coalesce(ev.campaign_id, ex.campaign_id) = last3.campaign_id AND coalesce(ev.subscriber_id, ex.subscriber_id) = s.id)) `,
+    ]);
+  }
+  if (a.tags.length) {
+    or.push([
+      " EXISTS (SELECT 1 FROM insights_newsletter_tags tg WHERE tg.account_id = s.account_id AND tg.subscriber_id = s.id AND tg.tag = ANY(string_to_array(",
+      param(a.tags.join(String.fromCharCode(31))),
+      ", chr(31)))) ",
+    ]);
+  }
+  if (!or.length) return [" FALSE "];
+  const out: SqlPart[] = [" ("];
+  or.forEach((p, i) => out.push(...(i ? [" OR "] : []), ...p));
+  out.push(") ");
+  return out;
+}
+
+/** Up to 20 typed addresses, read like a pasted list; more is refused so this is never a bulk import. */
+export function parseTyped(text: unknown): { emails: string[]; invalid: number } {
+  if (typeof text !== "string" || !text.trim()) throw new Error("Type at least one email address.");
+  const r = parseSubscriberList(text);
+  if (r.rows.length > MAX_TYPED) throw new Error(`Type up to ${MAX_TYPED} addresses at once. For more, import them as a list.`);
+  if (!r.rows.length) throw new Error("No email addresses were found in that.");
+  return { emails: r.rows.map((x) => x.email), invalid: r.invalid };
+}
+
+/** Why someone already on the list can't be added to an email (pure); null when they can. */
+export function skipReason(status: SubscriberStatus | undefined): string | null {
+  if (status === "unsubscribed") return "unsubscribed";
+  if (status === "bounced") return "their email bounced";
+  if (status === "complained") return "marked an email as spam";
+  return null;
+}
+
+/** Extra test addresses (team members): up to 3 plain addresses, no repeats, never the sign in address twice. */
+export function cleanTestEmails(v: unknown, mainEmail: string | null): string[] {
+  const list = Array.isArray(v) ? v : typeof v === "string" ? v.split(/[\s,;]+/) : [];
+  const out: string[] = [];
+  for (const x of list) {
+    const e = normalizeEmail(x);
+    if (!e) {
+      if (typeof x === "string" && x.trim()) throw new Error(`${x.trim().slice(0, 80)} isn't an email address.`);
+      continue;
+    }
+    if (e !== normalizeEmail(mainEmail ?? "") && !out.includes(e)) out.push(e);
+  }
+  if (out.length > 3) throw new Error("Add up to 3 other test addresses.");
+  return out;
+}
+
 // ---------- storage ----------
 
 let ready: Promise<void> | null = null;
@@ -661,6 +809,20 @@ function schema(): Promise<void> {
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS welcomed_at timestamptz`;
     // May get the welcome email: only someone who signed up themselves, or whom the owner chose to welcome at import.
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS welcome_ok boolean NOT NULL DEFAULT false`;
+    // Who each email goes to (all, a segment or tags, chosen people); null means all.
+    await sql`ALTER TABLE insights_newsletter_campaigns ADD COLUMN IF NOT EXISTS audience jsonb`;
+    // The weekly newsletter's audience (all or a segment), and up to 3 extra test addresses.
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS weekly_audience jsonb`;
+    await sql`ALTER TABLE insights_newsletter_settings ADD COLUMN IF NOT EXISTS test_emails jsonb`;
+    // The owner's own tags on subscribers, kept lowercase.
+    await sql`CREATE TABLE IF NOT EXISTS insights_newsletter_tags (
+      account_id bigint NOT NULL,
+      subscriber_id bigint NOT NULL,
+      tag text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (subscriber_id, tag)
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_newsletter_tags_account ON insights_newsletter_tags (account_id, tag)`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_campaign_id bigint`;
     await sql`ALTER TABLE insights_newsletter_subscribers ADD COLUMN IF NOT EXISTS unsub_at timestamptz`;
     // Resend's delivery and engagement events, once each (the Svix message id), keyed by account.
@@ -704,6 +866,10 @@ interface Settings {
   weeklyNote: string | null;
   weeklyPaused: string | null;
   origin: string | null;
+  /** The weekly newsletter's audience: all, or a segment. */
+  weeklyAudience: Audience;
+  /** Up to 3 more test addresses (team members). */
+  testEmails: string[];
 }
 
 const yes = (v: string | null | undefined) => v === "t" || v === "true";
@@ -733,6 +899,18 @@ async function readSettings(accountId: string): Promise<Settings> {
     weeklyNote: r?.weekly_note ?? null,
     weeklyPaused: r?.weekly_paused ?? null,
     origin: r?.origin ?? null,
+    weeklyAudience: (() => {
+      const a = readAudience(r?.weekly_audience);
+      return a.type === "people" ? { type: "all" as const } : a;
+    })(),
+    testEmails: (() => {
+      try {
+        const v = r?.test_emails ? JSON.parse(r.test_emails) : [];
+        return Array.isArray(v) ? v.map((x) => normalizeEmail(x)).filter((x): x is string => Boolean(x)).slice(0, 3) : [];
+      } catch {
+        return [];
+      }
+    })(),
   };
 }
 
@@ -765,6 +943,8 @@ export interface NewsletterSettingsView {
   weeklyPaused: string | null;
   /** What the last weekly run did, in plain words. */
   weeklyNote: string | null;
+  weeklyAudience: Audience;
+  testEmails: string[];
 }
 
 /** The connected Shopify store's own time zone. */
@@ -841,6 +1021,16 @@ export async function saveNewsletterSettings(accountId: string, input: unknown, 
   if (!auto.timeZone && auto.weeklyOn) auto.timeZone = await shopZone(accountId).catch(() => null);
   // Turning the weekly newsletter on again (a pause turns it off) clears the pause and its failure count.
   const weeklyRestart = auto.weeklyOn && !cur.weeklyOn;
+  // The weekly newsletter's audience (all or a segment, never chosen people) and the extra test addresses.
+  if (b.weeklyAudience !== undefined) {
+    const wa = cleanAudience(b.weeklyAudience, { allowPeople: false });
+    await sql`UPDATE insights_newsletter_settings SET weekly_audience = ${wa.type === "all" ? null : JSON.stringify(wa)}::jsonb WHERE account_id = ${accountId}`;
+  }
+  if (b.testEmails !== undefined) {
+    const [acct] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
+    const list = cleanTestEmails(b.testEmails, acct?.email ?? null);
+    await sql`UPDATE insights_newsletter_settings SET test_emails = ${JSON.stringify(list)}::jsonb WHERE account_id = ${accountId}`;
+  }
   // Turning the welcome email on starts counting new subscribers from now: nobody who joined while it was off gets it.
   const welcomeStart = auto.welcomeOn && !cur.welcomeOn;
   await sql`UPDATE insights_newsletter_settings SET welcome_since = CASE WHEN ${welcomeStart ? "1" : "0"}::text = '1' THEN now() ELSE welcome_since END,
@@ -892,6 +1082,7 @@ export interface Subscriber {
   source: SubscriberSource;
   consent: string;
   createdAt: string;
+  tags: string[];
 }
 
 export interface Campaign {
@@ -921,6 +1112,10 @@ export interface Campaign {
   scheduledAt: string | null;
   /** Approved by the agent on the owner's standing permission. */
   auto: boolean;
+  audience: Audience;
+  audienceLabel: string;
+  /** How many it would go to if approved now (drafts), or how many are still waiting (paused). */
+  audienceCount: number;
 }
 
 /** A timestamp as Postgres sends it as text ("2026-11-26 10:00:00.12+00"), in ISO form for the browser. */
@@ -952,6 +1147,9 @@ const toCampaign = (r: Record<string, string | null>): Campaign => ({
   kind: r.kind === "welcome" || r.kind === "weekly" ? r.kind : "campaign",
   scheduledAt: iso(r.scheduled_at),
   auto: r.auto === "t" || r.auto === "true",
+  audience: readAudience(r.audience),
+  audienceLabel: describeAudience(readAudience(r.audience)),
+  audienceCount: 0,
 });
 
 export async function newsletterView(accountId: string, query = "") {
@@ -962,9 +1160,12 @@ export async function newsletterView(accountId: string, query = "") {
     subscriberCounts(accountId),
     sentToday(accountId),
     q
-      ? sql`SELECT id, email, name, status, source, consent, created_at FROM insights_newsletter_subscribers
-          WHERE account_id = ${accountId} AND (email LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`} OR lower(name) LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`}) ORDER BY id DESC LIMIT 50`
-      : sql`SELECT id, email, name, status, source, consent, created_at FROM insights_newsletter_subscribers WHERE account_id = ${accountId} ORDER BY id DESC LIMIT 50`,
+      ? sql`SELECT id, email, name, status, source, consent, created_at,
+          (SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM insights_newsletter_tags t WHERE t.subscriber_id = insights_newsletter_subscribers.id) AS tags
+          FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND (email LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`} OR lower(name) LIKE ${`%${q.replace(/[%_\\]/g, "\\$&")}%`}) ORDER BY id DESC LIMIT 50`
+      : sql`SELECT id, email, name, status, source, consent, created_at,
+          (SELECT string_agg(t.tag, ',' ORDER BY t.tag) FROM insights_newsletter_tags t WHERE t.subscriber_id = insights_newsletter_subscribers.id) AS tags
+          FROM insights_newsletter_subscribers WHERE account_id = ${accountId} ORDER BY id DESC LIMIT 50`,
     sql`SELECT c.*, (c.test_sent_at IS NOT NULL AND c.test_sent_at >= c.updated_at) AS tested,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'sent') AS sent,
         (SELECT count(*) FROM insights_newsletter_sends x WHERE x.campaign_id = c.id AND x.status = 'unknown') AS unsure,
@@ -999,6 +1200,8 @@ export async function newsletterView(accountId: string, query = "") {
     timeZone: s.timeZone,
     weeklyPaused: s.weeklyPaused,
     weeklyNote: s.weeklyNote,
+    weeklyAudience: s.weeklyAudience,
+    testEmails: s.testEmails,
   };
   return {
     settings,
@@ -1014,9 +1217,23 @@ export async function newsletterView(accountId: string, query = "") {
         source: (r.source ?? "manual") as SubscriberSource,
         consent: r.consent ?? "",
         createdAt: iso(r.created_at) ?? "",
+        tags: r.tags ? r.tags.split(",") : [],
       }),
     ),
-    campaigns: camps.map(toCampaign),
+    campaigns: await Promise.all(
+      camps.map(async (r) => {
+        const c = toCampaign(r);
+        if (c.kind === "welcome") return c;
+        // The number on the approve button, and the people still waiting, from the email's own audience.
+        if (c.status === "draft" || ((c.status === "stopped" || c.status === "failed") && !r.approved_at)) c.audienceCount = await countAudience(accountId, c.audience).catch(() => 0);
+        else if (r.approved_at && (c.status === "approved" || c.status === "sending" || c.status === "stopped" || c.status === "failed")) {
+          c.waiting = await countAudience(accountId, c.audience, { ref: r.approved_at, campaignId: c.id }).catch(() => c.waiting);
+          c.audienceCount = c.waiting;
+        }
+        return c;
+      }),
+    ),
+    tags: (await sql`SELECT tag, count(*) AS n FROM insights_newsletter_tags WHERE account_id = ${accountId} GROUP BY tag ORDER BY tag LIMIT 200`).map((t) => ({ tag: t.tag ?? "", n: Number(t.n ?? 0) })),
     ownerEmail: owner?.email ?? null,
     hasStore: store,
   };
@@ -1319,9 +1536,25 @@ async function brandOf(accountId: string, s: Settings): Promise<string> {
   return s.fromName || p?.brandName || p?.siteDomain || "us";
 }
 
+/** Who a test goes to: the person who pressed it, then the extra test addresses, each once (pure). */
+export function testRecipients(presser: string | null, extras: string[]): string[] {
+  const out: string[] = [];
+  for (const e of [presser, ...extras]) {
+    const n = normalizeEmail(e ?? "");
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out.slice(0, 4);
+}
+
+/** Whether a test counts toward approval: it reached someone who can approve (pure). */
+export const testCounts = (f: { canApprove: boolean; presser: string | null; reached: string[]; ownerEmail: string | null }) =>
+  (f.canApprove && Boolean(f.presser) && f.reached.includes(normalizeEmail(f.presser ?? "") ?? "")) ||
+  Boolean(f.ownerEmail && f.reached.includes(normalizeEmail(f.ownerEmail) ?? ""));
+
 /**
- * A test through the business's Resend account: to the owner's own sign in address, or to `person` (a team member
- * who pressed it, with the verified email they signed in with).
+ * A test through the business's Resend account: to the person who pressed it (the owner's sign in address, or a team
+ * member's own verified email as `person`) and to the up to 3 extra test addresses in settings, each its own email.
+ * It counts toward approval only when it reached someone who can approve.
  */
 export async function sendTest(accountId: string, id: unknown, origin: string, person?: string, canApprove = !person): Promise<string> {
   await schema();
@@ -1331,34 +1564,48 @@ export async function sendTest(accountId: string, id: unknown, origin: string, p
   const missing = missingSetup(s);
   if (missing.length) throw new Error(`Add ${missing.join(", ")} first.`);
   const [owner] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
-  const to = normalizeEmail(person ?? owner?.email ?? "");
-  if (!to) throw new Error("Your account has no email address to send the test to.");
-  const payload = buildEmail({
-    from: fromHeader(s.fromName, s.fromAddress),
-    replyTo: s.replyTo || null,
-    to,
-    subject: `Test: ${c.subject}`,
-    preview: c.preview ?? "",
-    body: c.body ?? "",
-    brand: await brandOf(accountId, s),
-    postalAddress: s.postalAddress,
-    // A test link: it opens the unsubscribe page, which says it was only a test.
-    unsubscribe: `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=test`,
-  });
-  const r = await resendPost(s.resendKey!, "/emails", payload);
-  if (!r.ok) {
+  const presser = normalizeEmail(person ?? owner?.email ?? "");
+  const to = testRecipients(presser, s.testEmails);
+  if (!to.length) throw new Error("Your account has no email address to send the test to.");
+  const brand = await brandOf(accountId, s);
+  const profile = await readProfile(accountId).catch(() => null);
+  const reached: string[] = [];
+  let failure: string | null = null;
+  for (const addr of to) {
+    const payload = buildEmail({
+      from: fromHeader(s.fromName, s.fromAddress),
+      replyTo: s.replyTo || null,
+      to: addr,
+      subject: `Test: ${c.subject}`,
+      preview: c.preview ?? "",
+      body: c.body ?? "",
+      brand,
+      postalAddress: s.postalAddress,
+      // A test link: it opens the unsubscribe page, which says it was only a test.
+      unsubscribe: `${origin.replace(/\/+$/, "")}/api/newsletter/unsubscribe?t=test`,
+      // The links look exactly as they will in the real email.
+      utm: { domain: profile?.siteDomain ?? null, slug: campaignSlug(String(c.id), c.subject ?? "") },
+    });
+    const r = await resendPost(s.resendKey!, "/emails", payload);
+    if (r.ok) {
+      reached.push(addr);
+      continue;
+    }
     const why = resendWhy(r);
     await report("newsletter", false, `A test newsletter email for account ${accountId} failed (${why})`);
-    if (r.status === 401 || r.status === 403) throw new Error(`Resend refused the email (${why}). Check your Resend key and that ${s.fromAddress.split("@")[1]} is verified in Resend.`);
-    throw new Error(`Resend didn't send the test (${why}).`);
+    failure = r.status === 401 || r.status === 403
+      ? `Resend refused the email (${why}). Check your Resend key and that ${s.fromAddress.split("@")[1]} is verified in Resend.`
+      : `Resend didn't send the test to ${addr} (${why}).`;
+    if (r.status === 401 || r.status === 403) break;
   }
+  if (!reached.length) throw new Error(failure ?? "The test wasn't sent.");
   await report("newsletter", true);
-  // Only a test seen by someone with the right to approve counts: the owner, or a platform owner acting with owner rights,
-  // each in their own inbox. A team member's test only shows them the email. Any later edit needs a new test.
-  if (canApprove || to === normalizeEmail(owner?.email ?? "")) {
+  // Only a test seen by someone with the right to approve counts: the owner, or a platform owner acting with owner
+  // rights, each in their own inbox. A team member's test only shows them the email. Any later edit needs a new test.
+  if (testCounts({ canApprove, presser, reached, ownerEmail: owner?.email ?? null })) {
     await sql`UPDATE insights_newsletter_campaigns SET test_sent_at = now() WHERE id = ${c.id} AND account_id = ${accountId}`;
   }
-  return to;
+  return failure ? `${reached.join(", ")}. ${failure}` : reached.join(", ");
 }
 
 /**
@@ -1403,17 +1650,17 @@ export async function approveCampaign(accountId: string, id: unknown, count: unk
   }
   // A paused email carries on with the people still waiting for it (subscribed when it was first approved); a new one
   // goes to everyone subscribed now. The number must be the one the owner saw on the button.
+  // Only subscribed people in the email's audience (all, a segment or tags, or chosen people) count.
+  const audience = readAudience(c.audience);
   let subscribed: number;
   if (c.status === "stopped" && c.approved_at) {
-    const [w] = await sql`SELECT count(*) AS n FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.status = 'subscribed'
-      AND s.created_at <= ${c.approved_at}::timestamptz AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${c.id} AND x.subscriber_id = s.id)`;
-    subscribed = Number(w?.n ?? 0);
-    if (!subscribed) throw new Error("Everyone on the list already got this email.");
+    subscribed = await countAudience(accountId, audience, { ref: c.approved_at, campaignId: String(c.id) });
+    if (!subscribed) throw new Error("Everyone this email goes to already got it.");
     if (Number(count) !== subscribed) throw new Error(`The number waiting changed: ${subscribed.toLocaleString("en-US")} people are still waiting for it. Please check and approve again.`);
   } else {
-    subscribed = (await subscriberCounts(accountId)).subscribed;
-    if (!subscribed) throw new Error("Nobody is subscribed yet. Import your subscribers first.");
-    if (Number(count) !== subscribed) throw new Error(`Your list changed: it now has ${subscribed.toLocaleString("en-US")} subscribers. Please check and approve again.`);
+    subscribed = await countAudience(accountId, audience);
+    if (!subscribed) throw new Error(audience.type === "all" ? "Nobody is subscribed yet. Import your subscribers first." : "Nobody subscribed is in this audience. Pick other people or send to everyone.");
+    if (Number(count) !== subscribed) throw new Error(`The number of people changed: it is now ${subscribed.toLocaleString("en-US")}. Please check and approve again.`);
   }
   // Who was subscribed at this moment gets it (and only while they stay subscribed); people added later don't. A
   // scheduled email goes to who is subscribed when it was approved, too: the owner approved that number.
@@ -1444,6 +1691,196 @@ export async function retryCampaign(accountId: string, id: unknown): Promise<voi
   await sql`UPDATE insights_newsletter_campaigns SET status = 'sending', last_error = NULL WHERE id = ${c.id} AND account_id = ${accountId} AND status = 'failed'`;
 }
 
+
+// ---------- audiences, tags and people added for one email ----------
+
+/** Runs a query built from shared parts; every value still goes as a parameter. */
+function runSql(parts: SqlPart[]) {
+  const { strings, values } = joinSql(parts);
+  return sql(Object.assign(strings, { raw: strings }) as unknown as TemplateStringsArray, ...values);
+}
+
+/**
+ * How many subscribed people an audience reaches: for a new approval everyone in it now; for a paused or approved
+ * email (`ref` its approval time, `campaignId` given) those subscribed by then who haven't had it yet.
+ */
+export async function countAudience(accountId: string, a: Audience, opts: { ref: string | null; campaignId?: string } = { ref: null }): Promise<number> {
+  await schema();
+  const [r] = await runSql([
+    "SELECT count(*) AS n FROM insights_newsletter_subscribers s WHERE s.account_id = ",
+    param(accountId),
+    " AND s.status = 'subscribed' ",
+    ...(opts.ref ? [" AND s.created_at <= ", param(opts.ref), "::timestamptz "] : []),
+    ...(opts.campaignId ? [" AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ", param(opts.campaignId), " AND x.subscriber_id = s.id) "] : []),
+    " AND ",
+    ...audienceWhere(a, opts.ref),
+  ]);
+  return Number(r?.n ?? 0);
+}
+
+/** Claims the next people of a campaign's audience who haven't had it, only while it is still sending. */
+function claimAudience(accountId: string, cid: string, approvedAt: string, a: Audience, size: number, key: string) {
+  return runSql([
+    "WITH pick AS (SELECT s.id FROM insights_newsletter_subscribers s WHERE s.account_id = ",
+    param(accountId),
+    " AND s.status = 'subscribed' AND s.created_at <= ",
+    param(approvedAt),
+    "::timestamptz AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ",
+    param(cid),
+    " AND k.account_id = ",
+    param(accountId),
+    " AND k.status = 'sending') AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ",
+    param(cid),
+    " AND x.subscriber_id = s.id) AND ",
+    ...audienceWhere(a, approvedAt),
+    " ORDER BY s.id LIMIT ",
+    param(size),
+    ") INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key) SELECT ",
+    param(cid),
+    ", id, ",
+    param(accountId),
+    ", 'pending', ",
+    param(key),
+    " FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id",
+  ]);
+}
+
+/** A draft whose audience may still change: not approved, and nobody got it yet. */
+async function audienceEditable(accountId: string, id: unknown): Promise<Record<string, string | null>> {
+  const c = await ownedCampaign(accountId, id);
+  if (c.kind === "welcome") throw new Error("The welcome email goes to each new subscriber; it has no other audience.");
+  if (c.status !== "draft" && c.status !== "stopped" && c.status !== "failed") throw new Error("This email is already approved. Pause it first to change who it goes to.");
+  const sent = await sql`SELECT 1 FROM insights_newsletter_sends WHERE campaign_id = ${c.id} LIMIT 1`;
+  if (sent.length) throw new Error("Some people already got this email, so who it goes to can't change. Start a new one instead.");
+  return c;
+}
+
+/** Saves who an email goes to. A new count shows on the approve button; the content and its test stay as they are. */
+export async function saveAudience(accountId: string, id: unknown, raw: unknown): Promise<number> {
+  await schema();
+  const c = await audienceEditable(accountId, id);
+  const a = cleanAudience(raw);
+  await sql`UPDATE insights_newsletter_campaigns SET audience = ${a.type === "all" ? null : JSON.stringify(a)}::jsonb, status = CASE WHEN status = 'failed' THEN 'draft' ELSE status END
+    WHERE id = ${c.id} AND account_id = ${accountId}`;
+  return countAudience(accountId, a);
+}
+
+/** Adds people (by subscriber id) to an email's chosen people. */
+async function addToAudience(accountId: string, c: Record<string, string | null>, ids: string[], from: "chosen" | "crm" | "typed"): Promise<Audience> {
+  const cur = readAudience(c.audience);
+  const all = [...new Set([...(cur.type === "people" ? cur.ids : []), ...ids])];
+  const a = cleanAudience({ type: "people", ids: all, from: cur.type === "people" && cur.from !== from ? "chosen" : from });
+  await sql`UPDATE insights_newsletter_campaigns SET audience = ${JSON.stringify(a)}::jsonb WHERE id = ${c.id} AND account_id = ${accountId}`;
+  return a;
+}
+
+export interface PeopleResult {
+  added: number;
+  included: number;
+  skipped: { email: string; why: string }[];
+  count: number;
+}
+
+/** Adds addresses for one email; anyone unsubscribed, bounced or complained is skipped and never subscribed again. */
+async function addPeople(accountId: string, emails: { email: string; name: string }[], source: SubscriberSource, consent: string): Promise<{ ids: string[]; added: number; skipped: { email: string; why: string }[] }> {
+  const existing = await existingStatuses(accountId, emails.map((e) => e.email));
+  const skipped: { email: string; why: string }[] = [];
+  const fresh = emails.filter((e) => {
+    const why = skipReason(existing.get(e.email));
+    if (why) skipped.push({ email: e.email, why });
+    return !why && !existing.has(e.email);
+  });
+  const added = await insertRows(accountId, fresh, source, `${consent} (${new Date().toISOString().slice(0, 10)})`);
+  const ok = emails.filter((e) => !skipped.some((x) => x.email === e.email)).map((e) => e.email);
+  const rows = ok.length
+    ? await sql`SELECT id FROM insights_newsletter_subscribers WHERE account_id = ${accountId} AND status = 'subscribed'
+        AND email = ANY(string_to_array(${ok.join(String.fromCharCode(31))}, chr(31)))`
+    : [];
+  return { ids: rows.map((r) => String(r.id)), added, skipped };
+}
+
+/**
+ * Up to 20 typed addresses for one email, only with the owner's word that these people asked for or agreed to get it.
+ * They join the list (source manual, with the note) and the email's chosen people.
+ */
+export async function addTyped(accountId: string, id: unknown, text: unknown, confirmed: unknown, consentNote: unknown): Promise<PeopleResult> {
+  await schema();
+  if (confirmed !== true) throw new Error("Tick the box to confirm these people asked for or agreed to get this email.");
+  const c = await audienceEditable(accountId, id);
+  const { emails } = parseTyped(text);
+  const note = oneLine(consentNote, 200) || "Typed in by the owner, who confirmed they asked for or agreed to get emails";
+  const r = await addPeople(accountId, emails.map((email) => ({ email, name: "" })), "manual", note);
+  const a = await addToAudience(accountId, c, r.ids, "typed");
+  return { added: r.added, included: r.ids.length, skipped: r.skipped, count: await countAudience(accountId, a) };
+}
+
+export interface CrmCandidate {
+  contactId: string;
+  name: string;
+  company: string;
+  email: string;
+  /** Their place on the newsletter list, or null when they aren't on it. */
+  status: SubscriberStatus | null;
+}
+
+/** CRM contacts with an email, and whether each is already on the newsletter list (this site's own CRM only). */
+export async function crmCandidates(accountId: string, query = ""): Promise<CrmCandidate[]> {
+  await schema();
+  const q = oneLine(query, 120).toLowerCase().replace(/[%_\\]/g, "\\$&");
+  // A site that never used the CRM has no contacts table yet: nobody to list.
+  const rows = await sql`SELECT c.id, c.name, c.company, lower(trim(c.email)) AS email, s.status
+      FROM insights_crm_contacts c
+      LEFT JOIN insights_newsletter_subscribers s ON s.account_id = c.account_id AND s.email = lower(trim(c.email))
+      WHERE c.account_id = ${accountId} AND NOT c.archived AND c.email <> ''
+        AND (${q}::text = '' OR lower(c.email) LIKE ${`%${q}%`} OR lower(c.name) LIKE ${`%${q}%`} OR lower(c.company) LIKE ${`%${q}%`})
+      ORDER BY c.updated_at DESC LIMIT 50`.catch((e) => {
+    if (/insights_crm_contacts/.test(String((e as Error)?.message))) return [] as Record<string, string | null>[];
+    throw e;
+  });
+  return rows
+    .map((r) => ({ contactId: String(r.id), name: r.name ?? "", company: r.company ?? "", email: normalizeEmail(r.email ?? "") ?? "", status: (r.status as SubscriberStatus | null) ?? null }))
+    .filter((r) => r.email);
+}
+
+/**
+ * CRM contacts for one email. Someone already subscribed is simply included. Anyone else needs the owner's word that
+ * they agreed to get emails, with a note saying how; they then join the list (source crm, with the note). Nobody who
+ * unsubscribed, bounced or complained is ever added back.
+ */
+export async function addCrmPeople(accountId: string, id: unknown, contactIds: unknown, agreed: unknown, consentNote: unknown): Promise<PeopleResult> {
+  await schema();
+  const c = await audienceEditable(accountId, id);
+  const ids = Array.isArray(contactIds) ? [...new Set(contactIds.map(String).filter((x) => /^\d{1,18}$/.test(x)))].slice(0, 500) : [];
+  if (!ids.length) throw new Error("Pick at least one contact.");
+  const rows = await sql`SELECT c.name, lower(trim(c.email)) AS email, s.status FROM insights_crm_contacts c
+    LEFT JOIN insights_newsletter_subscribers s ON s.account_id = c.account_id AND s.email = lower(trim(c.email))
+    WHERE c.account_id = ${accountId} AND NOT c.archived AND c.id = ANY(string_to_array(${ids.join(",")}, ',')::bigint[])`;
+  const people = rows.map((r) => ({ email: normalizeEmail(r.email ?? "") ?? "", name: oneLine(r.name ?? "", 120), status: r.status as SubscriberStatus | null })).filter((p) => p.email);
+  const needConsent = people.filter((p) => !p.status);
+  const note = oneLine(consentNote, 200);
+  if (needConsent.length && (agreed !== true || !note)) {
+    throw new Error("Some of these contacts aren't on your newsletter list. Tick that they agreed to get emails from you and say how they agreed (for example, they asked at a trade show).");
+  }
+  const r = await addPeople(accountId, people, "crm", `From your CRM. ${note || "Already subscribed"}`);
+  const a = await addToAudience(accountId, c, r.ids, "crm");
+  return { added: r.added, included: r.ids.length, skipped: r.skipped, count: await countAudience(accountId, a) };
+}
+
+/** Adds or removes one tag on subscribers (this site's own only). */
+export async function tagSubscribers(accountId: string, ids: unknown, tagRaw: unknown, remove: boolean): Promise<number> {
+  await schema();
+  const tag = cleanTag(tagRaw);
+  if (!tag) throw new Error("Write a tag, like customers or wholesale.");
+  const list = Array.isArray(ids) ? [...new Set(ids.map(String).filter((x) => /^\d{1,18}$/.test(x)))].slice(0, 5_000) : [];
+  if (!list.length) throw new Error("Pick at least one person.");
+  const csv = list.join(",");
+  const rows = remove
+    ? await sql`DELETE FROM insights_newsletter_tags WHERE account_id = ${accountId} AND tag = ${tag} AND subscriber_id = ANY(string_to_array(${csv}, ',')::bigint[]) RETURNING subscriber_id`
+    : await sql`INSERT INTO insights_newsletter_tags (account_id, subscriber_id, tag)
+        SELECT ${accountId}, s.id, ${tag} FROM insights_newsletter_subscribers s WHERE s.account_id = ${accountId} AND s.id = ANY(string_to_array(${csv}, ',')::bigint[])
+        ON CONFLICT (subscriber_id, tag) DO NOTHING RETURNING subscriber_id`;
+  return rows.length;
+}
 
 // ---------- the weekly newsletter (automatic, owner turned on) ----------
 
@@ -1507,7 +1944,11 @@ export async function runWeekly(accountId: string, now = Date.now()): Promise<st
   }
   await sql`UPDATE insights_newsletter_settings SET weekly_failures = 0 WHERE account_id = ${accountId}`;
   await closeNeed(accountId, "Newsletter", "newsletter:weekly:failed").catch(() => undefined);
-  const { subscribed } = await subscriberCounts(accountId);
+  // The weekly newsletter goes to the owner's chosen audience for it (all, or a segment).
+  if (s.weeklyAudience.type !== "all") {
+    await sql`UPDATE insights_newsletter_campaigns SET audience = ${JSON.stringify(s.weeklyAudience)}::jsonb WHERE id = ${draft.id} AND account_id = ${accountId}`;
+  }
+  const subscribed = await countAudience(accountId, s.weeklyAudience);
   const missing = missingSetup(s);
   // Sent on its own only with the owner's standing permission, a real second AI verdict (never the owner standing in
   // for it), a complete setup, someone to send it to and the app's address for the unsubscribe links.
@@ -1529,7 +1970,7 @@ export async function runWeekly(accountId: string, now = Date.now()): Promise<st
       : missing.length
         ? `${missing.join(", ")} still needed`
         : !subscribed
-          ? "nobody is subscribed yet"
+          ? "nobody subscribed is in its audience yet"
           : "the app's address isn't saved yet (save Newsletter settings once)";
   await note(`${new Date(now).toISOString().slice(0, 10)}: "${draft.subject}" is drafted and waiting for your approval (${why}).`);
   await postNote(accountId, "Newsletter", "needs", `This week's newsletter "${draft.subject}" is drafted and waiting for your test and approval in Newsletter.`, { ref: `newsletter:weekly:${draft.id}` });
@@ -1985,14 +2426,7 @@ async function sendCampaign(
           ORDER BY s.id LIMIT ${size})
         INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key)
         SELECT ${cid}, id, ${accountId}, 'pending', ${key} FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`
-      : await sql`WITH pick AS (
-          SELECT s.id FROM insights_newsletter_subscribers s
-          WHERE s.account_id = ${accountId} AND s.status = 'subscribed' AND s.created_at <= ${c.approved_at}::timestamptz
-            AND EXISTS (SELECT 1 FROM insights_newsletter_campaigns k WHERE k.id = ${cid} AND k.account_id = ${accountId} AND k.status = 'sending')
-            AND NOT EXISTS (SELECT 1 FROM insights_newsletter_sends x WHERE x.campaign_id = ${cid} AND x.subscriber_id = s.id)
-          ORDER BY s.id LIMIT ${size})
-        INSERT INTO insights_newsletter_sends (campaign_id, subscriber_id, account_id, status, batch_key)
-        SELECT ${cid}, id, ${accountId}, 'pending', ${key} FROM pick ON CONFLICT DO NOTHING RETURNING subscriber_id`;
+      : await claimAudience(accountId, cid, c.approved_at ?? new Date().toISOString(), readAudience(c.audience), size, key);
     if (!claimed.length) {
       if (!(await stillSending())) return { note: `${sentNow} sent, then paused`, more: true };
       // The welcome email stays on for the next new subscriber; it is never "done".

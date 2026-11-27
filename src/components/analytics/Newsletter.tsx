@@ -6,6 +6,7 @@ import { api, apiFresh } from "./seo-ui";
 import { Card, ConfirmButton } from "./ui";
 import { MemberNote, OwnerOnly, useIsMember } from "./team-role";
 import { NewsletterMetrics } from "./NewsletterMetrics";
+import { AudiencePicker, SegmentChooser } from "./NewsletterAudience";
 
 interface NewsletterData {
   settings: NewsletterSettingsView;
@@ -17,6 +18,9 @@ interface NewsletterData {
   ownerEmail: string | null;
   hasStore: boolean;
   webhookUrl: string;
+  /** Where a test from the person signed in goes first. */
+  testTo: string | null;
+  tags: { tag: string; n: number }[];
 }
 
 const btn = "rounded-lg px-3 py-1.5 text-sm font-semibold disabled:opacity-60";
@@ -35,7 +39,7 @@ const STATUS_LABEL: Record<Campaign["status"], string> = {
   stopped: "Paused",
 };
 const SUB_LABEL: Record<SubscriberStatus, string> = { subscribed: "Subscribed", unsubscribed: "Unsubscribed", bounced: "Bounced", complained: "Marked as spam" };
-const SOURCE_LABEL: Record<Subscriber["source"], string> = { shopify: "Shopify", import: "Imported", signup: "Signed up", manual: "Added by you" };
+const SOURCE_LABEL: Record<Subscriber["source"], string> = { shopify: "Shopify", import: "Imported", signup: "Signed up", manual: "Added by you", crm: "From your CRM" };
 
 const post = <T,>(body: unknown) => api<T>("/api/newsletter", body);
 
@@ -110,7 +114,7 @@ function Checklist({ data }: { data: NewsletterData }) {
 function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => void }) {
   const s = data.settings;
   const [open, setOpen] = useState(data.missing.length > 0);
-  const [form, setForm] = useState({ fromName: s.fromName, fromAddress: s.fromAddress, replyTo: s.replyTo, postalAddress: s.postalAddress, dailyCap: String(s.dailyCap) });
+  const [form, setForm] = useState({ fromName: s.fromName, fromAddress: s.fromAddress, replyTo: s.replyTo, postalAddress: s.postalAddress, dailyCap: String(s.dailyCap), testEmails: s.testEmails.join(", ") });
   const [key, setKey] = useState("");
   const [hook, setHook] = useState("");
   const [busy, setBusy] = useState(false);
@@ -119,7 +123,7 @@ function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => vo
     setBusy(true);
     setMsg(null);
     try {
-      const out = await post<{ note: string | null }>({ action: "settings", settings: { ...form, dailyCap: Number(form.dailyCap), ...(key ? { resendKey: key } : {}), ...(hook ? { webhookSecret: hook } : {}), ...extra } });
+      const out = await post<{ note: string | null }>({ action: "settings", settings: { ...form, dailyCap: Number(form.dailyCap), testEmails: form.testEmails, ...(key ? { resendKey: key } : {}), ...(hook ? { webhookSecret: hook } : {}), ...extra } });
       setKey("");
       setHook("");
       setMsg(out.note ?? "Saved.");
@@ -173,6 +177,11 @@ function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => vo
             <input type="number" min={1} className={`${field} mt-1 max-w-[10rem]`} value={form.dailyCap} onChange={set("dailyCap")} />
             <span className="mt-1 block text-xs font-normal text-dash-muted">A bigger list is sent over several days. Keep it within your Resend plan.</span>
           </label>
+          <label className="text-sm font-medium">
+            Also send tests to
+            <input className={`${field} mt-1`} value={form.testEmails} onChange={set("testEmails")} placeholder="Up to 3 team emails, separated by commas" />
+            <span className="mt-1 block text-xs font-normal text-dash-muted">Each test goes to you and to these people too. A test counts toward approval only when it reached you.</span>
+          </label>
           <details className="text-sm">
             <summary className="cursor-pointer font-medium">Advanced: bounces and spam reports</summary>
             <p className="mt-2 text-dash-muted">
@@ -202,6 +211,9 @@ const hourLabel = (h: number) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeS
 function AutoCard({ data, onDone }: { data: NewsletterData; onDone: () => void }) {
   const s = data.settings;
   const [form, setForm] = useState({ welcomeOn: s.welcomeOn, weeklyOn: s.weeklyOn, weeklyAutoSend: s.weeklyAutoSend, weeklyDay: s.weeklyDay, weeklyHour: s.weeklyHour, timeZone: s.timeZone ?? "" });
+  const [weeklyGroups, setWeeklyGroups] = useState(s.weeklyAudience.type === "segment");
+  const [segments, setSegments] = useState(s.weeklyAudience.type === "segment" ? s.weeklyAudience.segments : []);
+  const [tags, setTags] = useState(s.weeklyAudience.type === "segment" ? s.weeklyAudience.tags : []);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const welcome = data.campaigns.find((c) => c.kind === "welcome" && (c.status === "approved" || c.status === "sending"));
@@ -209,7 +221,8 @@ function AutoCard({ data, onDone }: { data: NewsletterData; onDone: () => void }
     setBusy(true);
     setMsg(null);
     try {
-      await post({ action: "settings", settings: { ...form, timeZone: form.timeZone.trim() } });
+      const weeklyAudience = weeklyGroups && (segments.length || tags.length) ? { type: "segment", segments, tags } : { type: "all" };
+      await post({ action: "settings", settings: { ...form, timeZone: form.timeZone.trim(), weeklyAudience } });
       setMsg("Saved.");
       onDone();
     } catch (e) {
@@ -251,6 +264,15 @@ function AutoCard({ data, onDone }: { data: NewsletterData; onDone: () => void }
               Time zone
               <input className={`${field} mt-1`} value={form.timeZone} onChange={(e) => setForm({ ...form, timeZone: e.target.value })} placeholder={data.hasStore ? "Your store's time zone" : "America/Chicago"} />
             </label>
+          </div>
+        )}
+        {form.weeklyOn && (
+          <div className="ml-6 grid gap-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={weeklyGroups} onChange={(e) => setWeeklyGroups(e.target.checked)} />
+              Send it only to some groups or tags (otherwise everyone subscribed)
+            </label>
+            {weeklyGroups && <SegmentChooser segments={segments} tags={tags} allTags={data.tags} onChange={(sg, tg) => (setSegments(sg), setTags(tg))} />}
           </div>
         )}
         {form.weeklyOn && box("weeklyAutoSend", "Send it on its own", "Only when every check passed and a second AI said yes. Otherwise it waits for your test and approval, and you are told on the team board.")}
@@ -367,7 +389,8 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
   const editable = (draft || c.status === "failed") && c.sent === 0 && c.unsure === 0;
   // A paused email carries on with the people still waiting for it; a new one goes to everyone subscribed now.
   const resume = c.status === "stopped" && Boolean(c.approvedAt);
-  const subs = resume ? c.waiting : data.counts.subscribed;
+  // The exact number of people in this email's audience (still waiting, for a paused one); the server checks it again.
+  const subs = c.audienceCount;
   const welcome = c.kind === "welcome";
   const [later, setLater] = useState(false);
   const [at, setAt] = useState("");
@@ -401,9 +424,14 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
         <div className="flex flex-wrap gap-2">
           {editable && <button className={quiet} disabled={busy} onClick={() => setEditing(!editing)}>{editing ? "Close" : "Edit"}</button>}
           {draft && (
-            <button className={quiet} disabled={busy || data.missing.length > 0} onClick={() => act({ action: "test" }, (o) => `Test sent to ${String(o.to)}. Check your inbox, then approve.`)}>
-              Send me a test
-            </button>
+            <span className="flex flex-col items-start">
+              <button className={quiet} disabled={busy || data.missing.length > 0} onClick={() => act({ action: "test" }, (o) => `Test sent to ${String(o.to)}. Check your inbox, then approve.`)}>
+                Send me a test
+              </button>
+              <span className="mt-1 text-xs text-dash-muted">
+                Test goes to {data.testTo ?? "your sign in email"}{!member && data.settings.testEmails.length ? ` and ${data.settings.testEmails.join(", ")}` : ""}
+              </span>
+            </span>
           )}
           {draft && !member && welcome && (
             <ConfirmButton
@@ -418,9 +446,9 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
             <ConfirmButton
               className={primary}
               disabled={busy || !c.tested || data.missing.length > 0 || subs === 0 || (later && !at)}
-              label={resume ? `Carry on: send to the ${n(subs)} still waiting` : later && at ? `Schedule for ${n(subs)} subscribers` : `Send to ${n(subs)} subscribers`}
+              label={resume ? `Carry on: send to the ${n(subs)} still waiting` : later && at ? `Schedule for ${n(subs)} ${subs === 1 ? "person" : "people"}` : `Send to ${n(subs)} ${subs === 1 ? "person" : "people"}`}
               confirmLabel={`Click again to ${later && at ? "schedule" : "send"} to ${n(subs)}`}
-              onConfirm={() => act({ action: "approve", count: subs, scheduledAt: scheduledIso() }, (o) => later && at ? `Approved. It goes out to ${n(Number(o.count))} subscribers from ${when(new Date(at).toISOString())}, up to ${n(data.settings.dailyCap)} a day.` : `Approved. It goes out to ${n(Number(o.count))} subscribers over the next hours, up to ${n(data.settings.dailyCap)} a day.`)}
+              onConfirm={() => act({ action: "approve", count: subs, scheduledAt: scheduledIso() }, (o) => later && at ? `Approved. It goes out to ${n(Number(o.count))} people from ${when(new Date(at).toISOString())}, up to ${n(data.settings.dailyCap)} a day.` : `Approved. It goes out to ${n(Number(o.count))} people over the next hours, up to ${n(data.settings.dailyCap)} a day.`)}
             />
           )}
           {(c.status === "approved" || c.status === "sending" || c.status === "failed") && (
@@ -430,6 +458,12 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
           {editable && <ConfirmButton className={quiet} label="Delete" onConfirm={() => act({ action: "delete" })} />}
         </div>
       </div>
+      {!welcome && (c.status === "draft" || ((c.status === "stopped" || c.status === "failed") && c.sent === 0 && c.unsure === 0)) && (
+        <AudiencePicker c={c} allTags={data.tags} onDone={onDone} />
+      )}
+      {!welcome && !(c.status === "draft" || ((c.status === "stopped" || c.status === "failed") && c.sent === 0 && c.unsure === 0)) && (
+        <p className="mt-1 text-xs text-dash-muted">Goes to: {c.audienceLabel}</p>
+      )}
       {draft && !c.tested && !editing && <p className="mt-2 text-xs text-dash-muted">Send yourself a test first. Then you can approve it.</p>}
       {resume && c.scheduledAt && Date.parse(c.scheduledAt) > Date.now() && !later && (
         <p className="mt-2 text-xs text-dash-muted">When you carry on, it still waits until {when(c.scheduledAt)}. Tick Send later to pick another time.</p>
@@ -468,6 +502,18 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [search, setSearch] = useState(q);
+  const [ticked, setTicked] = useState<string[]>([]);
+  const [tag, setTag] = useState("");
+  const tagThem = async (remove: boolean) => {
+    setMsg(null);
+    try {
+      const out = await post<{ changed: number }>({ action: "tag", ids: ticked, tag, remove });
+      setMsg(remove ? `Tag ${tag.trim()} taken off ${n(out.changed)}.` : `Tag ${tag.trim()} added to ${n(out.changed)}.`);
+      onDone();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "That didn't work.");
+    }
+  };
   type Result = { added: number; already: number; blocked: number; invalid: number; optedOut?: number; complete?: boolean };
   const said = (r: Result) =>
     [
@@ -550,9 +596,12 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
       <ul className="mt-3 divide-y divide-dash-line text-sm">
         {data.subscribers.map((s) => (
           <li key={s.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-            <span className="min-w-0 break-all">
-              {s.name ? `${s.name}, ` : ""}{s.email}
-              <span className="ml-2 text-xs text-dash-muted">{SUB_LABEL[s.status]}, {SOURCE_LABEL[s.source]}</span>
+            <span className="flex min-w-0 items-start gap-2 break-all">
+              <input type="checkbox" className="mt-1" checked={ticked.includes(s.id)} onChange={() => setTicked(ticked.includes(s.id) ? ticked.filter((x) => x !== s.id) : [...ticked, s.id])} aria-label={`Pick ${s.email}`} />
+              <span>
+                {s.name ? `${s.name}, ` : ""}{s.email}
+                <span className="ml-2 text-xs text-dash-muted">{SUB_LABEL[s.status]}, {SOURCE_LABEL[s.source]}{s.tags.length ? `, tags: ${s.tags.join(", ")}` : ""}</span>
+              </span>
             </span>
             {s.status === "subscribed" && (
               <ConfirmButton
@@ -572,6 +621,14 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
         ))}
         {!data.subscribers.length && <li className="py-2 text-dash-muted">{q ? "Nobody found." : "No subscribers yet."}</li>}
       </ul>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-dash-muted">{n(ticked.length)} picked</span>
+        <button className={quiet} onClick={() => setTicked(ticked.length ? [] : data.subscribers.map((s) => s.id))}>{ticked.length ? "Clear" : "Pick all shown"}</button>
+        <input className={`${field} max-w-[14rem]`} value={tag} onChange={(e) => setTag(e.target.value)} placeholder="A tag, like wholesale" maxLength={40} list="newsletter-tags" />
+        <datalist id="newsletter-tags">{data.tags.map((t) => <option key={t.tag} value={t.tag} />)}</datalist>
+        <button className={quiet} disabled={!ticked.length || !tag.trim()} onClick={() => void tagThem(false)}>Add tag</button>
+        <button className={quiet} disabled={!ticked.length || !tag.trim()} onClick={() => void tagThem(true)}>Remove tag</button>
+      </div>
     </Card>
   );
 }
