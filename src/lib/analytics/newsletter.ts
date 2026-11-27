@@ -957,8 +957,11 @@ async function brandOf(accountId: string, s: Settings): Promise<string> {
   return s.fromName || p?.brandName || p?.siteDomain || "us";
 }
 
-/** A test to the owner's own sign in address, through their Resend account. */
-export async function sendTest(accountId: string, id: unknown, origin: string): Promise<string> {
+/**
+ * A test through the business's Resend account: to the owner's own sign in address, or to `person` (a team member
+ * who pressed it, with the verified email they signed in with).
+ */
+export async function sendTest(accountId: string, id: unknown, origin: string, person?: string): Promise<string> {
   await schema();
   if (isSabbath()) throw new Error("DashPatrol rests for the Sabbath. Try again after Saturday sundown.");
   const c = await ownedCampaign(accountId, id);
@@ -966,7 +969,7 @@ export async function sendTest(accountId: string, id: unknown, origin: string): 
   const missing = missingSetup(s);
   if (missing.length) throw new Error(`Add ${missing.join(", ")} first.`);
   const [owner] = await sql`SELECT email FROM insights_accounts WHERE id = ${accountId}`;
-  const to = normalizeEmail(owner?.email ?? "");
+  const to = normalizeEmail(person ?? owner?.email ?? "");
   if (!to) throw new Error("Your account has no email address to send the test to.");
   const payload = buildEmail({
     from: fromHeader(s.fromName, s.fromAddress),

@@ -7,6 +7,7 @@ import type { MetaChannel, MetaPost } from "@/lib/analytics/facebook";
 import { isEmbedded } from "./embedded-client";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
+import { useIsMember } from "./team-role";
 
 const CHANNELS = [
   { id: "linkedin", label: "LinkedIn" },
@@ -58,7 +59,15 @@ interface ThreadsState {
 function ThreadsBar({ t, onChange }: { t: ThreadsState; onChange: (t: ThreadsState) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const member = useIsMember();
   if (!t.configured) return null;
+  if (member) {
+    return (
+      <p className="mb-3 rounded-xl bg-dash-bg p-3 text-sm text-dash-muted">
+        {t.connected ? `Posting to Threads as @${t.username}. ` : ""}Only the main sign in can post or change the Threads connection.
+      </p>
+    );
+  }
   const connect = async () => {
     setBusy(true);
     setError(null);
@@ -121,6 +130,7 @@ function ThreadsBar({ t, onChange }: { t: ThreadsState; onChange: (t: ThreadsSta
 function ThreadsButton({ item, t, onPosted }: { item: ShareItem; t: ThreadsState; onPosted: (p: ThreadsPost, n: number) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const member = useIsMember();
   const done = t.posts.find((p) => p.changeId === item.changeId);
   if (done) {
     return done.permalink ? (
@@ -131,7 +141,7 @@ function ThreadsButton({ item, t, onPosted }: { item: ShareItem; t: ThreadsState
       <span className="text-xs text-dash-muted">On Threads</span>
     );
   }
-  if (!t.connected) return null;
+  if (!t.connected || member) return null;
   const post = async () => {
     if (!window.confirm(`Post this to Threads as @${t.username}?`)) return;
     setBusy(true);
@@ -173,7 +183,15 @@ interface MetaState {
 function FacebookBar({ m, onChange }: { m: MetaState; onChange: (m: MetaState) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const member = useIsMember();
   if (!m.configured) return null;
+  if (member) {
+    return (
+      <p className="mb-3 rounded-xl bg-dash-bg p-3 text-sm text-dash-muted">
+        {m.connected ? `Posting to the Facebook Page ${m.pageName}. ` : ""}Only the main sign in can post or change the Facebook connection.
+      </p>
+    );
+  }
   const connect = async () => {
     setBusy(true);
     setError(null);
@@ -253,6 +271,7 @@ const META_NAME = { facebook: "Facebook", instagram: "Instagram" } as const;
 function MetaButton({ item, m, channel, onPosted }: { item: ShareItem; m: MetaState; channel: MetaChannel; onPosted: (p: MetaPost, n: number) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const member = useIsMember();
   const done = m.posts.find((p) => p.channel === channel && p.changeId === item.changeId);
   const skipped = m.skips.find((s) => s.channel === channel && s.changeId === item.changeId);
   if (done) {
@@ -265,7 +284,7 @@ function MetaButton({ item, m, channel, onPosted }: { item: ShareItem; m: MetaSt
       <span className="text-xs text-dash-muted">On {META_NAME[channel]}</span>
     );
   }
-  if (!m.connected || (channel === "instagram" && !m.hasInstagram)) return null;
+  if (!m.connected || member || (channel === "instagram" && !m.hasInstagram)) return null;
   if (skipped) return <span className="max-w-[16rem] text-xs text-dash-muted">{skipped.reason}</span>;
   const post = async () => {
     if (!window.confirm(`Post this to ${META_NAME[channel]}?`)) return;

@@ -14,6 +14,31 @@ export const TEAM_CAP = 20;
 export const INVITE_DAYS = 14;
 
 export const MEMBER_GOOGLE_REFUSAL = "Only the main sign in can connect Google for this business.";
+/** Connections, autopilot settings, publishing, sending and spending are for the main sign in only. */
+export const OWNER_ONLY = "Only the main sign in can do this for the business.";
+
+/**
+ * Actions inside shared endpoints that only the main sign in may take (pure). Members may still read, draft, plan,
+ * keep the CRM and send themselves a newsletter test.
+ */
+const OWNER_ONLY_ACTIONS: Record<string, readonly string[]> = {
+  crm: ["email", "settings"],
+  newsletter: ["settings", "import", "add", "shopify", "approve", "retry"],
+  social: ["approve"],
+  storeAudit: ["apply-price", "undo-price"],
+  speed: ["shrink", "undo"],
+  conversion: ["add", "undo"],
+  fix: ["approve"],
+};
+
+export function ownerOnlyAction(area: keyof typeof OWNER_ONLY_ACTIONS | string, action: unknown): boolean {
+  return typeof action === "string" && (OWNER_ONLY_ACTIONS[area] ?? []).includes(action);
+}
+
+/** The refusal for a member taking an owner only action, or null when allowed (pure). */
+export function memberRefusal(role: Role, area: string, action: unknown): string | null {
+  return role === "member" && ownerOnlyAction(area, action) ? OWNER_ONLY : null;
+}
 
 const yes = (v: string | null | undefined) => v === "t" || v === "true";
 
@@ -84,12 +109,12 @@ async function ownBusiness(person: string): Promise<{ id: string; hasData: boole
     FROM insights_accounts a
     LEFT JOIN insights_account_profile p ON p.account_id = a.id
     LEFT JOIN insights_account_autopilot ap ON ap.account_id = a.id
-    WHERE a.email = ${person}`;
+    WHERE lower(a.email) = ${person}`;
   return row?.id ? { id: row.id, hasData: yes(row.has_data) } : null;
 }
 
 async function membershipsOf(person: string): Promise<string[]> {
-  const rows = await sql`SELECT account_id FROM insights_account_members WHERE email = ${person} ORDER BY last_used_at DESC, account_id`;
+  const rows = await sql`SELECT account_id FROM insights_account_members WHERE lower(email) = ${person} ORDER BY last_used_at DESC, account_id`;
   return rows.map((r) => r.account_id!);
 }
 
@@ -104,7 +129,7 @@ export async function signInLanding(rawPerson: string): Promise<{ accountId: str
 }
 
 async function touchMembership(accountId: string, person: string): Promise<void> {
-  await sql`UPDATE insights_account_members SET last_used_at = now() WHERE account_id = ${accountId} AND email = ${person}`;
+  await sql`UPDATE insights_account_members SET last_used_at = now() WHERE account_id = ${accountId} AND lower(email) = ${person}`;
 }
 
 /** The role this person may switch into for a business, or null when they have none there. */
@@ -114,10 +139,10 @@ export async function switchRole(rawPerson: string, accountId: string): Promise<
   await ensureSchema();
   const [row] = await sql`
     SELECT a.email,
-      EXISTS (SELECT 1 FROM insights_account_members m WHERE m.account_id = a.id AND m.email = ${person}) AS member
+      EXISTS (SELECT 1 FROM insights_account_members m WHERE m.account_id = a.id AND lower(m.email) = ${person}) AS member
     FROM insights_accounts a WHERE a.id = ${accountId}`;
   if (!row?.email) return null;
-  if (row.email === person) return "owner";
+  if (row.email.toLowerCase() === person) return "owner";
   if (!yes(row.member)) return null;
   await touchMembership(accountId, person);
   return "member";
@@ -152,7 +177,7 @@ export async function teamView(account: Account): Promise<TeamView> {
       : Promise.resolve([]),
     account.embedded
       ? Promise.resolve([])
-      : sql`SELECT account_id, token, expires_at FROM insights_account_invites WHERE email = ${person} AND expires_at > now() ORDER BY created_at`,
+      : sql`SELECT account_id, token, expires_at FROM insights_account_invites WHERE lower(email) = ${person} AND expires_at > now() ORDER BY created_at`,
     account.embedded ? Promise.resolve(null) : ownBusiness(person),
     account.embedded ? Promise.resolve([] as string[]) : membershipsOf(person),
   ]);
@@ -186,9 +211,9 @@ export async function inviteMember(account: Account, raw: unknown): Promise<{ em
     SELECT
       (SELECT count(*) FROM insights_account_members WHERE account_id = ${account.id}) AS members,
       (SELECT count(*) FROM insights_account_invites WHERE account_id = ${account.id} AND expires_at > now()) AS pending,
-      EXISTS (SELECT 1 FROM insights_account_members WHERE account_id = ${account.id} AND email = ${email ?? ""}) AS member,
-      EXISTS (SELECT 1 FROM insights_account_invites WHERE account_id = ${account.id} AND email = ${email ?? ""} AND expires_at > now()) AS invited,
-      EXISTS (SELECT 1 FROM insights_accounts WHERE email = ${email ?? ""}) AS owns`;
+      EXISTS (SELECT 1 FROM insights_account_members WHERE account_id = ${account.id} AND lower(email) = ${email ?? ""}) AS member,
+      EXISTS (SELECT 1 FROM insights_account_invites WHERE account_id = ${account.id} AND lower(email) = ${email ?? ""} AND expires_at > now()) AS invited,
+      EXISTS (SELECT 1 FROM insights_accounts WHERE lower(email) = ${email ?? ""}) AS owns`;
   const problem = inviteProblem({
     email,
     ownerEmail: account.ownerEmail,
@@ -202,11 +227,19 @@ export async function inviteMember(account: Account, raw: unknown): Promise<{ em
   if (problem) throw new Error(problem);
   const token = crypto.randomBytes(24).toString("base64url");
   // Inviting again renews the invite (a new token, a new expiry). The inviter is the person signed in.
-  await sql`
+  // The caps are checked again inside the insert itself, so a second tab can't go past them.
+  const saved = await sql`
     INSERT INTO insights_account_invites (account_id, email, token, invited_by, expires_at)
-    VALUES (${account.id}, ${email}, ${token}, ${account.email}, now() + ${`${INVITE_DAYS} days`}::interval)
+    SELECT ${account.id}, ${email}, ${token}, ${account.email}, now() + ${`${INVITE_DAYS} days`}::interval
+    WHERE (SELECT count(*) FROM insights_account_members WHERE account_id = ${account.id}) < ${TEAM_CAP}
+      AND (
+        EXISTS (SELECT 1 FROM insights_account_invites WHERE account_id = ${account.id} AND lower(email) = ${email} AND expires_at > now())
+        OR (SELECT count(*) FROM insights_account_invites WHERE account_id = ${account.id} AND expires_at > now()) < ${TEAM_CAP}
+      )
     ON CONFLICT (account_id, email) DO UPDATE SET token = EXCLUDED.token, invited_by = EXCLUDED.invited_by,
-      created_at = now(), expires_at = EXCLUDED.expires_at`;
+      created_at = now(), expires_at = EXCLUDED.expires_at
+    RETURNING email`;
+  if (!saved.length) throw new Error(`Up to ${TEAM_CAP} team members and ${TEAM_CAP} waiting invites. Remove or cancel one first.`);
   return { email: email!, ownsBusiness: yes(counts?.owns) };
 }
 
@@ -216,8 +249,8 @@ export async function removeMember(account: Account, raw: unknown): Promise<void
   const problem = removeProblem({ role: account.role, person: account.email, target, embedded: Boolean(account.embedded) });
   if (problem) throw new Error(problem);
   await ensureSchema();
-  await sql`DELETE FROM insights_account_members WHERE account_id = ${account.id} AND email = ${target}`;
-  if (account.role === "owner") await sql`DELETE FROM insights_account_invites WHERE account_id = ${account.id} AND email = ${target}`;
+  await sql`DELETE FROM insights_account_members WHERE account_id = ${account.id} AND lower(email) = ${target}`;
+  if (account.role === "owner") await sql`DELETE FROM insights_account_invites WHERE account_id = ${account.id} AND lower(email) = ${target}`;
 }
 
 /** Accepts an invite made for this exact signed in email. Returns the business joined. */
@@ -229,15 +262,21 @@ export async function acceptInvite(rawPerson: string, token: unknown): Promise<s
     SELECT i.account_id, i.invited_by, a.email AS owner,
       (SELECT count(*) FROM insights_account_members m WHERE m.account_id = i.account_id) AS members
     FROM insights_account_invites i JOIN insights_accounts a ON a.id = i.account_id
-    WHERE i.token = ${token} AND i.email = ${person} AND i.expires_at > now()`;
+    WHERE i.token = ${token} AND lower(i.email) = ${person} AND i.expires_at > now()`;
   if (!invite?.account_id) throw new Error("That invite isn't valid anymore. Ask for a new one.");
-  if (invite.owner === person) throw new Error("This is your own business already.");
-  if (Number(invite.members ?? 0) >= TEAM_CAP) throw new Error(`This business already has ${TEAM_CAP} team members.`);
-  await sql`
+  if (String(invite.owner).toLowerCase() === person) throw new Error("This is your own business already.");
+  const full = `This business already has ${TEAM_CAP} team members.`;
+  if (Number(invite.members ?? 0) >= TEAM_CAP) throw new Error(full);
+  // The cap again inside the insert (someone already on the team just stays).
+  const joined = await sql`
     INSERT INTO insights_account_members (account_id, email, invited_by)
-    VALUES (${invite.account_id}, ${person}, ${invite.invited_by})
-    ON CONFLICT (account_id, email) DO UPDATE SET last_used_at = now()`;
-  await sql`DELETE FROM insights_account_invites WHERE account_id = ${invite.account_id} AND email = ${person}`;
+    SELECT ${invite.account_id}, ${person}, ${invite.invited_by}
+    WHERE (SELECT count(*) FROM insights_account_members WHERE account_id = ${invite.account_id}) < ${TEAM_CAP}
+      OR EXISTS (SELECT 1 FROM insights_account_members WHERE account_id = ${invite.account_id} AND lower(email) = ${person})
+    ON CONFLICT (account_id, email) DO UPDATE SET last_used_at = now()
+    RETURNING account_id`;
+  if (!joined.length) throw new Error(full);
+  await sql`DELETE FROM insights_account_invites WHERE account_id = ${invite.account_id} AND lower(email) = ${person}`;
   return invite.account_id;
 }
 
@@ -245,7 +284,7 @@ export async function acceptInvite(rawPerson: string, token: unknown): Promise<s
 export async function declineInvite(rawPerson: string, token: unknown): Promise<void> {
   if (typeof token !== "string" || !token) return;
   await ensureSchema();
-  await sql`DELETE FROM insights_account_invites WHERE token = ${token} AND email = ${rawPerson.toLowerCase()}`;
+  await sql`DELETE FROM insights_account_invites WHERE token = ${token} AND lower(email) = ${rawPerson.toLowerCase()}`;
 }
 
 /** The person's own business id, if they have one (where they go after leaving another). */

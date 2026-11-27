@@ -8,6 +8,7 @@ import { matchProducts, productsFromLines, productsToLines } from "@/lib/analyti
 import { goToGoogle } from "./Onboarding";
 import { api, apiFresh } from "./seo-ui";
 import { Card } from "./ui";
+import { MemberNote, useIsMember } from "./team-role";
 
 interface GmailState {
   connected: boolean;
@@ -782,6 +783,8 @@ function Input({ label: l, v, on, type = "text" }: { label: string; v: string | 
 }
 
 function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; data: CrmData; onClose: () => void; onSent: () => void }) {
+  // Sending from the business's Gmail is for the main sign in; a member opens it in their own email instead.
+  const member = useIsMember();
   const [to, setTo] = useState(contact.email);
   const [subject, setSubject] = useState(contact.draft?.subject ?? "");
   const [body, setBody] = useState(contact.draft?.body ?? "");
@@ -826,7 +829,7 @@ function EmailComposer({ contact, data, onClose, onSent }: { contact: Contact; d
       <textarea className={`${field} min-h-[180px]`} placeholder="Your message" value={body} onChange={(e) => setBody(e.target.value)} />
       {err && <p className="text-sm text-dash-down">{err}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        {data.gmail.connected ? (
+        {member ? null : data.gmail.connected ? (
           <button disabled={busy || !to || !subject || !body} className={primary} onClick={send}>Send from {data.gmail.email}</button>
         ) : (
           <button className={primary} onClick={() => goToGoogle("gmail").catch((e) => setErr(e instanceof Error ? e.message : "Couldn't open Google."))}>Allow sending from Gmail</button>
@@ -988,6 +991,7 @@ function ArchivedDialog({ onClose, onDone }: { onClose: () => void; onDone: () =
 }
 
 function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages: string[]; settings: CrmSettings; templates: Template[]; onClose: () => void; onDone: () => void }) {
+  const member = useIsMember();
   const [list, setList] = useState(stages.join("\n"));
   const [days, setDays] = useState(String(settings.followUpDays));
   const [daily, setDaily] = useState(settings.dailyEmail);
@@ -1090,7 +1094,8 @@ function StagesDialog({ stages, settings, templates, onClose, onDone }: { stages
         </>
       )}
       {err && <p className="mt-2 text-sm text-dash-down">{err}</p>}
-      <button className={`${primary} mt-3`} onClick={save}>Save settings</button>
+      <MemberNote text="Only the main sign in can change the CRM settings." />
+      {!member && <button className={`${primary} mt-3`} onClick={save}>Save settings</button>}
     </Dialog>
   );
 }

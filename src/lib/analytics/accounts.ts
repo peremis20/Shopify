@@ -159,7 +159,7 @@ export async function currentAccount(req: Request): Promise<Account | null> {
   await ensureSchema();
   const [row] = await sql`
     SELECT a.id, a.email,
-      EXISTS (SELECT 1 FROM insights_account_members m WHERE m.account_id = a.id AND m.email = ${s.person ?? ""}) AS member
+      EXISTS (SELECT 1 FROM insights_account_members m WHERE m.account_id = a.id AND lower(m.email) = ${(s.person ?? "").toLowerCase()}) AS member
     FROM insights_accounts a WHERE a.id = ${s.id}`;
   if (!row?.email) return null;
   const person = s.person ?? row.email;

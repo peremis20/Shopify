@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ConversionChange, ConversionMove, ConversionNumbers, ConversionReport } from "@/lib/analytics/autopilot/conversion";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
+import { useIsMember } from "./team-role";
 
 interface View {
   report: ConversionReport | null;
@@ -43,6 +44,8 @@ function Since({ c, now }: { c: ConversionChange; now: ConversionNumbers }) {
 
 /** The Conversion card: the store's conversion rate and funnel, and this week's moves to raise it. */
 export function Conversion() {
+  // Applying or undoing on the live site is for the main sign in.
+  const member = useIsMember();
   const [view, setView] = useState<View | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +97,7 @@ export function Conversion() {
                       {IMPACT[m.impact]} · How to tell: {m.measure}
                     </span>
                     {m.add && !added.has(m.id) && (
-                      <button disabled={busy} onClick={() => act("add", m.id)} className="rounded-lg bg-dash-green px-2 py-1 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+                      <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => act("add", m.id)} className="rounded-lg bg-dash-green px-2 py-1 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
                         Add to the product page
                       </button>
                     )}
@@ -116,7 +119,7 @@ export function Conversion() {
                     <span>
                       {c.title}, {new Date(c.at).toLocaleDateString()}. <Since c={c} now={r.numbers} />
                     </span>
-                    <button disabled={busy} onClick={() => act("undo", c.id)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
+                    <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => act("undo", c.id)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
                       Undo
                     </button>
                   </li>

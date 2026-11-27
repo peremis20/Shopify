@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "crypto";
 import { readSession, roleFor, sessionValue } from "../src/lib/analytics/accounts";
-import { inviteProblem, landingFor, removeProblem, TEAM_CAP } from "../src/lib/analytics/members";
+import { inviteProblem, landingFor, memberRefusal, OWNER_ONLY, ownerOnlyAction, removeProblem, TEAM_CAP } from "../src/lib/analytics/members";
 
 process.env.SESSION_SECRET ??= "test secret for members";
 const later = Math.floor(Date.now() / 1000) + 3600;
@@ -98,4 +98,24 @@ test("members: wording for owners has no dashes", () => {
     removeProblem({ role: "member", person: "a@b.co", target: "c@d.co", embedded: false }),
   ];
   for (const t of texts) assert.doesNotMatch(t!, /[‐-―-]/);
+});
+
+test("members: sending, publishing and settings inside shared endpoints are for the main sign in", () => {
+  for (const [area, action] of [
+    ["crm", "email"], ["crm", "settings"],
+    ["newsletter", "settings"], ["newsletter", "import"], ["newsletter", "add"], ["newsletter", "shopify"], ["newsletter", "approve"], ["newsletter", "retry"],
+    ["social", "approve"], ["storeAudit", "apply-price"], ["storeAudit", "undo-price"], ["speed", "shrink"], ["speed", "undo"],
+    ["conversion", "add"], ["conversion", "undo"], ["fix", "approve"],
+  ] as const) {
+    assert.equal(ownerOnlyAction(area, action), true, `${area} ${action}`);
+    assert.equal(memberRefusal("member", area, action), OWNER_ONLY);
+    assert.equal(memberRefusal("owner", area, action), null);
+  }
+  // Members still draft, keep the CRM, test the newsletter on themselves and pause a send.
+  for (const [area, action] of [["crm", "save"], ["crm", "draft"], ["newsletter", "save"], ["newsletter", "draft"], ["newsletter", "test"], ["newsletter", "stop"], ["social", "skip"], ["storeAudit", "run"], ["fix", null]] as const) {
+    assert.equal(memberRefusal("member", area, action), null, `${area} ${action}`);
+  }
+  assert.equal(ownerOnlyAction("unknown", "email"), false);
+  assert.equal(ownerOnlyAction("crm", undefined), false);
+  assert.doesNotMatch(OWNER_ONLY, /[\u2010-\u2015-]/);
 });

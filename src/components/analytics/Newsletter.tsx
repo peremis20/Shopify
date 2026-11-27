@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Campaign, NewsletterSettingsView, Subscriber, SubscriberStatus } from "@/lib/analytics/newsletter";
 import { api, apiFresh } from "./seo-ui";
 import { Card, ConfirmButton } from "./ui";
+import { MemberNote, OwnerOnly, useIsMember } from "./team-role";
 
 interface NewsletterData {
   settings: NewsletterSettingsView;
@@ -69,8 +70,11 @@ export function Newsletter({ active = true }: { active?: boolean }) {
           </div>
         </div>
         <Checklist data={data} />
+        <MemberNote text="Only the main sign in can change the newsletter settings, add people or approve a send. You can write emails and send yourself a test." />
       </Card>
-      <SettingsCard data={data} onDone={() => load()} />
+      <OwnerOnly note={null}>
+        <SettingsCard data={data} onDone={() => load()} />
+      </OwnerOnly>
       <Compose data={data} onDone={() => load()} />
       <Campaigns data={data} onDone={() => load()} />
       <Subscribers data={data} q={q} onSearch={(v) => { setQ(v); void load(v); }} onDone={() => load()} />
@@ -259,6 +263,8 @@ function Campaigns({ data, onDone }: { data: NewsletterData; onDone: () => void 
 }
 
 function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; onDone: () => void }) {
+  // Approving a send is for the main sign in; a member's test goes to their own sign in email.
+  const member = useIsMember();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ subject: c.subject, preview: c.preview, body: c.body });
   const [busy, setBusy] = useState(false);
@@ -307,7 +313,7 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
               Send me a test
             </button>
           )}
-          {draft && (
+          {draft && !member && (
             <ConfirmButton
               className={primary}
               disabled={busy || !c.tested || data.missing.length > 0 || subs === 0}
@@ -319,7 +325,7 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
           {(c.status === "approved" || c.status === "sending" || c.status === "failed") && (
             <button className={quiet} disabled={busy} onClick={() => act({ action: "stop" }, () => "Paused. Nobody else gets it until you approve it again.")}>Pause</button>
           )}
-          {c.status === "failed" && <button className={primary} disabled={busy} onClick={() => act({ action: "retry" }, () => "Sending carries on within the hour.")}>Try again</button>}
+          {c.status === "failed" && !member && <button className={primary} disabled={busy} onClick={() => act({ action: "retry" }, () => "Sending carries on within the hour.")}>Try again</button>}
           {editable && <ConfirmButton className={quiet} label="Delete" onConfirm={() => act({ action: "delete" })} />}
         </div>
       </div>
@@ -376,6 +382,7 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
     <Card>
       <h2 className="font-serif text-xl text-dash-ink">Subscribers</h2>
       <p className="mt-1 text-sm text-dash-muted">Only people who agreed to get your emails. Anyone who unsubscribed is never added back.</p>
+      <OwnerOnly note={null}>
       {data.hasStore && (
         <div className="mt-4 rounded-xl border border-dash-line p-4">
           <p className="text-sm">Customers who said yes to email marketing in your Shopify store.</p>
@@ -405,6 +412,7 @@ function Subscribers({ data, q, onSearch, onDone }: { data: NewsletterData; q: s
           {busy === "import" ? "Importing..." : "Import"}
         </button>
       </div>
+      </OwnerOnly>
       {msg && <p className="mt-3 text-sm text-dash-muted">{msg}</p>}
       <form
         className="mt-4 flex gap-2"

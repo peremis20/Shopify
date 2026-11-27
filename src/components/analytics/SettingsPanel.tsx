@@ -26,7 +26,8 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
   const member = account?.role === "member";
 
   useEffect(() => {
-    if (mode !== "oauth") return;
+    // The property list is the main sign in's (members see the chosen properties only).
+    if (mode !== "oauth" || member) return;
     fetch("/api/analytics/properties")
       .then(async (res) => {
         const body = await res.json();
@@ -34,7 +35,7 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
         setOptions(body);
       })
       .catch((err) => setLoadError(err.message));
-  }, [mode]);
+  }, [mode, member]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();

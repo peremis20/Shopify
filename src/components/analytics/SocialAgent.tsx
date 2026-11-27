@@ -6,6 +6,7 @@ import type { CommunityIdea } from "@/lib/analytics/communities";
 import type { LandingNote } from "@/lib/analytics/landing";
 import { api, apiFresh } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
+import { useIsMember } from "./team-role";
 
 interface AgentState {
   posts: SocialDraft[];
@@ -67,6 +68,7 @@ function DraftCard({
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(text);
   const [busy, setBusy] = useState(false);
+  const member = useIsMember();
   const [error, setError] = useState<string | null>(null);
   const act = async (action: "approve" | "skip") => {
     if (action === "approve" && !window.confirm("Post this now?")) return;
@@ -96,9 +98,9 @@ function DraftCard({
       {link && <p className="mt-1 break-words text-xs text-dash-muted">Links to {link.split("?")[0]}</p>}
       {note && <p className="mt-1 text-xs text-dash-muted">{note}</p>}
       <div className="mt-3 flex flex-wrap gap-2">
-        <button onClick={() => act("approve")} disabled={busy} className="rounded-lg bg-dash-green px-3 py-1.5 text-xs font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+        {member ? <span className="text-xs text-dash-muted">The main sign in approves posts.</span> : <button onClick={() => act("approve")} disabled={busy} className="rounded-lg bg-dash-green px-3 py-1.5 text-xs font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
           {busy ? "Working" : "Approve"}
-        </button>
+        </button>}
         <button onClick={() => setEditing((v) => !v)} disabled={busy} className="rounded-lg border border-dash-line px-3 py-1.5 text-xs font-semibold text-dash-ink hover:border-dash-green">
           {editing ? "Keep the draft" : "Edit"}
         </button>
@@ -113,12 +115,14 @@ function DraftCard({
 
 function Toggle({ checked, label, hint, onChange }: { checked: boolean; label: string; hint: string; onChange: (v: boolean) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
+  // Automatic posting is the main sign in's choice.
+  const member = useIsMember();
   return (
     <label className="mt-2 flex items-start gap-2 text-sm text-dash-ink">
       <input
         type="checkbox"
         checked={checked}
-        disabled={busy}
+        disabled={busy || member}
         onChange={async (e) => {
           setBusy(true);
           await onChange(e.target.checked).catch(() => undefined);
@@ -128,7 +132,7 @@ function Toggle({ checked, label, hint, onChange }: { checked: boolean; label: s
       />
       <span>
         {label}
-        <span className="block text-xs text-dash-muted">{hint}</span>
+        <span className="block text-xs text-dash-muted">{member ? "Only the main sign in can change this for the business." : hint}</span>
       </span>
     </label>
   );

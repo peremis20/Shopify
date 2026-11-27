@@ -17,6 +17,7 @@ import { ConnectButton, SettingsPanel, SetupSteps, TeamInvites } from "./Setting
 import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { clearApiCache, keptOwner, setKeptOwner } from "./seo-ui";
+import { setMemberSession } from "./team-role";
 import { isEmbedded } from "./embedded-client";
 
 import { Backlinks } from "./Backlinks";
@@ -174,6 +175,7 @@ export function DashboardView() {
       const who = body.account?.email ? `${body.account.business ?? ""}:${body.account.email}` : null;
       if (keptOwner() !== who) clearApiCache();
       if (!isEmbedded()) setKeptOwner(who);
+      setMemberSession(body.account?.role === "member");
       setData(body);
       try {
         if (!isEmbedded()) sessionStorage.setItem(keptKey, JSON.stringify({ at: Date.now(), data: body }));

@@ -19,7 +19,7 @@ import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { accountEmail, cleanEmail, currentAccount, extraAdmins, isAdminEmail, readCookie, saveExtraAdmins, sessionCookie, upsertAccount, type Account } from "./accounts";
-import { acceptInvite, declineInvite, inviteMember, MEMBER_GOOGLE_REFUSAL, ownBusinessId, removeMember, signInLanding, switchRole, teamView } from "./members";
+import { acceptInvite, declineInvite, inviteMember, MEMBER_GOOGLE_REFUSAL, memberRefusal, OWNER_ONLY, ownBusinessId, removeMember, signInLanding, switchRole, teamView } from "./members";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
@@ -213,6 +213,16 @@ async function withAccount(req: Request, run: (account: Account) => Promise<Resp
 const withAdmin = (req: Request, run: (account: Account) => Promise<Response>) =>
   withAccount(req, (a) => (a.admin ? run(a) : Promise.resolve(json({ error: "Only the platform owner can do this." }, 403))));
 
+/** Connections, autopilot settings, publishing, sending and spending: the business's main sign in only, never a team member. */
+const ownerOnly = (req: Request, run: (account: Account) => Promise<Response>) =>
+  withAccount(req, (a) => (a.role === "member" ? Promise.resolve(json({ error: OWNER_ONLY }, 403)) : run(a)));
+
+/** A shared endpoint's action that only the main sign in may take: the refusal, or null. */
+const refuseMember = (a: Account, area: string, action: unknown) => {
+  const why = memberRefusal(a.role, area, action);
+  return why ? json({ error: why }, 403) : null;
+};
+
 // ---------- session and Google sign-in ----------
 
 export async function session(req: Request): Promise<Response> {
@@ -242,8 +252,9 @@ export async function authStart(req: Request): Promise<Response> {
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
   }
-  // A team member signed in here is already in; a Connect with Google from their session would change nothing, so say why.
-  if (purpose !== "ads" && (await currentAccount(req).catch(() => null))?.role === "member") {
+  // A team member may sign in again (to switch Google accounts); every purpose that adds Google access is refused.
+  const linkAsked = Boolean(new URL(req.url).searchParams.get("link"));
+  if (purpose !== "ads" && (purpose !== "signin" || linkAsked) && (await currentAccount(req).catch(() => null))?.role === "member") {
     return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent(MEMBER_GOOGLE_REFUSAL)}`);
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
@@ -475,6 +486,7 @@ export async function wordpressConnect(req: Request): Promise<Response> {
   }
 
   const account = await currentAccount(req).catch(() => null);
+  if (account?.role === "member") return toApp(OWNER_ONLY);
   if (!account) {
     // Sign in first; the Google callback comes back here.
     const keep = new URLSearchParams({ site, key, back: backTo }).toString();
@@ -487,7 +499,7 @@ export async function wordpressConnect(req: Request): Promise<Response> {
     const host = escapeHtml(new URL(site).host);
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Connect WordPress</title>
 <style>body{margin:0;background:#F7F3EC;color:#2B2A27;font:16px/1.5 system-ui,sans-serif}main{max-width:480px;margin:12vh auto;padding:0 16px}a.b{display:inline-block;padding:10px 18px;border-radius:8px;background:#2B2A27;color:#fff;text-decoration:none;margin-right:12px}a{color:#2B2A27}</style></head>
-<body><main><h1>Connect ${host}?</h1><p>This lets the SEO autopilot improve titles, descriptions and content on <strong>${host}</strong> for ${escapeHtml(account.role === "member" ? `the business of ${account.ownerEmail} (you are signed in as ${account.email})` : `your account ${account.email}`)}. Every change is listed in the app and can be undone.</p>
+<body><main><h1>Connect ${host}?</h1><p>This lets the SEO autopilot improve titles, descriptions and content on <strong>${host}</strong> for your account ${escapeHtml(account.email)}. Every change is listed in the app and can be undone.</p>
 <p>Only continue if you just clicked Connect to Insights on your own WordPress site.</p>
 <p><a class="b" href="${escapeHtml(yes)}">Connect this site</a><a href="${escapeHtml(`${appOrigin(req)}/analytics`)}">Cancel</a></p></main></body></html>`;
     const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
@@ -532,7 +544,7 @@ export async function wordpressPlugin(req: Request): Promise<Response> {
 }
 
 export const wordpressDisconnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     await deleteWp(account.id);
     return json({ settings: await autopilotView(account.id, account.admin) });
   });
@@ -541,7 +553,7 @@ export const wordpressDisconnect = (req: Request) =>
 
 /** Webflow: a site token (Sites, Pages and CMS read and write) for the site at the account's domain. */
 export const webflowConnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     const token = typeof b.token === "string" ? b.token.trim() : "";
     const profile = await readProfile(account.id);
@@ -558,7 +570,7 @@ export const webflowConnect = (req: Request) =>
 
 /** Wix: an API key with Wix Blog permissions, and the site's id. */
 export const wixConnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     const apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
     // The site id is the long id in the Wix dashboard address; accept the whole address too.
@@ -578,7 +590,7 @@ export const wixConnect = (req: Request) =>
 
 /** Disconnects WordPress, Webflow or Wix (changes go back to the fix list). */
 export const siteDisconnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     if (b.kind === "webflow" || b.kind === "wix") await deleteConnectionFor(b.kind, account.id);
     else if (b.kind === "snippet") await removeSnippet(account.id);
@@ -688,7 +700,7 @@ export const saveOnboardingProfile = (req: Request) =>
  * platform, then finds its Google properties.
  */
 export const connectWebsite = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     const domain = bareDomain(typeof b.domain === "string" ? b.domain : "");
     if (!domain) return json({ error: "Enter your website address, like example.com." }, 400);
@@ -708,7 +720,7 @@ export const connectWebsite = (req: Request) =>
 
 /** Looks for the Search Console and Analytics properties again (after the owner granted access). */
 export const rematchProperties = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     await autoMatch(account.id);
     return json(await onboardingStatus(account.id, account.ownerEmail));
   });
@@ -739,7 +751,7 @@ export async function overview(req: Request): Promise<Response> {
 }
 
 export async function properties(req: Request): Promise<Response> {
-  return withAccount(req, async (account) => {
+  return ownerOnly(req, async (account) => {
     const conn = await getConnection(account.id);
     if (!conn) return json({ error: "Sign in with Google again." }, 401);
     return json(await listProperties({ kind: "oauth", refreshToken: conn.refreshToken }));
@@ -994,7 +1006,7 @@ export const gmailStatus = (req: Request) =>
 
 /** Sends one outreach email from the owner's Gmail. Only ever called by the owner's own Send click. */
 export const gmailSendEmail = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { url?: string; to?: unknown; subject?: unknown; body?: unknown };
     const list = await readProspects(account.id);
     const p = list?.prospects.find((x) => x.url === b.url);
@@ -1306,7 +1318,7 @@ export const autopilotStatus = (req: Request) =>
 
 /** The customer's own choices: on/off, pages per week, content sections. */
 export const saveAutopilot = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     await saveAccountAutopilot(account.id, {
       enabled: typeof b.enabled === "boolean" ? b.enabled : undefined,
@@ -1633,7 +1645,7 @@ export const previewAutopilot = (req: Request) =>
   withAccount(req, async (account) => json(await runAutopilot(account.id, await getConnection(account.id), "preview")));
 
 export const runAutopilotNow = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     // Sabbath rest: no changes to live sites from Friday sundown to Saturday sundown.
     if (isSabbath()) return json({ error: "The autopilot rests for the Sabbath and changes nothing until Saturday sundown. Run now works again after that." }, 409);
     const out = await runAutopilot(account.id, await getConnection(account.id), "manual");
@@ -1645,6 +1657,8 @@ export const runAutopilotNow = (req: Request) =>
 export const markFix = (req: Request) =>
   withAccount(req, async (account) => {
     const b = await req.json().catch(() => ({}));
+    const refused = refuseMember(account, "fix", b.approve === true ? "approve" : null);
+    if (refused) return refused;
     try {
       if (b.approve === true) {
         // Sabbath rest: nothing goes live on a site from Friday sundown to Saturday sundown.
@@ -1658,7 +1672,7 @@ export const markFix = (req: Request) =>
   });
 
 export const revertAutopilot = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = await req.json().catch(() => ({}));
     try {
       await revertChange(account.id, String(b.id ?? ""));
@@ -2135,6 +2149,7 @@ export async function heartbeat(): Promise<Response> {
 export async function shopifyInstall(req: Request): Promise<Response> {
   const account = await currentAccount(req);
   if (!account) return redirect(`${appOrigin(req)}/analytics`);
+  if (account.role === "member") return redirect(`${appOrigin(req)}/analytics?${new URLSearchParams({ shopify_error: OWNER_ONLY })}#autopilot`);
   const shop = normalizeShopDomain(new URL(req.url).searchParams.get("shop") ?? "");
   if (!shop) return redirect(`${appOrigin(req)}/analytics?shopify_error=Enter+your+store+name,+like+mystore.myshopify.com#autopilot`);
   try {
@@ -2151,6 +2166,7 @@ export async function shopifyCallback(req: Request): Promise<Response> {
     redirect(`${appOrigin(req)}/analytics?${new URLSearchParams(p)}#autopilot`, tempCookie(req, SHOPIFY_STATE_COOKIE, "", 0));
   const account = await currentAccount(req);
   if (!account) return back({ shopify_error: "Please sign in, then connect your store again." });
+  if (account.role === "member") return back({ shopify_error: OWNER_ONLY });
   const shop = normalizeShopDomain(params.get("shop") ?? "");
   const code = params.get("code");
   // The state must be the one this browser was given at install: without it, someone could link their own store
@@ -2171,7 +2187,7 @@ export async function shopifyCallback(req: Request): Promise<Response> {
 }
 
 export const shopifyDisconnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     await saveAccountAutopilot(account.id, { shopDomain: "", shopTokenEnc: null, enabled: false });
     // The store's sales are no longer this account's to show.
     await sql`DELETE FROM insights_report_cache WHERE cache_key = ${`shopsales:${account.id}`}`.catch(() => undefined);
@@ -2258,7 +2274,7 @@ export const threadsStatus = (req: Request) =>
 
 /** A Threads connect link tied to this account (opened at the top level, also from inside Shopify admin). */
 export const threadsLinkStart = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     if (!(await threadsApp())) return json({ error: "Threads isn't set up on DashPatrol yet." }, 400);
     const acct = await readAccountAutopilot(account.id);
     const embedded = Boolean(req.headers.get("authorization"));
@@ -2292,6 +2308,7 @@ export async function threadsAuthCallback(req: Request): Promise<Response> {
   if (!code || !link || !app) return back({ auth_error: "The Threads link expired. Please try again from Share this week." });
   try {
     const here = await currentAccount(req).catch(() => null);
+    if (here?.role === "member") throw new Error(OWNER_ONLY);
     if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Threads from inside that account instead.");
     if (link.session && !here) throw new Error("Please sign in again, then connect Threads from the app.");
     if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
@@ -2334,6 +2351,7 @@ export async function threadsAuthConfirm(req: Request): Promise<Response> {
   const fallback = `${appOrigin(req)}/analytics`;
   const go = (to: string, p: Record<string, string>) => redirect(`${to}${to.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
   try {
+    if ((await currentAccount(req).catch(() => null))?.role === "member") return go(fallback, { auth_error: OWNER_ONLY });
     const pending = id ? await readPending(id) : null;
     if (!pending || !id || !confirm || readCookie(req, THREADS_CONFIRM_COOKIE) !== `${id}.${confirm}`) {
       return go(fallback, { auth_error: "That Threads link expired. Please connect Threads again from Share this week." });
@@ -2352,7 +2370,7 @@ export async function threadsAuthConfirm(req: Request): Promise<Response> {
 
 /** Posts one article's share post to Threads. Only the owner's click (or their own automatic posting choice) calls this. */
 export const threadsPost = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { changeId?: string };
     // Sabbath rest: nothing is posted from Friday sundown to Saturday sundown.
     if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Post it again after Saturday sundown." }, 409);
@@ -2365,7 +2383,7 @@ export const threadsPost = (req: Request) =>
 
 /** Turns automatic posting to Threads on or off for this site. */
 export const threadsSettings = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { auto?: unknown; autoReply?: unknown };
     const link = await getThreads(account.id);
     if (!link) return json({ error: "Connect Threads first." }, 400);
@@ -2383,6 +2401,8 @@ export const socialAgent = (req: Request) =>
       const id = String(b.id ?? "");
       const edited = typeof b.text === "string" ? b.text : null;
       if (!id || (b.type !== "post" && b.type !== "reply")) return json({ error: "Nothing to do." }, 400);
+      const refused = refuseMember(account, "social", b.action);
+      if (refused) return refused;
       if (b.action === "skip") {
         if (b.type === "post") await skipPost(account.id, id);
         else await skipReply(account.id, id);
@@ -2423,6 +2443,8 @@ export const storeAuditApi = (req: Request) =>
   withAccount(req, async (account) => {
     if (req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
+      const refused = refuseMember(account, "storeAudit", b.action);
+      if (refused) return refused;
       if (b.action === "apply-price" || b.action === "undo-price") {
         if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
         if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
@@ -2445,6 +2467,8 @@ export const speedApi = (req: Request) =>
     if (req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
       if (b.action !== "shrink" && b.action !== "undo") return json({ error: "Nothing to do." }, 400);
+      const refused = refuseMember(account, "speed", b.action);
+      if (refused) return refused;
       if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
       if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
       const why = await applyImage(account.id, b.id, typeof b.checkAt === "string" ? b.checkAt : null, b.action === "undo");
@@ -2555,6 +2579,8 @@ export const crmApi = (req: Request) =>
     // Nothing bigger than a 3 MB file (about 4 MB as text) is read at all.
     if (Number(req.headers.get("content-length") ?? 0) > 4_400_000) return json({ error: "That is too much to send at once. Files up to 3 MB can be kept here; for bigger files, put them in Google Drive and add the link." }, 413);
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+    const refused = refuseMember(account, "crm", b.action);
+    if (refused) return refused;
     let id: string | undefined;
     try {
       switch (b.action) {
@@ -2620,6 +2646,8 @@ export const newsletterApi = (req: Request) =>
     if (Number(req.headers.get("content-length") ?? 0) > 3_500_000) return json({ error: "That is too much at once. Import up to 20,000 people at a time." }, 413);
     const b = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const rest = () => json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
+    const refused = refuseMember(account, "newsletter", b.action);
+    if (refused) return refused;
     try {
       switch (b.action) {
         case "settings": return json({ ok: true, note: await saveNewsletterSettings(account.id, b.settings) });
@@ -2635,7 +2663,8 @@ export const newsletterApi = (req: Request) =>
         }
         case "test": {
           if (isSabbath()) return rest();
-          return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req)) });
+          // A member's test goes to the member who pressed it; the owner's to the owner.
+          return json({ ok: true, to: await sendTest(account.id, b.id, appOrigin(req), account.role === "member" ? account.email : undefined) });
         }
         case "approve": return json({ ok: true, count: await approveCampaign(account.id, b.id, b.count, appOrigin(req)) });
         case "stop": await stopCampaign(account.id, b.id); break;
@@ -2718,6 +2747,8 @@ export const conversionApi = (req: Request) =>
     if (req.method === "POST") {
       const b = (await req.json().catch(() => ({}))) as { action?: string; id?: string; checkAt?: string };
       if (b.action !== "add" && b.action !== "undo") return json({ error: "Nothing to do." }, 400);
+      const refused = refuseMember(account, "conversion", b.action);
+      if (refused) return refused;
       if (isSabbath()) return json({ error: "DashPatrol rests for the Sabbath. Try again after Saturday sundown." }, 409);
       if (typeof b.id !== "string" || !b.id) return json({ error: "Nothing to do." }, 400);
       const why = await applyConversionMove(account.id, b.id, typeof b.checkAt === "string" ? b.checkAt : null, b.action === "undo");
@@ -2829,7 +2860,7 @@ export const outreachApi = (req: Request) =>
 
 /** Stops posting to Threads: the saved access is deleted. */
 export const threadsDisconnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     await removeThreads(account.id);
     return json({ ok: true });
   });
@@ -2913,7 +2944,7 @@ export const facebookStatus = (req: Request) =>
 
 /** A Facebook connect link tied to this account (opened at the top level, also from inside Shopify admin). */
 export const facebookLinkStart = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     if (!(await facebookApp())) return json({ error: "Facebook isn't set up on DashPatrol yet." }, 400);
     const acct = await readAccountAutopilot(account.id);
     const embedded = Boolean(req.headers.get("authorization"));
@@ -2961,6 +2992,7 @@ export async function facebookAuthCallback(req: Request): Promise<Response> {
   if (!code || !link || !app) return back({ auth_error: "The Facebook link expired. Please try again from Share this week." });
   try {
     const here = await currentAccount(req).catch(() => null);
+    if (here?.role === "member") throw new Error(OWNER_ONLY);
     if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Facebook from inside that account instead.");
     if (link.session && !here) throw new Error("Please sign in again, then connect Facebook from the app.");
     if (!(await useLinkTicket(link))) throw new Error("That link was already used. Please start again from the app.");
@@ -2997,6 +3029,7 @@ async function creatorGrantCallback(
   if (params.get("error") || !code) return fail("Facebook access was not allowed.");
   try {
     const here = await currentAccount(req).catch(() => null);
+    if (here?.role === "member") return fail(OWNER_ONLY);
     if (link.session && here && here.id !== link.accountId) return fail("This browser is signed in to a different account.");
     if (link.session && !here) return fail("Please sign in again first.");
     if (!(await useLinkTicket(link))) return fail("That link was already used.");
@@ -3048,6 +3081,7 @@ export async function facebookAuthConfirm(req: Request): Promise<Response> {
   const go = (to: string, p: Record<string, string>) => redirect(`${to}${to.includes("?") ? "&" : "?"}${new URLSearchParams(p)}`, clear);
   const expired = { auth_error: "That Facebook link expired. Please connect Facebook again from Share this week." };
   try {
+    if ((await currentAccount(req).catch(() => null))?.role === "member") return go(fallback, { auth_error: OWNER_ONLY });
     const pending = id ? await readFacebookPending(id) : null;
     if (!pending || !id || !confirm || readCookie(req, FACEBOOK_CONFIRM_COOKIE) !== `${id}.${confirm}`) return go(fallback, expired);
     if (form?.get("answer") !== "yes") {
@@ -3065,7 +3099,7 @@ export async function facebookAuthConfirm(req: Request): Promise<Response> {
 
 /** Posts one article to the owner's Facebook Page or Instagram account. Only the owner's click (or their automatic posting choice) calls this. */
 export const facebookPost = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { changeId?: string; channel?: string };
     const channel = b.channel === "instagram" ? "instagram" : b.channel === "facebook" ? "facebook" : null;
     if (!channel) return json({ error: "Pick Facebook or Instagram." }, 400);
@@ -3080,7 +3114,7 @@ export const facebookPost = (req: Request) =>
 
 /** Turns automatic posting to the Facebook Page or Instagram on or off for this site. */
 export const facebookSettings = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     const b = (await req.json().catch(() => ({}))) as { facebook?: unknown; instagram?: unknown };
     const link = await getFacebook(account.id);
     if (!link) return json({ error: "Connect Facebook first." }, 400);
@@ -3095,7 +3129,7 @@ export const facebookSettings = (req: Request) =>
 
 /** Stops posting to Facebook and Instagram: the saved access is deleted. */
 export const facebookDisconnect = (req: Request) =>
-  withAccount(req, async (account) => {
+  ownerOnly(req, async (account) => {
     await removeFacebook(account.id);
     return json({ ok: true });
   });

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { SpeedFix, SpeedReport } from "@/lib/analytics/autopilot/speed";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
+import { useIsMember } from "./team-role";
 
 interface View {
   report: SpeedReport | null;
@@ -23,6 +24,8 @@ const IMPACT: Record<SpeedFix["impact"], string> = { high: "Big effect", medium:
 
 /** The Speed card: the Speed agent's phone test and fixes, and the Image agent's lighter copies. */
 export function Speed() {
+  // Applying or undoing on the live site is for the main sign in.
+  const member = useIsMember();
   const [view, setView] = useState<View | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +99,7 @@ export function Speed() {
                   {done.has(c.fileId) ? (
                     <span className="text-xs font-semibold">Done</span>
                   ) : (
-                    <button disabled={busy} onClick={() => act("shrink", c.fileId)} className="rounded-lg bg-dash-green px-2 py-1 text-xs font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+                    <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => act("shrink", c.fileId)} className="rounded-lg bg-dash-green px-2 py-1 text-xs font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
                       Shrink
                     </button>
                   )}
@@ -115,7 +118,7 @@ export function Speed() {
                 <span>
                   {c.name}: {kb(c.before)} to {kb(c.after)}, {new Date(c.at).toLocaleDateString()}
                 </span>
-                <button disabled={busy} onClick={() => act("undo", c.fileId)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
+                <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => act("undo", c.fileId)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
                   Undo
                 </button>
               </li>

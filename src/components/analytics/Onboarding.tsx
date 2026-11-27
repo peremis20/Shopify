@@ -7,6 +7,7 @@ import { isEmbedded } from "./embedded-client";
 import { ConnectButton } from "./SettingsPanel";
 import { PlatformConnect } from "./PlatformConnect";
 import { Card } from "./ui";
+import { OwnerOnly } from "./team-role";
 
 /**
  * Guided setup at the top of the dashboard: one question at a time, about two
@@ -198,13 +199,21 @@ export function Onboarding({ simple = true, onOpenSettings, onChanged, onPreview
                 One Google sign in covers Search Console and Analytics. The app reads them, and only changes something in your Google
                 account when you ask it to (like Set it up for me).
               </p>
-              <ConnectButton />
+              <OwnerOnly note="Only the main sign in can connect Google for this business.">
+                <ConnectButton />
+              </OwnerOnly>
             </div>
           )}
-          {current === "website" && <WebsiteConnect busy={busy === "website"} act={act} />}
+          {current === "website" && (
+            <OwnerOnly note="The main sign in connects the website for this business.">
+              <WebsiteConnect busy={busy === "website"} act={act} />
+            </OwnerOnly>
+          )}
           {current === "connect" && status.domain && (
             <div className="space-y-3">
-              <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("connected", async () => undefined, true)} />
+              <OwnerOnly note="The main sign in connects the website for this business.">
+                <PlatformConnect platform={status.platform} domain={status.domain} onConnected={() => act("connected", async () => undefined, true)} />
+              </OwnerOnly>
               <button onClick={() => skip("connect")} className="font-semibold text-dash-muted hover:text-dash-ink">
                 Skip for now: I&apos;ll paste changes in myself
               </button>
@@ -276,7 +285,9 @@ function DataScreen({
   if (mode === "setup") {
     return (
       <div className="space-y-3">
-        <SetupForMe act={act} busy={busy} autoStart={!pending} />
+        <OwnerOnly note="Only the main sign in can connect Google for this business.">
+          <SetupForMe act={act} busy={busy} autoStart={!pending} />
+        </OwnerOnly>
         {otherOptions}
       </div>
     );
@@ -332,13 +343,15 @@ function Finish({ status, busy, act, onLater, onPreview }: { status: Status; bus
       </ul>
       <p className="text-dash-muted">You can change both numbers in Autopilot settings, and undo any change.</p>
       <div className="flex flex-wrap items-center gap-3">
-        <button
-          disabled={busy === "enable"}
-          onClick={() => act("enable", async () => void (await api("/api/autopilot/settings", { enabled: true })), true)}
-          className={button}
-        >
-          {busy === "enable" ? "Turning on…" : "Turn on the autopilot"}
-        </button>
+        <OwnerOnly note="The main sign in turns the autopilot on.">
+          <button
+            disabled={busy === "enable"}
+            onClick={() => act("enable", async () => void (await api("/api/autopilot/settings", { enabled: true })), true)}
+            className={button}
+          >
+            {busy === "enable" ? "Turning on…" : "Turn on the autopilot"}
+          </button>
+        </OwnerOnly>
         <button
           onClick={() => {
             onLater();
@@ -755,9 +768,11 @@ function PropertyHelp({
   if (!google) return <p className="text-dash-muted">Connect Google first; this is then found for you.</p>;
   const access = !step.done ? status.access : null;
   const recheck = (
-    <button disabled={busy === "match"} onClick={() => act("match", () => api<Status>("/api/onboarding/match", {}), true)} className={link}>
-      {busy === "match" ? "Looking…" : "Check again"}
-    </button>
+    <OwnerOnly note={null}>
+      <button disabled={busy === "match"} onClick={() => act("match", () => api<Status>("/api/onboarding/match", {}), true)} className={link}>
+        {busy === "match" ? "Looking…" : "Check again"}
+      </button>
+    </OwnerOnly>
   );
   if (step.done) {
     return (
@@ -769,7 +784,11 @@ function PropertyHelp({
   return (
     <div className="max-w-2xl space-y-3">
       {/* Never Google's own setup screens: the app sets it up, or the owner adds this account. */}
-      {!hideSetup && canSetUp && <SetupForMe act={act} busy={busy} />}
+      {!hideSetup && canSetUp && (
+        <OwnerOnly note={null}>
+          <SetupForMe act={act} busy={busy} />
+        </OwnerOnly>
+      )}
       {access && (
         <div className="space-y-2">
           {!hideSetup && (

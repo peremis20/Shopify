@@ -7,6 +7,7 @@ import type { AuthorityPlan } from "@/lib/analytics/autopilot/authority-coach";
 import { api } from "./seo-ui";
 import { Skeleton } from "./ui";
 import { goToGoogle } from "./Onboarding";
+import { useIsMember } from "./team-role";
 
 export interface GmailState {
   connected: boolean;
@@ -144,6 +145,8 @@ export function Backlinks() {
 }
 
 function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: string, s: ProspectStatus) => void; gmail: GmailState | null; onSent: (list: ProspectList | null, sentToday: number, note: string) => void }) {
+  // Sending from the business's Gmail is for the main sign in; a member opens it in their own email instead.
+  const member = useIsMember();
   const [email, setEmail] = useState<{ subject: string; body: string; to?: string | null; at?: string } | null>(p.status === "new" ? (p.draft ?? null) : null);
   // A draft written after this row first showed (the weekly Outreach Drafter) is loaded in when the list reloads.
   const draftAt = p.status === "new" ? p.draft?.at : undefined;
@@ -275,7 +278,7 @@ function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: 
             >
               Open in my email
             </a>
-            {p.status === "new" && gmail?.connected && (
+            {p.status === "new" && gmail?.connected && !member && (
               <button
                 onClick={send}
                 disabled={sending || gmail.sentToday >= gmail.cap}
@@ -285,7 +288,7 @@ function ProspectRow({ p, onMark, gmail, onSent }: { p: Prospect; onMark: (url: 
                 {sending ? "Sending..." : "Send from my Gmail"}
               </button>
             )}
-            {p.status === "new" && gmail && !gmail.connected && (
+            {p.status === "new" && gmail && !gmail.connected && !member && (
               <button onClick={() => setAllowInfo(!allowInfo)} className="rounded-full border border-dash-line bg-white px-3 py-1 text-xs font-semibold text-dash-ink">
                 Send from my Gmail
               </button>

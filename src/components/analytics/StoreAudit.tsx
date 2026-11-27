@@ -5,6 +5,7 @@ import type { PageReport, ReviewState, SlowApp, StoreFinding } from "@/lib/analy
 import type { AppliedChange, PriceFinding, PricingCheck } from "@/lib/analytics/autopilot/pricing-check";
 import { api } from "./seo-ui";
 import { Card, CardHeader } from "./ui";
+import { useIsMember } from "./team-role";
 
 type Labeled<T> = T & { label: string };
 type Page = Omit<PageReport, "scripts"> & {
@@ -53,6 +54,8 @@ function Fix({ f }: { f: StoreFinding }) {
 }
 
 function PriceFix({ f, applied, busy, onApply }: { f: PriceFinding; applied: boolean; busy: boolean; onApply: (id: string) => void }) {
+  // Applying or undoing on the live site is for the main sign in.
+  const member = useIsMember();
   return (
     <li className="rounded-xl border border-dash-line p-3">
       <p className="text-sm font-semibold text-dash-ink">{f.problem}</p>
@@ -62,7 +65,7 @@ function PriceFix({ f, applied, busy, onApply }: { f: PriceFinding; applied: boo
           {pathOf(f.page)} · {IMPACT[f.impact]}
         </span>
         {f.apply && !applied && (
-          <button disabled={busy} onClick={() => onApply(f.id)} className="rounded-lg bg-dash-green px-2 py-1 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
+          <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => onApply(f.id)} className="rounded-lg bg-dash-green px-2 py-1 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
             Apply crossed out price
           </button>
         )}
@@ -76,6 +79,8 @@ function PriceFix({ f, applied, busy, onApply }: { f: PriceFinding; applied: boo
 const amount = (c: number | null, currency: string) => (c === null ? "none" : `${(c / 100).toFixed(2)} ${currency}`);
 
 function AppliedList({ list, busy, onUndo }: { list: AppliedChange[]; busy: boolean; onUndo: (id: string) => void }) {
+  // Applying or undoing on the live site is for the main sign in.
+  const member = useIsMember();
   if (!list.length) return null;
   return (
     <div className="mt-3">
@@ -86,7 +91,7 @@ function AppliedList({ list, busy, onUndo }: { list: AppliedChange[]; busy: bool
             <span>
               {c.label}: {amount(c.before, c.currency)} to {amount(c.after, c.currency)}, {new Date(c.at).toLocaleDateString()}
             </span>
-            <button disabled={busy} onClick={() => onUndo(`${c.id}@${c.at}`)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
+            <button hidden={member} title={member ? "Only the main sign in can change this for the business." : undefined} disabled={busy} onClick={() => onUndo(`${c.id}@${c.at}`)} className="font-semibold text-dash-green hover:underline disabled:opacity-60">
               Undo
             </button>
           </li>

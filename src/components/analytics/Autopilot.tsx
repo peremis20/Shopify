@@ -11,6 +11,7 @@ import { PlatformForm } from "./PlatformSettings";
 import { api, pathOf } from "./seo-ui";
 import { SortHeader, useSort } from "./sorting";
 import { Card, CardHeader, ConfirmButton, Skeleton } from "./ui";
+import { OWNER_ONLY_NOTE, OwnerOnly, useIsMember } from "./team-role";
 
 interface State {
   settings: AutopilotSettingsView;
@@ -105,6 +106,9 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
     }
   }
 
+  // A team member sees the settings but can't change them, run the autopilot, or change a connection.
+  const member = useIsMember();
+
   const save = (body: Record<string, unknown>) =>
     act("save", async () => {
       const d = await api<{ settings: AutopilotSettingsView }>("/api/autopilot/settings", body);
@@ -169,10 +173,16 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
           </p>
         )
       ) : !state.settings.shopConnected && !website ? (
-        <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} onWebsite={load} />
+        <OwnerOnly note="The main sign in connects the store or website for this business.">
+          <ConnectShopify adminLink={admin ? () => setPlatformOpen(true) : undefined} onWebsite={load} />
+        </OwnerOnly>
       ) : (
         <div className="space-y-5 text-sm">
-          {website && !website.connection && <PlatformConnect platform={website.platform} domain={website.domain} onConnected={load} />}
+          {website && !website.connection && (
+            <OwnerOnly note={null}>
+              <PlatformConnect platform={website.platform} domain={website.domain} onConnected={load} />
+            </OwnerOnly>
+          )}
           {website && !website.connection && (
             <p className="max-w-3xl rounded-lg bg-[#FBF1E1] p-3 text-dash-ink">
               The app reads {website.domain} like Google does but can&apos;t edit it, so each improvement lands on your{" "}
@@ -199,7 +209,9 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
 
           {state.apps && state.apps.length > 0 && <ConnectedApps apps={state.apps} />}
 
+          {member && <p className="text-dash-muted">{OWNER_ONLY_NOTE} You can preview the next run.</p>}
           <div className="flex flex-wrap items-center gap-3">
+            <fieldset disabled={member} className="contents">
             <button
               onClick={() => save({ enabled: !state.settings.enabled })}
               disabled={busy !== null}
@@ -253,6 +265,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
               />
               Email me a weekly report and urgent alerts{state.settings.alertEmail ? ` (to ${state.settings.alertEmail})` : ""}
             </label>
+            </fieldset>
             <div className="ml-auto flex flex-wrap gap-2">
               <button
                 onClick={runPreview}
@@ -261,7 +274,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
               >
                 {busy === "preview" ? "Checking live data…" : "Preview next run"}
               </button>
-              <button
+              {!member && <button
                 onClick={() =>
                   act("run", async () => {
                     const r = await api<{ message: string }>("/api/autopilot/run", {});
@@ -273,7 +286,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
                 className="rounded-xl border border-dash-line bg-white px-4 py-2.5 font-semibold text-dash-ink hover:border-dash-green/40 disabled:opacity-60"
               >
                 {busy === "run" ? "Working, this takes a minute or two…" : "Run now"}
-              </button>
+              </button>}
               {admin && (
                 <button onClick={() => setPlatformOpen(true)} className="px-2 font-semibold text-dash-green hover:underline">
                   Platform keys
@@ -293,6 +306,10 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
                 <>
                   {" · connected"}
                   {website.connection.detail ? ` (${website.connection.detail})` : ""}
+                </>
+              )}
+              {website.connection && !member && (
+                <>
                   {" · "}
                   <ConfirmButton
                     label="Disconnect"
@@ -312,6 +329,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
           ) : (
           <p className="text-dash-muted">
             Connected store: <span className="font-semibold text-dash-ink">{state.settings.shopDomain}</span>
+            {!member && <>
             {" · "}
             <a
               href={`/api/shopify/install?shop=${encodeURIComponent(state.settings.shopDomain ?? "")}`}
@@ -333,6 +351,7 @@ export function Autopilot({ connected, admin, simple = false, autoPreview = fals
               }
               className="font-semibold text-dash-down hover:underline"
             />
+            </>}
           </p>
           )}
 
@@ -443,6 +462,7 @@ function FixList({
   onMark: (id: string, done: boolean, approve?: boolean) => void;
 }) {
   const [copied, setCopied] = useState<string | null>(null);
+  const member = useIsMember();
   const html = (f: AutopilotChange) => f.field === "content" || f.field === "schema" || f.field === "internal_link" || f.field === "new_article";
   const waiting = fixes.filter((f) => f.awaiting).length;
   return (
@@ -478,7 +498,9 @@ function FixList({
             {!f.awaiting && <p className="mt-2 text-dash-muted">{fixGuide(platform, f.field)}</p>}
             {f.reason && <p className="mt-1 text-xs text-dash-muted">Why: {f.reason}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-3">
-              {f.awaiting ? (
+              {f.awaiting && member ? (
+                <span className="text-xs text-dash-muted">Waiting for the main sign in to approve.</span>
+              ) : f.awaiting ? (
                 <button onClick={() => onMark(f.id, true, true)} disabled={busy} className="rounded-xl bg-dash-green px-3 py-1.5 font-semibold text-white hover:bg-dash-deep disabled:opacity-60">
                   Approve
                 </button>
@@ -578,6 +600,7 @@ function PreviewCard({ preview, labels, onClose }: { preview: AutopilotPreview; 
 
 function ChangeLog({ changes, labels, busy, onUndo }: { changes: AutopilotChange[]; labels: Record<ChangeField, string>; busy: boolean; onUndo: (id: string) => void }) {
   const [open, setOpen] = useState<string | null>(null);
+  const member = useIsMember();
   const { sorted, sort } = useSort(
     changes,
     {
@@ -645,7 +668,7 @@ function ChangeLog({ changes, labels, busy, onUndo }: { changes: AutopilotChange
                     </span>
                   </td>
                   <td className="px-1 py-2 text-right">
-                    {(c.status === "applied" || c.status === "kept") && (
+                    {(c.status === "applied" || c.status === "kept") && !member && (
                       <ConfirmButton
                         label="Undo"
                         confirmLabel="Click again to undo"
