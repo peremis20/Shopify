@@ -1917,7 +1917,13 @@ async function sendCampaign(
       if (!(await stillSending())) return { note: `${sentNow} sent, then paused`, more: true };
       // The welcome email stays on for the next new subscriber; it is never "done".
       if (welcome) {
-        if (sentNow) await postNote(accountId, "Newsletter", "did", `Sent the welcome email to ${sentNow} new ${sentNow === 1 ? "subscriber" : "subscribers"}.`);
+        if (sentNow) {
+          // One note a day on the team board, with the day's whole count.
+          const [d] = await sql`SELECT count(*) AS n FROM insights_newsletter_sends WHERE campaign_id = ${cid} AND status = 'sent'
+            AND sent_at >= ((now() AT TIME ZONE 'UTC')::date::timestamp AT TIME ZONE 'UTC')`;
+          const today = Number(d?.n ?? sentNow);
+          await postNote(accountId, "Newsletter", "did", `Sent the welcome email to ${today.toLocaleString("en-US")} new ${today === 1 ? "subscriber" : "subscribers"} today.`, { ref: `newsletter:welcome:${new Date().toISOString().slice(0, 10)}` });
+        }
         return { note: `${sentNow} welcomed`, more: true };
       }
       // Nobody left to claim. Done once no batch is still waiting for a clear answer from Resend.

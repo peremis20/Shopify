@@ -47,3 +47,10 @@ test("order source: Google app, Shopping, ads names, unknown and the store's own
   assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("Other") }), "Other");
   assert.equal(orderSource("web", { firstVisit: null, lastVisit: visit("google.evil.com") }), "google.evil.com");
 });
+
+test("order source: a visit from a newsletter link counts as Newsletter, after Google search", () => {
+  const letter = { source: "newsletter", referrerUrl: null, landingPage: "https://x.com/a", utmParameters: { medium: "email", source: "newsletter", campaign: "12_spring" } };
+  assert.equal(orderSource("web", { firstVisit: null, lastVisit: letter }), "Newsletter");
+  assert.equal(orderSource("web", { firstVisit: letter, lastVisit: visit("direct") }), "Newsletter");
+  assert.equal(orderSource("web", { firstVisit: visit("Google", "https://www.google.com/"), lastVisit: letter }), "Google search");
+});

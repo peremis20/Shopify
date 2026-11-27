@@ -5,6 +5,7 @@ import type { Campaign, NewsletterSettingsView, Subscriber, SubscriberStatus } f
 import { api, apiFresh } from "./seo-ui";
 import { Card, ConfirmButton } from "./ui";
 import { MemberNote, OwnerOnly, useIsMember } from "./team-role";
+import { NewsletterMetrics } from "./NewsletterMetrics";
 
 interface NewsletterData {
   settings: NewsletterSettingsView;
@@ -43,9 +44,11 @@ export function Newsletter({ active = true }: { active?: boolean }) {
   const [data, setData] = useState<NewsletterData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  const [loads, setLoads] = useState(0);
   const load = useCallback(async (search = q) => {
     try {
       setData(await apiFresh<NewsletterData>(`/api/newsletter${search ? `?q=${encodeURIComponent(search)}` : ""}`));
+      setLoads((x) => x + 1);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load the newsletter.");
@@ -72,8 +75,10 @@ export function Newsletter({ active = true }: { active?: boolean }) {
         <Checklist data={data} />
         <MemberNote text="Only the main sign in can change the newsletter settings, add people or approve a send. You can write emails and send yourself a test." />
       </Card>
+      <NewsletterMetrics active={active} reload={loads} />
       <OwnerOnly note={null}>
         <SettingsCard data={data} onDone={() => load()} />
+        <AutoCard data={data} onDone={() => load()} />
       </OwnerOnly>
       <Compose data={data} onDone={() => load()} />
       <Campaigns data={data} onDone={() => load()} />
@@ -171,7 +176,7 @@ function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => vo
           <details className="text-sm">
             <summary className="cursor-pointer font-medium">Advanced: bounces and spam reports</summary>
             <p className="mt-2 text-dash-muted">
-              In Resend, open Webhooks, add this address and pick the bounced and complained events. Then paste the signing secret here, so people whose email bounced or who marked it as spam are never emailed again.
+              In Resend, open Webhooks, add this address and pick these events: sent, delivered, delivery delayed, bounced, complained, opened and clicked. Then paste the signing secret here. People whose email bounced or who marked it as spam are never emailed again, and the Results show deliveries, opens and clicks.
             </p>
             <input readOnly className={`${field} mt-2 font-mono`} value={data.webhookUrl} onFocus={(e) => e.target.select()} />
             <label className="mt-2 block font-medium">
@@ -190,10 +195,81 @@ function SettingsCard({ data, onDone }: { data: NewsletterData; onDone: () => vo
   );
 }
 
+const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const hourLabel = (h: number) => new Date(Date.UTC(2026, 0, 1, h)).toLocaleTimeString("en-US", { hour: "numeric", timeZone: "UTC" });
+
+/** Automatic sending: all off until the owner turns it on (owner only). */
+function AutoCard({ data, onDone }: { data: NewsletterData; onDone: () => void }) {
+  const s = data.settings;
+  const [form, setForm] = useState({ welcomeOn: s.welcomeOn, weeklyOn: s.weeklyOn, weeklyAutoSend: s.weeklyAutoSend, weeklyDay: s.weeklyDay, weeklyHour: s.weeklyHour, timeZone: s.timeZone ?? "" });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const welcome = data.campaigns.find((c) => c.kind === "welcome" && (c.status === "approved" || c.status === "sending"));
+  const save = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await post({ action: "settings", settings: { ...form, timeZone: form.timeZone.trim() } });
+      setMsg("Saved.");
+      onDone();
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Couldn't save.");
+    }
+    setBusy(false);
+  };
+  const box = (k: "welcomeOn" | "weeklyOn" | "weeklyAutoSend", text: string, sub: string) => (
+    <label className="flex items-start gap-2 text-sm">
+      <input type="checkbox" className="mt-1" checked={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.checked })} />
+      <span>
+        <span className="font-medium">{text}</span>
+        <span className="block text-xs text-dash-muted">{sub}</span>
+      </span>
+    </label>
+  );
+  return (
+    <Card>
+      <h2 className="font-serif text-xl text-dash-ink">Automatic sending</h2>
+      <p className="mt-1 text-sm text-dash-muted">Nothing goes out on its own unless you turn it on here. Pause works on every email, automatic ones too. Nothing is sent from Friday sundown to Saturday sundown.</p>
+      <div className="mt-4 grid gap-4">
+        {box("welcomeOn", "Welcome email", welcome ? `Each new subscriber gets "${welcome.subject}" once.` : "Write an email, tick This is my welcome email, send yourself a test and approve it. Then each new subscriber gets it once. People already on your list don't.")}
+        {box("weeklyOn", "Weekly newsletter", "On your chosen day, the agent writes an email from your newest article that no newsletter used yet, with every check: the claim guard, AI wording, numbers in the article and a second AI. No new article, no email.")}
+        {form.weeklyOn && (
+          <div className="ml-6 grid gap-3 sm:grid-cols-3">
+            <label className="text-xs font-medium">
+              Day
+              <select className={`${field} mt-1`} value={form.weeklyDay} onChange={(e) => setForm({ ...form, weeklyDay: Number(e.target.value) })}>
+                {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium">
+              Hour
+              <select className={`${field} mt-1`} value={form.weeklyHour} onChange={(e) => setForm({ ...form, weeklyHour: Number(e.target.value) })}>
+                {Array.from({ length: 24 }, (_, h) => <option key={h} value={h}>{hourLabel(h)}</option>)}
+              </select>
+            </label>
+            <label className="text-xs font-medium">
+              Time zone
+              <input className={`${field} mt-1`} value={form.timeZone} onChange={(e) => setForm({ ...form, timeZone: e.target.value })} placeholder={data.hasStore ? "Your store's time zone" : "America/Chicago"} />
+            </label>
+          </div>
+        )}
+        {form.weeklyOn && box("weeklyAutoSend", "Send it on its own", "Only when every check passed and a second AI said yes. Otherwise it waits for your test and approval, and you are told on the team board.")}
+        {s.weeklyPaused && <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">{s.weeklyPaused} Tick Weekly newsletter and save to start it again.</p>}
+        {s.weeklyNote && <p className="text-xs text-dash-muted">Last weekly run: {s.weeklyNote}</p>}
+        <div>
+          <button className={primary} disabled={busy} onClick={save}>{busy ? "Saving..." : "Save"}</button>
+        </div>
+        {msg && <p className="text-sm text-dash-muted">{msg}</p>}
+      </div>
+    </Card>
+  );
+}
+
 function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void }) {
   const [subject, setSubject] = useState("");
   const [preview, setPreview] = useState("");
   const [body, setBody] = useState("");
+  const [welcome, setWelcome] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const run = async (what: string, work: () => Promise<void>) => {
@@ -214,17 +290,22 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
         <input className={field} value={preview} onChange={(e) => setPreview(e.target.value)} placeholder="Preview text, shown next to the subject in the inbox (optional)" maxLength={200} />
         <textarea className={field} rows={10} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your email here." />
         <p className="text-xs text-dash-muted">
-          Leave a blank line between paragraphs. Start a line with # for a heading, or * for a list. Links look like [Read more](https://yoursite.com). Your unsubscribe link and postal address are added at the bottom.
+          Leave a blank line between paragraphs. Start a line with # for a heading, or * for a list. Links look like [Read more](https://yoursite.com). Links to your own site get newsletter tags, so visits and sales from them can be counted. Your unsubscribe link and postal address are added at the bottom.
         </p>
+        <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-1" checked={welcome} onChange={(e) => setWelcome(e.target.checked)} />
+          This is my welcome email: each new subscriber gets it once, after I approve it and turn it on.
+        </label>
         <div className="flex flex-wrap gap-2">
           <button
             className={primary}
             disabled={Boolean(busy)}
             onClick={() => run("save", async () => {
-              await post({ action: "save", campaign: { subject, preview, body } });
+              await post({ action: "save", campaign: { subject, preview, body, kind: welcome ? "welcome" : "campaign" } });
               setSubject("");
               setPreview("");
               setBody("");
+              setWelcome(false);
               setMsg("Saved as a draft below. Send yourself a test next.");
               onDone();
             })}
@@ -287,13 +368,24 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
   // A paused email carries on with the people still waiting for it; a new one goes to everyone subscribed now.
   const resume = c.status === "stopped" && Boolean(c.approvedAt);
   const subs = resume ? c.waiting : data.counts.subscribed;
+  const welcome = c.kind === "welcome";
+  const [later, setLater] = useState(false);
+  const [at, setAt] = useState("");
+  const scheduledIso = () => (later && at ? new Date(at).toISOString() : undefined);
   return (
     <li className="py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-semibold text-dash-ink">{c.subject}</p>
+          <p className="font-semibold text-dash-ink">
+            {c.subject}
+            {welcome && <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800">Welcome email</span>}
+            {c.kind === "weekly" && <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-800">Weekly</span>}
+            {c.auto && <span className="ml-2 rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-800">Sent on its own</span>}
+          </p>
           <p className="text-xs text-dash-muted">
-            {STATUS_LABEL[c.status]}
+            {welcome && (c.status === "approved" || c.status === "sending")
+              ? data.settings.welcomeOn ? "On: each new subscriber gets it once" : "Approved, but the welcome email is turned off in Automatic sending"
+              : c.scheduledAt && c.status === "approved" ? `Scheduled for ${when(c.scheduledAt)}` : STATUS_LABEL[c.status]}
             {c.sent ? `, ${n(c.sent)} sent` : ""}
             {c.waiting ? `, ${n(c.waiting)} waiting` : ""}
             {c.unsure ? `, ${n(c.unsure)} not sure (never sent twice)` : ""}
@@ -313,13 +405,22 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
               Send me a test
             </button>
           )}
-          {draft && !member && (
+          {draft && !member && welcome && (
             <ConfirmButton
               className={primary}
-              disabled={busy || !c.tested || data.missing.length > 0 || subs === 0}
-              label={resume ? `Carry on: send to the ${n(subs)} still waiting` : `Send to ${n(subs)} subscribers`}
-              confirmLabel={`Click again to send to ${n(subs)}`}
-              onConfirm={() => act({ action: "approve", count: subs }, (o) => `Approved. It goes out to ${n(Number(o.count))} subscribers over the next hours, up to ${n(data.settings.dailyCap)} a day.`)}
+              disabled={busy || !c.tested || data.missing.length > 0}
+              label="Approve the welcome email"
+              confirmLabel="Click again to approve"
+              onConfirm={() => act({ action: "approve", count: 0 }, () => data.settings.welcomeOn ? "Approved. Each new subscriber gets it once from now on." : "Approved. Turn on the welcome email under Automatic sending to start it.")}
+            />
+          )}
+          {draft && !member && !welcome && (
+            <ConfirmButton
+              className={primary}
+              disabled={busy || !c.tested || data.missing.length > 0 || subs === 0 || (later && !at)}
+              label={resume ? `Carry on: send to the ${n(subs)} still waiting` : later && at ? `Schedule for ${n(subs)} subscribers` : `Send to ${n(subs)} subscribers`}
+              confirmLabel={`Click again to ${later && at ? "schedule" : "send"} to ${n(subs)}`}
+              onConfirm={() => act({ action: "approve", count: subs, scheduledAt: scheduledIso() }, (o) => later && at ? `Approved. It goes out to ${n(Number(o.count))} subscribers from ${when(new Date(at).toISOString())}, up to ${n(data.settings.dailyCap)} a day.` : `Approved. It goes out to ${n(Number(o.count))} subscribers over the next hours, up to ${n(data.settings.dailyCap)} a day.`)}
             />
           )}
           {(c.status === "approved" || c.status === "sending" || c.status === "failed") && (
@@ -330,6 +431,16 @@ function CampaignRow({ c, data, onDone }: { c: Campaign; data: NewsletterData; o
         </div>
       </div>
       {draft && !c.tested && !editing && <p className="mt-2 text-xs text-dash-muted">Send yourself a test first. Then you can approve it.</p>}
+      {draft && !member && !welcome && !resume && c.tested && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <label className="flex items-center gap-1">
+            <input type="checkbox" checked={later} onChange={(e) => setLater(e.target.checked)} />
+            Send later
+          </label>
+          {later && <input type="datetime-local" className="rounded-lg border border-dash-line px-2 py-1 text-xs" value={at} onChange={(e) => setAt(e.target.value)} />}
+          {later && <span className="text-dash-muted">Your computer's time. It goes to who is subscribed when you approve it.</span>}
+        </div>
+      )}
       {editing && (
         <div className="mt-3 grid gap-2">
           <input className={field} value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} maxLength={150} />
