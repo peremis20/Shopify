@@ -1635,15 +1635,17 @@ async function draftFrom(accountId: string, f: { unused: boolean; kind: "campaig
   const preview = noDashes(raw.preview.replace(/\n/g, " ").trim()).slice(0, 200);
   const headline = noDashes(raw.headline.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/https?:\/\/\S+/g, " ").replace(/[#*[\]\n]/g, " ").replace(/\s+/g, " ").trim()).slice(0, 120);
   const paras = draftParagraphs(raw.body);
-  const text = `Subject: ${subject}\nPreview: ${preview}\nHeadline: ${headline}\nBody:\n${paras.join("\n\n")}`;
+  // The local checks read the plain text (some AI tells are anchored to its start); the second AI gets it labeled.
+  const text = newsletterCheckText({ subject, preview, headline, paras });
+  const labeled = newsletterCheckText({ subject, preview, headline, paras }, true);
   if (!subject || !paras.length) throw new Error("The draft came back empty. Please try again.");
   const problem = claimProblem(text, health) ?? (hasAiTell(text) ? "It reads as written by AI." : null) ?? headlineProblem(headline) ?? (numbersKnown(text.replace(/^\d{1,2}\. /gm, ""), `${latest.title} ${articleText}`) ? null : "It has a number the article doesn't have.");
   if (problem) throw new Error(`The draft didn't pass the checks, so it isn't offered: ${problem}`);
   const verdict = await secondCheck(ai, {
     what: "a newsletter email that shares the business's own article with its subscribers",
     copyPart: "Headline",
+    text: labeled,
     source: `${latest.title}\n${articleText}`,
-    text,
     health,
   });
   if (verdict && !verdict.ok) throw new Error(`A second AI turned the draft down, so it isn't offered: ${verdict.why || "no reason given."}`);
@@ -1676,6 +1678,13 @@ export function draftParagraphs(raw: string): string[] {
     })
     .flat()
     .filter(Boolean);
+}
+
+/** A draft's words for the checks (pure): plain for the local checks, or labeled so the second AI knows which line is the headline. */
+export function newsletterCheckText(d: { subject: string; preview: string; headline: string; paras: string[] }, labeled = false): string {
+  return labeled
+    ? `Subject: ${d.subject}\nPreview: ${d.preview}\nHeadline: ${d.headline}\nBody:\n${d.paras.join("\n\n")}`
+    : `${d.subject}\n${d.preview}\n${d.headline}\n${d.paras.join("\n\n")}`;
 }
 
 /** The newsletter draft in the house format (pure): the large title, the body, the article link and the sign off. */

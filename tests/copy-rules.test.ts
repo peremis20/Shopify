@@ -21,3 +21,12 @@ test("copy rules: separators are not words, and an 11 word headline is refused",
   assert.equal(headlineProblem("Tired, wired or foggy? Supplements that support all three."), null);
   assert.equal(headlineProblem("one two three four five six seven eight nine ten eleven"), "The headline is longer than 10 words.");
 });
+
+test("newsletter checks: the local checks get the plain text, so a draft opening with Imagine is still caught", async () => {
+  const { newsletterCheckText } = await import("../src/lib/analytics/newsletter");
+  const { hasAiTell } = await import("../src/lib/analytics/autopilot/writer");
+  const d = { subject: "Imagine sleeping through the night", preview: "p", headline: "h", paras: ["x"] };
+  assert.ok(newsletterCheckText(d).startsWith("Imagine"));
+  assert.ok(hasAiTell(newsletterCheckText(d)));
+  assert.ok(newsletterCheckText(d, true).includes("Headline: h"));
+});
