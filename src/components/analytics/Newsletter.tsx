@@ -357,12 +357,11 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
         </label>
         <div className="flex flex-wrap gap-2">
           {direct && !member && (
-            <ConfirmButton
+            <button
+              type="button"
               className={primary}
               disabled={Boolean(busy) || !subject.trim() || !body.trim() || Boolean(sentId)}
-              label="Send now"
-              confirmLabel={`Click again to send to ${people.join(", ")}`}
-              onConfirm={() => run("send", async () => {
+              onClick={() => run("send", async () => {
                 const out = await post<{ result: { id: string; sent: string[]; failed: { email: string; why: string }[]; waiting: string[]; note: string | null; again?: boolean } }>({
                   action: "sendNow", to, agreed, requestId, campaign: { subject, preview, body },
                 });
@@ -387,7 +386,9 @@ function Compose({ data, onDone }: { data: NewsletterData; onDone: () => void })
                 }
                 onDone();
               })}
-            />
+            >
+              {busy === "send" ? "Sending..." : `Send now to ${people.join(", ")}`}
+            </button>
           )}
           <button
             className={direct ? quiet : primary}
