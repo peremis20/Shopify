@@ -18,7 +18,7 @@ import { trafficCheck } from "./autopilot/guards";
 import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
-import { accountEmail, cleanEmail, currentAccount, extraAdmins, isAdminEmail, readCookie, saveExtraAdmins, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { accountEmail, addMember, cleanEmail, listMembers, memberAccount, removeMember, currentAccount, extraAdmins, isAdminEmail, readCookie, saveExtraAdmins, sessionCookie, upsertAccount, type Account } from "./accounts";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
@@ -333,6 +333,10 @@ export async function authCallback(req: Request): Promise<Response> {
     }
     // Accounts are found by email, so only an address Google has verified may sign in to one.
     if (!link && !verified) throw new Error("Google hasn't verified this email address yet. Verify it with Google, then sign in again.");
+    // A team member signs in to the business they were added to. Only signs in: the business's own Google connection
+    // (Search Console, Analytics) is left exactly as it is.
+    const team = link ? null : await memberAccount(email);
+    if (team) return back({}, sessionCookie(req, team));
     const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
     const previous = await getConnection(account.id).catch(() => null);
@@ -1305,6 +1309,21 @@ async function clearAiCausedProblems(): Promise<void> {
     console.warn(`clearing AI caused warnings failed: ${message(e)}`),
   );
 }
+
+/** Team members of this business: other Google emails that sign in to it. */
+export const teamMembers = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method === "POST") {
+      const b = ((await req.json().catch(() => null)) ?? {}) as { add?: unknown; remove?: unknown };
+      try {
+        if (b.add !== undefined) await addMember(account.id, b.add, account.email);
+        if (b.remove !== undefined) await removeMember(account.id, b.remove);
+      } catch (e) {
+        return json({ error: message(e) }, 400);
+      }
+    }
+    return json({ owner: account.email, members: await listMembers(account.id) });
+  });
 
 /**
  * Platform owners. The server setting ADMIN_EMAILS is the root list and can't be changed here; an owner can add or
