@@ -10,7 +10,7 @@ import { ConfirmButton, GaLogo, GscLogo } from "./ui";
 
 export function SettingsPanel({ connection, account, onClose, onChanged }: {
   connection: ConnectionInfo | undefined;
-  account?: { email: string; admin: boolean };
+  account?: TeamAccount;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -22,6 +22,8 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const mode = connection?.mode ?? "none";
+  // A team member works on the business but never changes its Google connection.
+  const member = account?.role === "member";
 
   useEffect(() => {
     if (mode !== "oauth") return;
@@ -84,17 +86,34 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
           </button>
         </div>
 
-        {mode === "oauth" && (
-          <div className="space-y-5">
-            <div className="rounded-xl border border-dash-line bg-white p-4 text-sm">
-              <p className="text-dash-muted">Signed in as</p>
-              <div className="mt-0.5 flex items-center justify-between gap-3">
-                <p className="font-semibold">{account?.email ?? connection?.email ?? "Google account"}</p>
-                <button onClick={signOut} className="text-sm font-semibold text-dash-green hover:underline">
-                  Sign out
-                </button>
-              </div>
+        {(account || mode === "oauth") && (
+          <div className="mb-5 rounded-xl border border-dash-line bg-white p-4 text-sm">
+            <p className="text-dash-muted">Signed in as</p>
+            <div className="mt-0.5 flex items-center justify-between gap-3">
+              <p className="break-all font-semibold">{account?.email ?? connection?.email ?? "Google account"}</p>
+              <button onClick={signOut} className="text-sm font-semibold text-dash-green hover:underline">
+                Sign out
+              </button>
             </div>
+            {member && account?.ownerEmail && (
+              <p className="mt-1 text-xs text-dash-muted">Team member. The main sign in for this business is {account.ownerEmail}.</p>
+            )}
+          </div>
+        )}
+
+        {mode === "oauth" && member && (
+          <div className="space-y-3 text-sm">
+            <p>
+              Google is connected for this business by its main sign in{account?.ownerEmail ? `, ${account.ownerEmail}` : ""}. Only the
+              main sign in can change which Analytics and Search Console properties are used, or connect Google again.
+            </p>
+            {connection?.gaPropertyId && <p className="text-dash-muted">Analytics property: {connection.gaPropertyId}</p>}
+            {connection?.gscSiteUrl && <p className="text-dash-muted">Search Console: {connection.gscSiteUrl.replace(/^sc-domain:/, "Domain: ")}</p>}
+          </div>
+        )}
+
+        {mode === "oauth" && !member && (
+          <div className="space-y-5">
 
             {loadError && <p className="rounded-lg bg-dash-down/5 p-3 text-sm text-dash-down">{loadError}</p>}
 
@@ -163,6 +182,8 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
           </div>
         )}
 
+        {account && !isEmbedded() && <TeamBox />}
+
         {account?.admin && (
           <div className="mt-8 space-y-4 border-t border-dash-line pt-6 text-sm">
             <p className="font-serif text-xl">Platform owner</p>
@@ -186,7 +207,11 @@ export function SettingsPanel({ connection, account, onClose, onChanged }: {
           </div>
         )}
 
-        {mode === "none" && (
+        {mode === "none" && member && (
+          <p className="text-sm">Only the main sign in can connect Google for this business{account?.ownerEmail ? ` (${account.ownerEmail})` : ""}.</p>
+        )}
+
+        {mode === "none" && !member && (
           <div className="space-y-5 text-sm">
             <p>
               Connect the Google account that has access to your Analytics and Search Console. DashPatrol reads them, and only changes
@@ -329,6 +354,238 @@ export function SetupSteps({ redirectUri, canSaveClient }: { redirectUri?: strin
           </li>
         )}
       </ol>
+    </div>
+  );
+}
+
+/** Who is signed in: the person, the business's main sign in, and their role in it. */
+export interface TeamAccount {
+  email: string;
+  admin: boolean;
+  ownerEmail?: string;
+  role?: "owner" | "member";
+  business?: string;
+}
+
+interface TeamData {
+  you: string;
+  role: "owner" | "member";
+  owner: string;
+  business: string;
+  embedded: boolean;
+  members: { email: string; invitedBy: string; joinedAt: string }[];
+  invites: { email: string; invitedBy: string; expiresAt: string }[];
+  pending: { token: string; business: string; owner: string; expiresAt: string }[];
+  ownsBusiness: boolean;
+  businesses: { id: string; name: string; role: "owner" | "member"; current: boolean }[];
+  cap: number;
+  note?: string;
+  reload?: boolean;
+  error?: string;
+}
+
+type TeamAction = { invite: string } | { remove: string } | { accept: string } | { decline: string } | { switch: string };
+
+async function teamCall(body?: TeamAction): Promise<TeamData> {
+  const res = await fetch("/api/account/team", body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
+  const out = (await res.json().catch(() => ({}))) as TeamData;
+  if (!res.ok) throw new Error(out.error || "That didn't work. Please try again.");
+  // Joining, leaving or switching signs this browser in to another business: start fresh there.
+  if (out.reload) {
+    clearApiCache();
+    window.location.href = "/analytics";
+  }
+  return out;
+}
+
+const shortDate = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
+
+/** Invites waiting for the person signed in: Join or No thanks. */
+function PendingInvites({ data, busy, act }: { data: TeamData; busy: boolean; act: (b: TeamAction) => void }) {
+  if (!data.pending.length) return null;
+  return (
+    <div className="space-y-2">
+      {data.pending.map((p) => (
+        <div key={p.token} className="rounded-xl border border-dash-green/40 bg-white p-3">
+          <p>
+            <b>{p.owner}</b> invited you to join <b>{p.business}</b>.
+          </p>
+          {data.ownsBusiness && (
+            <p className="mt-1 text-xs text-dash-muted">Your own business stays as it is. You can switch between them in Settings.</p>
+          )}
+          <div className="mt-2 flex gap-3">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => act({ accept: p.token })}
+              className="rounded-lg bg-dash-green px-3 py-1.5 font-semibold text-white disabled:opacity-60"
+            >
+              Join {p.business}
+            </button>
+            <button type="button" disabled={busy} onClick={() => act({ decline: p.token })} className="text-xs font-semibold text-dash-muted hover:underline disabled:opacity-50">
+              No thanks
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function useTeam() {
+  const [data, setData] = useState<TeamData | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    teamCall().then(setData).catch((e) => setNote(e instanceof Error ? e.message : "The team couldn't be loaded."));
+  }, []);
+  const act = async (body: TeamAction, done?: string): Promise<boolean> => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const out = await teamCall(body);
+      if (out.reload) return true;
+      setData(out);
+      setNote(out.note ?? done ?? null);
+      return true;
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : "That didn't work. Please try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { data, note, busy, act };
+}
+
+/** On the dashboard: an invite to join another business, shown right after signing in. */
+export function TeamInvites() {
+  const { data, note, busy, act } = useTeam();
+  if (!data?.pending.length) return null;
+  return (
+    <div className="mb-4 space-y-2 text-sm">
+      <PendingInvites data={data} busy={busy} act={(b) => void act(b)} />
+      {note && <p className="text-xs text-dash-ink">{note}</p>}
+    </div>
+  );
+}
+
+/** Settings: the team. The main sign in invites and removes people; a member sees who they are and can leave. */
+function TeamBox() {
+  const { data, note, busy, act } = useTeam();
+  const [email, setEmail] = useState("");
+  const others = data?.businesses.filter((b) => !b.current) ?? [];
+  return (
+    <div className="mt-8 space-y-3 border-t border-dash-line pt-6 text-sm">
+      <p className="font-serif text-xl">Team</p>
+      {data && <PendingInvites data={data} busy={busy} act={(b) => void act(b)} />}
+
+      {data?.role === "owner" && (
+        <>
+          <p className="text-dash-muted">
+            Invite people to work on {data.business} with their own Google email. They join only after they sign in with that email
+            and click Join. They can't change your Google connection.
+          </p>
+          <ul className="space-y-1">
+            <li className="flex justify-between gap-2">
+              <span className="break-all">{data.owner}</span>
+              <span className="text-xs text-dash-muted">main sign in</span>
+            </li>
+            {data.members.map((m) => (
+              <li key={m.email} className="flex items-center justify-between gap-2">
+                <span className="break-all">{m.email}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act({ remove: m.email }, `${m.email} was removed and is signed out of this business.`)}
+                  className="text-xs font-semibold text-dash-down hover:underline disabled:opacity-50"
+                >
+                  Remove
+                </button>
+              </li>
+            ))}
+            {data.invites.map((i) => (
+              <li key={i.email} className="flex items-center justify-between gap-2">
+                <span className="break-all text-dash-muted">
+                  {i.email} <span className="text-xs">(invited, open until {shortDate(i.expiresAt)})</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act({ remove: i.email }, "Invite cancelled.")}
+                  className="text-xs font-semibold text-dash-down hover:underline disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </li>
+            ))}
+          </ul>
+          <form
+            onSubmit={(ev) => {
+              ev.preventDefault();
+              if (!email.trim()) return;
+              void act({ invite: email.trim() }).then((ok) => ok && setEmail(""));
+            }}
+            className="flex gap-2"
+          >
+            <input
+              value={email}
+              onChange={(ev) => setEmail(ev.target.value)}
+              type="email"
+              placeholder="name@example.com"
+              aria-label="Email to invite"
+              className="w-full min-w-0 rounded-lg border border-dash-line px-3 py-2"
+            />
+            <button type="submit" disabled={busy || !email.trim()} className="rounded-lg bg-dash-green px-3 py-2 font-semibold text-white disabled:opacity-60">
+              Invite
+            </button>
+          </form>
+          <p className="text-xs text-dash-muted">Up to {data.cap} team members.</p>
+        </>
+      )}
+
+      {data?.role === "member" && (
+        <>
+          <p>
+            You are signed in as <b className="break-all">{data.you}</b>, a team member of <b>{data.business}</b>. Its main sign in is{" "}
+            <span className="break-all">{data.owner}</span>.
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (window.confirm(`Leave ${data.business}? You lose access until you are invited again.`)) void act({ remove: data.you });
+            }}
+            className="text-sm font-semibold text-dash-down hover:underline disabled:opacity-50"
+          >
+            Leave this business
+          </button>
+        </>
+      )}
+
+      {others.length > 0 && (
+        <div className="space-y-1 pt-2">
+          <p className="font-semibold">Switch business</p>
+          {others.map((b) => (
+            <button
+              key={b.id}
+              type="button"
+              disabled={busy}
+              onClick={() => void act({ switch: b.id })}
+              className="block text-left font-semibold text-dash-green hover:underline disabled:opacity-50"
+            >
+              Open {b.name}
+              <span className="ml-1 text-xs font-normal text-dash-muted">{b.role === "owner" ? "(your own)" : "(team member)"}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!data && !note && <p className="text-dash-muted">Loading the team…</p>}
+      {note && <p className="text-xs text-dash-ink">{note}</p>}
     </div>
   );
 }

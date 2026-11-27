@@ -19,6 +19,7 @@ import { updateRollingOut } from "./autopilot/google-updates";
 import { isSabbath } from "./autopilot/sabbath";
 import crypto from "crypto";
 import { accountEmail, cleanEmail, currentAccount, extraAdmins, isAdminEmail, readCookie, saveExtraAdmins, sessionCookie, upsertAccount, type Account } from "./accounts";
+import { acceptInvite, declineInvite, inviteMember, MEMBER_GOOGLE_REFUSAL, ownBusinessId, removeMember, signInLanding, switchRole, teamView } from "./members";
 import { accountsDueForAudit, auditPass } from "./autopilot/site-audit";
 import { accountsDueForStoreAudit, applyPriceFix, runStoreAudit, storeAuditView, takeRunNow } from "./autopilot/store-audit";
 import { accountsDueForConversion, applyConversionMove, conversionView, runConversion } from "./autopilot/conversion";
@@ -218,7 +219,10 @@ export async function session(req: Request): Promise<Response> {
   const account = await accountOf(req).catch(() => null);
   return json({
     signedIn: Boolean(account),
+    // The person signed in, and the business's main sign in (the same for its owner).
     email: account?.email,
+    ownerEmail: account?.ownerEmail,
+    role: account?.role,
     admin: account?.admin ?? false,
     signInAvailable: await signInAvailable().catch(() => false),
   });
@@ -237,6 +241,10 @@ export async function authStart(req: Request): Promise<Response> {
   const purpose = asked === "ads" ? "ads" : asked === "setup" ? "setup" : asked === "recrawl" ? "recrawl" : asked === "gmail" ? "gmail" : "signin";
   if (purpose === "ads" && !(await currentAccount(req))?.admin) {
     return redirect(`${appOrigin(req)}/analytics?auth_error=Only+the+platform+owner+can+connect+Google+Ads`);
+  }
+  // A team member signed in here is already in; a Connect with Google from their session would change nothing, so say why.
+  if (purpose !== "ads" && (await currentAccount(req).catch(() => null))?.role === "member") {
+    return redirect(`${appOrigin(req)}/analytics?auth_error=${encodeURIComponent(MEMBER_GOOGLE_REFUSAL)}`);
   }
   // From inside Shopify admin: a signed ticket says which account the Google connection is for.
   const ticket = new URL(req.url).searchParams.get("link");
@@ -314,6 +322,8 @@ export async function authCallback(req: Request): Promise<Response> {
       // A ticket only attaches Google to the account it was made for, in a browser that isn't signed in to another account,
       // and once: a link someone else sends can't capture this browser's Google connection for their account.
       const here = await currentAccount(req).catch(() => null);
+      // A team member never changes the business's Google connection, whatever ticket reaches this browser.
+      if (here?.role === "member" && here.id === link.accountId) throw new Error(MEMBER_GOOGLE_REFUSAL);
       // Only a ticket made from a signed in browser is tied to that session; one made inside Shopify admin has no cookie to match.
       if (link.session && here && here.id !== link.accountId) throw new Error("This browser is signed in to a different account. Connect Google from inside that account instead.");
       if (link.session && !here) throw new Error("Please sign in again, then connect Google from the app.");
@@ -333,17 +343,36 @@ export async function authCallback(req: Request): Promise<Response> {
     }
     // Accounts are found by email, so only an address Google has verified may sign in to one.
     if (!link && !verified) throw new Error("Google hasn't verified this email address yet. Verify it with Google, then sign in again.");
-    const account = link ? { id: link.accountId } : await upsertAccount(email);
     // Keep the properties already chosen when a customer signs in again; find the rest by the store's domain.
-    const previous = await getConnection(account.id).catch(() => null);
-    const conn = { refreshToken, email, gaPropertyId: previous?.gaPropertyId, gscSiteUrl: previous?.gscSiteUrl };
-    await saveConnection(account.id, conn);
-    await autoMatch(account.id, conn).catch(() => undefined);
-    // Back into Shopify admin when the sign in started there.
-    if (link) return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
+    const keepToken = async (accountId: string) => {
+      const previous = await getConnection(accountId).catch(() => null);
+      const conn = { refreshToken, email, gaPropertyId: previous?.gaPropertyId, gscSiteUrl: previous?.gscSiteUrl };
+      await saveConnection(accountId, conn);
+      await autoMatch(accountId, conn).catch(() => undefined);
+      return previous;
+    };
+    if (link) {
+      await keepToken(link.accountId);
+      // Back into Shopify admin when the sign in started there.
+      return redirect(link.returnTo || `${appOrigin(req)}/analytics`, clearState);
+    }
+    // Where this person lands: their own business, or one they accepted an invite to (never on an invite alone).
+    const person = email.toLowerCase();
+    const landing = await signInLanding(person);
+    let accountId: string;
+    let previous: Awaited<ReturnType<typeof getConnection>> | null = null;
+    if (landing.role === "owner") {
+      accountId = (await upsertAccount(person)).id;
+      previous = await keepToken(accountId);
+    } else {
+      accountId = landing.accountId!;
+      // A member's Google token is never saved on the business they joined; only on a business of their own.
+      if (landing.ownId) await keepToken(landing.ownId).catch((e) => console.error(`own business token save failed: ${message(e)}`));
+    }
+    const cookie = sessionCookie(req, accountId, person);
     // Signed in on the way to connecting WordPress: finish that now.
-    if (readCookie(req, WP_PENDING_COOKIE)) return redirect(`${appOrigin(req)}/api/wordpress/connect`, clearState, sessionCookie(req, account.id));
-    return back(previous ? {} : { connected: "1" }, sessionCookie(req, account.id));
+    if (readCookie(req, WP_PENDING_COOKIE)) return redirect(`${appOrigin(req)}/api/wordpress/connect`, clearState, cookie);
+    return back(landing.role === "owner" && !previous ? { connected: "1" } : {}, cookie);
   } catch (err) {
     return back({ auth_error: message(err) });
   }
@@ -353,9 +382,10 @@ export async function logout(req: Request): Promise<Response> {
   return json({ ok: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
 }
 
-/** Removes the customer's Google connection and signs them out. */
+/** Removes the customer's Google connection and signs them out. A team member is only signed out. */
 export async function disconnect(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
+    if (account.role === "member") return json({ ok: true, signedOutOnly: true }, 200, { "Set-Cookie": sessionCookie(req, null) });
     const conn = await getConnection(account.id);
     if (conn) await revokeToken(conn.refreshToken);
     await deleteConnection(account.id);
@@ -457,7 +487,7 @@ export async function wordpressConnect(req: Request): Promise<Response> {
     const host = escapeHtml(new URL(site).host);
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Connect WordPress</title>
 <style>body{margin:0;background:#F7F3EC;color:#2B2A27;font:16px/1.5 system-ui,sans-serif}main{max-width:480px;margin:12vh auto;padding:0 16px}a.b{display:inline-block;padding:10px 18px;border-radius:8px;background:#2B2A27;color:#fff;text-decoration:none;margin-right:12px}a{color:#2B2A27}</style></head>
-<body><main><h1>Connect ${host}?</h1><p>This lets the SEO autopilot improve titles, descriptions and content on <strong>${host}</strong> for your account ${escapeHtml(account.email)}. Every change is listed in the app and can be undone.</p>
+<body><main><h1>Connect ${host}?</h1><p>This lets the SEO autopilot improve titles, descriptions and content on <strong>${host}</strong> for ${escapeHtml(account.role === "member" ? `the business of ${account.ownerEmail} (you are signed in as ${account.email})` : `your account ${account.email}`)}. Every change is listed in the app and can be undone.</p>
 <p>Only continue if you just clicked Connect to Insights on your own WordPress site.</p>
 <p><a class="b" href="${escapeHtml(yes)}">Connect this site</a><a href="${escapeHtml(`${appOrigin(req)}/analytics`)}">Cancel</a></p></main></body></html>`;
     const headers = new Headers({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Content-Security-Policy": "frame-ancestors 'none'", "Referrer-Policy": "no-referrer" });
@@ -613,6 +643,8 @@ export async function embeddedAppKey(): Promise<string | null> {
  */
 export const googleLinkStart = (req: Request) =>
   withAccount(req, async (account) => {
+    // Covers every Google link: connect, Set it up for me, recrawl, inside Shopify admin and Gmail.
+    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const acct = await readAccountAutopilot(account.id);
     const embedded = Boolean(req.headers.get("authorization"));
     const back = embedded && acct.shopDomain ? await adminAppUrl(acct.shopDomain) : `${appOrigin(req)}/analytics`;
@@ -626,15 +658,16 @@ export const googleLinkStart = (req: Request) =>
 /** "Set it up for me": creates Search Console and Analytics for a store that has neither. */
 export const setupGoogleTools = (req: Request) =>
   withAccount(req, async (account) => {
+    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     // A new Analytics account comes back through the Google callback (an address the OAuth client already allows).
     const state = await setupGoogle(account.id, redirectUri(req));
-    return json({ state, onboarding: await onboardingStatus(account.id, account.email) });
+    return json({ state, onboarding: await onboardingStatus(account.id, account.ownerEmail) });
   });
 
 // ---------- onboarding ----------
 
 /** The setup checklist, with the owner access message when needed. */
-export const onboarding = (req: Request) => withAccount(req, async (account) => json(await onboardingStatus(account.id, account.email)));
+export const onboarding = (req: Request) => withAccount(req, async (account) => json(await onboardingStatus(account.id, account.ownerEmail)));
 
 /** Saves what the business is (and hides or shows the checklist). */
 export const saveOnboardingProfile = (req: Request) =>
@@ -646,7 +679,7 @@ export const saveOnboardingProfile = (req: Request) =>
       gaExcludeHosts: typeof b.gaExcludeHosts === "string" ? b.gaExcludeHosts.split(",") : undefined,
       onboardingDismissed: typeof b.dismissed === "boolean" ? b.dismissed : undefined,
     });
-    return json(await onboardingStatus(account.id, account.email));
+    return json(await onboardingStatus(account.id, account.ownerEmail));
   });
 
 /**
@@ -670,14 +703,14 @@ export const connectWebsite = (req: Request) =>
     // What kind of site it is, read from its own pages, so setup offers the types that fit it first.
     await detectSiteTypes(account.id).catch((e) => console.error(`site type reading failed: ${message(e)}`));
     await autoMatch(account.id).catch(() => undefined);
-    return json(await onboardingStatus(account.id, account.email));
+    return json(await onboardingStatus(account.id, account.ownerEmail));
   });
 
 /** Looks for the Search Console and Analytics properties again (after the owner granted access). */
 export const rematchProperties = (req: Request) =>
   withAccount(req, async (account) => {
     await autoMatch(account.id);
-    return json(await onboardingStatus(account.id, account.email));
+    return json(await onboardingStatus(account.id, account.ownerEmail));
   });
 
 // ---------- analytics ----------
@@ -686,7 +719,7 @@ export async function overview(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
     const params = new URL(req.url).searchParams;
     const range = params.get("range");
-    const profile = await readProfile(account.id, account.email);
+    const profile = await readProfile(account.id, account.ownerEmail);
     const data = await getOverview(
       account.id,
       isRangeKey(range) ? range : "28d",
@@ -697,7 +730,11 @@ export async function overview(req: Request): Promise<Response> {
     );
     // The business the owner set up (its brand, else its site), shown instead of the sign in email.
     const company = profile.brandName?.trim() || profile.siteDomain || null;
-    return json({ ...data, account: { email: account.email, admin: account.admin, company } });
+    // email is the person signed in; ownerEmail the business's main sign in; business tells kept numbers apart per business.
+    return json({
+      ...data,
+      account: { email: account.email, ownerEmail: account.ownerEmail, role: account.role, business: account.id, admin: account.admin, company },
+    });
   });
 }
 
@@ -712,6 +749,7 @@ export async function properties(req: Request): Promise<Response> {
 /** Saves which GA4 property and Search Console site the dashboard reads. */
 export async function saveSettings(req: Request): Promise<Response> {
   return withAccount(req, async (account) => {
+    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const conn = await getConnection(account.id);
     if (!conn) return json({ error: "Sign in with Google again." }, 401);
     const body = await req.json().catch(() => ({}));
@@ -975,6 +1013,7 @@ export const gmailSendEmail = (req: Request) =>
 /** Stops sending from Gmail: the saved access is deleted (see removeGmail for when Google is told too). */
 export const gmailDisconnect = (req: Request) =>
   withAccount(req, async (account) => {
+    if (account.role === "member") return json({ error: MEMBER_GOOGLE_REFUSAL }, 403);
     const conn = await getConnection(account.id).catch(() => null);
     await removeGmail(account.id, conn?.email);
     return json({ ok: true });
@@ -1307,6 +1346,52 @@ async function clearAiCausedProblems(): Promise<void> {
 }
 
 /**
+ * The business's team. GET: who is signed in, the team (for the main sign in), invites waiting for this person and
+ * the businesses they can switch between. POST one of: invite, remove (the main sign in removes anyone, a member
+ * only themselves), accept or decline (an invite for this exact signed in email), switch (to a business this
+ * person owns or joined). Accept, leave and switch sign this browser in to the business it lands in.
+ */
+export const teamMembers = (req: Request) =>
+  withAccount(req, async (account) => {
+    if (req.method !== "POST") return json(await teamView(account));
+    if (account.embedded) return json({ error: "Open DashPatrol in your browser to manage your team." }, 400);
+    const b = ((await req.json().catch(() => null)) ?? {}) as { invite?: unknown; remove?: unknown; accept?: unknown; decline?: unknown; switch?: unknown };
+    let cookie: string | undefined;
+    let note: string | undefined;
+    try {
+      if (b.invite !== undefined) {
+        const out = await inviteMember(account, b.invite);
+        note = out.ownsBusiness
+          ? `Invite saved. ${out.email} already has a business here; they join only if they accept, and theirs stays as it is.`
+          : `Invite saved. Ask ${out.email} to sign in to DashPatrol with Google and click Join.`;
+      } else if (b.remove !== undefined) {
+        const leaving = account.role === "member" && cleanEmail(b.remove) === account.email.toLowerCase();
+        await removeMember(account, b.remove);
+        if (leaving) {
+          // Back to a business of their own, or signed out.
+          const own = await ownBusinessId(account.email);
+          cookie = sessionCookie(req, own, account.email);
+          return json({ ok: true, left: true, reload: true }, 200, { "Set-Cookie": cookie });
+        }
+      } else if (b.accept !== undefined) {
+        const joined = await acceptInvite(account.email, b.accept);
+        cookie = sessionCookie(req, joined, account.email);
+        return json({ ok: true, reload: true }, 200, { "Set-Cookie": cookie });
+      } else if (b.decline !== undefined) {
+        await declineInvite(account.email, b.decline);
+      } else if (b.switch !== undefined) {
+        const to = String(b.switch);
+        if (!(await switchRole(account.email, to))) return json({ error: "You don't have access to that business." }, 403);
+        cookie = sessionCookie(req, to, account.email);
+        return json({ ok: true, reload: true }, 200, { "Set-Cookie": cookie });
+      } else return json({ error: "Nothing to change." }, 400);
+    } catch (e) {
+      return json({ error: publicError(e, "team") }, 400);
+    }
+    return json({ ...(await teamView(account)), note });
+  });
+
+/**
  * Platform owners. The server setting ADMIN_EMAILS is the root list and can't be changed here; an owner can add or
  * remove other owners in the app. Only owners can see or change this.
  */
@@ -1320,6 +1405,7 @@ export const platformOwners = (req: Request) =>
       const remove = b.remove === undefined ? null : cleanEmail(b.remove);
       if ((b.add !== undefined && !add) || (b.remove !== undefined && !remove)) return json({ error: "That doesn't look like an email address." }, 400);
       if (remove && isAdminEmail(remove)) return json({ error: "This owner is set on the server and can't be removed here." }, 400);
+      // account.email is the person signed in (platform owners are people, not businesses).
       if (remove && remove === account.email.toLowerCase()) return json({ error: "You can't remove yourself. Ask another owner." }, 400);
       if (add && !isAdminEmail(add)) extra = await saveExtraAdmins([...extra, add]);
       if (remove) extra = await saveExtraAdmins(extra.filter((e) => e !== remove));
@@ -1406,6 +1492,7 @@ export const savePlatform = (req: Request) =>
     // New email settings: a test email goes to the owner at once, so a wrong key or an unverified domain shows now.
     // Also when either was saved earlier but emails still show as not working.
     if (str("resendKey")?.trim() || str("alertsFrom")?.trim() || ((p.resendKey || p.alertsFrom) && failing("email"))) {
+      // To the platform owner who saved the settings (the person signed in, not their business).
       const sent = await sendEmail(
         account.email,
         "DashPatrol emails are working",

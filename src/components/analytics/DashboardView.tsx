@@ -13,7 +13,7 @@ import { RankHealth } from "./RankHealth";
 import { KeywordResearch } from "./KeywordResearch";
 import { Onboarding } from "./Onboarding";
 import { SignInScreen } from "./SignIn";
-import { ConnectButton, SettingsPanel, SetupSteps } from "./SettingsPanel";
+import { ConnectButton, SettingsPanel, SetupSteps, TeamInvites } from "./SettingsPanel";
 import { NAV_SIMPLE, Sidebar } from "./Sidebar";
 import { Home, type SimplePage } from "./Home";
 import { clearApiCache, keptOwner, setKeptOwner } from "./seo-ui";
@@ -170,8 +170,10 @@ export function DashboardView() {
       }
       if (!res.ok) throw new Error(body.error ?? `Server responded with ${res.status}`);
       // Another account than the one these kept numbers came from: forget them all.
-      if (keptOwner() !== (body.account?.email ?? null)) clearApiCache();
-      if (!isEmbedded()) setKeptOwner(body.account?.email ?? null);
+      // Per business and person: a team member switching businesses never sees the other one's kept numbers.
+      const who = body.account?.email ? `${body.account.business ?? ""}:${body.account.email}` : null;
+      if (keptOwner() !== who) clearApiCache();
+      if (!isEmbedded()) setKeptOwner(who);
       setData(body);
       try {
         if (!isEmbedded()) sessionStorage.setItem(keptKey, JSON.stringify({ at: Date.now(), data: body }));
@@ -250,6 +252,8 @@ export function DashboardView() {
 
       <main className="lg:pl-64">
         <div className="mx-auto max-w-[1400px] px-4 pb-16 pt-5 sm:px-8">
+          {/* An invite to join another business, waiting for this person to accept. */}
+          {data?.account && !isEmbedded() && <TeamInvites />}
           {/* Header */}
           <header id="overview" className="scroll-mt-6">
             <div className="mb-4 flex items-center justify-between lg:hidden">

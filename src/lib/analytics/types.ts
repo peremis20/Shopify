@@ -130,7 +130,8 @@ export interface PropertyOptions {
 }
 
 export interface OverviewResponse {
-  account?: { email: string; admin: boolean; company?: string | null };
+  /** email: the person signed in; ownerEmail: the business's main sign in; business: the business id. */
+  account?: { email: string; ownerEmail?: string; role?: "owner" | "member"; business?: string; admin: boolean; company?: string | null };
   generatedAt: string;
   rangeKey: RangeKey;
   ga: SourceResult<GaData>;

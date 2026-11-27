@@ -180,6 +180,27 @@ export function ensureSchema(): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now(),
       last_login_at timestamptz NOT NULL DEFAULT now()
     )`;
+    // Team members: other verified Google emails that accepted an invite to a business. They sign in as themselves.
+    await sql`CREATE TABLE IF NOT EXISTS insights_account_members (
+      account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      email text NOT NULL,
+      invited_by text NOT NULL,
+      joined_at timestamptz NOT NULL DEFAULT now(),
+      last_used_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (account_id, email)
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_account_members_email ON insights_account_members (email)`;
+    // Invites waiting for the invitee to accept while signed in as that email. Nothing changes until they do.
+    await sql`CREATE TABLE IF NOT EXISTS insights_account_invites (
+      account_id bigint NOT NULL REFERENCES insights_accounts (id) ON DELETE CASCADE,
+      email text NOT NULL,
+      token text NOT NULL UNIQUE,
+      invited_by text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (account_id, email)
+    )`;
+    await sql`CREATE INDEX IF NOT EXISTS insights_account_invites_email ON insights_account_invites (email)`;
     await sql`CREATE TABLE IF NOT EXISTS insights_account_google (
       account_id bigint PRIMARY KEY REFERENCES insights_accounts (id) ON DELETE CASCADE,
       refresh_token_enc text NOT NULL,

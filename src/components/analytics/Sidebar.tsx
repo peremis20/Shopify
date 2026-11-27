@@ -114,7 +114,8 @@ export function Sidebar({ items = NAV_ADVANCED, active, onNavigate, integrations
         {email && !isEmbedded() && (
           <div className="border-t border-white/10 px-6 py-4">
             <p className="text-[11px] uppercase tracking-[0.16em] text-white/45">Signed in as</p>
-            <p className="truncate text-sm text-white" title={email}>{company || email}</p>
+            <p className="truncate text-sm text-white" title={company || email}>{company || email}</p>
+            {company && <p className="truncate text-xs text-white/60" title={email}>{email}</p>}
             <button
               onClick={async () => {
                 clearApiCache();

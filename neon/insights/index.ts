@@ -121,6 +121,8 @@ const routes: Record<string, Handler> = {
   "POST /api/autopilot/settings": api.saveAutopilot,
   "POST /api/autopilot/platform": api.savePlatform,
   "GET /api/autopilot/owners": api.platformOwners,
+  "GET /api/account/team": api.teamMembers,
+  "POST /api/account/team": api.teamMembers,
   "POST /api/autopilot/owners": api.platformOwners,
   "POST /api/autopilot/run": api.runAutopilotNow,
   "POST /api/autopilot/preview": api.previewAutopilot,

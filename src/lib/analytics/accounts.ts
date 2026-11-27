@@ -4,12 +4,26 @@ import { ensureSchema, sql } from "./db";
 /**
  * Customer accounts. Signing in with Google creates the account (keyed by
  * email) and a signed session cookie identifies it on every request.
+ *
+ * A business (an account) has one main sign in (its owner) and may have team
+ * members: other verified Google emails that accepted an invite. The session
+ * names both the business and the person, so a member never acts as the owner.
  */
 
+export type Role = "owner" | "member";
+
 export interface Account {
+  /** The business. */
   id: string;
+  /** The person signed in (the owner, or a team member). */
   email: string;
+  /** The business's main sign in. */
+  ownerEmail: string;
+  role: Role;
+  /** A platform owner, from the signed in person's own email only. */
   admin: boolean;
+  /** Inside Shopify admin (the store's session token, no cookie). */
+  embedded?: boolean;
 }
 
 const COOKIE = "insights_session";
@@ -80,14 +94,55 @@ export async function upsertAccount(email: string): Promise<Account> {
     INSERT INTO insights_accounts (email) VALUES (${email.toLowerCase()})
     ON CONFLICT (email) DO UPDATE SET last_login_at = now()
     RETURNING id, email`;
-  return { id: row.id!, email: row.email!, admin: await isAdmin(row.email!) };
+  return { id: row.id!, email: row.email!, ownerEmail: row.email!, role: "owner", admin: await isAdmin(row.email!) };
 }
 
-export function sessionCookie(req: Request, accountId: string | null): string {
+const b64 = (v: string) => Buffer.from(v, "utf8").toString("base64url");
+const unb64 = (v: string) => Buffer.from(v, "base64url").toString("utf8");
+
+/** The signed cookie value: `accountId.person.exp.sig`, the person being the signed in email (base64url). */
+export function sessionValue(accountId: string, person: string, exp: number): string {
+  const payload = `${accountId}.${b64(person.toLowerCase())}.${exp}`;
+  return `${payload}.${sign(payload)}`;
+}
+
+/**
+ * The business and person a cookie names, or null when it is forged, malformed or expired. Cookies from before
+ * team members (`accountId.exp.sig`) stay valid and name the business's main sign in (person null).
+ */
+export function readSession(value: string, now = Date.now()): { id: string; person: string | null; exp: number } | null {
+  const parts = value.split(".");
+  let id: string, person: string | null, exp: string, sig: string, payload: string;
+  if (parts.length === 3) {
+    [id, exp, sig] = parts;
+    person = null;
+    payload = `${id}.${exp}`;
+  } else if (parts.length === 4) {
+    let p: string;
+    [id, p, exp, sig] = parts;
+    payload = `${id}.${p}.${exp}`;
+    person = cleanEmail(unb64(p));
+    if (!person) return null;
+  } else return null;
+  if (!/^\d+$/.test(id) || !/^\d+$/.test(exp) || !sig) return null;
+  const expected = sign(payload);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  if (Number(exp) * 1000 < now) return null;
+  return { id, person, exp: Number(exp) };
+}
+
+/** Signs in `person` to business `accountId` (the owner or an accepted team member), or signs out with null. */
+export function sessionCookie(req: Request, accountId: string | null, person?: string): string {
   const secure = new URL(req.url).protocol === "https:" || process.env.APP_URL?.startsWith("https:") ? "; Secure" : "";
-  if (!accountId) return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
-  const payload = `${accountId}.${Math.floor(Date.now() / 1000) + MAX_AGE}`;
-  return `${COOKIE}=${payload}.${sign(payload)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${MAX_AGE}${secure}`;
+  if (!accountId || !person) return `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+  const value = sessionValue(accountId, person, Math.floor(Date.now() / 1000) + MAX_AGE);
+  return `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${MAX_AGE}${secure}`;
+}
+
+/** The role a person has in a business, or null when they have none (a removed member loses access at once). */
+export function roleFor(person: string, ownerEmail: string, isMember: boolean): Role | null {
+  if (person.toLowerCase() === ownerEmail.toLowerCase()) return "owner";
+  return isMember ? "member" : null;
 }
 
 export function readCookie(req: Request, name: string): string | undefined {
@@ -95,18 +150,22 @@ export function readCookie(req: Request, name: string): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
-/** The signed-in account, or null. */
+/** The signed-in business and person, or null. Membership is read again on every request. */
 export async function currentAccount(req: Request): Promise<Account | null> {
   const value = readCookie(req, COOKIE);
   if (!value) return null;
-  const [id, exp, sig] = value.split(".");
-  if (!id || !exp || !sig) return null;
-  const expected = sign(`${id}.${exp}`);
-  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-  if (Number(exp) * 1000 < Date.now()) return null;
+  const s = readSession(value);
+  if (!s) return null;
   await ensureSchema();
-  const [row] = await sql`SELECT id, email FROM insights_accounts WHERE id = ${id}`;
-  return row ? { id: row.id!, email: row.email!, admin: await isAdmin(row.email!) } : null;
+  const [row] = await sql`
+    SELECT a.id, a.email,
+      EXISTS (SELECT 1 FROM insights_account_members m WHERE m.account_id = a.id AND m.email = ${s.person ?? ""}) AS member
+    FROM insights_accounts a WHERE a.id = ${s.id}`;
+  if (!row?.email) return null;
+  const person = s.person ?? row.email;
+  const role = roleFor(person, row.email, row.member === "t" || row.member === "true");
+  if (!role) return null;
+  return { id: row.id!, email: person, ownerEmail: row.email, role, admin: await isAdmin(person) };
 }
 
 /** The email an account signs in with, or null. */

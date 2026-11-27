@@ -83,8 +83,9 @@ async function findOrCreateAccount(shop: string): Promise<Account> {
     SELECT a.id, a.email FROM insights_account_autopilot ap JOIN insights_accounts a ON a.id = ap.account_id
     WHERE ap.shop_domain = ${shop} ORDER BY a.id LIMIT 1`;
   // Inside Shopify admin any of the store's staff gets here, so only owners set on the server count, never ones added in the app.
-  if (row) return { id: row.id!, email: row.email!, admin: isAdminEmail(row.email!) };
-  return upsertAccount(shop);
+  // Always the business's own identity here (never a team member's).
+  if (row) return { id: row.id!, email: row.email!, ownerEmail: row.email!, role: "owner", admin: isAdminEmail(row.email!), embedded: true };
+  return { ...(await upsertAccount(shop)), admin: isAdminEmail(shop), embedded: true };
 }
 
 /**
