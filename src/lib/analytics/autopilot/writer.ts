@@ -79,7 +79,30 @@ const UNSOURCED =
   /\b(?:(?:some|many|several|recent|new|clinical)\s+)?(?:studies|research|trials?)\s+(?:show|shows|suggest|suggests|have\s+shown|have\s+observed|observed|found|indicate|point)\b|\b(?:many|most|some)\s+(?:users|people|customers)\s+(?:notice|report|find|say)\b|\bexperts?\s+(?:say|agree|recommend)\b|\banecdotal\b/i;
 export const isUnsourced = (text: string) => UNSOURCED.test(text);
 
+/**
+ * The owner's copy rules for headlines and short sales copy, for every site: a visitor gives a page about 2 seconds,
+ * so the first words must say what the business offers and the problem it solves. Used by the writer, checked by the
+ * second AI, and the store audit holds the homepage to them.
+ */
+export const COPY_RULES = `Copy rules (visitors decide in about 2 seconds):
+- The headline says plainly what the business offers and the problem it solves. 10 words or fewer. Short and to the point, no filler, no clever wordplay that hides the offer.
+- Use one of these proven frameworks:
+  Problem, solution, result (StoryBrand one liner): name the problem, say what you provide, show the outcome. Best for a homepage header.
+  Value proposition: [desirable outcome] for [specific audience] without [painful trade off]. Best for a headline and subheadline.
+  Audience + category + outcome + differentiator, in one sentence.
+  Plain version: We help [who] get [result] without [worry].
+- A subheadline is one or two short sentences, 25 words or fewer.
+- No medical claims: never say a product cures, treats, prevents, heals or diagnoses anything. Wellness benefits only as "supports", from the site's own words.
+- Every fact, number, rating and review count comes from the site's own data. Never round up, never invent one.`;
+
+/** How many words a headline has (pure). */
+export const wordCount = (text: string) => text.trim().split(/\s+/).filter(Boolean).length;
+/** Longest headline the copy rules allow. */
+export const MAX_HEADLINE_WORDS = 10;
+
 const RULES = `
+${COPY_RULES}
+
 Hard rules:
 - Never claim a product or ingredient cures, treats, prevents, heals or diagnoses any disease or condition. Use careful wording such as "supports" or "may help", and only for well established, general wellness benefits.
 - Never write "FDA approved", "clinically proven", "doctor recommended", "miracle", "no side effects", "guaranteed results", a number of pounds to lose, or anything suggesting people replace or stop medication. Everything you write is checked for these and dropped if found.
@@ -1601,7 +1624,7 @@ No hyphens or dashes, no emojis, no exclamation marks.`,
  */
 export async function secondCheck(
   ai: AiProvider,
-  p: { what: string; source: string; text: string; health: boolean; publicText?: string },
+  p: { what: string; source: string; text: string; health: boolean; publicText?: string; copy?: boolean },
 ): Promise<{ ok: boolean; why: string } | null> {
   await loadRests();
   if (!hasSecondAi(ai)) return null;
@@ -1616,7 +1639,7 @@ Text:
 """
 ${p.text}
 """
-ok: false if it claims more than the source says, invents a fact, number, study or result, ${p.health ? "makes a medical claim, promises to cure, treat or prevent anything, gives advice for someone's own health, " : ""}copies someone else's words, reads as spam or clickbait, is unkind, or would embarrass the owner. When unsure, false.
+ok: false if it claims more than the source says, invents a fact, number, study or result, ${p.health ? "makes a medical claim, promises to cure, treat or prevent anything, gives advice for someone's own health, " : ""}copies someone else's words, reads as spam or clickbait, is unkind, or would embarrass the owner.${p.copy ? ` Also false if it breaks these copy rules:\n${COPY_RULES}\n` : ""} When unsure, false.
 why: one short plain sentence, no hyphens or dashes.`,
     { type: "object", properties: { ok: { type: "boolean" }, why: { type: "string" } }, required: ["ok", "why"] },
   );
@@ -1682,6 +1705,8 @@ fix: one exact change someone can check after, saying what to add or change and 
 field: what changes: seo_title, meta_description, page_text (the text of a content page or article), product_description, theme (layout, buttons, sections, design, menus, footer), app (an app to add, remove or set up), other.
 fact: the name of the one fact it rests on, exactly as written in the facts (for example shippingInfo).
 impact: high when it likely stops a purchase, medium when it slows one, low when it is polish.
+Hold the homepage's main headline and the first lines of each key page to these rules, and list it as a problem when a visitor can't tell within 2 seconds what is sold and what problem it solves (fix: new words that follow a framework below):
+${COPY_RULES}
 Only what the facts clearly show; never guess. At most 3 per page and 12 in total, most important first. No hyphens or dashes. Never invent a fact, number, review, guarantee or policy the store doesn't state; a fix may ask the owner to add their own real policy.${health ? " This store sells health products: no health or medical claims of any kind, in any field." : ""}
 Return an empty list when nothing is clearly wrong.`,
     CONVERSION_SCHEMA,
@@ -2199,7 +2224,8 @@ Proposed SEO title: ${change.metaTitle || "(unchanged)"}
 Proposed meta description: ${change.metaDescription || "(unchanged)"}
 Proposed new section: ${change.contentSectionHtml ? `\n"""\n${change.contentSectionHtml}\n"""` : "(none)"}
 
-For each proposed part, keep it only if the data supports it: it matches what people searching that want (Search Console and page one above), is at least as good as the current one, reads naturally (no keyword stuffing), and states nothing the page text doesn't support. When unsure, do not keep it.
+For each proposed part, keep it only if the data supports it: it matches what people searching that want (Search Console and page one above), is at least as good as the current one, reads naturally (no keyword stuffing), says plainly what the page offers and the problem it solves, and states nothing the page text doesn't support. When unsure, do not keep it.
+${COPY_RULES}
 If you can write a clearly stronger SEO title (under 60 characters) or meta description (under 155 characters) for this search, using only what the page supports, give it in betterTitle or betterDescription; otherwise return an empty string. No hyphens or dashes.`;
   const out = await askJson<{ keepTitle: boolean; keepDescription: boolean; keepSection: boolean; betterTitle: string; betterDescription: string }>(
     reviewerOf(ai),
@@ -2568,7 +2594,7 @@ ${p.articleText.slice(0, 6000).replace(/"{3,}/g, '"')}
 """
 "subject": under nine words, plain, true to the article, no clickbait.
 "preview": one short sentence shown next to the subject in the inbox.
-"headline": one short, warm line that names the reader's problem the article speaks to, under twelve words, shown large at the top. No clickbait.
+"headline": one short, warm line that names the reader's problem the article speaks to and what helps, ${MAX_HEADLINE_WORDS} words or fewer, shown large at the top. No clickbait.
 "body": an educational email in this shape, each part separated by a blank line:
   two short paragraphs that open on the everyday problem the article itself describes, in its own terms (invent no scene, time, person or detail), and then say plainly what the article explains;
   "Try this:" on its own line, then up to three numbered steps, one per line, written as "1. ...", "2. ...", "3. ...", each a simple everyday step the article itself gives (fewer if the article gives fewer, none if it gives none);
